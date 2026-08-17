@@ -14,6 +14,10 @@ let package = Package(
         .library(
             name: "AFMOpenAICompat",
             targets: ["AFMOpenAICompat"]
+        ),
+        .library(
+            name: "AFMKitApple",
+            targets: ["AFMKitApple"]
         )
     ],
     targets: [
@@ -25,6 +29,10 @@ let package = Package(
             name: "AFMOpenAICompat",
             dependencies: []
         ),
+        .target(
+            name: "AFMKitApple",
+            dependencies: ["AFMKitCore", "AFMOpenAICompat"]
+        ),
         .testTarget(
             name: "AFMKitCoreTests",
             dependencies: ["AFMKitCore"]
@@ -32,6 +40,10 @@ let package = Package(
         .testTarget(
             name: "AFMOpenAICompatTests",
             dependencies: ["AFMOpenAICompat"]
+        ),
+        .testTarget(
+            name: "AFMKitAppleTests",
+            dependencies: ["AFMKitApple", "AFMKitCore"]
         )
     ]
 )

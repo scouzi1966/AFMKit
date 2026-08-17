@@ -78,6 +78,8 @@ Current checkpoint:
 
 ## Phase 3: Apple and macOS 27 Provider Surface
 
+Status: extracted and verified in this repository; downstream Vesta adoption remains in Phase 5.
+
 Scope:
 
 - Extract FoundationModels provider interfaces into `AFMKitApple`.
@@ -85,9 +87,19 @@ Scope:
 - Move reusable Private Cloud Compute capability, quota, and availability checks from Vesta into AFMKit where they are app-agnostic.
 - Keep app-specific entitlements, profile IDs, signing, and UI selection logic in Vesta.
 
-Known gap:
+Extracted runtime boundary:
 
-- Current PCC execution is primarily in Vesta. AFMKit has capability metadata but not the full reusable PCC request/session runtime.
+- `AFMFoundationNativeProviderProbe` exposes typed on-device and PCC availability, locale, context, and quota snapshots.
+- `AFMFoundationNativeExecutionPlanner` validates the signed-app entitlement before quota access and carries PCC reasoning selection.
+- `AFMFoundationNativeSessionRuntime` creates and reuses on-device and PCC `LanguageModelSession` instances without importing Vesta types.
+- Foundation Models stream processing, telemetry, tool snapshots, structured completion, transcript windows, and generation option policies are reusable package APIs.
+- Public API changes are guarded by the `AFMKitApple` normalized symbol-graph baseline.
+
+Deliberate app boundary:
+
+- The host app detects entitlements from its own signed binary and supplies the result to AFMKit.
+- Vesta continues to own provisioning profiles, entitlement files, provider selection UI, route metadata, and chat workflow DTOs.
+- Vesta's native request factory can migrate to the AFMKit runtime in Phase 5 without copying those app concerns into the SDK.
 
 ## Phase 4: Runtime Adapters
 
