@@ -33,6 +33,13 @@ Normal consumers resolve the tagged AFM-compatible MLX stack directly:
 swift test -c release
 ```
 
+The standalone [MLX quickstart](Examples/AFMKitQuickstart/README.md) shows the downstream provider
+registry and structured streaming path without linking the maclocal-api server, CLI, or WebUI:
+
+```bash
+Scripts/check-downstream-example.sh
+```
+
 When developing the compatibility packages themselves, their persistent local checkouts can replace the tagged dependencies:
 
 ```bash

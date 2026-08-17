@@ -144,12 +144,19 @@ AFM-compatible dependency checkpoint:
 
 ## Phase 5: Consumer Migration
 
+Status: in progress. A standalone MLX quickstart now compiles against the public provider registry
+and runtime adapter without importing maclocal-api server targets. Tagged-package migration for
+maclocal-api and Vesta remains outstanding.
+
 Scope:
 
 - Make maclocal-api consume AFMKit packages from tags.
 - Make Vesta consume `AFMKitCore`, `AFMOpenAICompat`, and Apple/PCC packages directly.
 - Keep high-throughput server, WebUI, Homebrew, PyPI, release harness, and model qualification in maclocal-api.
 - Add a downstream example app that exercises AFMKit without local maclocal-api source checkout assumptions.
+- Keep a standalone downstream build gate that imports public AFMKit products only. During private
+  pre-tag development it uses a relative package path; the first AFMKit tag replaces that path with
+  the repository URL and becomes the clean-clone release gate.
 
 Exit criteria:
 
