@@ -1,0 +1,5488 @@
+{
+  "metadata": {
+    "formatVersion": {
+      "major": 0,
+      "minor": 6,
+      "patch": 0
+    }
+  },
+  "module": {
+    "name": "AFMKitMLX",
+    "platform": {
+      "architecture": "arm64",
+      "operatingSystem": {
+        "minimumVersion": {
+          "major": 26,
+          "minor": 0
+        },
+        "name": "macosx"
+      },
+      "vendor": "apple"
+    }
+  },
+  "relationships": [
+    {
+      "kind": "conformsTo",
+      "source": "s:9AFMKitMLX11AFMMLXModelC",
+      "target": "s:10AFMKitCore17AFMTextTokenizingP",
+      "targetFallback": "AFMKitCore.AFMTextTokenizing"
+    },
+    {
+      "kind": "conformsTo",
+      "source": "s:9AFMKitMLX11AFMMLXModelC",
+      "target": "s:10AFMKitCore8AFMModelP",
+      "targetFallback": "AFMKitCore.AFMModel"
+    },
+    {
+      "kind": "conformsTo",
+      "source": "s:9AFMKitMLX11AFMMLXModelC",
+      "target": "s:s16SendableMetatypeP",
+      "targetFallback": "Swift.SendableMetatype"
+    },
+    {
+      "kind": "conformsTo",
+      "source": "s:9AFMKitMLX11AFMMLXModelC",
+      "target": "s:s8SendableP",
+      "targetFallback": "Swift.Sendable"
+    },
+    {
+      "kind": "conformsTo",
+      "source": "s:9AFMKitMLX18AFMMLXKernelEngineO",
+      "target": "s:SH",
+      "targetFallback": "Swift.Hashable"
+    },
+    {
+      "kind": "conformsTo",
+      "source": "s:9AFMKitMLX18AFMMLXKernelEngineO",
+      "target": "s:SQ",
+      "targetFallback": "Swift.Equatable"
+    },
+    {
+      "kind": "conformsTo",
+      "source": "s:9AFMKitMLX18AFMMLXKernelEngineO",
+      "target": "s:SY",
+      "targetFallback": "Swift.RawRepresentable"
+    },
+    {
+      "kind": "conformsTo",
+      "source": "s:9AFMKitMLX18AFMMLXKernelEngineO",
+      "target": "s:s12CaseIterableP",
+      "targetFallback": "Swift.CaseIterable"
+    },
+    {
+      "kind": "conformsTo",
+      "source": "s:9AFMKitMLX18AFMMLXKernelEngineO",
+      "target": "s:s16SendableMetatypeP",
+      "targetFallback": "Swift.SendableMetatype"
+    },
+    {
+      "kind": "conformsTo",
+      "source": "s:9AFMKitMLX18AFMMLXKernelEngineO",
+      "target": "s:s8SendableP",
+      "targetFallback": "Swift.Sendable"
+    },
+    {
+      "kind": "conformsTo",
+      "source": "s:9AFMKitMLX21AFMMLXProviderFactoryV",
+      "target": "s:10AFMKitCore18AFMProviderFactoryP",
+      "targetFallback": "AFMKitCore.AFMProviderFactory"
+    },
+    {
+      "kind": "conformsTo",
+      "source": "s:9AFMKitMLX21AFMMLXProviderFactoryV",
+      "target": "s:s16SendableMetatypeP",
+      "targetFallback": "Swift.SendableMetatype"
+    },
+    {
+      "kind": "conformsTo",
+      "source": "s:9AFMKitMLX21AFMMLXProviderFactoryV",
+      "target": "s:s8SendableP",
+      "targetFallback": "Swift.Sendable"
+    },
+    {
+      "kind": "conformsTo",
+      "source": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV",
+      "target": "s:s16SendableMetatypeP",
+      "targetFallback": "Swift.SendableMetatype"
+    },
+    {
+      "kind": "conformsTo",
+      "source": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV",
+      "target": "s:s8SendableP",
+      "targetFallback": "Swift.Sendable"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX11AFMMLXModelC10descriptor0A4Core18AFMModelDescriptorVvp",
+      "sourceOrigin": {
+        "displayName": "AFMModel.descriptor",
+        "identifier": "s:10AFMKitCore8AFMModelP10descriptorAA0C10DescriptorVvp"
+      },
+      "target": "s:9AFMKitMLX11AFMMLXModelC"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX11AFMMLXModelC12availability0A4Core20AFMModelAvailabilityOyYaF",
+      "sourceOrigin": {
+        "displayName": "AFMModel.availability()",
+        "identifier": "s:10AFMKitCore8AFMModelP12availabilityAA0C12AvailabilityOyYaF"
+      },
+      "target": "s:9AFMKitMLX11AFMMLXModelC"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX11AFMMLXModelC14streamResponse2toScsy0A4Core18AFMGenerationEventOs5Error_pGAF10AFMRequestV_tF",
+      "sourceOrigin": {
+        "displayName": "AFMModel.streamResponse(to:)",
+        "identifier": "s:10AFMKitCore8AFMModelP14streamResponse2toScsyAA18AFMGenerationEventOs5Error_pGAA10AFMRequestV_tF"
+      },
+      "target": "s:9AFMKitMLX11AFMMLXModelC"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX11AFMMLXModelC4load8progress0A4Core18AFMModelDescriptorVySdYbcSg_tYaKF",
+      "sourceOrigin": {
+        "displayName": "AFMModel.load(progress:)",
+        "identifier": "s:10AFMKitCore8AFMModelP4load8progressAA0C10DescriptorVySdYbcSg_tYaKF"
+      },
+      "target": "s:9AFMKitMLX11AFMMLXModelC"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX11AFMMLXModelC6unloadyyYaF",
+      "sourceOrigin": {
+        "displayName": "AFMModel.unload()",
+        "identifier": "s:10AFMKitCore8AFMModelP6unloadyyYaF"
+      },
+      "target": "s:9AFMKitMLX11AFMMLXModelC"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX11AFMMLXModelC7modelID13configurationAC0A4Core08AFMModelE0V_AF24AFMProviderConfigurationVtcfc",
+      "target": "s:9AFMKitMLX11AFMMLXModelC"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX11AFMMLXModelC7respond2to0A4Core16AFMModelResponseVAF10AFMRequestV_tYaKF",
+      "sourceOrigin": {
+        "displayName": "AFMModel.respond(to:)",
+        "identifier": "s:10AFMKitCore8AFMModelP7respond2toAA0C8ResponseVAA10AFMRequestV_tYaKF"
+      },
+      "target": "s:9AFMKitMLX11AFMMLXModelC"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX11AFMMLXModelC8tokenize4textSaySiGSS_tYaKF",
+      "sourceOrigin": {
+        "displayName": "AFMTextTokenizing.tokenize(text:)",
+        "identifier": "s:10AFMKitCore17AFMTextTokenizingP8tokenize4textSaySiGSS_tYaKF"
+      },
+      "target": "s:9AFMKitMLX11AFMMLXModelC"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX18AFMMLXKernelEngineO15configuredValueACSSSg_tcfc",
+      "target": "s:9AFMKitMLX18AFMMLXKernelEngineO"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX18AFMMLXKernelEngineO3ds4yA2CmF",
+      "target": "s:9AFMKitMLX18AFMMLXKernelEngineO"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX18AFMMLXKernelEngineO6nativeyA2CmF",
+      "target": "s:9AFMKitMLX18AFMMLXKernelEngineO"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX18AFMMLXKernelEngineO8rawValueACSgSS_tcfc",
+      "sourceOrigin": {
+        "displayName": "RawRepresentable.init(rawValue:)",
+        "identifier": "s:SY8rawValuexSg03RawB0Qz_tcfc"
+      },
+      "target": "s:9AFMKitMLX18AFMMLXKernelEngineO"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX21AFMMLXProviderFactoryV10descriptor0A4Core21AFMProviderDescriptorVvp",
+      "sourceOrigin": {
+        "displayName": "AFMProviderFactory.descriptor",
+        "identifier": "s:10AFMKitCore18AFMProviderFactoryP10descriptorAA0C10DescriptorVvp"
+      },
+      "target": "s:9AFMKitMLX21AFMMLXProviderFactoryV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX21AFMMLXProviderFactoryV10providerID0A4Core011AFMProviderF0VvpZ",
+      "target": "s:9AFMKitMLX21AFMMLXProviderFactoryV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX21AFMMLXProviderFactoryV16modelDescriptorsSay0A4Core18AFMModelDescriptorVGyYaKF",
+      "sourceOrigin": {
+        "displayName": "AFMProviderFactory.modelDescriptors()",
+        "identifier": "s:10AFMKitCore18AFMProviderFactoryP16modelDescriptorsSayAA18AFMModelDescriptorVGyYaKF"
+      },
+      "target": "s:9AFMKitMLX21AFMMLXProviderFactoryV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX21AFMMLXProviderFactoryV9makeModel2id13configuration0A4Core11AnyAFMModelVAG0K2IDV_AG24AFMProviderConfigurationVtKF",
+      "sourceOrigin": {
+        "displayName": "AFMProviderFactory.makeModel(id:configuration:)",
+        "identifier": "s:10AFMKitCore18AFMProviderFactoryP9makeModel2id13configurationAA11AnyAFMModelVAA0J2IDV_AA0C13ConfigurationVtKF"
+      },
+      "target": "s:9AFMKitMLX21AFMMLXProviderFactoryV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX21AFMMLXProviderFactoryVACycfc",
+      "target": "s:9AFMKitMLX21AFMMLXProviderFactoryV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV08providerD0AC0A4Core011AFMProviderD0V_tcfc",
+      "target": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV10gpuProfileSbvp",
+      "target": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV10mtpEnabledSbvp",
+      "target": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV12kernelEngineAA012AFMMLXKernelF0Ovp",
+      "target": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV13maxConcurrentSivp",
+      "target": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV14gpuCapturePathSSSgvp",
+      "target": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV14toolCallParserSSSgvp",
+      "target": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV15prefillStepSizeSiSgvp",
+      "target": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV16cacheProfilePathSSSgvp",
+      "target": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV16fixToolArgumentsSbvp",
+      "target": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV16gpuTraceDurationSiSgvp",
+      "target": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV16kvEvictionPolicySSvp",
+      "target": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV17eagle3DrafterPathSSSgvp",
+      "target": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV19enablePrefixCachingSbvp",
+      "target": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV19gpuProfileBandwidthSbvp",
+      "target": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV20forceDisableThinkingSbvp",
+      "target": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV23defaultGuidedJsonSchema15AFMOpenAICompat14ResponseFormatVSgvp",
+      "target": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV24enableGrammarConstraintsSbvp",
+      "target": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV25defaultChatTemplateKwargsSDySS0A4Core12AFMJSONValueOGSgvp",
+      "target": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV5applyyy0A4Core011AFMProviderD0VF",
+      "target": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV5traceSbvp",
+      "target": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV6kvBits19enablePrefixCaching12kernelEngine10mtpEnabled0L5Depth17eagle3DrafterPath13maxConcurrent14toolCallParser0G18GrammarConstraints15prefillStepSize0E14EvictionPolicy16fixToolArguments8forceVLM012cacheProfileQ05trace010gpuCaptureQ016gpuTraceDuration10gpuProfile19gpuProfileBandwidth25defaultChatTemplateKwargs20forceDisableThinking23defaultGuidedJsonSchemaACSiSg_SbAA012AFMMLXKernelK0OSbSiSSSgSiA1_SbAZSSS2bA1_SbA1_AZS2bSDySS0A4Core12AFMJSONValueOGSgSb15AFMOpenAICompat14ResponseFormatVSgtcfc",
+      "target": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV6kvBitsSiSgvp",
+      "target": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV8forceVLMSbvp",
+      "target": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV8mtpDepthSivp",
+      "target": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV"
+    }
+  ],
+  "symbols": [
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "attribute",
+          "spelling": "@Sendable"
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "progress"
+        },
+        {
+          "kind": "identifier",
+          "spelling": "load"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "async"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "func"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "throws"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "text",
+          "spelling": " ("
+        },
+        {
+          "kind": "text",
+          "spelling": " -> "
+        },
+        {
+          "kind": "text",
+          "spelling": "("
+        },
+        {
+          "kind": "text",
+          "spelling": ") -> "
+        },
+        {
+          "kind": "text",
+          "spelling": ")?) "
+        },
+        {
+          "kind": "text",
+          "spelling": ": ("
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:10AFMKitCore18AFMModelDescriptorV",
+          "spelling": "AFMModelDescriptor"
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Sd",
+          "spelling": "Double"
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:s4Voida",
+          "spelling": "Void"
+        }
+      ],
+      "functionSignature": {
+        "parameters": [
+          {
+            "declarationFragments": [
+              {
+                "kind": "attribute",
+                "spelling": "@Sendable"
+              },
+              {
+                "kind": "identifier",
+                "spelling": "progress"
+              },
+              {
+                "kind": "text",
+                "spelling": " ("
+              },
+              {
+                "kind": "text",
+                "spelling": ") -> "
+              },
+              {
+                "kind": "text",
+                "spelling": ")?"
+              },
+              {
+                "kind": "text",
+                "spelling": ": ("
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:Sd",
+                "spelling": "Double"
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:s4Voida",
+                "spelling": "Void"
+              }
+            ],
+            "name": "progress"
+          }
+        ],
+        "returns": [
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:10AFMKitCore18AFMModelDescriptorV",
+            "spelling": "AFMModelDescriptor"
+          }
+        ]
+      },
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX11AFMMLXModelC4load8progress0A4Core18AFMModelDescriptorVySdYbcSg_tYaKF"
+      },
+      "kind": {
+        "displayName": "Instance Method",
+        "identifier": "swift.method"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "externalParam",
+            "spelling": "progress"
+          },
+          {
+            "kind": "identifier",
+            "spelling": "load"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "async"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "func"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "throws"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "text",
+            "spelling": " -> "
+          },
+          {
+            "kind": "text",
+            "spelling": "("
+          },
+          {
+            "kind": "text",
+            "spelling": ") -> "
+          },
+          {
+            "kind": "text",
+            "spelling": ")?) "
+          },
+          {
+            "kind": "text",
+            "spelling": ": (("
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:10AFMKitCore18AFMModelDescriptorV",
+            "spelling": "AFMModelDescriptor"
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Sd",
+            "spelling": "Double"
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:s4Voida",
+            "spelling": "Void"
+          }
+        ],
+        "title": "load(progress:)"
+      },
+      "pathComponents": [
+        "AFMMLXModel",
+        "load(progress:)"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "externalParam",
+          "spelling": "_"
+        },
+        {
+          "kind": "identifier",
+          "spelling": "apply"
+        },
+        {
+          "kind": "internalParam",
+          "spelling": "configuration"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "func"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "mutating"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "text",
+          "spelling": "("
+        },
+        {
+          "kind": "text",
+          "spelling": ")"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:10AFMKitCore24AFMProviderConfigurationV",
+          "spelling": "AFMProviderConfiguration"
+        }
+      ],
+      "functionSignature": {
+        "parameters": [
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "configuration"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:10AFMKitCore24AFMProviderConfigurationV",
+                "spelling": "AFMProviderConfiguration"
+              }
+            ],
+            "name": "configuration"
+          }
+        ],
+        "returns": [
+          {
+            "kind": "text",
+            "spelling": "()"
+          }
+        ]
+      },
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV5applyyy0A4Core011AFMProviderD0VF"
+      },
+      "kind": {
+        "displayName": "Instance Method",
+        "identifier": "swift.method"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "identifier",
+            "spelling": "apply"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "func"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "text",
+            "spelling": "("
+          },
+          {
+            "kind": "text",
+            "spelling": ")"
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:10AFMKitCore24AFMProviderConfigurationV",
+            "spelling": "AFMProviderConfiguration"
+          }
+        ],
+        "title": "apply(_:)"
+      },
+      "pathComponents": [
+        "AFMMLXRuntimeConfiguration",
+        "apply(_:)"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "externalParam",
+          "spelling": "cacheProfilePath"
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "defaultChatTemplateKwargs"
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "defaultGuidedJsonSchema"
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "eagle3DrafterPath"
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "enableGrammarConstraints"
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "enablePrefixCaching"
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "fixToolArguments"
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "forceDisableThinking"
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "forceVLM"
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "gpuCapturePath"
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "gpuProfile"
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "gpuProfileBandwidth"
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "gpuTraceDuration"
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "kernelEngine"
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "kvBits"
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "kvEvictionPolicy"
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "maxConcurrent"
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "mtpDepth"
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "mtpEnabled"
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "prefillStepSize"
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "toolCallParser"
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "trace"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "init"
+        },
+        {
+          "kind": "text",
+          "spelling": " : "
+        },
+        {
+          "kind": "text",
+          "spelling": " = .native, "
+        },
+        {
+          "kind": "text",
+          "spelling": " = 0, "
+        },
+        {
+          "kind": "text",
+          "spelling": " = 3, "
+        },
+        {
+          "kind": "text",
+          "spelling": " = \"none\", "
+        },
+        {
+          "kind": "text",
+          "spelling": " = false, "
+        },
+        {
+          "kind": "text",
+          "spelling": " = false, "
+        },
+        {
+          "kind": "text",
+          "spelling": " = false, "
+        },
+        {
+          "kind": "text",
+          "spelling": " = false, "
+        },
+        {
+          "kind": "text",
+          "spelling": " = false, "
+        },
+        {
+          "kind": "text",
+          "spelling": " = false, "
+        },
+        {
+          "kind": "text",
+          "spelling": " = false, "
+        },
+        {
+          "kind": "text",
+          "spelling": " = false, "
+        },
+        {
+          "kind": "text",
+          "spelling": " = true, "
+        },
+        {
+          "kind": "text",
+          "spelling": "("
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "text",
+          "spelling": ": ["
+        },
+        {
+          "kind": "text",
+          "spelling": "? = nil)"
+        },
+        {
+          "kind": "text",
+          "spelling": "? = nil, "
+        },
+        {
+          "kind": "text",
+          "spelling": "? = nil, "
+        },
+        {
+          "kind": "text",
+          "spelling": "? = nil, "
+        },
+        {
+          "kind": "text",
+          "spelling": "? = nil, "
+        },
+        {
+          "kind": "text",
+          "spelling": "? = nil, "
+        },
+        {
+          "kind": "text",
+          "spelling": "? = nil, "
+        },
+        {
+          "kind": "text",
+          "spelling": "? = nil, "
+        },
+        {
+          "kind": "text",
+          "spelling": "]? = nil, "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:10AFMKitCore12AFMJSONValueO",
+          "spelling": "AFMJSONValue"
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:15AFMOpenAICompat14ResponseFormatV",
+          "spelling": "ResponseFormat"
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:9AFMKitMLX18AFMMLXKernelEngineO",
+          "spelling": "AFMMLXKernelEngine"
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:SS",
+          "spelling": "String"
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:SS",
+          "spelling": "String"
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:SS",
+          "spelling": "String"
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:SS",
+          "spelling": "String"
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:SS",
+          "spelling": "String"
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:SS",
+          "spelling": "String"
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Sb",
+          "spelling": "Bool"
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Sb",
+          "spelling": "Bool"
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Sb",
+          "spelling": "Bool"
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Sb",
+          "spelling": "Bool"
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Sb",
+          "spelling": "Bool"
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Sb",
+          "spelling": "Bool"
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Sb",
+          "spelling": "Bool"
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Sb",
+          "spelling": "Bool"
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Sb",
+          "spelling": "Bool"
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Si",
+          "spelling": "Int"
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Si",
+          "spelling": "Int"
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Si",
+          "spelling": "Int"
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Si",
+          "spelling": "Int"
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Si",
+          "spelling": "Int"
+        }
+      ],
+      "functionSignature": {
+        "parameters": [
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "cacheProfilePath"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "text",
+                "spelling": "?"
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:SS",
+                "spelling": "String"
+              }
+            ],
+            "name": "cacheProfilePath"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "defaultChatTemplateKwargs"
+              },
+              {
+                "kind": "text",
+                "spelling": " : "
+              },
+              {
+                "kind": "text",
+                "spelling": ": ["
+              },
+              {
+                "kind": "text",
+                "spelling": "]?"
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:10AFMKitCore12AFMJSONValueO",
+                "spelling": "AFMJSONValue"
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:SS",
+                "spelling": "String"
+              }
+            ],
+            "name": "defaultChatTemplateKwargs"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "defaultGuidedJsonSchema"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "text",
+                "spelling": "?"
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:15AFMOpenAICompat14ResponseFormatV",
+                "spelling": "ResponseFormat"
+              }
+            ],
+            "name": "defaultGuidedJsonSchema"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "eagle3DrafterPath"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "text",
+                "spelling": "?"
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:SS",
+                "spelling": "String"
+              }
+            ],
+            "name": "eagle3DrafterPath"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "enableGrammarConstraints"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:Sb",
+                "spelling": "Bool"
+              }
+            ],
+            "name": "enableGrammarConstraints"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "enablePrefixCaching"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:Sb",
+                "spelling": "Bool"
+              }
+            ],
+            "name": "enablePrefixCaching"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "fixToolArguments"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:Sb",
+                "spelling": "Bool"
+              }
+            ],
+            "name": "fixToolArguments"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "forceDisableThinking"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:Sb",
+                "spelling": "Bool"
+              }
+            ],
+            "name": "forceDisableThinking"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "forceVLM"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:Sb",
+                "spelling": "Bool"
+              }
+            ],
+            "name": "forceVLM"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "gpuCapturePath"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "text",
+                "spelling": "?"
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:SS",
+                "spelling": "String"
+              }
+            ],
+            "name": "gpuCapturePath"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "gpuProfile"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:Sb",
+                "spelling": "Bool"
+              }
+            ],
+            "name": "gpuProfile"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "gpuProfileBandwidth"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:Sb",
+                "spelling": "Bool"
+              }
+            ],
+            "name": "gpuProfileBandwidth"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "gpuTraceDuration"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "text",
+                "spelling": "?"
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:Si",
+                "spelling": "Int"
+              }
+            ],
+            "name": "gpuTraceDuration"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "kernelEngine"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:9AFMKitMLX18AFMMLXKernelEngineO",
+                "spelling": "AFMMLXKernelEngine"
+              }
+            ],
+            "name": "kernelEngine"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "kvBits"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "text",
+                "spelling": "?"
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:Si",
+                "spelling": "Int"
+              }
+            ],
+            "name": "kvBits"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "kvEvictionPolicy"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:SS",
+                "spelling": "String"
+              }
+            ],
+            "name": "kvEvictionPolicy"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "maxConcurrent"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:Si",
+                "spelling": "Int"
+              }
+            ],
+            "name": "maxConcurrent"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "mtpDepth"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:Si",
+                "spelling": "Int"
+              }
+            ],
+            "name": "mtpDepth"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "mtpEnabled"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:Sb",
+                "spelling": "Bool"
+              }
+            ],
+            "name": "mtpEnabled"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "prefillStepSize"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "text",
+                "spelling": "?"
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:Si",
+                "spelling": "Int"
+              }
+            ],
+            "name": "prefillStepSize"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "toolCallParser"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "text",
+                "spelling": "?"
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:SS",
+                "spelling": "String"
+              }
+            ],
+            "name": "toolCallParser"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "trace"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:Sb",
+                "spelling": "Bool"
+              }
+            ],
+            "name": "trace"
+          }
+        ]
+      },
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV6kvBits19enablePrefixCaching12kernelEngine10mtpEnabled0L5Depth17eagle3DrafterPath13maxConcurrent14toolCallParser0G18GrammarConstraints15prefillStepSize0E14EvictionPolicy16fixToolArguments8forceVLM012cacheProfileQ05trace010gpuCaptureQ016gpuTraceDuration10gpuProfile19gpuProfileBandwidth25defaultChatTemplateKwargs20forceDisableThinking23defaultGuidedJsonSchemaACSiSg_SbAA012AFMMLXKernelK0OSbSiSSSgSiA1_SbAZSSS2bA1_SbA1_AZS2bSDySS0A4Core12AFMJSONValueOGSgSb15AFMOpenAICompat14ResponseFormatVSgtcfc"
+      },
+      "kind": {
+        "displayName": "Initializer",
+        "identifier": "swift.init"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "externalParam",
+            "spelling": "cacheProfilePath"
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "defaultChatTemplateKwargs"
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "defaultGuidedJsonSchema"
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "eagle3DrafterPath"
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "enableGrammarConstraints"
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "enablePrefixCaching"
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "fixToolArguments"
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "forceDisableThinking"
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "forceVLM"
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "gpuCapturePath"
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "gpuProfile"
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "gpuProfileBandwidth"
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "gpuTraceDuration"
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "kernelEngine"
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "kvBits"
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "kvEvictionPolicy"
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "maxConcurrent"
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "mtpDepth"
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "mtpEnabled"
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "prefillStepSize"
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "toolCallParser"
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "trace"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "init"
+          },
+          {
+            "kind": "text",
+            "spelling": " : "
+          },
+          {
+            "kind": "text",
+            "spelling": "("
+          },
+          {
+            "kind": "text",
+            "spelling": ", "
+          },
+          {
+            "kind": "text",
+            "spelling": ", "
+          },
+          {
+            "kind": "text",
+            "spelling": ", "
+          },
+          {
+            "kind": "text",
+            "spelling": ", "
+          },
+          {
+            "kind": "text",
+            "spelling": ", "
+          },
+          {
+            "kind": "text",
+            "spelling": ", "
+          },
+          {
+            "kind": "text",
+            "spelling": ", "
+          },
+          {
+            "kind": "text",
+            "spelling": ", "
+          },
+          {
+            "kind": "text",
+            "spelling": ", "
+          },
+          {
+            "kind": "text",
+            "spelling": ", "
+          },
+          {
+            "kind": "text",
+            "spelling": ", "
+          },
+          {
+            "kind": "text",
+            "spelling": ", "
+          },
+          {
+            "kind": "text",
+            "spelling": ", "
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "text",
+            "spelling": ": ["
+          },
+          {
+            "kind": "text",
+            "spelling": "?)"
+          },
+          {
+            "kind": "text",
+            "spelling": "?, "
+          },
+          {
+            "kind": "text",
+            "spelling": "?, "
+          },
+          {
+            "kind": "text",
+            "spelling": "?, "
+          },
+          {
+            "kind": "text",
+            "spelling": "?, "
+          },
+          {
+            "kind": "text",
+            "spelling": "?, "
+          },
+          {
+            "kind": "text",
+            "spelling": "?, "
+          },
+          {
+            "kind": "text",
+            "spelling": "?, "
+          },
+          {
+            "kind": "text",
+            "spelling": "]?, "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:10AFMKitCore12AFMJSONValueO",
+            "spelling": "AFMJSONValue"
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:15AFMOpenAICompat14ResponseFormatV",
+            "spelling": "ResponseFormat"
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:9AFMKitMLX18AFMMLXKernelEngineO",
+            "spelling": "AFMMLXKernelEngine"
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:SS",
+            "spelling": "String"
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:SS",
+            "spelling": "String"
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:SS",
+            "spelling": "String"
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:SS",
+            "spelling": "String"
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:SS",
+            "spelling": "String"
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:SS",
+            "spelling": "String"
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Sb",
+            "spelling": "Bool"
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Sb",
+            "spelling": "Bool"
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Sb",
+            "spelling": "Bool"
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Sb",
+            "spelling": "Bool"
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Sb",
+            "spelling": "Bool"
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Sb",
+            "spelling": "Bool"
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Sb",
+            "spelling": "Bool"
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Sb",
+            "spelling": "Bool"
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Sb",
+            "spelling": "Bool"
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Si",
+            "spelling": "Int"
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Si",
+            "spelling": "Int"
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Si",
+            "spelling": "Int"
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Si",
+            "spelling": "Int"
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Si",
+            "spelling": "Int"
+          }
+        ],
+        "title": "init(kvBits:enablePrefixCaching:kernelEngine:mtpEnabled:mtpDepth:eagle3DrafterPath:maxConcurrent:toolCallParser:enableGrammarConstraints:prefillStepSize:kvEvictionPolicy:fixToolArguments:forceVLM:cacheProfilePath:trace:gpuCapturePath:gpuTraceDuration:gpuProfile:gpuProfileBandwidth:defaultChatTemplateKwargs:forceDisableThinking:defaultGuidedJsonSchema:)"
+      },
+      "pathComponents": [
+        "AFMMLXRuntimeConfiguration",
+        "init(kvBits:enablePrefixCaching:kernelEngine:mtpEnabled:mtpDepth:eagle3DrafterPath:maxConcurrent:toolCallParser:enableGrammarConstraints:prefillStepSize:kvEvictionPolicy:fixToolArguments:forceVLM:cacheProfilePath:trace:gpuCapturePath:gpuTraceDuration:gpuProfile:gpuProfileBandwidth:defaultChatTemplateKwargs:forceDisableThinking:defaultGuidedJsonSchema:)"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "externalParam",
+          "spelling": "configuration"
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "id"
+        },
+        {
+          "kind": "identifier",
+          "spelling": "makeModel"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "func"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "throws"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "text",
+          "spelling": " -> "
+        },
+        {
+          "kind": "text",
+          "spelling": "("
+        },
+        {
+          "kind": "text",
+          "spelling": ") "
+        },
+        {
+          "kind": "text",
+          "spelling": ", "
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:10AFMKitCore10AFMModelIDV",
+          "spelling": "AFMModelID"
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:10AFMKitCore11AnyAFMModelV",
+          "spelling": "AnyAFMModel"
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:10AFMKitCore24AFMProviderConfigurationV",
+          "spelling": "AFMProviderConfiguration"
+        }
+      ],
+      "functionSignature": {
+        "parameters": [
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "configuration"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:10AFMKitCore24AFMProviderConfigurationV",
+                "spelling": "AFMProviderConfiguration"
+              }
+            ],
+            "name": "configuration"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "id"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:10AFMKitCore10AFMModelIDV",
+                "spelling": "AFMModelID"
+              }
+            ],
+            "name": "id"
+          }
+        ],
+        "returns": [
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:10AFMKitCore11AnyAFMModelV",
+            "spelling": "AnyAFMModel"
+          }
+        ]
+      },
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX21AFMMLXProviderFactoryV9makeModel2id13configuration0A4Core11AnyAFMModelVAG0K2IDV_AG24AFMProviderConfigurationVtKF"
+      },
+      "kind": {
+        "displayName": "Instance Method",
+        "identifier": "swift.method"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "externalParam",
+            "spelling": "configuration"
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "id"
+          },
+          {
+            "kind": "identifier",
+            "spelling": "makeModel"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "func"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "throws"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "text",
+            "spelling": " -> "
+          },
+          {
+            "kind": "text",
+            "spelling": "("
+          },
+          {
+            "kind": "text",
+            "spelling": ") "
+          },
+          {
+            "kind": "text",
+            "spelling": ", "
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:10AFMKitCore10AFMModelIDV",
+            "spelling": "AFMModelID"
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:10AFMKitCore11AnyAFMModelV",
+            "spelling": "AnyAFMModel"
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:10AFMKitCore24AFMProviderConfigurationV",
+            "spelling": "AFMProviderConfiguration"
+          }
+        ],
+        "title": "makeModel(id:configuration:)"
+      },
+      "pathComponents": [
+        "AFMMLXProviderFactory",
+        "makeModel(id:configuration:)"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "externalParam",
+          "spelling": "configuration"
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "modelID"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "convenience"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "init"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "text",
+          "spelling": " = .init())"
+        },
+        {
+          "kind": "text",
+          "spelling": "("
+        },
+        {
+          "kind": "text",
+          "spelling": ", "
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:10AFMKitCore10AFMModelIDV",
+          "spelling": "AFMModelID"
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:10AFMKitCore24AFMProviderConfigurationV",
+          "spelling": "AFMProviderConfiguration"
+        }
+      ],
+      "functionSignature": {
+        "parameters": [
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "configuration"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:10AFMKitCore24AFMProviderConfigurationV",
+                "spelling": "AFMProviderConfiguration"
+              }
+            ],
+            "name": "configuration"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "modelID"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:10AFMKitCore10AFMModelIDV",
+                "spelling": "AFMModelID"
+              }
+            ],
+            "name": "modelID"
+          }
+        ]
+      },
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX11AFMMLXModelC7modelID13configurationAC0A4Core08AFMModelE0V_AF24AFMProviderConfigurationVtcfc"
+      },
+      "kind": {
+        "displayName": "Initializer",
+        "identifier": "swift.init"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "externalParam",
+            "spelling": "configuration"
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "modelID"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "convenience"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "init"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "text",
+            "spelling": "("
+          },
+          {
+            "kind": "text",
+            "spelling": ")"
+          },
+          {
+            "kind": "text",
+            "spelling": ", "
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:10AFMKitCore10AFMModelIDV",
+            "spelling": "AFMModelID"
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:10AFMKitCore24AFMProviderConfigurationV",
+            "spelling": "AFMProviderConfiguration"
+          }
+        ],
+        "title": "init(modelID:configuration:)"
+      },
+      "pathComponents": [
+        "AFMMLXModel",
+        "init(modelID:configuration:)"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "externalParam",
+          "spelling": "configuredValue"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "init"
+        },
+        {
+          "kind": "text",
+          "spelling": "("
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "text",
+          "spelling": "?)"
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:SS",
+          "spelling": "String"
+        }
+      ],
+      "functionSignature": {
+        "parameters": [
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "configuredValue"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "text",
+                "spelling": "?"
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:SS",
+                "spelling": "String"
+              }
+            ],
+            "name": "configuredValue"
+          }
+        ]
+      },
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX18AFMMLXKernelEngineO15configuredValueACSSSg_tcfc"
+      },
+      "kind": {
+        "displayName": "Initializer",
+        "identifier": "swift.init"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "externalParam",
+            "spelling": "configuredValue"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "init"
+          },
+          {
+            "kind": "text",
+            "spelling": "("
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "text",
+            "spelling": "?)"
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:SS",
+            "spelling": "String"
+          }
+        ],
+        "title": "init(configuredValue:)"
+      },
+      "pathComponents": [
+        "AFMMLXKernelEngine",
+        "init(configuredValue:)"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "externalParam",
+          "spelling": "providerConfiguration"
+        },
+        {
+          "kind": "internalParam",
+          "spelling": "configuration"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "init"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "text",
+          "spelling": "("
+        },
+        {
+          "kind": "text",
+          "spelling": ")"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:10AFMKitCore24AFMProviderConfigurationV",
+          "spelling": "AFMProviderConfiguration"
+        }
+      ],
+      "functionSignature": {
+        "parameters": [
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "configuration"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:10AFMKitCore24AFMProviderConfigurationV",
+                "spelling": "AFMProviderConfiguration"
+              }
+            ],
+            "internalName": "configuration",
+            "name": "providerConfiguration"
+          }
+        ]
+      },
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV08providerD0AC0A4Core011AFMProviderD0V_tcfc"
+      },
+      "kind": {
+        "displayName": "Initializer",
+        "identifier": "swift.init"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "externalParam",
+            "spelling": "providerConfiguration"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "init"
+          },
+          {
+            "kind": "text",
+            "spelling": "("
+          },
+          {
+            "kind": "text",
+            "spelling": ")"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:10AFMKitCore24AFMProviderConfigurationV",
+            "spelling": "AFMProviderConfiguration"
+          }
+        ],
+        "title": "init(providerConfiguration:)"
+      },
+      "pathComponents": [
+        "AFMMLXRuntimeConfiguration",
+        "init(providerConfiguration:)"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "externalParam",
+          "spelling": "rawValue"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "init"
+        },
+        {
+          "kind": "text",
+          "spelling": ")"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "text",
+          "spelling": "?("
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:SS",
+          "spelling": "String"
+        }
+      ],
+      "functionSignature": {
+        "parameters": [
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "rawValue"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:SS",
+                "spelling": "String"
+              }
+            ],
+            "name": "rawValue"
+          }
+        ]
+      },
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX18AFMMLXKernelEngineO8rawValueACSgSS_tcfc"
+      },
+      "kind": {
+        "displayName": "Initializer",
+        "identifier": "swift.init"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "externalParam",
+            "spelling": "rawValue"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "init"
+          },
+          {
+            "kind": "text",
+            "spelling": ")"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "text",
+            "spelling": "?("
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:SS",
+            "spelling": "String"
+          }
+        ],
+        "title": "init(rawValue:)"
+      },
+      "pathComponents": [
+        "AFMMLXKernelEngine",
+        "init(rawValue:)"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "externalParam",
+          "spelling": "text"
+        },
+        {
+          "kind": "identifier",
+          "spelling": "tokenize"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "async"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "func"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "throws"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "text",
+          "spelling": " -> ["
+        },
+        {
+          "kind": "text",
+          "spelling": "("
+        },
+        {
+          "kind": "text",
+          "spelling": ") "
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "text",
+          "spelling": "]"
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:SS",
+          "spelling": "String"
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Si",
+          "spelling": "Int"
+        }
+      ],
+      "functionSignature": {
+        "parameters": [
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "text"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:SS",
+                "spelling": "String"
+              }
+            ],
+            "name": "text"
+          }
+        ],
+        "returns": [
+          {
+            "kind": "text",
+            "spelling": "["
+          },
+          {
+            "kind": "text",
+            "spelling": "]"
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Si",
+            "spelling": "Int"
+          }
+        ]
+      },
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX11AFMMLXModelC8tokenize4textSaySiGSS_tYaKF"
+      },
+      "kind": {
+        "displayName": "Instance Method",
+        "identifier": "swift.method"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "externalParam",
+            "spelling": "text"
+          },
+          {
+            "kind": "identifier",
+            "spelling": "tokenize"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "async"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "func"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "throws"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "text",
+            "spelling": " -> ["
+          },
+          {
+            "kind": "text",
+            "spelling": "("
+          },
+          {
+            "kind": "text",
+            "spelling": ") "
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "text",
+            "spelling": "]"
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:SS",
+            "spelling": "String"
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Si",
+            "spelling": "Int"
+          }
+        ],
+        "title": "tokenize(text:)"
+      },
+      "pathComponents": [
+        "AFMMLXModel",
+        "tokenize(text:)"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "externalParam",
+          "spelling": "to"
+        },
+        {
+          "kind": "identifier",
+          "spelling": "respond"
+        },
+        {
+          "kind": "internalParam",
+          "spelling": "request"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "async"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "func"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "throws"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "text",
+          "spelling": " -> "
+        },
+        {
+          "kind": "text",
+          "spelling": "("
+        },
+        {
+          "kind": "text",
+          "spelling": ") "
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:10AFMKitCore10AFMRequestV",
+          "spelling": "AFMRequest"
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:10AFMKitCore16AFMModelResponseV",
+          "spelling": "AFMModelResponse"
+        }
+      ],
+      "functionSignature": {
+        "parameters": [
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "request"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:10AFMKitCore10AFMRequestV",
+                "spelling": "AFMRequest"
+              }
+            ],
+            "internalName": "request",
+            "name": "to"
+          }
+        ],
+        "returns": [
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:10AFMKitCore16AFMModelResponseV",
+            "spelling": "AFMModelResponse"
+          }
+        ]
+      },
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX11AFMMLXModelC7respond2to0A4Core16AFMModelResponseVAF10AFMRequestV_tYaKF"
+      },
+      "kind": {
+        "displayName": "Instance Method",
+        "identifier": "swift.method"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "externalParam",
+            "spelling": "to"
+          },
+          {
+            "kind": "identifier",
+            "spelling": "respond"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "async"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "func"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "throws"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "text",
+            "spelling": " -> "
+          },
+          {
+            "kind": "text",
+            "spelling": "("
+          },
+          {
+            "kind": "text",
+            "spelling": ") "
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:10AFMKitCore10AFMRequestV",
+            "spelling": "AFMRequest"
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:10AFMKitCore16AFMModelResponseV",
+            "spelling": "AFMModelResponse"
+          }
+        ],
+        "title": "respond(to:)"
+      },
+      "pathComponents": [
+        "AFMMLXModel",
+        "respond(to:)"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "externalParam",
+          "spelling": "to"
+        },
+        {
+          "kind": "identifier",
+          "spelling": "streamResponse"
+        },
+        {
+          "kind": "internalParam",
+          "spelling": "request"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "func"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "text",
+          "spelling": "("
+        },
+        {
+          "kind": "text",
+          "spelling": ") -> "
+        },
+        {
+          "kind": "text",
+          "spelling": ", any "
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "text",
+          "spelling": "<"
+        },
+        {
+          "kind": "text",
+          "spelling": ">"
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:10AFMKitCore10AFMRequestV",
+          "spelling": "AFMRequest"
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:10AFMKitCore18AFMGenerationEventO",
+          "spelling": "AFMGenerationEvent"
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Scs",
+          "spelling": "AsyncThrowingStream"
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:s5ErrorP",
+          "spelling": "Error"
+        }
+      ],
+      "functionSignature": {
+        "parameters": [
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "request"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:10AFMKitCore10AFMRequestV",
+                "spelling": "AFMRequest"
+              }
+            ],
+            "internalName": "request",
+            "name": "to"
+          }
+        ],
+        "returns": [
+          {
+            "kind": "text",
+            "spelling": ", any "
+          },
+          {
+            "kind": "text",
+            "spelling": "<"
+          },
+          {
+            "kind": "text",
+            "spelling": ">"
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:10AFMKitCore18AFMGenerationEventO",
+            "spelling": "AFMGenerationEvent"
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Scs",
+            "spelling": "AsyncThrowingStream"
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:s5ErrorP",
+            "spelling": "Error"
+          }
+        ]
+      },
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX11AFMMLXModelC14streamResponse2toScsy0A4Core18AFMGenerationEventOs5Error_pGAF10AFMRequestV_tF"
+      },
+      "kind": {
+        "displayName": "Instance Method",
+        "identifier": "swift.method"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "externalParam",
+            "spelling": "to"
+          },
+          {
+            "kind": "identifier",
+            "spelling": "streamResponse"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "func"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "text",
+            "spelling": "("
+          },
+          {
+            "kind": "text",
+            "spelling": ") -> "
+          },
+          {
+            "kind": "text",
+            "spelling": ", any "
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "text",
+            "spelling": "<"
+          },
+          {
+            "kind": "text",
+            "spelling": ">"
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:10AFMKitCore10AFMRequestV",
+            "spelling": "AFMRequest"
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:10AFMKitCore18AFMGenerationEventO",
+            "spelling": "AFMGenerationEvent"
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Scs",
+            "spelling": "AsyncThrowingStream"
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:s5ErrorP",
+            "spelling": "Error"
+          }
+        ],
+        "title": "streamResponse(to:)"
+      },
+      "pathComponents": [
+        "AFMMLXModel",
+        "streamResponse(to:)"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "identifier",
+          "spelling": "AFMMLXKernelEngine"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "enum"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX18AFMMLXKernelEngineO"
+      },
+      "kind": {
+        "displayName": "Enumeration",
+        "identifier": "swift.enum"
+      },
+      "names": {
+        "navigator": [
+          {
+            "kind": "identifier",
+            "spelling": "AFMMLXKernelEngine"
+          }
+        ],
+        "subHeading": [
+          {
+            "kind": "identifier",
+            "spelling": "AFMMLXKernelEngine"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "enum"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          }
+        ],
+        "title": "AFMMLXKernelEngine"
+      },
+      "pathComponents": [
+        "AFMMLXKernelEngine"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "identifier",
+          "spelling": "AFMMLXModel"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "class"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "final"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX11AFMMLXModelC"
+      },
+      "kind": {
+        "displayName": "Class",
+        "identifier": "swift.class"
+      },
+      "names": {
+        "navigator": [
+          {
+            "kind": "identifier",
+            "spelling": "AFMMLXModel"
+          }
+        ],
+        "subHeading": [
+          {
+            "kind": "identifier",
+            "spelling": "AFMMLXModel"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "class"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          }
+        ],
+        "title": "AFMMLXModel"
+      },
+      "pathComponents": [
+        "AFMMLXModel"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "identifier",
+          "spelling": "AFMMLXProviderFactory"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "struct"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX21AFMMLXProviderFactoryV"
+      },
+      "kind": {
+        "displayName": "Structure",
+        "identifier": "swift.struct"
+      },
+      "names": {
+        "navigator": [
+          {
+            "kind": "identifier",
+            "spelling": "AFMMLXProviderFactory"
+          }
+        ],
+        "subHeading": [
+          {
+            "kind": "identifier",
+            "spelling": "AFMMLXProviderFactory"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "struct"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          }
+        ],
+        "title": "AFMMLXProviderFactory"
+      },
+      "pathComponents": [
+        "AFMMLXProviderFactory"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "identifier",
+          "spelling": "AFMMLXRuntimeConfiguration"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "struct"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV"
+      },
+      "kind": {
+        "displayName": "Structure",
+        "identifier": "swift.struct"
+      },
+      "names": {
+        "navigator": [
+          {
+            "kind": "identifier",
+            "spelling": "AFMMLXRuntimeConfiguration"
+          }
+        ],
+        "subHeading": [
+          {
+            "kind": "identifier",
+            "spelling": "AFMMLXRuntimeConfiguration"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "struct"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          }
+        ],
+        "title": "AFMMLXRuntimeConfiguration"
+      },
+      "pathComponents": [
+        "AFMMLXRuntimeConfiguration"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "identifier",
+          "spelling": "availability"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "async"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "func"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "text",
+          "spelling": " -> "
+        },
+        {
+          "kind": "text",
+          "spelling": "() "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:10AFMKitCore20AFMModelAvailabilityO",
+          "spelling": "AFMModelAvailability"
+        }
+      ],
+      "functionSignature": {
+        "returns": [
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:10AFMKitCore20AFMModelAvailabilityO",
+            "spelling": "AFMModelAvailability"
+          }
+        ]
+      },
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX11AFMMLXModelC12availability0A4Core20AFMModelAvailabilityOyYaF"
+      },
+      "kind": {
+        "displayName": "Instance Method",
+        "identifier": "swift.method"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "identifier",
+            "spelling": "availability"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "async"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "func"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "text",
+            "spelling": " -> "
+          },
+          {
+            "kind": "text",
+            "spelling": "() "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:10AFMKitCore20AFMModelAvailabilityO",
+            "spelling": "AFMModelAvailability"
+          }
+        ],
+        "title": "availability()"
+      },
+      "pathComponents": [
+        "AFMMLXModel",
+        "availability()"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "identifier",
+          "spelling": "cacheProfilePath"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "var"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "text",
+          "spelling": "?"
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:SS",
+          "spelling": "String"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV16cacheProfilePathSSSgvp"
+      },
+      "kind": {
+        "displayName": "Instance Property",
+        "identifier": "swift.property"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "identifier",
+            "spelling": "cacheProfilePath"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "var"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "text",
+            "spelling": "?"
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:SS",
+            "spelling": "String"
+          }
+        ],
+        "title": "cacheProfilePath"
+      },
+      "pathComponents": [
+        "AFMMLXRuntimeConfiguration",
+        "cacheProfilePath"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "identifier",
+          "spelling": "defaultChatTemplateKwargs"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "var"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "text",
+          "spelling": " : "
+        },
+        {
+          "kind": "text",
+          "spelling": ": ["
+        },
+        {
+          "kind": "text",
+          "spelling": "]?"
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:10AFMKitCore12AFMJSONValueO",
+          "spelling": "AFMJSONValue"
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:SS",
+          "spelling": "String"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV25defaultChatTemplateKwargsSDySS0A4Core12AFMJSONValueOGSgvp"
+      },
+      "kind": {
+        "displayName": "Instance Property",
+        "identifier": "swift.property"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "identifier",
+            "spelling": "defaultChatTemplateKwargs"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "var"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "text",
+            "spelling": " : "
+          },
+          {
+            "kind": "text",
+            "spelling": ": ["
+          },
+          {
+            "kind": "text",
+            "spelling": "]?"
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:10AFMKitCore12AFMJSONValueO",
+            "spelling": "AFMJSONValue"
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:SS",
+            "spelling": "String"
+          }
+        ],
+        "title": "defaultChatTemplateKwargs"
+      },
+      "pathComponents": [
+        "AFMMLXRuntimeConfiguration",
+        "defaultChatTemplateKwargs"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "identifier",
+          "spelling": "defaultGuidedJsonSchema"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "var"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "text",
+          "spelling": "?"
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:15AFMOpenAICompat14ResponseFormatV",
+          "spelling": "ResponseFormat"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV23defaultGuidedJsonSchema15AFMOpenAICompat14ResponseFormatVSgvp"
+      },
+      "kind": {
+        "displayName": "Instance Property",
+        "identifier": "swift.property"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "identifier",
+            "spelling": "defaultGuidedJsonSchema"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "var"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "text",
+            "spelling": "?"
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:15AFMOpenAICompat14ResponseFormatV",
+            "spelling": "ResponseFormat"
+          }
+        ],
+        "title": "defaultGuidedJsonSchema"
+      },
+      "pathComponents": [
+        "AFMMLXRuntimeConfiguration",
+        "defaultGuidedJsonSchema"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "identifier",
+          "spelling": "descriptor"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "get"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "var"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "text",
+          "spelling": " { "
+        },
+        {
+          "kind": "text",
+          "spelling": " }"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:10AFMKitCore21AFMProviderDescriptorV",
+          "spelling": "AFMProviderDescriptor"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX21AFMMLXProviderFactoryV10descriptor0A4Core21AFMProviderDescriptorVvp"
+      },
+      "kind": {
+        "displayName": "Instance Property",
+        "identifier": "swift.property"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "identifier",
+            "spelling": "descriptor"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "var"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:10AFMKitCore21AFMProviderDescriptorV",
+            "spelling": "AFMProviderDescriptor"
+          }
+        ],
+        "title": "descriptor"
+      },
+      "pathComponents": [
+        "AFMMLXProviderFactory",
+        "descriptor"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "identifier",
+          "spelling": "descriptor"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "let"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:10AFMKitCore18AFMModelDescriptorV",
+          "spelling": "AFMModelDescriptor"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX11AFMMLXModelC10descriptor0A4Core18AFMModelDescriptorVvp"
+      },
+      "kind": {
+        "displayName": "Instance Property",
+        "identifier": "swift.property"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "identifier",
+            "spelling": "descriptor"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "let"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:10AFMKitCore18AFMModelDescriptorV",
+            "spelling": "AFMModelDescriptor"
+          }
+        ],
+        "title": "descriptor"
+      },
+      "pathComponents": [
+        "AFMMLXModel",
+        "descriptor"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "identifier",
+          "spelling": "ds4"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "case"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX18AFMMLXKernelEngineO3ds4yA2CmF"
+      },
+      "kind": {
+        "displayName": "Case",
+        "identifier": "swift.enum.case"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "identifier",
+            "spelling": "ds4"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "case"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          }
+        ],
+        "title": "AFMMLXKernelEngine.ds4"
+      },
+      "pathComponents": [
+        "AFMMLXKernelEngine",
+        "ds4"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "identifier",
+          "spelling": "eagle3DrafterPath"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "var"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "text",
+          "spelling": "?"
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:SS",
+          "spelling": "String"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV17eagle3DrafterPathSSSgvp"
+      },
+      "kind": {
+        "displayName": "Instance Property",
+        "identifier": "swift.property"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "identifier",
+            "spelling": "eagle3DrafterPath"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "var"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "text",
+            "spelling": "?"
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:SS",
+            "spelling": "String"
+          }
+        ],
+        "title": "eagle3DrafterPath"
+      },
+      "pathComponents": [
+        "AFMMLXRuntimeConfiguration",
+        "eagle3DrafterPath"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "identifier",
+          "spelling": "enableGrammarConstraints"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "var"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Sb",
+          "spelling": "Bool"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV24enableGrammarConstraintsSbvp"
+      },
+      "kind": {
+        "displayName": "Instance Property",
+        "identifier": "swift.property"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "identifier",
+            "spelling": "enableGrammarConstraints"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "var"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Sb",
+            "spelling": "Bool"
+          }
+        ],
+        "title": "enableGrammarConstraints"
+      },
+      "pathComponents": [
+        "AFMMLXRuntimeConfiguration",
+        "enableGrammarConstraints"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "identifier",
+          "spelling": "enablePrefixCaching"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "var"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Sb",
+          "spelling": "Bool"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV19enablePrefixCachingSbvp"
+      },
+      "kind": {
+        "displayName": "Instance Property",
+        "identifier": "swift.property"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "identifier",
+            "spelling": "enablePrefixCaching"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "var"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Sb",
+            "spelling": "Bool"
+          }
+        ],
+        "title": "enablePrefixCaching"
+      },
+      "pathComponents": [
+        "AFMMLXRuntimeConfiguration",
+        "enablePrefixCaching"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "identifier",
+          "spelling": "fixToolArguments"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "var"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Sb",
+          "spelling": "Bool"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV16fixToolArgumentsSbvp"
+      },
+      "kind": {
+        "displayName": "Instance Property",
+        "identifier": "swift.property"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "identifier",
+            "spelling": "fixToolArguments"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "var"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Sb",
+            "spelling": "Bool"
+          }
+        ],
+        "title": "fixToolArguments"
+      },
+      "pathComponents": [
+        "AFMMLXRuntimeConfiguration",
+        "fixToolArguments"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "identifier",
+          "spelling": "forceDisableThinking"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "var"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Sb",
+          "spelling": "Bool"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV20forceDisableThinkingSbvp"
+      },
+      "kind": {
+        "displayName": "Instance Property",
+        "identifier": "swift.property"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "identifier",
+            "spelling": "forceDisableThinking"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "var"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Sb",
+            "spelling": "Bool"
+          }
+        ],
+        "title": "forceDisableThinking"
+      },
+      "pathComponents": [
+        "AFMMLXRuntimeConfiguration",
+        "forceDisableThinking"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "identifier",
+          "spelling": "forceVLM"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "var"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Sb",
+          "spelling": "Bool"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV8forceVLMSbvp"
+      },
+      "kind": {
+        "displayName": "Instance Property",
+        "identifier": "swift.property"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "identifier",
+            "spelling": "forceVLM"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "var"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Sb",
+            "spelling": "Bool"
+          }
+        ],
+        "title": "forceVLM"
+      },
+      "pathComponents": [
+        "AFMMLXRuntimeConfiguration",
+        "forceVLM"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "identifier",
+          "spelling": "gpuCapturePath"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "var"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "text",
+          "spelling": "?"
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:SS",
+          "spelling": "String"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV14gpuCapturePathSSSgvp"
+      },
+      "kind": {
+        "displayName": "Instance Property",
+        "identifier": "swift.property"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "identifier",
+            "spelling": "gpuCapturePath"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "var"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "text",
+            "spelling": "?"
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:SS",
+            "spelling": "String"
+          }
+        ],
+        "title": "gpuCapturePath"
+      },
+      "pathComponents": [
+        "AFMMLXRuntimeConfiguration",
+        "gpuCapturePath"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "identifier",
+          "spelling": "gpuProfile"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "var"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Sb",
+          "spelling": "Bool"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV10gpuProfileSbvp"
+      },
+      "kind": {
+        "displayName": "Instance Property",
+        "identifier": "swift.property"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "identifier",
+            "spelling": "gpuProfile"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "var"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Sb",
+            "spelling": "Bool"
+          }
+        ],
+        "title": "gpuProfile"
+      },
+      "pathComponents": [
+        "AFMMLXRuntimeConfiguration",
+        "gpuProfile"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "identifier",
+          "spelling": "gpuProfileBandwidth"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "var"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Sb",
+          "spelling": "Bool"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV19gpuProfileBandwidthSbvp"
+      },
+      "kind": {
+        "displayName": "Instance Property",
+        "identifier": "swift.property"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "identifier",
+            "spelling": "gpuProfileBandwidth"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "var"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Sb",
+            "spelling": "Bool"
+          }
+        ],
+        "title": "gpuProfileBandwidth"
+      },
+      "pathComponents": [
+        "AFMMLXRuntimeConfiguration",
+        "gpuProfileBandwidth"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "identifier",
+          "spelling": "gpuTraceDuration"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "var"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "text",
+          "spelling": "?"
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Si",
+          "spelling": "Int"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV16gpuTraceDurationSiSgvp"
+      },
+      "kind": {
+        "displayName": "Instance Property",
+        "identifier": "swift.property"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "identifier",
+            "spelling": "gpuTraceDuration"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "var"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "text",
+            "spelling": "?"
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Si",
+            "spelling": "Int"
+          }
+        ],
+        "title": "gpuTraceDuration"
+      },
+      "pathComponents": [
+        "AFMMLXRuntimeConfiguration",
+        "gpuTraceDuration"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "identifier",
+          "spelling": "kernelEngine"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "var"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:9AFMKitMLX18AFMMLXKernelEngineO",
+          "spelling": "AFMMLXKernelEngine"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV12kernelEngineAA012AFMMLXKernelF0Ovp"
+      },
+      "kind": {
+        "displayName": "Instance Property",
+        "identifier": "swift.property"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "identifier",
+            "spelling": "kernelEngine"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "var"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:9AFMKitMLX18AFMMLXKernelEngineO",
+            "spelling": "AFMMLXKernelEngine"
+          }
+        ],
+        "title": "kernelEngine"
+      },
+      "pathComponents": [
+        "AFMMLXRuntimeConfiguration",
+        "kernelEngine"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "identifier",
+          "spelling": "kvBits"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "var"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "text",
+          "spelling": "?"
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Si",
+          "spelling": "Int"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV6kvBitsSiSgvp"
+      },
+      "kind": {
+        "displayName": "Instance Property",
+        "identifier": "swift.property"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "identifier",
+            "spelling": "kvBits"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "var"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "text",
+            "spelling": "?"
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Si",
+            "spelling": "Int"
+          }
+        ],
+        "title": "kvBits"
+      },
+      "pathComponents": [
+        "AFMMLXRuntimeConfiguration",
+        "kvBits"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "identifier",
+          "spelling": "kvEvictionPolicy"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "var"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:SS",
+          "spelling": "String"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV16kvEvictionPolicySSvp"
+      },
+      "kind": {
+        "displayName": "Instance Property",
+        "identifier": "swift.property"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "identifier",
+            "spelling": "kvEvictionPolicy"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "var"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:SS",
+            "spelling": "String"
+          }
+        ],
+        "title": "kvEvictionPolicy"
+      },
+      "pathComponents": [
+        "AFMMLXRuntimeConfiguration",
+        "kvEvictionPolicy"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "identifier",
+          "spelling": "maxConcurrent"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "var"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Si",
+          "spelling": "Int"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV13maxConcurrentSivp"
+      },
+      "kind": {
+        "displayName": "Instance Property",
+        "identifier": "swift.property"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "identifier",
+            "spelling": "maxConcurrent"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "var"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Si",
+            "spelling": "Int"
+          }
+        ],
+        "title": "maxConcurrent"
+      },
+      "pathComponents": [
+        "AFMMLXRuntimeConfiguration",
+        "maxConcurrent"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "identifier",
+          "spelling": "modelDescriptors"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "async"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "func"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "throws"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "text",
+          "spelling": " -> ["
+        },
+        {
+          "kind": "text",
+          "spelling": "() "
+        },
+        {
+          "kind": "text",
+          "spelling": "]"
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:10AFMKitCore18AFMModelDescriptorV",
+          "spelling": "AFMModelDescriptor"
+        }
+      ],
+      "functionSignature": {
+        "returns": [
+          {
+            "kind": "text",
+            "spelling": "["
+          },
+          {
+            "kind": "text",
+            "spelling": "]"
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:10AFMKitCore18AFMModelDescriptorV",
+            "spelling": "AFMModelDescriptor"
+          }
+        ]
+      },
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX21AFMMLXProviderFactoryV16modelDescriptorsSay0A4Core18AFMModelDescriptorVGyYaKF"
+      },
+      "kind": {
+        "displayName": "Instance Method",
+        "identifier": "swift.method"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "identifier",
+            "spelling": "modelDescriptors"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "async"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "func"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "throws"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "text",
+            "spelling": " -> ["
+          },
+          {
+            "kind": "text",
+            "spelling": "() "
+          },
+          {
+            "kind": "text",
+            "spelling": "]"
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:10AFMKitCore18AFMModelDescriptorV",
+            "spelling": "AFMModelDescriptor"
+          }
+        ],
+        "title": "modelDescriptors()"
+      },
+      "pathComponents": [
+        "AFMMLXProviderFactory",
+        "modelDescriptors()"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "identifier",
+          "spelling": "mtpDepth"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "var"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Si",
+          "spelling": "Int"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV8mtpDepthSivp"
+      },
+      "kind": {
+        "displayName": "Instance Property",
+        "identifier": "swift.property"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "identifier",
+            "spelling": "mtpDepth"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "var"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Si",
+            "spelling": "Int"
+          }
+        ],
+        "title": "mtpDepth"
+      },
+      "pathComponents": [
+        "AFMMLXRuntimeConfiguration",
+        "mtpDepth"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "identifier",
+          "spelling": "mtpEnabled"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "var"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Sb",
+          "spelling": "Bool"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV10mtpEnabledSbvp"
+      },
+      "kind": {
+        "displayName": "Instance Property",
+        "identifier": "swift.property"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "identifier",
+            "spelling": "mtpEnabled"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "var"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Sb",
+            "spelling": "Bool"
+          }
+        ],
+        "title": "mtpEnabled"
+      },
+      "pathComponents": [
+        "AFMMLXRuntimeConfiguration",
+        "mtpEnabled"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "identifier",
+          "spelling": "native"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "case"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX18AFMMLXKernelEngineO6nativeyA2CmF"
+      },
+      "kind": {
+        "displayName": "Case",
+        "identifier": "swift.enum.case"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "identifier",
+            "spelling": "native"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "case"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          }
+        ],
+        "title": "AFMMLXKernelEngine.native"
+      },
+      "pathComponents": [
+        "AFMMLXKernelEngine",
+        "native"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "identifier",
+          "spelling": "prefillStepSize"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "var"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "text",
+          "spelling": "?"
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Si",
+          "spelling": "Int"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV15prefillStepSizeSiSgvp"
+      },
+      "kind": {
+        "displayName": "Instance Property",
+        "identifier": "swift.property"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "identifier",
+            "spelling": "prefillStepSize"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "var"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "text",
+            "spelling": "?"
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Si",
+            "spelling": "Int"
+          }
+        ],
+        "title": "prefillStepSize"
+      },
+      "pathComponents": [
+        "AFMMLXRuntimeConfiguration",
+        "prefillStepSize"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "identifier",
+          "spelling": "providerID"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "let"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "static"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:10AFMKitCore13AFMProviderIDV",
+          "spelling": "AFMProviderID"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX21AFMMLXProviderFactoryV10providerID0A4Core011AFMProviderF0VvpZ"
+      },
+      "kind": {
+        "displayName": "Type Property",
+        "identifier": "swift.type.property"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "identifier",
+            "spelling": "providerID"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "let"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "static"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:10AFMKitCore13AFMProviderIDV",
+            "spelling": "AFMProviderID"
+          }
+        ],
+        "title": "providerID"
+      },
+      "pathComponents": [
+        "AFMMLXProviderFactory",
+        "providerID"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "identifier",
+          "spelling": "toolCallParser"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "var"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "text",
+          "spelling": "?"
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:SS",
+          "spelling": "String"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV14toolCallParserSSSgvp"
+      },
+      "kind": {
+        "displayName": "Instance Property",
+        "identifier": "swift.property"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "identifier",
+            "spelling": "toolCallParser"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "var"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "text",
+            "spelling": "?"
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:SS",
+            "spelling": "String"
+          }
+        ],
+        "title": "toolCallParser"
+      },
+      "pathComponents": [
+        "AFMMLXRuntimeConfiguration",
+        "toolCallParser"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "identifier",
+          "spelling": "trace"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "var"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Sb",
+          "spelling": "Bool"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV5traceSbvp"
+      },
+      "kind": {
+        "displayName": "Instance Property",
+        "identifier": "swift.property"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "identifier",
+            "spelling": "trace"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "var"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Sb",
+            "spelling": "Bool"
+          }
+        ],
+        "title": "trace"
+      },
+      "pathComponents": [
+        "AFMMLXRuntimeConfiguration",
+        "trace"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "identifier",
+          "spelling": "unload"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "async"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "func"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "text",
+          "spelling": "() "
+        }
+      ],
+      "functionSignature": {
+        "returns": [
+          {
+            "kind": "text",
+            "spelling": "()"
+          }
+        ]
+      },
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX11AFMMLXModelC6unloadyyYaF"
+      },
+      "kind": {
+        "displayName": "Instance Method",
+        "identifier": "swift.method"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "identifier",
+            "spelling": "unload"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "async"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "func"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "text",
+            "spelling": "() "
+          }
+        ],
+        "title": "unload()"
+      },
+      "pathComponents": [
+        "AFMMLXModel",
+        "unload()"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "init"
+        },
+        {
+          "kind": "text",
+          "spelling": "()"
+        }
+      ],
+      "functionSignature": {},
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX21AFMMLXProviderFactoryVACycfc"
+      },
+      "kind": {
+        "displayName": "Initializer",
+        "identifier": "swift.init"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "init"
+          },
+          {
+            "kind": "text",
+            "spelling": "()"
+          }
+        ],
+        "title": "init()"
+      },
+      "pathComponents": [
+        "AFMMLXProviderFactory",
+        "init()"
+      ]
+    }
+  ]
+}

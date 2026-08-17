@@ -1,0 +1,4 @@
+module AFMXGrammar {
+    header "cxgrammar.h"
+    export *
+}

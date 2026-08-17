@@ -103,6 +103,8 @@ Deliberate app boundary:
 
 ## Phase 4: Runtime Adapters
 
+Status: in progress. `AFMKitMLX` is extracted and Release-verified through both the tagged remote dependency graph and the persistent local compatibility stack. `AFMKitDwarfStar` has not yet been extracted.
+
 Scope:
 
 - `AFMKitMLX`: expose model loading, download progress, reasoning, tool calling, streaming, cancellation, prefix-cache/concurrency capability metadata, and multimodal descriptors without requiring consumers to depend on the full AFM server.
@@ -114,6 +116,23 @@ Known transition blockers:
 - maclocal-api currently uses `Scripts/apply-mlx-cpp-patches.sh` for MLX C++/Metal support that can be lost on clean rebuild.
 - Clean downstream apps cannot depend on the full AFMKit umbrella without inheriting the patched MLX/DwarfStar/Vapor graph.
 - A clean showcase app found that focused FoundationModels-style usage is practical, while full MLX downstream use still exposes patched-runtime coupling.
+
+Current `AFMKitMLX` checkpoint:
+
+- The normal public API is limited to `AFMMLXProviderFactory`, `AFMMLXModel`, `AFMMLXKernelEngine`, and `AFMMLXRuntimeConfiguration` (46 normalized public symbols).
+- Model loading, download progress, reasoning, tool calls, structured output, streaming, cancellation, prefix-cache configuration, concurrency configuration, MTP, multimodal model selection, and runtime telemetry flow through the AFMKit provider contract.
+- Server implementation types remain package-scoped. This lets maclocal-api reuse them during Phase 5 without freezing cache, scheduler, converter, and UI policy details as community API.
+- The full package Release test suite passes against the local AFM-compatible dependency stack.
+- A clean downstream copy resolves the published compatibility tags and passes the full Release test suite without path overrides.
+
+AFM-compatible dependency checkpoint:
+
+| Repository | Local path | Published tag | Pinned revision | Purpose |
+| --- | --- | --- | --- | --- |
+| `mlx-afm` | `/Volumes/edata/dev/git/CODEX/AFMKit-dependencies/mlx-afm` | `0.31.6-afm.1` | `b9af157b016a470be1ca609531693b822d40f95f` | AFM-compatible MLX C++/Metal source |
+| `mlx-c-afm` | `/Volumes/edata/dev/git/CODEX/AFMKit-dependencies/mlx-c-afm` | `0.31.6-afm.1` | `1692252c78e634a90ae09bd77a9f68929982b8a0` | C bridge pinning `mlx-afm` |
+| `mlx-swift-afm` | `/Volumes/edata/dev/git/CODEX/AFMKit-dependencies/mlx-swift-afm` | `0.31.6-afm.1` | `6000b7b26b70be2713c74e9ec2adeb89be07b9e5` | Swift MLX bindings and bundled Metal runtime |
+| `mlx-swift-lm` compatibility branch | `/Volumes/edata/dev/git/CODEX/AFMKit-dependencies/mlx-swift-lm-afm` | `0.31.6-afm.2` | `90303ec548cb5d0dd6da16b86c82dad03240bd44` | AFM model architectures, parsers, and generation behavior |
 
 ## Phase 5: Consumer Migration
 
