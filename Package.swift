@@ -51,6 +51,10 @@ let package = Package(
         .library(
             name: "AFMKitMLX",
             targets: ["AFMKitMLX"]
+        ),
+        .library(
+            name: "AFMKitDwarfStar",
+            targets: ["AFMKitDwarfStar"]
         )
     ],
     dependencies: [
@@ -63,6 +67,10 @@ let package = Package(
             url: "https://github.com/huggingface/swift-huggingface.git",
             from: "0.8.1",
             traits: ["Xet"]
+        ),
+        .package(
+            url: "https://github.com/huggingface/swift-xet.git",
+            exact: "0.2.3"
         ),
         .package(
             url: "https://github.com/mlc-ai/xgrammar",
@@ -126,6 +134,47 @@ let package = Package(
                 .linkedLibrary("sqlite3")
             ]
         ),
+        .target(
+            name: "CDwarfStar",
+            path: "Sources/CDwarfStar",
+            sources: [
+                "AFMDwarfStarBridge.c",
+                "CDwarfStarKVStore.c",
+                "CDwarfStarEngine.c",
+                "CDwarfStarDistributed.c",
+                "CDwarfStarTensorParallel.c",
+                "CDwarfStarSSD.c",
+                "CDwarfStarMetal.m",
+                "CDwarfStarLayerPack.c"
+            ],
+            publicHeadersPath: "include",
+            cSettings: [
+                .unsafeFlags(["-O3", "-ffast-math"])
+            ],
+            linkerSettings: [
+                .linkedFramework("Foundation"),
+                .linkedFramework("Metal")
+            ]
+        ),
+        .target(
+            name: "AFMKitDwarfStar",
+            dependencies: [
+                "AFMKitCore",
+                "CDwarfStar",
+                .product(name: "HuggingFace", package: "swift-huggingface"),
+                .product(name: "Xet", package: "swift-xet")
+            ],
+            resources: [
+                .copy("../../vendor/ds4/metal")
+            ],
+            swiftSettings: [
+                .unsafeFlags(["-O"], .when(configuration: .release)),
+                .unsafeFlags(
+                    ["-file-prefix-map", "\(packageDirectory)/="],
+                    .when(configuration: .release)
+                )
+            ]
+        ),
         .testTarget(
             name: "AFMKitCoreTests",
             dependencies: ["AFMKitCore"]
@@ -145,6 +194,14 @@ let package = Package(
                 "AFMKitCore",
                 "AFMOpenAICompat",
                 .product(name: "MLXLMCommon", package: mlxSwiftLMPackageIdentity)
+            ]
+        ),
+        .testTarget(
+            name: "AFMKitDwarfStarTests",
+            dependencies: [
+                "AFMKitCore",
+                "AFMKitDwarfStar",
+                "CDwarfStar"
             ]
         )
     ],

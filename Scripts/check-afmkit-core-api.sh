@@ -29,7 +29,7 @@ for SHIMS_DIR in "$NUMERICS_SHIMS" "$ATOMICS_SHIMS" "$SYSTEM_SHIMS" "$NIO_WINDOW
 done
 
 GENERATED_MODULE_MAPS="$BUILD_DIR/out/Intermediates.noindex/GeneratedModuleMaps"
-for C_MODULE in CAsyncHTTPClient CNIOAtomics CNIOBoringSSLShims CNIODarwin CNIOExtrasZlib CNIOFreeBSD CNIOLLHTTP CNIOLinux CNIOOpenBSD CNIOPosix CNIOWASI CNIOWindows yyjson; do
+for C_MODULE in CAsyncHTTPClient CDwarfStar CNIOAtomics CNIOBoringSSLShims CNIODarwin CNIOExtrasZlib CNIOFreeBSD CNIOLLHTTP CNIOLinux CNIOOpenBSD CNIOPosix CNIOWASI CNIOWindows yyjson; do
     MODULE_MAP="$GENERATED_MODULE_MAPS/$C_MODULE.modulemap"
     [[ -f "$MODULE_MAP" ]] || continue
     EXTRACTOR_FLAGS+=(-Xcc "-fmodule-map-file=$MODULE_MAP")

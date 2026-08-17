@@ -103,7 +103,7 @@ Deliberate app boundary:
 
 ## Phase 4: Runtime Adapters
 
-Status: in progress. `AFMKitMLX` is extracted and Release-verified through both the tagged remote dependency graph and the persistent local compatibility stack. `AFMKitDwarfStar` has not yet been extracted.
+Status: extracted and Release-verified. `AFMKitMLX` passes through both the tagged remote dependency graph and the persistent local compatibility stack. `AFMKitDwarfStar` compiles against a pinned, unmodified DwarfStar submodule.
 
 Scope:
 
@@ -114,7 +114,7 @@ Known transition blockers:
 
 - maclocal-api currently uses `Scripts/apply-mlx-patches.sh` to patch `vendor/mlx-swift-lm`.
 - maclocal-api currently uses `Scripts/apply-mlx-cpp-patches.sh` for MLX C++/Metal support that can be lost on clean rebuild.
-- Clean downstream apps cannot depend on the full AFMKit umbrella without inheriting the patched MLX/DwarfStar/Vapor graph.
+- Clean downstream apps selecting `AFMKitMLX` inherit the tagged AFM-compatible MLX graph; apps selecting `AFMKitDwarfStar` inherit the vanilla DwarfStar engine. Neither provider product inherits Vapor.
 - A clean showcase app found that focused FoundationModels-style usage is practical, while full MLX downstream use still exposes patched-runtime coupling.
 
 Current `AFMKitMLX` checkpoint:
@@ -124,6 +124,14 @@ Current `AFMKitMLX` checkpoint:
 - Server implementation types remain package-scoped. This lets maclocal-api reuse them during Phase 5 without freezing cache, scheduler, converter, and UI policy details as community API.
 - The full package Release test suite passes against the local AFM-compatible dependency stack.
 - A clean downstream copy resolves the published compatibility tags and passes the full Release test suite without path overrides.
+
+Current `AFMKitDwarfStar` checkpoint:
+
+- The public API is limited to `AFMDwarfStarProviderFactory`, `AFMDwarfStarModel`, and `AFMDwarfStarRuntimeConfiguration` (25 normalized public symbols).
+- The engine is the unmodified `antirez/ds4` submodule pinned at `84cc882352757baf628a1776badf7cc54d584e28`; AFMKit owns the Swift provider, C bridge translation units, Hub/checkpoint resolver, scheduling policy, and runtime integration.
+- Reasoning, DSML tool calls, DSpark generalized draft depth, prefix-cache identity, continuous-prefill scheduling, Metal resource validation, and resumable Hub downloads are covered by 40 focused Release tests.
+- The full provider implementation remains package-scoped so the public contract does not freeze engine internals or force consumers to understand DwarfStar's C API.
+- There are no source patches applied to `vendor/ds4`. Engine-level limitations remain documented or upstreamed; AFMKit changes are restricted to the interface and orchestration layer.
 
 AFM-compatible dependency checkpoint:
 

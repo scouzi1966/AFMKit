@@ -1,0 +1,426 @@
+import Foundation
+
+/// Header-only view of an AFM DeepSeek V4 safetensor checkpoint.
+///
+/// The catalog retains file-backed tensor locations so a fixed-schedule runtime
+/// can map shard payloads directly without first materializing a second model.
+package struct AFMDwarfStarCheckpointCatalog: Sendable {
+    package static let bundledTemplateFilename = "dwarfstar-template.gguf"
+
+    private struct SafetensorHeader {
+        let tensors: [String: Any]
+        let payloadStart: UInt64
+        let fileSize: UInt64
+    }
+
+    package struct Layout: Sendable, Equatable {
+        package let isAFMNative: Bool
+        package let usesQ80DenseWeights: Bool
+        package let usesDwarfStarMXFP4Experts: Bool
+        package let usesPackedDwarfStarMXFP4Experts: Bool
+        package let executorLayoutVersion: Int?
+
+        package var isExecutorReady: Bool {
+            isAFMNative
+                && usesQ80DenseWeights
+                && usesDwarfStarMXFP4Experts
+                && usesPackedDwarfStarMXFP4Experts
+                && (executorLayoutVersion ?? 0) >= 3
+        }
+    }
+
+    package struct TensorLocation: Sendable, Equatable {
+        package let name: String
+        package let shardPath: String
+        package let fileOffset: UInt64
+        package let byteCount: UInt64
+        package let dtype: String
+        package let shape: [Int]
+    }
+
+    package enum CatalogError: LocalizedError, Equatable {
+        case invalidCheckpoint(String)
+        case unsupportedLayout(String)
+
+        package var errorDescription: String? {
+            switch self {
+            case .invalidCheckpoint(let message), .unsupportedLayout(let message):
+                return message
+            }
+        }
+    }
+
+    package let checkpointPath: String
+    package let layout: Layout
+    package let tensors: [String: TensorLocation]
+    package let shardPaths: [String]
+
+    package var bundledTemplateURL: URL {
+        URL(fileURLWithPath: checkpointPath, isDirectory: true)
+            .appendingPathComponent(Self.bundledTemplateFilename, isDirectory: false)
+    }
+
+    package var isSelfContainedExecutorReady: Bool {
+        layout.isExecutorReady
+            && FileManager.default.fileExists(atPath: bundledTemplateURL.path)
+    }
+
+    package var totalTensorBytes: UInt64 {
+        tensors.values.reduce(0) { $0 + $1.byteCount }
+    }
+
+    /// Returns true when the file has a readable GGUF v3 container header.
+    package static func isGGUF(at url: URL) -> Bool {
+        ggufArchitecture(at: url) != nil
+    }
+
+    /// Reads the model architecture from GGUF metadata without loading tensor
+    /// data. This is the runtime auto-selection signal; filenames are ignored.
+    package static func ggufArchitecture(at url: URL) -> String? {
+        try? GGUFMetadataReader(url: url.resolvingSymlinksInPath()).architecture()
+    }
+
+    package static func isDwarfStarCompatibleGGUF(at url: URL) -> Bool {
+        ggufArchitecture(at: url) == "deepseek4"
+    }
+
+    package init(checkpointURL: URL) throws {
+        let root = checkpointURL.standardizedFileURL
+        let config = try Self.jsonObject(
+            at: root.appendingPathComponent("config.json"),
+            description: "config.json"
+        )
+        guard config["model_type"] as? String == "deepseek_v4" else {
+            throw CatalogError.invalidCheckpoint(
+                "DwarfStar checkpoint loading requires model_type deepseek_v4."
+            )
+        }
+
+        layout = Layout(
+            isAFMNative: Self.bool(config["afm_native_checkpoint"]),
+            usesQ80DenseWeights: Self.bool(config["afm_q8_0"]),
+            usesDwarfStarMXFP4Experts: Self.bool(config["afm_dwarfstar_mxfp4_layout"]),
+            usesPackedDwarfStarMXFP4Experts: Self.bool(
+                config["afm_dwarfstar_mxfp4_packed"]),
+            executorLayoutVersion: Self.integer(config["afm_dwarfstar_executor_layout_version"])
+        )
+
+        let index = try Self.jsonObject(
+            at: root.appendingPathComponent("model.safetensors.index.json"),
+            description: "model.safetensors.index.json"
+        )
+        guard let rawWeightMap = index["weight_map"] as? [String: Any],
+              !rawWeightMap.isEmpty
+        else {
+            throw CatalogError.invalidCheckpoint("Safetensor index has no weight_map entries.")
+        }
+
+        var weightMap: [String: String] = [:]
+        for (name, value) in rawWeightMap {
+            guard let shard = value as? String, !shard.isEmpty else {
+                throw CatalogError.invalidCheckpoint(
+                    "Safetensor index has an invalid shard for tensor \(name)."
+                )
+            }
+            weightMap[name] = shard
+        }
+
+        var discovered: [String: TensorLocation] = [:]
+        let shardNames = Set(weightMap.values).sorted()
+        for shardName in shardNames {
+            let shardURL = try Self.checkedShardURL(named: shardName, under: root)
+            let header = try Self.readSafetensorHeader(at: shardURL)
+            for (name, metadata) in header.tensors {
+                guard name != "__metadata__",
+                      !name.hasPrefix("__afm_padding_") else { continue }
+                guard discovered[name] == nil else {
+                    throw CatalogError.invalidCheckpoint(
+                        "Tensor \(name) appears in more than one safetensor shard."
+                    )
+                }
+                discovered[name] = try Self.tensorLocation(
+                    name: name,
+                    metadata: metadata,
+                    shardURL: shardURL,
+                    payloadStart: header.payloadStart,
+                    fileSize: header.fileSize
+                )
+            }
+        }
+
+        var indexed: [String: TensorLocation] = [:]
+        for (name, shardName) in weightMap {
+            guard let location = discovered[name] else {
+                throw CatalogError.invalidCheckpoint(
+                    "Tensor \(name) is indexed in \(shardName) but absent from its safetensor header."
+                )
+            }
+            guard URL(fileURLWithPath: location.shardPath).lastPathComponent == shardName else {
+                throw CatalogError.invalidCheckpoint(
+                    "Tensor \(name) is stored in \(URL(fileURLWithPath: location.shardPath).lastPathComponent), not indexed shard \(shardName)."
+                )
+            }
+            indexed[name] = location
+        }
+
+        checkpointPath = root.path
+        tensors = indexed
+        shardPaths = shardNames.map {
+            root.appendingPathComponent($0, isDirectory: false).standardizedFileURL.path
+        }
+        if layout.isExecutorReady {
+            guard indexed.values.allSatisfy({ $0.fileOffset.isMultiple(of: 32) }) else {
+                throw CatalogError.unsupportedLayout(
+                    "DwarfStar executor tensors must be aligned to 32-byte file offsets.")
+            }
+        }
+    }
+
+    package func tensor(named name: String) -> TensorLocation? {
+        tensors[name]
+    }
+
+    package func requireExecutorReady() throws {
+        guard layout.isExecutorReady else {
+            throw CatalogError.unsupportedLayout(
+                "DwarfStar execution requires an AFM native checkpoint with "
+                    + "afm_q8_0=true, afm_dwarfstar_mxfp4_layout=true, and "
+                    + "afm_dwarfstar_mxfp4_packed=true with "
+                    + "afm_dwarfstar_executor_layout_version>=3 with 32-byte-aligned tensors."
+            )
+        }
+    }
+
+    private static func jsonObject(at url: URL, description: String) throws -> [String: Any] {
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            throw CatalogError.invalidCheckpoint("Missing \(description) at \(url.path).")
+        }
+        do {
+            let value = try JSONSerialization.jsonObject(with: Data(contentsOf: url))
+            guard let object = value as? [String: Any] else {
+                throw CatalogError.invalidCheckpoint("\(description) is not a JSON object.")
+            }
+            return object
+        } catch let error as CatalogError {
+            throw error
+        } catch {
+            throw CatalogError.invalidCheckpoint("Cannot parse \(description): \(error.localizedDescription)")
+        }
+    }
+
+    private static func checkedShardURL(named name: String, under root: URL) throws -> URL {
+        guard URL(fileURLWithPath: name).lastPathComponent == name else {
+            throw CatalogError.invalidCheckpoint("Unsafe safetensor shard path \(name).")
+        }
+        let url = root.appendingPathComponent(name, isDirectory: false).standardizedFileURL
+        guard url.deletingLastPathComponent() == root else {
+            throw CatalogError.invalidCheckpoint("Safetensor shard escapes checkpoint directory: \(name).")
+        }
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            throw CatalogError.invalidCheckpoint("Missing safetensor shard at \(url.path).")
+        }
+        return url
+    }
+
+    private static func readSafetensorHeader(at url: URL) throws -> SafetensorHeader {
+        let handle: FileHandle
+        do {
+            handle = try FileHandle(forReadingFrom: url)
+        } catch {
+            throw CatalogError.invalidCheckpoint(
+                "Cannot open safetensor shard \(url.lastPathComponent): \(error.localizedDescription)"
+            )
+        }
+        defer { try? handle.close() }
+
+        let prefix = try handle.read(upToCount: 8) ?? Data()
+        guard prefix.count == 8 else {
+            throw CatalogError.invalidCheckpoint(
+                "Safetensor shard \(url.lastPathComponent) has a truncated header length."
+            )
+        }
+        let headerLength = prefix.enumerated().reduce(UInt64(0)) { result, item in
+            result | (UInt64(item.element) << UInt64(item.offset * 8))
+        }
+        let fileSize = try fileByteCount(url)
+        guard fileSize >= 8,
+              headerLength > 0,
+              headerLength <= fileSize - 8,
+              headerLength <= UInt64(Int.max)
+        else {
+            throw CatalogError.invalidCheckpoint(
+                "Safetensor shard \(url.lastPathComponent) has invalid header length \(headerLength)."
+            )
+        }
+
+        let data = try handle.read(upToCount: Int(headerLength)) ?? Data()
+        guard data.count == Int(headerLength) else {
+            throw CatalogError.invalidCheckpoint(
+                "Safetensor shard \(url.lastPathComponent) has a truncated JSON header."
+            )
+        }
+        do {
+            guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                throw CatalogError.invalidCheckpoint(
+                    "Safetensor shard \(url.lastPathComponent) header is not a JSON object."
+                )
+            }
+            return SafetensorHeader(
+                tensors: object,
+                payloadStart: 8 + headerLength,
+                fileSize: fileSize
+            )
+        } catch let error as CatalogError {
+            throw error
+        } catch {
+            throw CatalogError.invalidCheckpoint(
+                "Cannot parse safetensor header \(url.lastPathComponent): \(error.localizedDescription)"
+            )
+        }
+    }
+
+    private static func tensorLocation(
+        name: String,
+        metadata: Any,
+        shardURL: URL,
+        payloadStart: UInt64,
+        fileSize: UInt64
+    ) throws -> TensorLocation {
+        guard let object = metadata as? [String: Any],
+              let dtype = object["dtype"] as? String,
+              let rawShape = object["shape"] as? [Any],
+              let rawOffsets = object["data_offsets"] as? [Any],
+              rawOffsets.count == 2,
+              let start = unsignedInteger(rawOffsets[0]),
+              let end = unsignedInteger(rawOffsets[1]),
+              end >= start
+        else {
+            throw CatalogError.invalidCheckpoint(
+                "Tensor \(name) has invalid safetensor metadata."
+            )
+        }
+        let shape = try rawShape.map { value -> Int in
+            guard let dimension = integer(value), dimension >= 0 else {
+                throw CatalogError.invalidCheckpoint("Tensor \(name) has an invalid shape.")
+            }
+            return dimension
+        }
+
+        let absoluteStart = payloadStart.addingReportingOverflow(start)
+        let absoluteEnd = payloadStart.addingReportingOverflow(end)
+        guard !absoluteStart.overflow,
+              !absoluteEnd.overflow,
+              absoluteEnd.partialValue <= fileSize
+        else {
+            throw CatalogError.invalidCheckpoint(
+                "Tensor \(name) points outside safetensor shard \(shardURL.lastPathComponent)."
+            )
+        }
+        return TensorLocation(
+            name: name,
+            shardPath: shardURL.path,
+            fileOffset: absoluteStart.partialValue,
+            byteCount: end - start,
+            dtype: dtype,
+            shape: shape
+        )
+    }
+
+    private static func fileByteCount(_ url: URL) throws -> UInt64 {
+        let values = try url.resourceValues(forKeys: [.fileSizeKey])
+        guard let size = values.fileSize, size >= 0 else {
+            throw CatalogError.invalidCheckpoint("Cannot determine size of \(url.path).")
+        }
+        return UInt64(size)
+    }
+
+    private static func bool(_ value: Any?) -> Bool {
+        (value as? Bool) ?? false
+    }
+
+    private static func integer(_ value: Any?) -> Int? {
+        if let value = value as? Int { return value }
+        if let value = value as? NSNumber { return value.intValue }
+        return nil
+    }
+
+    private static func unsignedInteger(_ value: Any?) -> UInt64? {
+        if let value = value as? UInt64 { return value }
+        if let value = value as? Int, value >= 0 { return UInt64(value) }
+        if let value = value as? NSNumber, value.int64Value >= 0 {
+            return UInt64(value.int64Value)
+        }
+        return nil
+    }
+}
+
+private final class GGUFMetadataReader {
+    private let handle: FileHandle
+
+    init(url: URL) throws {
+        let values = try url.resourceValues(forKeys: [.isRegularFileKey])
+        guard values.isRegularFile == true else { throw CocoaError(.fileReadCorruptFile) }
+        handle = try FileHandle(forReadingFrom: url)
+    }
+
+    deinit { try? handle.close() }
+
+    func architecture() throws -> String? {
+        guard try bytes(4) == Data("GGUF".utf8), try u32() == 3 else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        _ = try u64() // tensor count
+        let metadataCount = try u64()
+        for _ in 0..<metadataCount {
+            let key = try string()
+            let type = try u32()
+            if key == "general.architecture", type == 8 {
+                return try string()
+            }
+            try skipValue(type: type)
+        }
+        return nil
+    }
+
+    private func bytes(_ count: Int) throws -> Data {
+        let data = try handle.read(upToCount: count) ?? Data()
+        guard data.count == count else { throw CocoaError(.fileReadCorruptFile) }
+        return data
+    }
+
+    private func u32() throws -> UInt32 { try integer(UInt32.self) }
+    private func u64() throws -> UInt64 { try integer(UInt64.self) }
+
+    private func string() throws -> String {
+        let count = try u64()
+        guard count <= UInt64(Int.max),
+              let value = String(data: try bytes(Int(count)), encoding: .utf8)
+        else { throw CocoaError(.fileReadCorruptFile) }
+        return value
+    }
+
+    private func skipValue(type: UInt32, depth: Int = 0) throws {
+        guard depth <= 8 else { throw CocoaError(.fileReadCorruptFile) }
+        let scalarSizes: [UInt32: Int] = [
+            0: 1, 1: 1, 2: 2, 3: 2, 4: 4, 5: 4, 6: 4, 7: 1,
+            10: 8, 11: 8, 12: 8,
+        ]
+        if let count = scalarSizes[type] {
+            _ = try bytes(count)
+        } else if type == 8 {
+            _ = try string()
+        } else if type == 9 {
+            let elementType = try u32()
+            let count = try u64()
+            for _ in 0..<count { try skipValue(type: elementType, depth: depth + 1) }
+        } else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+    }
+
+    private func integer<T: FixedWidthInteger>(_ type: T.Type) throws -> T {
+        try bytes(MemoryLayout<T>.size).withUnsafeBytes {
+            T(littleEndian: $0.loadUnaligned(as: T.self))
+        }
+    }
+}
