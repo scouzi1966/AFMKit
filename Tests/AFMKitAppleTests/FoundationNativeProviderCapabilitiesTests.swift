@@ -19,6 +19,8 @@ final class FoundationNativeProviderCapabilitiesTests: XCTestCase {
         XCTAssertTrue(snapshot.capabilities.contains(.vision))
         XCTAssertTrue(snapshot.capabilities.contains(.toolCalling))
         XCTAssertTrue(snapshot.capabilities.contains(.structuredOutput))
+        XCTAssertTrue(snapshot.capabilities.contains(.streaming))
+        XCTAssertFalse(snapshot.capabilities.contains(.reasoning))
         XCTAssertTrue(snapshot.supportedReasoningLevels.isEmpty)
     }
 
@@ -31,6 +33,8 @@ final class FoundationNativeProviderCapabilitiesTests: XCTestCase {
         XCTAssertEqual(snapshot.privacyBoundary, .privateCloud)
         XCTAssertTrue(snapshot.requiresNetwork)
         XCTAssertEqual(snapshot.entitlement, "com.apple.developer.private-cloud-compute")
+        XCTAssertTrue(snapshot.capabilities.contains(.reasoning))
+        XCTAssertTrue(snapshot.capabilities.contains(.streaming))
         XCTAssertEqual(snapshot.supportedReasoningLevels, [.light, .moderate, .deep])
     }
 }

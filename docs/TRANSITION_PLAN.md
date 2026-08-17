@@ -78,7 +78,8 @@ Current checkpoint:
 
 ## Phase 3: Apple and macOS 27 Provider Surface
 
-Status: extracted and verified in this repository; downstream Vesta adoption remains in Phase 5.
+Status: extracted and verified in this repository; the common AFM provider adapter is implemented,
+and downstream Vesta adoption remains in Phase 5.
 
 Scope:
 
@@ -93,6 +94,12 @@ Extracted runtime boundary:
 - `AFMFoundationNativeExecutionPlanner` validates the signed-app entitlement before quota access and carries PCC reasoning selection.
 - `AFMFoundationNativeSessionRuntime` creates and reuses on-device and PCC `LanguageModelSession` instances without importing Vesta types.
 - Foundation Models stream processing, telemetry, tool snapshots, structured completion, transcript windows, and generation option policies are reusable package APIs.
+- `AFMFoundationProviderFactory` registers stable on-device and PCC model identifiers through the
+  same `AFMProviderFactory`/`AFMModel` contract used by MLX and DwarfStar.
+- Common requests use a fresh native session and render the complete AFM conversation exactly once;
+  lower-level reusable sessions remain available for stateful interactive consumers.
+- Native host tools are supplied as executable `FoundationModels.Tool` values and are advertised
+  only when a matching implementation exists.
 - Public API changes are guarded by the `AFMKitApple` normalized symbol-graph baseline.
 
 Deliberate app boundary:

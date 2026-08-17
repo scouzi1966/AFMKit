@@ -51,7 +51,7 @@ public enum AFMFoundationNativeProviderCapabilities {
         AFMFoundationNativeProviderCapabilitySnapshot(
             kind: .appleOnDevice,
             modelIdentifier: "apple.system.default",
-            capabilities: [.text, .vision, .toolCalling, .structuredOutput],
+            capabilities: [.text, .vision, .toolCalling, .structuredOutput, .streaming],
             contextWindow: max(minimumContextWindow, systemContextWindow),
             privacyBoundary: .device,
             requiresNetwork: false,
@@ -68,7 +68,14 @@ public enum AFMFoundationNativeProviderCapabilities {
         AFMFoundationNativeProviderCapabilitySnapshot(
             kind: .privateCloudCompute,
             modelIdentifier: "apple.private-cloud-compute",
-            capabilities: [.text, .vision, .toolCalling, .structuredOutput],
+            capabilities: [
+                .text,
+                .vision,
+                .reasoning,
+                .toolCalling,
+                .structuredOutput,
+                .streaming,
+            ],
             contextWindow: contextWindow,
             privacyBoundary: .privateCloud,
             requiresNetwork: true,

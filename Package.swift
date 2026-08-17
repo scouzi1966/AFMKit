@@ -89,7 +89,10 @@ let package = Package(
         ),
         .target(
             name: "AFMKitApple",
-            dependencies: ["AFMKitCore", "AFMOpenAICompat"]
+            dependencies: ["AFMKitCore", "AFMOpenAICompat"],
+            linkerSettings: [
+                .linkedFramework("Security")
+            ]
         ),
         .target(
             name: "AFMXGrammar",
