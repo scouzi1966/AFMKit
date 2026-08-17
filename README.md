@@ -2,14 +2,14 @@
 
 AFMKit is the provider SDK being extracted from maclocal-api. The goal is to make the AFM provider contract usable by Swift applications without pulling in the full AFM server, patched MLX runtime, DwarfStar adapter, Vapor stack, or model download machinery.
 
-The first private checkpoint contains `AFMKitCore`: dependency-free provider identity, capability, availability, reasoning-stream, download-progress, and generation-loop contracts.
+The first private checkpoint contains dependency-free provider and OpenAI-compatible API surfaces that downstream apps can import without the full AFM server/runtime graph.
 
 ## Current Products
 
 | Product | Status | Dependencies |
 | --- | --- | --- |
 | `AFMKitCore` | Extracted | Swift Foundation only |
-| `AFMOpenAICompat` | Planned | Swift Foundation only |
+| `AFMOpenAICompat` | Extracted | Swift Foundation only |
 | `AFMKitApple` | Planned | Apple FoundationModels and macOS 27 provider surfaces |
 | `AFMKitMLX` | Planned | AFM-compatible MLX package path |
 | `AFMKitDwarfStar` | Planned | Vanilla DwarfStar plus AFM-owned adapter |
@@ -19,6 +19,7 @@ The first private checkpoint contains `AFMKitCore`: dependency-free provider ide
 ```bash
 swift test
 Scripts/check-afmkit-core-api.sh
+Scripts/check-afmkit-core-api.sh AFMOpenAICompat
 ```
 
 ## Transition Plan

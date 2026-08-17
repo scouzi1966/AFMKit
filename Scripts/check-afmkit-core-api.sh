@@ -2,9 +2,10 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+MODULE="${1:-AFMKitCore}"
 BUILD_DIR="$ROOT/.build"
 PRODUCTS_DIR="$BUILD_DIR/out/Products/Debug"
-BASELINE="$ROOT/docs/api-baselines/AFMKitCore.symbols.json"
+BASELINE="$ROOT/docs/api-baselines/$MODULE.symbols.json"
 CURRENT_DIR="$BUILD_DIR/api-current"
 RAW_CURRENT_DIR="$BUILD_DIR/api-current-raw"
 MODULE_CACHE="$BUILD_DIR/api-module-cache"
@@ -15,13 +16,13 @@ export SWIFTPM_MODULECACHE_OVERRIDE="$BUILD_DIR/swiftpm-module-cache"
 export CLANG_MODULE_CACHE_PATH="$BUILD_DIR/clang-module-cache"
 
 cd "$ROOT"
-swift build --target AFMKitCore
+swift build --target "$MODULE"
 
 rm -rf "$CURRENT_DIR" "$RAW_CURRENT_DIR"
 mkdir -p "$CURRENT_DIR" "$RAW_CURRENT_DIR" "$MODULE_CACHE"
 
 xcrun swift-symbolgraph-extract \
-    -module-name AFMKitCore \
+    -module-name "$MODULE" \
     -I "$PRODUCTS_DIR" \
     -output-dir "$RAW_CURRENT_DIR" \
     -minimum-access-level public \
@@ -32,7 +33,7 @@ xcrun swift-symbolgraph-extract \
     -target "${ARCH}-apple-macos26.0" \
     -module-cache-path "$MODULE_CACHE"
 
-python3 - "$RAW_CURRENT_DIR/AFMKitCore.symbols.json" "$CURRENT_DIR/AFMKitCore.symbols.json" <<'PY'
+python3 - "$RAW_CURRENT_DIR/$MODULE.symbols.json" "$CURRENT_DIR/$MODULE.symbols.json" <<'PY'
 import json
 import sys
 
@@ -66,11 +67,17 @@ with open(normalized_path, "w", encoding="utf-8") as handle:
     handle.write("\n")
 PY
 
-if ! cmp -s "$BASELINE" "$CURRENT_DIR/AFMKitCore.symbols.json"; then
-    echo "AFMKitCore public API differs from $BASELINE" >&2
-    echo "Review the API change, then replace the baseline intentionally." >&2
-    diff -u "$BASELINE" "$CURRENT_DIR/AFMKitCore.symbols.json" || true
+if [[ ! -f "$BASELINE" ]]; then
+    echo "$MODULE has no checked-in API baseline at $BASELINE" >&2
+    echo "Review $CURRENT_DIR/$MODULE.symbols.json, then add it intentionally." >&2
     exit 1
 fi
 
-echo "AFMKitCore public API matches its checked-in baseline."
+if ! cmp -s "$BASELINE" "$CURRENT_DIR/$MODULE.symbols.json"; then
+    echo "$MODULE public API differs from $BASELINE" >&2
+    echo "Review the API change, then replace the baseline intentionally." >&2
+    diff -u "$BASELINE" "$CURRENT_DIR/$MODULE.symbols.json" || true
+    exit 1
+fi
+
+echo "$MODULE public API matches its checked-in baseline."

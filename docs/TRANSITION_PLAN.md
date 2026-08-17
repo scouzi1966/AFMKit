@@ -28,7 +28,7 @@ Use tagged SwiftPM packages for normal consumers:
 
 ## Phase 1: Extract `AFMKitCore`
 
-Status: started in this repository.
+Status: extracted and verified in this repository.
 
 Scope:
 
@@ -45,16 +45,36 @@ Exit criteria:
 
 ## Phase 2: Extract `AFMOpenAICompat`
 
+Status: extracted and verified in this repository; downstream adoption is intentionally deferred to Phase 5.
+
 Scope:
 
 - Move OpenAI-compatible request/response DTOs, tool call payloads, JSON schema helpers, and error surface into a dependency-free package.
 - Keep provider APIs event-based instead of string-only.
 - Ensure tool-call parser tests are portable outside maclocal-api.
 
+Initial extraction:
+
+- `OpenAIRequest.swift`
+- `OpenAIResponse.swift`
+- `OpenAIResponseFormatPolicy.swift`
+- Focused tests for response-format policy and reasoning-effort request decoding.
+
+Deferred:
+
+- Tool-call parser runtime tests remain in maclocal-api until parser code is split out of the MLX/server targets.
+- Nullable Jinja schema regression tests remain with the runtime package because they require `swift-jinja`.
+
 Exit criteria:
 
 - maclocal-api imports `AFMOpenAICompat` from AFMKit instead of its local copy.
 - Vesta can use the DTO package without linking Vapor or model runtimes.
+
+Current checkpoint:
+
+- Public API has a normalized Swift symbol-graph baseline.
+- Unit tests pass without server or inference dependencies.
+- maclocal-api adoption remains deferred until the Apple/provider packages are extracted, so its release cadence is not tied to a partially split package graph.
 
 ## Phase 3: Apple and macOS 27 Provider Surface
 
