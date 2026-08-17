@@ -104,9 +104,24 @@ Extracted runtime boundary:
 
 Deliberate app boundary:
 
-- The host app detects entitlements from its own signed binary and supplies the result to AFMKit.
+- AFMKit provides an app-agnostic current-process entitlement reader and also accepts an injected
+  entitlement check for tests and specialized hosts.
 - Vesta continues to own provisioning profiles, entitlement files, provider selection UI, route metadata, and chat workflow DTOs.
 - Vesta's native request factory can migrate to the AFMKit runtime in Phase 5 without copying those app concerns into the SDK.
+
+Current `AFMKitApple` checkpoint:
+
+- The provider-neutral downstream quickstart builds in Release and exposes MLX, Apple on-device,
+  and Apple PCC routes through the same registry/model contract.
+- A live on-device quickstart smoke test loaded Apple Intelligence, generated the requested exact
+  response, emitted usage, and completed normally.
+- An unsigned PCC quickstart exits cleanly with the missing managed-entitlement reason instead of
+  crashing or masking it as a locale failure. Live PCC generation remains a signed-host integration
+  test because the entitlement belongs to the consuming app's code signature.
+- The normalized `AFMKitApple` symbol graph includes the intentional provider, model, managed
+  capability, and configuration-key additions with no removed public symbols.
+- The focused Release suite passes 65 Apple tests. The full Release suite passes 236 tests across
+  Core, OpenAI compatibility, Apple, MLX, and DwarfStar.
 
 ## Phase 4: Runtime Adapters
 
@@ -151,9 +166,9 @@ AFM-compatible dependency checkpoint:
 
 ## Phase 5: Consumer Migration
 
-Status: in progress. A standalone MLX quickstart now compiles against the public provider registry
-and runtime adapter without importing maclocal-api server targets. Tagged-package migration for
-maclocal-api and Vesta remains outstanding.
+Status: in progress. A provider-neutral quickstart now compiles against the public registry and
+runtime adapters, and exercises Apple on-device generation without importing maclocal-api server
+targets. Tagged-package migration for maclocal-api and Vesta remains outstanding.
 
 Scope:
 

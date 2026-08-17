@@ -63,6 +63,23 @@ final class FoundationProviderTests: XCTestCase {
         }
     }
 
+    func testPCCAvailabilityPrioritizesMissingEntitlementOverDerivedLocaleState() async throws {
+        let model = try AFMFoundationModel(
+            modelID: AFMFoundationProviderFactory.privateCloudComputeModelID,
+            hasPrivateCloudComputeEntitlement: { false }
+        )
+
+        let availability = await model.availability()
+
+        guard case .unavailable(let reason) = availability else {
+            return XCTFail("Expected PCC to be unavailable without its managed entitlement.")
+        }
+        XCTAssertEqual(
+            reason,
+            "PCC entitlement missing from signed app: com.apple.developer.private-cloud-compute"
+        )
+    }
+
     func testAdapterBuildsInstructionsAndCompleteConversation() throws {
         let request = AFMRequest(
             messages: [

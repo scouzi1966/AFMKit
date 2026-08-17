@@ -41,6 +41,24 @@
     },
     {
       "kind": "conformsTo",
+      "source": "s:11AFMKitApple18AFMFoundationModelC",
+      "target": "s:10AFMKitCore8AFMModelP",
+      "targetFallback": "AFMKitCore.AFMModel"
+    },
+    {
+      "kind": "conformsTo",
+      "source": "s:11AFMKitApple18AFMFoundationModelC",
+      "target": "s:s16SendableMetatypeP",
+      "targetFallback": "Swift.SendableMetatype"
+    },
+    {
+      "kind": "conformsTo",
+      "source": "s:11AFMKitApple18AFMFoundationModelC",
+      "target": "s:s8SendableP",
+      "targetFallback": "Swift.Sendable"
+    },
+    {
+      "kind": "conformsTo",
       "source": "s:11AFMKitApple20FoundationModelErrorO",
       "target": "s:10Foundation14LocalizedErrorP",
       "targetFallback": "Foundation.LocalizedError"
@@ -174,6 +192,24 @@
     {
       "kind": "conformsTo",
       "source": "s:11AFMKitApple28AFMFoundationGenerationUsageV",
+      "target": "s:s8SendableP",
+      "targetFallback": "Swift.Sendable"
+    },
+    {
+      "kind": "conformsTo",
+      "source": "s:11AFMKitApple28AFMFoundationProviderFactoryV",
+      "target": "s:10AFMKitCore18AFMProviderFactoryP",
+      "targetFallback": "AFMKitCore.AFMProviderFactory"
+    },
+    {
+      "kind": "conformsTo",
+      "source": "s:11AFMKitApple28AFMFoundationProviderFactoryV",
+      "target": "s:s16SendableMetatypeP",
+      "targetFallback": "Swift.SendableMetatype"
+    },
+    {
+      "kind": "conformsTo",
+      "source": "s:11AFMKitApple28AFMFoundationProviderFactoryV",
       "target": "s:s8SendableP",
       "targetFallback": "Swift.Sendable"
     },
@@ -755,6 +791,56 @@
     },
     {
       "kind": "memberOf",
+      "source": "s:11AFMKitApple18AFMFoundationModelC10descriptor0A4Core18AFMModelDescriptorVvp",
+      "sourceOrigin": {
+        "displayName": "AFMModel.descriptor",
+        "identifier": "s:10AFMKitCore8AFMModelP10descriptorAA0C10DescriptorVvp"
+      },
+      "target": "s:11AFMKitApple18AFMFoundationModelC"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:11AFMKitApple18AFMFoundationModelC12availability0A4Core20AFMModelAvailabilityOyYaF",
+      "sourceOrigin": {
+        "displayName": "AFMModel.availability()",
+        "identifier": "s:10AFMKitCore8AFMModelP12availabilityAA0C12AvailabilityOyYaF"
+      },
+      "target": "s:11AFMKitApple18AFMFoundationModelC"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:11AFMKitApple18AFMFoundationModelC14streamResponse2toScsy0A4Core18AFMGenerationEventOs5Error_pGAF10AFMRequestV_tF",
+      "sourceOrigin": {
+        "displayName": "AFMModel.streamResponse(to:)",
+        "identifier": "s:10AFMKitCore8AFMModelP14streamResponse2toScsyAA18AFMGenerationEventOs5Error_pGAA10AFMRequestV_tF"
+      },
+      "target": "s:11AFMKitApple18AFMFoundationModelC"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:11AFMKitApple18AFMFoundationModelC4load8progress0A4Core18AFMModelDescriptorVySdYbcSg_tYaKF",
+      "sourceOrigin": {
+        "displayName": "AFMModel.load(progress:)",
+        "identifier": "s:10AFMKitCore8AFMModelP4load8progressAA0C10DescriptorVySdYbcSg_tYaKF"
+      },
+      "target": "s:11AFMKitApple18AFMFoundationModelC"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:11AFMKitApple18AFMFoundationModelC7modelID13configuration33hasPrivateCloudComputeEntitlement5toolsAC0A4Core08AFMModelF0V_AH24AFMProviderConfigurationVSbyYbcSay16FoundationModels4Tool_pGtKcfc",
+      "target": "s:11AFMKitApple18AFMFoundationModelC"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:11AFMKitApple18AFMFoundationModelC7respond2to0A4Core16AFMModelResponseVAF10AFMRequestV_tYaKF",
+      "sourceOrigin": {
+        "displayName": "AFMModel.respond(to:)",
+        "identifier": "s:10AFMKitCore8AFMModelP7respond2toAA0C8ResponseVAA10AFMRequestV_tYaKF"
+      },
+      "target": "s:11AFMKitApple18AFMFoundationModelC"
+    },
+    {
+      "kind": "memberOf",
       "source": "s:11AFMKitApple20FoundationModelErrorO12invalidInputyA2CmF",
       "target": "s:11AFMKitApple20FoundationModelErrorO"
     },
@@ -989,6 +1075,53 @@
     },
     {
       "kind": "memberOf",
+      "source": "s:11AFMKitApple28AFMFoundationProviderFactoryV10descriptor0A4Core21AFMProviderDescriptorVvp",
+      "sourceOrigin": {
+        "displayName": "AFMProviderFactory.descriptor",
+        "identifier": "s:10AFMKitCore18AFMProviderFactoryP10descriptorAA0C10DescriptorVvp"
+      },
+      "target": "s:11AFMKitApple28AFMFoundationProviderFactoryV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:11AFMKitApple28AFMFoundationProviderFactoryV10providerID0A4Core011AFMProviderG0VvpZ",
+      "target": "s:11AFMKitApple28AFMFoundationProviderFactoryV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:11AFMKitApple28AFMFoundationProviderFactoryV15onDeviceModelID0A4Core08AFMModelI0VvpZ",
+      "target": "s:11AFMKitApple28AFMFoundationProviderFactoryV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:11AFMKitApple28AFMFoundationProviderFactoryV16modelDescriptorsSay0A4Core18AFMModelDescriptorVGyYaKF",
+      "sourceOrigin": {
+        "displayName": "AFMProviderFactory.modelDescriptors()",
+        "identifier": "s:10AFMKitCore18AFMProviderFactoryP16modelDescriptorsSayAA18AFMModelDescriptorVGyYaKF"
+      },
+      "target": "s:11AFMKitApple28AFMFoundationProviderFactoryV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:11AFMKitApple28AFMFoundationProviderFactoryV26privateCloudComputeModelID0A4Core08AFMModelJ0VvpZ",
+      "target": "s:11AFMKitApple28AFMFoundationProviderFactoryV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:11AFMKitApple28AFMFoundationProviderFactoryV33hasPrivateCloudComputeEntitlement5toolsACSbyYbc_Say16FoundationModels4Tool_pGtcfc",
+      "target": "s:11AFMKitApple28AFMFoundationProviderFactoryV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:11AFMKitApple28AFMFoundationProviderFactoryV9makeModel2id13configuration0A4Core11AnyAFMModelVAG0L2IDV_AG24AFMProviderConfigurationVtKF",
+      "sourceOrigin": {
+        "displayName": "AFMProviderFactory.makeModel(id:configuration:)",
+        "identifier": "s:10AFMKitCore18AFMProviderFactoryP9makeModel2id13configurationAA11AnyAFMModelVAA0J2IDV_AA0C13ConfigurationVtKF"
+      },
+      "target": "s:11AFMKitApple28AFMFoundationProviderFactoryV"
+    },
+    {
+      "kind": "memberOf",
       "source": "s:11AFMKitApple29AFMFoundationHistoryTransformO10normalizedySay16FoundationModels10TranscriptV5EntryOGAJFZ",
       "target": "s:11AFMKitApple29AFMFoundationHistoryTransformO"
     },
@@ -1165,6 +1298,16 @@
       "kind": "memberOf",
       "source": "s:11AFMKitApple32AFMFoundationGenerationTelemetryV9toolNamesSaySSGvp",
       "target": "s:11AFMKitApple32AFMFoundationGenerationTelemetryV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:11AFMKitApple32AFMFoundationManagedCapabilitiesO30privateCloudComputeEntitlementSSvpZ",
+      "target": "s:11AFMKitApple32AFMFoundationManagedCapabilitiesO"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:11AFMKitApple32AFMFoundationManagedCapabilitiesO47currentProcessHasPrivateCloudComputeEntitlementSbyFZ",
+      "target": "s:11AFMKitApple32AFMFoundationManagedCapabilitiesO"
     },
     {
       "kind": "memberOf",
@@ -1676,6 +1819,16 @@
       "kind": "memberOf",
       "source": "s:11AFMKitApple37AFMFoundationTranscriptSnapshotParserO7bounded_5limitSSSgAF_SitFZ",
       "target": "s:11AFMKitApple37AFMFoundationTranscriptSnapshotParserO"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:11AFMKitApple38AFMFoundationProviderConfigurationKeysO12systemPromptSSvpZ",
+      "target": "s:11AFMKitApple38AFMFoundationProviderConfigurationKeysO"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:11AFMKitApple38AFMFoundationProviderConfigurationKeysO14reasoningLevelSSvpZ",
+      "target": "s:11AFMKitApple38AFMFoundationProviderConfigurationKeysO"
     },
     {
       "kind": "memberOf",
@@ -10966,6 +11119,707 @@
       "declarationFragments": [
         {
           "kind": "attribute",
+          "spelling": "@Sendable"
+        },
+        {
+          "kind": "attribute",
+          "spelling": "@escaping "
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "configuration"
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "hasPrivateCloudComputeEntitlement"
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "modelID"
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "tools"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "convenience"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "init"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "throws"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "text",
+          "spelling": " () -> "
+        },
+        {
+          "kind": "text",
+          "spelling": " = .init(), "
+        },
+        {
+          "kind": "text",
+          "spelling": " = {\n            AFMFoundationManagedCapabilities.currentProcessHasPrivateCloudComputeEntitlement()\n        }, "
+        },
+        {
+          "kind": "text",
+          "spelling": "("
+        },
+        {
+          "kind": "text",
+          "spelling": ", "
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "text",
+          "spelling": ": [any "
+        },
+        {
+          "kind": "text",
+          "spelling": "] = []) "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:10AFMKitCore10AFMModelIDV",
+          "spelling": "AFMModelID"
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:10AFMKitCore24AFMProviderConfigurationV",
+          "spelling": "AFMProviderConfiguration"
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:16FoundationModels4ToolP",
+          "spelling": "Tool"
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Sb",
+          "spelling": "Bool"
+        }
+      ],
+      "functionSignature": {
+        "parameters": [
+          {
+            "declarationFragments": [
+              {
+                "kind": "attribute",
+                "spelling": "@Sendable"
+              },
+              {
+                "kind": "identifier",
+                "spelling": "hasPrivateCloudComputeEntitlement"
+              },
+              {
+                "kind": "text",
+                "spelling": " () -> "
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:Sb",
+                "spelling": "Bool"
+              }
+            ],
+            "name": "hasPrivateCloudComputeEntitlement"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "configuration"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:10AFMKitCore24AFMProviderConfigurationV",
+                "spelling": "AFMProviderConfiguration"
+              }
+            ],
+            "name": "configuration"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "modelID"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:10AFMKitCore10AFMModelIDV",
+                "spelling": "AFMModelID"
+              }
+            ],
+            "name": "modelID"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "tools"
+              },
+              {
+                "kind": "text",
+                "spelling": ": [any "
+              },
+              {
+                "kind": "text",
+                "spelling": "]"
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:16FoundationModels4ToolP",
+                "spelling": "Tool"
+              }
+            ],
+            "name": "tools"
+          }
+        ]
+      },
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:11AFMKitApple18AFMFoundationModelC7modelID13configuration33hasPrivateCloudComputeEntitlement5toolsAC0A4Core08AFMModelF0V_AH24AFMProviderConfigurationVSbyYbcSay16FoundationModels4Tool_pGtKcfc"
+      },
+      "kind": {
+        "displayName": "Initializer",
+        "identifier": "swift.init"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "externalParam",
+            "spelling": "configuration"
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "hasPrivateCloudComputeEntitlement"
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "modelID"
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "tools"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "convenience"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "init"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "throws"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "text",
+            "spelling": "("
+          },
+          {
+            "kind": "text",
+            "spelling": ", "
+          },
+          {
+            "kind": "text",
+            "spelling": ", "
+          },
+          {
+            "kind": "text",
+            "spelling": ", "
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "text",
+            "spelling": ": () -> "
+          },
+          {
+            "kind": "text",
+            "spelling": ": [any "
+          },
+          {
+            "kind": "text",
+            "spelling": "]) "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:10AFMKitCore10AFMModelIDV",
+            "spelling": "AFMModelID"
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:10AFMKitCore24AFMProviderConfigurationV",
+            "spelling": "AFMProviderConfiguration"
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:16FoundationModels4ToolP",
+            "spelling": "Tool"
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Sb",
+            "spelling": "Bool"
+          }
+        ],
+        "title": "init(modelID:configuration:hasPrivateCloudComputeEntitlement:tools:)"
+      },
+      "pathComponents": [
+        "AFMFoundationModel",
+        "init(modelID:configuration:hasPrivateCloudComputeEntitlement:tools:)"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "availability": [
+        {
+          "domain": "macOS",
+          "introduced": {
+            "major": 27,
+            "minor": 0
+          }
+        }
+      ],
+      "declarationFragments": [
+        {
+          "kind": "attribute",
+          "spelling": "@Sendable"
+        },
+        {
+          "kind": "attribute",
+          "spelling": "@escaping "
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "hasPrivateCloudComputeEntitlement"
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "tools"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "init"
+        },
+        {
+          "kind": "text",
+          "spelling": " () -> "
+        },
+        {
+          "kind": "text",
+          "spelling": " = {\n            AFMFoundationManagedCapabilities.currentProcessHasPrivateCloudComputeEntitlement()\n        }, "
+        },
+        {
+          "kind": "text",
+          "spelling": "("
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "text",
+          "spelling": ": [any "
+        },
+        {
+          "kind": "text",
+          "spelling": "] = [])"
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:16FoundationModels4ToolP",
+          "spelling": "Tool"
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Sb",
+          "spelling": "Bool"
+        }
+      ],
+      "functionSignature": {
+        "parameters": [
+          {
+            "declarationFragments": [
+              {
+                "kind": "attribute",
+                "spelling": "@Sendable"
+              },
+              {
+                "kind": "identifier",
+                "spelling": "hasPrivateCloudComputeEntitlement"
+              },
+              {
+                "kind": "text",
+                "spelling": " () -> "
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:Sb",
+                "spelling": "Bool"
+              }
+            ],
+            "name": "hasPrivateCloudComputeEntitlement"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "tools"
+              },
+              {
+                "kind": "text",
+                "spelling": ": [any "
+              },
+              {
+                "kind": "text",
+                "spelling": "]"
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:16FoundationModels4ToolP",
+                "spelling": "Tool"
+              }
+            ],
+            "name": "tools"
+          }
+        ]
+      },
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:11AFMKitApple28AFMFoundationProviderFactoryV33hasPrivateCloudComputeEntitlement5toolsACSbyYbc_Say16FoundationModels4Tool_pGtcfc"
+      },
+      "kind": {
+        "displayName": "Initializer",
+        "identifier": "swift.init"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "externalParam",
+            "spelling": "hasPrivateCloudComputeEntitlement"
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "tools"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "init"
+          },
+          {
+            "kind": "text",
+            "spelling": "("
+          },
+          {
+            "kind": "text",
+            "spelling": ", "
+          },
+          {
+            "kind": "text",
+            "spelling": ": () -> "
+          },
+          {
+            "kind": "text",
+            "spelling": ": [any "
+          },
+          {
+            "kind": "text",
+            "spelling": "])"
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:16FoundationModels4ToolP",
+            "spelling": "Tool"
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Sb",
+            "spelling": "Bool"
+          }
+        ],
+        "title": "init(hasPrivateCloudComputeEntitlement:tools:)"
+      },
+      "pathComponents": [
+        "AFMFoundationProviderFactory",
+        "init(hasPrivateCloudComputeEntitlement:tools:)"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "availability": [
+        {
+          "domain": "macOS",
+          "introduced": {
+            "major": 27,
+            "minor": 0
+          }
+        }
+      ],
+      "declarationFragments": [
+        {
+          "kind": "attribute",
+          "spelling": "@Sendable"
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "progress"
+        },
+        {
+          "kind": "identifier",
+          "spelling": "load"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "async"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "func"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "throws"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "text",
+          "spelling": " ("
+        },
+        {
+          "kind": "text",
+          "spelling": " -> "
+        },
+        {
+          "kind": "text",
+          "spelling": "("
+        },
+        {
+          "kind": "text",
+          "spelling": ") -> "
+        },
+        {
+          "kind": "text",
+          "spelling": ")?) "
+        },
+        {
+          "kind": "text",
+          "spelling": ": ("
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:10AFMKitCore18AFMModelDescriptorV",
+          "spelling": "AFMModelDescriptor"
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Sd",
+          "spelling": "Double"
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:s4Voida",
+          "spelling": "Void"
+        }
+      ],
+      "functionSignature": {
+        "parameters": [
+          {
+            "declarationFragments": [
+              {
+                "kind": "attribute",
+                "spelling": "@Sendable"
+              },
+              {
+                "kind": "identifier",
+                "spelling": "progress"
+              },
+              {
+                "kind": "text",
+                "spelling": " ("
+              },
+              {
+                "kind": "text",
+                "spelling": ") -> "
+              },
+              {
+                "kind": "text",
+                "spelling": ")?"
+              },
+              {
+                "kind": "text",
+                "spelling": ": ("
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:Sd",
+                "spelling": "Double"
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:s4Voida",
+                "spelling": "Void"
+              }
+            ],
+            "name": "progress"
+          }
+        ],
+        "returns": [
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:10AFMKitCore18AFMModelDescriptorV",
+            "spelling": "AFMModelDescriptor"
+          }
+        ]
+      },
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:11AFMKitApple18AFMFoundationModelC4load8progress0A4Core18AFMModelDescriptorVySdYbcSg_tYaKF"
+      },
+      "kind": {
+        "displayName": "Instance Method",
+        "identifier": "swift.method"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "externalParam",
+            "spelling": "progress"
+          },
+          {
+            "kind": "identifier",
+            "spelling": "load"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "async"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "func"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "throws"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "text",
+            "spelling": " -> "
+          },
+          {
+            "kind": "text",
+            "spelling": "("
+          },
+          {
+            "kind": "text",
+            "spelling": ") -> "
+          },
+          {
+            "kind": "text",
+            "spelling": ")?) "
+          },
+          {
+            "kind": "text",
+            "spelling": ": (("
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:10AFMKitCore18AFMModelDescriptorV",
+            "spelling": "AFMModelDescriptor"
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Sd",
+            "spelling": "Double"
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:s4Voida",
+            "spelling": "Void"
+          }
+        ],
+        "title": "load(progress:)"
+      },
+      "pathComponents": [
+        "AFMFoundationModel",
+        "load(progress:)"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "availability": [
+        {
+          "domain": "macOS",
+          "introduced": {
+            "major": 27,
+            "minor": 0
+          }
+        }
+      ],
+      "declarationFragments": [
+        {
+          "kind": "attribute",
           "spelling": "nonisolated"
         },
         {
@@ -11254,6 +12108,120 @@
       },
       "pathComponents": [
         "AFMFoundationHistoryTransform"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "availability": [
+        {
+          "domain": "macOS",
+          "introduced": {
+            "major": 27,
+            "minor": 0
+          }
+        }
+      ],
+      "declarationFragments": [
+        {
+          "kind": "attribute",
+          "spelling": "nonisolated"
+        },
+        {
+          "kind": "identifier",
+          "spelling": "currentProcessHasPrivateCloudComputeEntitlement"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "func"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "static"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "text",
+          "spelling": "() -> "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Sb",
+          "spelling": "Bool"
+        }
+      ],
+      "docComment": {
+        "lines": [
+          {
+            "text": "Returns whether the current executable's code signature contains the PCC entitlement."
+          }
+        ],
+        "module": "AFMKitApple"
+      },
+      "functionSignature": {
+        "returns": [
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Sb",
+            "spelling": "Bool"
+          }
+        ]
+      },
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:11AFMKitApple32AFMFoundationManagedCapabilitiesO47currentProcessHasPrivateCloudComputeEntitlementSbyFZ"
+      },
+      "kind": {
+        "displayName": "Type Method",
+        "identifier": "swift.type.method"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "identifier",
+            "spelling": "currentProcessHasPrivateCloudComputeEntitlement"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "func"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "static"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "text",
+            "spelling": "() -> "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Sb",
+            "spelling": "Bool"
+          }
+        ],
+        "title": "currentProcessHasPrivateCloudComputeEntitlement()"
+      },
+      "pathComponents": [
+        "AFMFoundationManagedCapabilities",
+        "currentProcessHasPrivateCloudComputeEntitlement()"
       ]
     },
     {
@@ -18159,6 +19127,210 @@
         "extendedModule": "AFMKitApple",
         "typeKind": "swift.enum"
       }
+    },
+    {
+      "accessLevel": "public",
+      "availability": [
+        {
+          "domain": "macOS",
+          "introduced": {
+            "major": 27,
+            "minor": 0
+          }
+        }
+      ],
+      "declarationFragments": [
+        {
+          "kind": "externalParam",
+          "spelling": "configuration"
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "id"
+        },
+        {
+          "kind": "identifier",
+          "spelling": "makeModel"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "func"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "throws"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "text",
+          "spelling": " -> "
+        },
+        {
+          "kind": "text",
+          "spelling": "("
+        },
+        {
+          "kind": "text",
+          "spelling": ") "
+        },
+        {
+          "kind": "text",
+          "spelling": ", "
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:10AFMKitCore10AFMModelIDV",
+          "spelling": "AFMModelID"
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:10AFMKitCore11AnyAFMModelV",
+          "spelling": "AnyAFMModel"
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:10AFMKitCore24AFMProviderConfigurationV",
+          "spelling": "AFMProviderConfiguration"
+        }
+      ],
+      "functionSignature": {
+        "parameters": [
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "configuration"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:10AFMKitCore24AFMProviderConfigurationV",
+                "spelling": "AFMProviderConfiguration"
+              }
+            ],
+            "name": "configuration"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "id"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:10AFMKitCore10AFMModelIDV",
+                "spelling": "AFMModelID"
+              }
+            ],
+            "name": "id"
+          }
+        ],
+        "returns": [
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:10AFMKitCore11AnyAFMModelV",
+            "spelling": "AnyAFMModel"
+          }
+        ]
+      },
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:11AFMKitApple28AFMFoundationProviderFactoryV9makeModel2id13configuration0A4Core11AnyAFMModelVAG0L2IDV_AG24AFMProviderConfigurationVtKF"
+      },
+      "kind": {
+        "displayName": "Instance Method",
+        "identifier": "swift.method"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "externalParam",
+            "spelling": "configuration"
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "id"
+          },
+          {
+            "kind": "identifier",
+            "spelling": "makeModel"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "func"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "throws"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "text",
+            "spelling": " -> "
+          },
+          {
+            "kind": "text",
+            "spelling": "("
+          },
+          {
+            "kind": "text",
+            "spelling": ") "
+          },
+          {
+            "kind": "text",
+            "spelling": ", "
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:10AFMKitCore10AFMModelIDV",
+            "spelling": "AFMModelID"
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:10AFMKitCore11AnyAFMModelV",
+            "spelling": "AnyAFMModel"
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:10AFMKitCore24AFMProviderConfigurationV",
+            "spelling": "AFMProviderConfiguration"
+          }
+        ],
+        "title": "makeModel(id:configuration:)"
+      },
+      "pathComponents": [
+        "AFMFoundationProviderFactory",
+        "makeModel(id:configuration:)"
+      ]
     },
     {
       "accessLevel": "public",
@@ -25438,6 +26610,394 @@
       ],
       "declarationFragments": [
         {
+          "kind": "externalParam",
+          "spelling": "to"
+        },
+        {
+          "kind": "identifier",
+          "spelling": "respond"
+        },
+        {
+          "kind": "internalParam",
+          "spelling": "request"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "async"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "func"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "throws"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "text",
+          "spelling": " -> "
+        },
+        {
+          "kind": "text",
+          "spelling": "("
+        },
+        {
+          "kind": "text",
+          "spelling": ") "
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:10AFMKitCore10AFMRequestV",
+          "spelling": "AFMRequest"
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:10AFMKitCore16AFMModelResponseV",
+          "spelling": "AFMModelResponse"
+        }
+      ],
+      "functionSignature": {
+        "parameters": [
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "request"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:10AFMKitCore10AFMRequestV",
+                "spelling": "AFMRequest"
+              }
+            ],
+            "internalName": "request",
+            "name": "to"
+          }
+        ],
+        "returns": [
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:10AFMKitCore16AFMModelResponseV",
+            "spelling": "AFMModelResponse"
+          }
+        ]
+      },
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:11AFMKitApple18AFMFoundationModelC7respond2to0A4Core16AFMModelResponseVAF10AFMRequestV_tYaKF"
+      },
+      "kind": {
+        "displayName": "Instance Method",
+        "identifier": "swift.method"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "externalParam",
+            "spelling": "to"
+          },
+          {
+            "kind": "identifier",
+            "spelling": "respond"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "async"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "func"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "throws"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "text",
+            "spelling": " -> "
+          },
+          {
+            "kind": "text",
+            "spelling": "("
+          },
+          {
+            "kind": "text",
+            "spelling": ") "
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:10AFMKitCore10AFMRequestV",
+            "spelling": "AFMRequest"
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:10AFMKitCore16AFMModelResponseV",
+            "spelling": "AFMModelResponse"
+          }
+        ],
+        "title": "respond(to:)"
+      },
+      "pathComponents": [
+        "AFMFoundationModel",
+        "respond(to:)"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "availability": [
+        {
+          "domain": "macOS",
+          "introduced": {
+            "major": 27,
+            "minor": 0
+          }
+        }
+      ],
+      "declarationFragments": [
+        {
+          "kind": "externalParam",
+          "spelling": "to"
+        },
+        {
+          "kind": "identifier",
+          "spelling": "streamResponse"
+        },
+        {
+          "kind": "internalParam",
+          "spelling": "request"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "func"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "text",
+          "spelling": "("
+        },
+        {
+          "kind": "text",
+          "spelling": ") -> "
+        },
+        {
+          "kind": "text",
+          "spelling": ", any "
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "text",
+          "spelling": "<"
+        },
+        {
+          "kind": "text",
+          "spelling": ">"
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:10AFMKitCore10AFMRequestV",
+          "spelling": "AFMRequest"
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:10AFMKitCore18AFMGenerationEventO",
+          "spelling": "AFMGenerationEvent"
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Scs",
+          "spelling": "AsyncThrowingStream"
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:s5ErrorP",
+          "spelling": "Error"
+        }
+      ],
+      "functionSignature": {
+        "parameters": [
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "request"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:10AFMKitCore10AFMRequestV",
+                "spelling": "AFMRequest"
+              }
+            ],
+            "internalName": "request",
+            "name": "to"
+          }
+        ],
+        "returns": [
+          {
+            "kind": "text",
+            "spelling": ", any "
+          },
+          {
+            "kind": "text",
+            "spelling": "<"
+          },
+          {
+            "kind": "text",
+            "spelling": ">"
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:10AFMKitCore18AFMGenerationEventO",
+            "spelling": "AFMGenerationEvent"
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Scs",
+            "spelling": "AsyncThrowingStream"
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:s5ErrorP",
+            "spelling": "Error"
+          }
+        ]
+      },
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:11AFMKitApple18AFMFoundationModelC14streamResponse2toScsy0A4Core18AFMGenerationEventOs5Error_pGAF10AFMRequestV_tF"
+      },
+      "kind": {
+        "displayName": "Instance Method",
+        "identifier": "swift.method"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "externalParam",
+            "spelling": "to"
+          },
+          {
+            "kind": "identifier",
+            "spelling": "streamResponse"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "func"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "text",
+            "spelling": "("
+          },
+          {
+            "kind": "text",
+            "spelling": ") -> "
+          },
+          {
+            "kind": "text",
+            "spelling": ", any "
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "text",
+            "spelling": "<"
+          },
+          {
+            "kind": "text",
+            "spelling": ">"
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:10AFMKitCore10AFMRequestV",
+            "spelling": "AFMRequest"
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:10AFMKitCore18AFMGenerationEventO",
+            "spelling": "AFMGenerationEvent"
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Scs",
+            "spelling": "AsyncThrowingStream"
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:s5ErrorP",
+            "spelling": "Error"
+          }
+        ],
+        "title": "streamResponse(to:)"
+      },
+      "pathComponents": [
+        "AFMFoundationModel",
+        "streamResponse(to:)"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "availability": [
+        {
+          "domain": "macOS",
+          "introduced": {
+            "major": 27,
+            "minor": 0
+          }
+        }
+      ],
+      "declarationFragments": [
+        {
           "kind": "genericParameter",
           "spelling": "ProgressState"
         },
@@ -26295,6 +27855,134 @@
       "declarationFragments": [
         {
           "kind": "identifier",
+          "spelling": "AFMFoundationManagedCapabilities"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "enum"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:11AFMKitApple32AFMFoundationManagedCapabilitiesO"
+      },
+      "kind": {
+        "displayName": "Enumeration",
+        "identifier": "swift.enum"
+      },
+      "names": {
+        "navigator": [
+          {
+            "kind": "identifier",
+            "spelling": "AFMFoundationManagedCapabilities"
+          }
+        ],
+        "subHeading": [
+          {
+            "kind": "identifier",
+            "spelling": "AFMFoundationManagedCapabilities"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "enum"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          }
+        ],
+        "title": "AFMFoundationManagedCapabilities"
+      },
+      "pathComponents": [
+        "AFMFoundationManagedCapabilities"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "availability": [
+        {
+          "domain": "macOS",
+          "introduced": {
+            "major": 27,
+            "minor": 0
+          }
+        }
+      ],
+      "declarationFragments": [
+        {
+          "kind": "identifier",
+          "spelling": "AFMFoundationModel"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "class"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "final"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:11AFMKitApple18AFMFoundationModelC"
+      },
+      "kind": {
+        "displayName": "Class",
+        "identifier": "swift.class"
+      },
+      "names": {
+        "navigator": [
+          {
+            "kind": "identifier",
+            "spelling": "AFMFoundationModel"
+          }
+        ],
+        "subHeading": [
+          {
+            "kind": "identifier",
+            "spelling": "AFMFoundationModel"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "class"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          }
+        ],
+        "title": "AFMFoundationModel"
+      },
+      "pathComponents": [
+        "AFMFoundationModel"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "availability": [
+        {
+          "domain": "macOS",
+          "introduced": {
+            "major": 27,
+            "minor": 0
+          }
+        }
+      ],
+      "declarationFragments": [
+        {
+          "kind": "identifier",
           "spelling": "AFMFoundationNativeAvailability"
         },
         {
@@ -26718,6 +28406,126 @@
       },
       "pathComponents": [
         "AFMFoundationPromptBuilder"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "availability": [
+        {
+          "domain": "macOS",
+          "introduced": {
+            "major": 27,
+            "minor": 0
+          }
+        }
+      ],
+      "declarationFragments": [
+        {
+          "kind": "identifier",
+          "spelling": "AFMFoundationProviderConfigurationKeys"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "enum"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:11AFMKitApple38AFMFoundationProviderConfigurationKeysO"
+      },
+      "kind": {
+        "displayName": "Enumeration",
+        "identifier": "swift.enum"
+      },
+      "names": {
+        "navigator": [
+          {
+            "kind": "identifier",
+            "spelling": "AFMFoundationProviderConfigurationKeys"
+          }
+        ],
+        "subHeading": [
+          {
+            "kind": "identifier",
+            "spelling": "AFMFoundationProviderConfigurationKeys"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "enum"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          }
+        ],
+        "title": "AFMFoundationProviderConfigurationKeys"
+      },
+      "pathComponents": [
+        "AFMFoundationProviderConfigurationKeys"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "availability": [
+        {
+          "domain": "macOS",
+          "introduced": {
+            "major": 27,
+            "minor": 0
+          }
+        }
+      ],
+      "declarationFragments": [
+        {
+          "kind": "identifier",
+          "spelling": "AFMFoundationProviderFactory"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "struct"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:11AFMKitApple28AFMFoundationProviderFactoryV"
+      },
+      "kind": {
+        "displayName": "Structure",
+        "identifier": "swift.struct"
+      },
+      "names": {
+        "navigator": [
+          {
+            "kind": "identifier",
+            "spelling": "AFMFoundationProviderFactory"
+          }
+        ],
+        "subHeading": [
+          {
+            "kind": "identifier",
+            "spelling": "AFMFoundationProviderFactory"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "struct"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          }
+        ],
+        "title": "AFMFoundationProviderFactory"
+      },
+      "pathComponents": [
+        "AFMFoundationProviderFactory"
       ]
     },
     {
@@ -27648,6 +29456,104 @@
         },
         {
           "kind": "keyword",
+          "spelling": "async"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "func"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "text",
+          "spelling": " -> "
+        },
+        {
+          "kind": "text",
+          "spelling": "() "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:10AFMKitCore20AFMModelAvailabilityO",
+          "spelling": "AFMModelAvailability"
+        }
+      ],
+      "functionSignature": {
+        "returns": [
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:10AFMKitCore20AFMModelAvailabilityO",
+            "spelling": "AFMModelAvailability"
+          }
+        ]
+      },
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:11AFMKitApple18AFMFoundationModelC12availability0A4Core20AFMModelAvailabilityOyYaF"
+      },
+      "kind": {
+        "displayName": "Instance Method",
+        "identifier": "swift.method"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "identifier",
+            "spelling": "availability"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "async"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "func"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "text",
+            "spelling": " -> "
+          },
+          {
+            "kind": "text",
+            "spelling": "() "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:10AFMKitCore20AFMModelAvailabilityO",
+            "spelling": "AFMModelAvailability"
+          }
+        ],
+        "title": "availability()"
+      },
+      "pathComponents": [
+        "AFMFoundationModel",
+        "availability()"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "availability": [
+        {
+          "domain": "macOS",
+          "introduced": {
+            "major": 27,
+            "minor": 0
+          }
+        }
+      ],
+      "declarationFragments": [
+        {
+          "kind": "identifier",
+          "spelling": "availability"
+        },
+        {
+          "kind": "keyword",
           "spelling": "let"
         },
         {
@@ -28101,6 +30007,164 @@
       "pathComponents": [
         "AFMFoundationTranscriptSnapshotParser",
         "defaultPreviewLimit"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "availability": [
+        {
+          "domain": "macOS",
+          "introduced": {
+            "major": 27,
+            "minor": 0
+          }
+        }
+      ],
+      "declarationFragments": [
+        {
+          "kind": "identifier",
+          "spelling": "descriptor"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "get"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "var"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "text",
+          "spelling": " { "
+        },
+        {
+          "kind": "text",
+          "spelling": " }"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:10AFMKitCore21AFMProviderDescriptorV",
+          "spelling": "AFMProviderDescriptor"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:11AFMKitApple28AFMFoundationProviderFactoryV10descriptor0A4Core21AFMProviderDescriptorVvp"
+      },
+      "kind": {
+        "displayName": "Instance Property",
+        "identifier": "swift.property"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "identifier",
+            "spelling": "descriptor"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "var"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:10AFMKitCore21AFMProviderDescriptorV",
+            "spelling": "AFMProviderDescriptor"
+          }
+        ],
+        "title": "descriptor"
+      },
+      "pathComponents": [
+        "AFMFoundationProviderFactory",
+        "descriptor"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "availability": [
+        {
+          "domain": "macOS",
+          "introduced": {
+            "major": 27,
+            "minor": 0
+          }
+        }
+      ],
+      "declarationFragments": [
+        {
+          "kind": "identifier",
+          "spelling": "descriptor"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "let"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:10AFMKitCore18AFMModelDescriptorV",
+          "spelling": "AFMModelDescriptor"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:11AFMKitApple18AFMFoundationModelC10descriptor0A4Core18AFMModelDescriptorVvp"
+      },
+      "kind": {
+        "displayName": "Instance Property",
+        "identifier": "swift.property"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "identifier",
+            "spelling": "descriptor"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "let"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:10AFMKitCore18AFMModelDescriptorV",
+            "spelling": "AFMModelDescriptor"
+          }
+        ],
+        "title": "descriptor"
+      },
+      "pathComponents": [
+        "AFMFoundationModel",
+        "descriptor"
       ]
     },
     {
@@ -29922,6 +31986,136 @@
       "declarationFragments": [
         {
           "kind": "identifier",
+          "spelling": "modelDescriptors"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "async"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "func"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "throws"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "text",
+          "spelling": " -> ["
+        },
+        {
+          "kind": "text",
+          "spelling": "() "
+        },
+        {
+          "kind": "text",
+          "spelling": "]"
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:10AFMKitCore18AFMModelDescriptorV",
+          "spelling": "AFMModelDescriptor"
+        }
+      ],
+      "functionSignature": {
+        "returns": [
+          {
+            "kind": "text",
+            "spelling": "["
+          },
+          {
+            "kind": "text",
+            "spelling": "]"
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:10AFMKitCore18AFMModelDescriptorV",
+            "spelling": "AFMModelDescriptor"
+          }
+        ]
+      },
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:11AFMKitApple28AFMFoundationProviderFactoryV16modelDescriptorsSay0A4Core18AFMModelDescriptorVGyYaKF"
+      },
+      "kind": {
+        "displayName": "Instance Method",
+        "identifier": "swift.method"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "identifier",
+            "spelling": "modelDescriptors"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "async"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "func"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "throws"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "text",
+            "spelling": " -> ["
+          },
+          {
+            "kind": "text",
+            "spelling": "() "
+          },
+          {
+            "kind": "text",
+            "spelling": "]"
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:10AFMKitCore18AFMModelDescriptorV",
+            "spelling": "AFMModelDescriptor"
+          }
+        ],
+        "title": "modelDescriptors()"
+      },
+      "pathComponents": [
+        "AFMFoundationProviderFactory",
+        "modelDescriptors()"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "availability": [
+        {
+          "domain": "macOS",
+          "introduced": {
+            "major": 27,
+            "minor": 0
+          }
+        }
+      ],
+      "declarationFragments": [
+        {
+          "kind": "identifier",
           "spelling": "name"
         },
         {
@@ -30076,6 +32270,95 @@
       "declarationFragments": [
         {
           "kind": "identifier",
+          "spelling": "onDeviceModelID"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "let"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "static"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:10AFMKitCore10AFMModelIDV",
+          "spelling": "AFMModelID"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:11AFMKitApple28AFMFoundationProviderFactoryV15onDeviceModelID0A4Core08AFMModelI0VvpZ"
+      },
+      "kind": {
+        "displayName": "Type Property",
+        "identifier": "swift.type.property"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "identifier",
+            "spelling": "onDeviceModelID"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "let"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "static"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:10AFMKitCore10AFMModelIDV",
+            "spelling": "AFMModelID"
+          }
+        ],
+        "title": "onDeviceModelID"
+      },
+      "pathComponents": [
+        "AFMFoundationProviderFactory",
+        "onDeviceModelID"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "availability": [
+        {
+          "domain": "macOS",
+          "introduced": {
+            "major": 27,
+            "minor": 0
+          }
+        }
+      ],
+      "declarationFragments": [
+        {
+          "kind": "identifier",
           "spelling": "originalPromptCount"
         },
         {
@@ -30214,6 +32497,184 @@
       "pathComponents": [
         "AFMFoundationToolInvocationSnapshot",
         "outputPreview"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "availability": [
+        {
+          "domain": "macOS",
+          "introduced": {
+            "major": 27,
+            "minor": 0
+          }
+        }
+      ],
+      "declarationFragments": [
+        {
+          "kind": "identifier",
+          "spelling": "privateCloudComputeEntitlement"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "let"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "static"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:SS",
+          "spelling": "String"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:11AFMKitApple32AFMFoundationManagedCapabilitiesO30privateCloudComputeEntitlementSSvpZ"
+      },
+      "kind": {
+        "displayName": "Type Property",
+        "identifier": "swift.type.property"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "identifier",
+            "spelling": "privateCloudComputeEntitlement"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "let"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "static"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:SS",
+            "spelling": "String"
+          }
+        ],
+        "title": "privateCloudComputeEntitlement"
+      },
+      "pathComponents": [
+        "AFMFoundationManagedCapabilities",
+        "privateCloudComputeEntitlement"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "availability": [
+        {
+          "domain": "macOS",
+          "introduced": {
+            "major": 27,
+            "minor": 0
+          }
+        }
+      ],
+      "declarationFragments": [
+        {
+          "kind": "identifier",
+          "spelling": "privateCloudComputeModelID"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "let"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "static"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:10AFMKitCore10AFMModelIDV",
+          "spelling": "AFMModelID"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:11AFMKitApple28AFMFoundationProviderFactoryV26privateCloudComputeModelID0A4Core08AFMModelJ0VvpZ"
+      },
+      "kind": {
+        "displayName": "Type Property",
+        "identifier": "swift.type.property"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "identifier",
+            "spelling": "privateCloudComputeModelID"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "let"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "static"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:10AFMKitCore10AFMModelIDV",
+            "spelling": "AFMModelID"
+          }
+        ],
+        "title": "privateCloudComputeModelID"
+      },
+      "pathComponents": [
+        "AFMFoundationProviderFactory",
+        "privateCloudComputeModelID"
       ]
     },
     {
@@ -30674,6 +33135,95 @@
       "declarationFragments": [
         {
           "kind": "identifier",
+          "spelling": "providerID"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "let"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "static"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:10AFMKitCore13AFMProviderIDV",
+          "spelling": "AFMProviderID"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:11AFMKitApple28AFMFoundationProviderFactoryV10providerID0A4Core011AFMProviderG0VvpZ"
+      },
+      "kind": {
+        "displayName": "Type Property",
+        "identifier": "swift.type.property"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "identifier",
+            "spelling": "providerID"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "let"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "static"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:10AFMKitCore13AFMProviderIDV",
+            "spelling": "AFMProviderID"
+          }
+        ],
+        "title": "providerID"
+      },
+      "pathComponents": [
+        "AFMFoundationProviderFactory",
+        "providerID"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "availability": [
+        {
+          "domain": "macOS",
+          "introduced": {
+            "major": 27,
+            "minor": 0
+          }
+        }
+      ],
+      "declarationFragments": [
+        {
+          "kind": "identifier",
           "spelling": "quotaIsLimitReached"
         },
         {
@@ -31035,6 +33585,103 @@
       "pathComponents": [
         "AFMFoundationSnapshotAccumulator",
         "reasoningContent"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "availability": [
+        {
+          "domain": "macOS",
+          "introduced": {
+            "major": 27,
+            "minor": 0
+          }
+        }
+      ],
+      "declarationFragments": [
+        {
+          "kind": "identifier",
+          "spelling": "reasoningLevel"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "let"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "static"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:SS",
+          "spelling": "String"
+        }
+      ],
+      "docComment": {
+        "lines": [
+          {
+            "text": "PCC reasoning level: automatic, light, moderate, or deep."
+          }
+        ],
+        "module": "AFMKitApple"
+      },
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:11AFMKitApple38AFMFoundationProviderConfigurationKeysO14reasoningLevelSSvpZ"
+      },
+      "kind": {
+        "displayName": "Type Property",
+        "identifier": "swift.type.property"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "identifier",
+            "spelling": "reasoningLevel"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "let"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "static"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:SS",
+            "spelling": "String"
+          }
+        ],
+        "title": "reasoningLevel"
+      },
+      "pathComponents": [
+        "AFMFoundationProviderConfigurationKeys",
+        "reasoningLevel"
       ]
     },
     {
@@ -32293,6 +34940,103 @@
       "pathComponents": [
         "AFMFoundationNativeProviderProbe",
         "systemContextWindow()"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "availability": [
+        {
+          "domain": "macOS",
+          "introduced": {
+            "major": 27,
+            "minor": 0
+          }
+        }
+      ],
+      "declarationFragments": [
+        {
+          "kind": "identifier",
+          "spelling": "systemPrompt"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "let"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "static"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:SS",
+          "spelling": "String"
+        }
+      ],
+      "docComment": {
+        "lines": [
+          {
+            "text": "Additional instructions prepended to system messages in each request."
+          }
+        ],
+        "module": "AFMKitApple"
+      },
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:11AFMKitApple38AFMFoundationProviderConfigurationKeysO12systemPromptSSvpZ"
+      },
+      "kind": {
+        "displayName": "Type Property",
+        "identifier": "swift.type.property"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "identifier",
+            "spelling": "systemPrompt"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "let"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "static"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:SS",
+            "spelling": "String"
+          }
+        ],
+        "title": "systemPrompt"
+      },
+      "pathComponents": [
+        "AFMFoundationProviderConfigurationKeys",
+        "systemPrompt"
       ]
     },
     {

@@ -1,11 +1,21 @@
 import AFMKitApple
 import AFMKitCore
 import AFMKitMLX
+import Darwin
 import Foundation
 
 @main
 struct AFMKitQuickstart {
-    static func main() async throws {
+    static func main() async {
+        do {
+            try await run()
+        } catch {
+            FileHandle.standardError.write(Data("AFMKitQuickstart error: \(error)\n".utf8))
+            exit(EXIT_FAILURE)
+        }
+    }
+
+    private static func run() async throws {
         let arguments = Array(CommandLine.arguments.dropFirst())
         guard let provider = arguments.first else {
             printUsage()

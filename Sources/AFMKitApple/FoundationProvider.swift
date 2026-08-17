@@ -177,13 +177,17 @@ public final class AFMFoundationModel: AFMModel, Sendable {
             let snapshot = probe.privateCloudComputeSnapshot(
                 hasEntitlement: hasPrivateCloudComputeEntitlement()
             )
+            let availability = Self.availability(snapshot.availability)
+            guard availability.isAvailable else {
+                return availability
+            }
             guard snapshot.localeSupported else {
                 return .unavailable(reason: "Locale \(snapshot.localeIdentifier) is not supported.")
             }
             if snapshot.quotaIsLimitReached {
                 return .unavailable(reason: snapshot.quotaLimitDetail ?? "PCC quota limit reached.")
             }
-            return Self.availability(snapshot.availability)
+            return availability
         }
     }
 
