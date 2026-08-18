@@ -55,6 +55,10 @@ let package = Package(
             targets: ["AFMKitMLX"]
         ),
         .library(
+            name: "AFMKitFoundationModelsMLX",
+            targets: ["AFMKitFoundationModelsMLX"]
+        ),
+        .library(
             name: "AFMKitDwarfStar",
             targets: ["AFMKitDwarfStar"]
         )
@@ -140,6 +144,13 @@ let package = Package(
             ]
         ),
         .target(
+            name: "AFMKitFoundationModelsMLX",
+            dependencies: [
+                "AFMKitCore",
+                "AFMKitMLX"
+            ]
+        ),
+        .target(
             name: "CDwarfStar",
             path: "Sources/CDwarfStar",
             sources: [
@@ -199,6 +210,13 @@ let package = Package(
                 "AFMKitCore",
                 "AFMOpenAICompat",
                 .product(name: "MLXLMCommon", package: mlxSwiftLMPackageIdentity)
+            ]
+        ),
+        .testTarget(
+            name: "AFMKitFoundationModelsMLXTests",
+            dependencies: [
+                "AFMKitCore",
+                "AFMKitFoundationModelsMLX"
             ]
         ),
         .testTarget(
