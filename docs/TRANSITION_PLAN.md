@@ -123,9 +123,10 @@ Current `AFMKitApple` checkpoint:
   test because the entitlement belongs to the consuming app's code signature.
 - The normalized `AFMKitApple` symbol graph includes the intentional provider, model, managed
   capability, and configuration-key additions with no removed public symbols.
-- The focused Release suite passes 65 Apple tests. The full Release suite passes 250 tests across
-  Core, OpenAI compatibility, Apple, MLX, and DwarfStar. All five public API baselines and the
-  clean downstream quickstart build also pass against the published dependency graph.
+- The focused Release suite passes 65 Apple tests. The full Release suite passes 251 XCTest cases
+  plus 8 Swift Testing cases across Core, OpenAI compatibility, Apple, MLX, and DwarfStar. All five
+  public API baselines and the clean downstream quickstart build also pass against the published
+  dependency graph.
 
 ## Phase 4: Runtime Adapters
 
@@ -145,12 +146,15 @@ Known transition blockers:
 
 Current `AFMKitMLX` checkpoint:
 
-- The normal public API is limited to `AFMMLXProviderFactory`, `AFMMLXModel`, `AFMMLXKernelEngine`, and `AFMMLXRuntimeConfiguration` (46 normalized public symbols).
+- `AFMMLXModel` is the stable public runtime facade. In addition to `AFMModel`, it implements
+  `AFMMLXOpenAIChatServing`, which exposes OpenAI-compatible generation and streaming, request
+  admission, batch lifecycle, serving policy, and request profiling without exposing the concrete
+  MLX service implementation.
 - Model loading, download progress, reasoning, tool calls, structured output, streaming, cancellation, prefix-cache configuration, concurrency configuration, MTP, multimodal model selection, and runtime telemetry flow through the AFMKit provider contract.
-- Server implementation types remain package-scoped inside `AFMKitMLX`; Swift `package` access does
+- Engine implementation types remain package-scoped inside `AFMKitMLX`; Swift `package` access does
   not cross into maclocal-api. Provider-owned scheduling, cache, and generation tests therefore move
-  with the implementation into AFMKit, while maclocal-api consumes only the public model/event
-  contract and retains HTTP orchestration, request admission, files, and cancellable batch tasks.
+  with the implementation into AFMKit, while maclocal-api consumes the public serving facade and
+  retains HTTP routing, Prometheus metric exposition, files, and cancellable request tasks.
 - The full package Release test suite passes against the local AFM-compatible dependency stack.
 - A clean downstream copy resolves the published compatibility tags and passes the full Release test suite without path overrides.
 - Qwen 3.8 MTP heads resolve from checkpoint architecture and quantization metadata rather than

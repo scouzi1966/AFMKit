@@ -66,11 +66,13 @@ public struct AFMMLXProviderFactory: AFMProviderFactory {
     }
 }
 
-public final class AFMMLXModel: AFMModel, AFMTextTokenizing, AFMPrewarmableModel, @unchecked Sendable {
+public final class AFMMLXModel: AFMModel, AFMTextTokenizing, AFMPrewarmableModel,
+    AFMMLXOpenAIChatServing, @unchecked Sendable
+{
     public let descriptor: AFMModelDescriptor
 
     private let runtime: AFMMLXRuntime
-    private let service: MLXModelService
+    package let service: MLXModelService
     private let modelID: String
 
     public convenience init(
@@ -83,6 +85,26 @@ public final class AFMMLXModel: AFMModel, AFMTextTokenizing, AFMPrewarmableModel
             resolver: .init(),
             service: nil
         )
+    }
+
+    /// Creates a model with the complete MLX runtime configuration used by
+    /// server and app hosts. The concrete engine service remains private to
+    /// AFMKitMLX; callers interact through `AFMMLXOpenAIChatServing`.
+    public init(
+        modelID: AFMModelID,
+        runtimeConfiguration: AFMMLXRuntimeConfiguration,
+        resolver: MLXCacheResolver = .init()
+    ) {
+        let runtime = AFMMLXRuntime(
+            modelID: modelID.rawValue,
+            configuration: runtimeConfiguration,
+            resolver: resolver
+        )
+
+        self.runtime = runtime
+        self.service = runtime.service
+        self.modelID = runtime.modelID
+        self.descriptor = runtime.descriptor
     }
 
     package init(

@@ -1,5 +1,5 @@
 import Foundation
-package struct MLXCacheResolver: Sendable {
+public struct MLXCacheResolver: Sendable {
     public let cacheRoot: URL?
 
     public init() {

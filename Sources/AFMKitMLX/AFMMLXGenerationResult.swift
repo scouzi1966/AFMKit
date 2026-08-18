@@ -1,6 +1,6 @@
 import AFMOpenAICompat
 
-package typealias AFMMLXChatGenerationResult = (
+public typealias AFMMLXChatGenerationResult = (
     modelID: String,
     content: String,
     promptTokens: Int,
@@ -13,7 +13,7 @@ package typealias AFMMLXChatGenerationResult = (
     stoppedBySequence: Bool
 )
 
-package typealias AFMMLXChatStreamingResult = (
+public typealias AFMMLXChatStreamingResult = (
     modelID: String,
     stream: AsyncThrowingStream<StreamChunk, Error>,
     promptTokens: Int,

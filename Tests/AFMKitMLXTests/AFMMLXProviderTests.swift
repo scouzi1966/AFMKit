@@ -255,6 +255,25 @@ final class AFMMLXProviderTests: XCTestCase {
         requirePortableTokenizer(model)
     }
 
+    func testMLXModelIsThePublicServingFacade() {
+        let model = AFMMLXModel(
+            modelID: "test/model",
+            runtimeConfiguration: AFMMLXRuntimeConfiguration(
+                enablePrefixCaching: true,
+                maxConcurrent: 8,
+                toolCallParser: "qwen3_xml",
+                enableGrammarConstraints: true,
+                fixToolArguments: true
+            )
+        )
+
+        requireOpenAIChatServingContract(model)
+        XCTAssertEqual(model.maxConcurrent, 8)
+        XCTAssertEqual(model.servingConfiguration.toolCallParser, "qwen3_xml")
+        XCTAssertTrue(model.servingConfiguration.grammarConstraintsEnabled)
+        XCTAssertTrue(model.servingConfiguration.fixToolArguments)
+    }
+
     func testMLXModelServiceExposesAFMKitProfilingContract() {
         requireProfilingContract(MLXModelService(resolver: MLXCacheResolver()))
     }

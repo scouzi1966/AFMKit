@@ -55,7 +55,7 @@ final class Eagle3Runtime: @unchecked Sendable {
 }
 
 /// Resolved log probability entry with token strings (ready for API response).
-package struct ResolvedLogprob: Sendable {
+public struct ResolvedLogprob: Sendable {
     public let token: String
     public let tokenId: Int
     public let logprob: Float
@@ -75,7 +75,7 @@ package struct ResolvedLogprob: Sendable {
 }
 
 /// A chunk of streaming output, optionally carrying per-token log probabilities or tool calls.
-package struct StreamChunk: Sendable {
+public struct StreamChunk: Sendable {
     public let text: String
     public let logprobs: [ResolvedLogprob]?
     public let toolCalls: [ResponseToolCall]?

@@ -2,7 +2,7 @@ import Foundation
 import AFMOpenAICompat
 import MLX
 
-package protocol AFMMLXOpenAIChatGenerating: Sendable {
+public protocol AFMMLXOpenAIChatGenerating: Sendable {
     func generate(
         model: String,
         messages: [Message],
@@ -90,7 +90,7 @@ package protocol AFMMLXOpenAIChatGenerating: Sendable {
     ) async throws -> AFMMLXChatStreamingResult
 }
 
-package protocol AFMMLXOpenAIChatServing:
+public protocol AFMMLXOpenAIChatServing:
     AFMMLXAPIProfiling,
     AFMMLXRequestScheduling,
     AFMMLXBatchControlling,
@@ -109,7 +109,7 @@ package protocol AFMMLXOpenAIChatServing:
     func effectiveResponseFormat(requestFormat: ResponseFormat?) -> ResponseFormat?
 }
 
-package extension AFMMLXOpenAIChatServing {
+public extension AFMMLXOpenAIChatServing {
     var defaultGuidedJsonSchema: ResponseFormat? { nil }
 
     func resetRequestPeakMemory() {}
@@ -124,7 +124,7 @@ package extension AFMMLXOpenAIChatServing {
     }
 }
 
-package extension AFMMLXOpenAIChatGenerating {
+public extension AFMMLXOpenAIChatGenerating {
     func generate(
         model: String,
         messages: [Message],
