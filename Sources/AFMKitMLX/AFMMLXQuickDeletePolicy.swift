@@ -1,11 +1,11 @@
-package enum AFMMLXQuickDeletePlan: Equatable, Sendable {
+public enum AFMMLXQuickDeletePlan: Equatable, Sendable {
     case importedReference(rawPath: String)
     case userDownloaded(repoID: String)
     case cachedModel(name: String)
     case unavailable
 }
 
-package struct AFMMLXDownloadedModelDeletionPlan: Equatable, Sendable {
+public struct AFMMLXDownloadedModelDeletionPlan: Equatable, Sendable {
     public let repoID: String
     public let shouldUnloadCurrentModel: Bool
 
@@ -15,7 +15,7 @@ package struct AFMMLXDownloadedModelDeletionPlan: Equatable, Sendable {
     }
 }
 
-package enum AFMMLXQuickDeletePolicy {
+public enum AFMMLXQuickDeletePolicy {
     public static func make(
         selectionID: String,
         downloadedIDs: [String]

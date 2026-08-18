@@ -1,7 +1,7 @@
 import Foundation
 @preconcurrency import MLXLMCommon
 
-package struct AFMMLXRuntimeFactoryDecision: Equatable, Sendable {
+public struct AFMMLXRuntimeFactoryDecision: Equatable, Sendable {
     public let isVisionModelDirectory: Bool
     public let requiresVisionFactory: Bool
 
@@ -11,19 +11,19 @@ package struct AFMMLXRuntimeFactoryDecision: Equatable, Sendable {
     }
 }
 
-package enum AFMMLXLegacyLoadSource: Equatable, Sendable {
+public enum AFMMLXLegacyLoadSource: Equatable, Sendable {
     case importedDirectory(URL)
     case cachedDirectory(URL)
     case remoteRepository(String)
     case defaultConfiguration
 }
 
-package enum AFMMLXLegacyLoadModelKind: Equatable, Sendable {
+public enum AFMMLXLegacyLoadModelKind: Equatable, Sendable {
     case llm
     case vlm
 }
 
-package struct AFMMLXLegacyLoadModelDescriptor {
+public struct AFMMLXLegacyLoadModelDescriptor {
     public let name: String
     public let customModelPath: String?
     public let configuration: ModelConfiguration
@@ -42,7 +42,7 @@ package struct AFMMLXLegacyLoadModelDescriptor {
     }
 }
 
-package struct AFMMLXLegacyLoadPlan {
+public struct AFMMLXLegacyLoadPlan {
     public let repoID: String
     public let source: AFMMLXLegacyLoadSource
     public let configuration: ModelConfiguration
@@ -75,7 +75,7 @@ package struct AFMMLXLegacyLoadPlan {
     }
 }
 
-package struct AFMMLXLegacyModelLoadResolutionPlan: Equatable, Sendable {
+public struct AFMMLXLegacyModelLoadResolutionPlan: Equatable, Sendable {
     public let localDirectory: URL?
     public let factoryDecision: AFMMLXRuntimeFactoryDecision?
     public let resolvedKind: AFMMLXLegacyLoadModelKind
@@ -98,7 +98,7 @@ package struct AFMMLXLegacyModelLoadResolutionPlan: Equatable, Sendable {
     }
 }
 
-package enum AFMMLXLegacyLoadPolicy {
+public enum AFMMLXLegacyLoadPolicy {
     public static func resolveModelForLoading(
         model: AFMMLXLegacyLoadModelDescriptor,
         localDirectoryForRepo: (String) -> URL?,

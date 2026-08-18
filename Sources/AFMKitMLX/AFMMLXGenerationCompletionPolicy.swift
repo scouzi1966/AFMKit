@@ -1,7 +1,7 @@
 import Foundation
 import AFMKitCore
 
-package struct AFMMLXGenerationCompletionSummary: Equatable, Sendable {
+public struct AFMMLXGenerationCompletionSummary: Equatable, Sendable {
     public let tokenCount: Int
     public let maxTokens: Int
     public let finishReason: AFMFinishReason
@@ -29,7 +29,7 @@ package struct AFMMLXGenerationCompletionSummary: Equatable, Sendable {
     }
 }
 
-package enum AFMMLXGenerationCompletionPolicy {
+public enum AFMMLXGenerationCompletionPolicy {
     public static func summary(
         finalState: AFMReasoningStreamFinalState,
         tokenCount: Int,

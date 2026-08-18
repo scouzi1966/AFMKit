@@ -1,7 +1,7 @@
 import Foundation
 import AFMKitCore
 
-package enum AFMMLXSpeculativeDecodingMode: String, Codable, CaseIterable, Identifiable, Hashable, Sendable {
+public enum AFMMLXSpeculativeDecodingMode: String, Codable, CaseIterable, Identifiable, Hashable, Sendable {
     case off
     case auto
     case mtp
@@ -19,7 +19,7 @@ package enum AFMMLXSpeculativeDecodingMode: String, Codable, CaseIterable, Ident
     }
 }
 
-package struct AFMMLXSpeculativeModeAvailability: Equatable, Sendable {
+public struct AFMMLXSpeculativeModeAvailability: Equatable, Sendable {
     public let mode: AFMMLXSpeculativeDecodingMode
     public let isSelectable: Bool
     public let reason: String
@@ -114,7 +114,7 @@ package struct AFMMLXSpeculativeModeAvailability: Equatable, Sendable {
     }
 }
 
-package struct AFMMLXSpeculativeModelCompatibility: Equatable, Sendable {
+public struct AFMMLXSpeculativeModelCompatibility: Equatable, Sendable {
     public let mtpCompatible: Bool
     public let denseGemma4Verifier: Bool
 
@@ -174,20 +174,20 @@ package struct AFMMLXSpeculativeModelCompatibility: Equatable, Sendable {
     }
 }
 
-package enum AFMMLXSpeculativeRuntimeKind: Equatable, Sendable {
+public enum AFMMLXSpeculativeRuntimeKind: Equatable, Sendable {
     case none
     case mtp
     case eagle3
 }
 
-package enum AFMMLXSpeculativeGenerationPath: String, Equatable, Sendable {
+public enum AFMMLXSpeculativeGenerationPath: String, Equatable, Sendable {
     case normal = "Normal MLX"
     case mtp = "MTP"
     case eagle3 = "EAGLE3"
     case fallback = "Fallback"
 }
 
-package enum AFMMLXSpeculativeFallbackReason: String, Equatable, Sendable {
+public enum AFMMLXSpeculativeFallbackReason: String, Equatable, Sendable {
     case modeOff = "Acceleration off"
     case runtimeUnavailable = "Runtime unavailable"
     case samplingEnabled = "Sampling enabled"
@@ -197,7 +197,7 @@ package enum AFMMLXSpeculativeFallbackReason: String, Equatable, Sendable {
     case stopSequences = "Stop sequences enabled"
 }
 
-package struct AFMMLXSpeculativeGenerationDecision: Equatable, Sendable {
+public struct AFMMLXSpeculativeGenerationDecision: Equatable, Sendable {
     public let path: AFMMLXSpeculativeGenerationPath
     public let reason: AFMMLXSpeculativeFallbackReason?
 
@@ -264,7 +264,7 @@ package struct AFMMLXSpeculativeGenerationDecision: Equatable, Sendable {
     }
 }
 
-package struct AFMMLXSpeculativeGenerationCompletionSummary: Equatable, Sendable {
+public struct AFMMLXSpeculativeGenerationCompletionSummary: Equatable, Sendable {
     public let shouldCommit: Bool
     public let historyText: String
     public let finishReason: AFMFinishReason
@@ -283,7 +283,7 @@ package struct AFMMLXSpeculativeGenerationCompletionSummary: Equatable, Sendable
     }
 }
 
-package enum AFMMLXSpeculativeGenerationCompletionPolicy {
+public enum AFMMLXSpeculativeGenerationCompletionPolicy {
     public static func summary(
         accumulatedText: String
     ) -> AFMMLXSpeculativeGenerationCompletionSummary {

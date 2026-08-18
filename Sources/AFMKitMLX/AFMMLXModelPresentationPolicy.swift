@@ -1,6 +1,6 @@
 import Foundation
 
-package struct AFMMLXAutoLoadCandidate: Equatable, Sendable {
+public struct AFMMLXAutoLoadCandidate: Equatable, Sendable {
     public let name: String
     public let isAvailable: Bool
 
@@ -10,7 +10,7 @@ package struct AFMMLXAutoLoadCandidate: Equatable, Sendable {
     }
 }
 
-package struct AFMMLXBenchmarkModelCandidate: Equatable, Sendable {
+public struct AFMMLXBenchmarkModelCandidate: Equatable, Sendable {
     public let id: String
     public let isAvailable: Bool
 
@@ -20,7 +20,7 @@ package struct AFMMLXBenchmarkModelCandidate: Equatable, Sendable {
     }
 }
 
-package struct AFMMLXDisplayModelCandidate: Equatable, Sendable {
+public struct AFMMLXDisplayModelCandidate: Equatable, Sendable {
     public let name: String
     public let displayName: String
 
@@ -30,7 +30,7 @@ package struct AFMMLXDisplayModelCandidate: Equatable, Sendable {
     }
 }
 
-package struct AFMMLXParameterPresetCandidate<Parameters> {
+public struct AFMMLXParameterPresetCandidate<Parameters> {
     public let name: String
     public let parameters: Parameters?
 
@@ -40,7 +40,7 @@ package struct AFMMLXParameterPresetCandidate<Parameters> {
     }
 }
 
-package struct AFMMLXCuratedModelCandidate: Equatable, Sendable {
+public struct AFMMLXCuratedModelCandidate: Equatable, Sendable {
     public let name: String
 
     public init(name: String) {
@@ -48,7 +48,7 @@ package struct AFMMLXCuratedModelCandidate: Equatable, Sendable {
     }
 }
 
-package enum AFMMLXModelPresentationPolicy {
+public enum AFMMLXModelPresentationPolicy {
     public static func displayName(
         forSelection selection: String,
         loadedModelName: String?,

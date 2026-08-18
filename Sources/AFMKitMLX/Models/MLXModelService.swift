@@ -55,7 +55,7 @@ final class Eagle3Runtime: @unchecked Sendable {
 }
 
 /// Resolved log probability entry with token strings (ready for API response).
-package struct ResolvedLogprob: Sendable {
+public struct ResolvedLogprob: Sendable {
     public let token: String
     public let tokenId: Int
     public let logprob: Float
@@ -75,7 +75,7 @@ package struct ResolvedLogprob: Sendable {
 }
 
 /// A chunk of streaming output, optionally carrying per-token log probabilities or tool calls.
-package struct StreamChunk: Sendable {
+public struct StreamChunk: Sendable {
     public let text: String
     public let logprobs: [ResolvedLogprob]?
     public let toolCalls: [ResponseToolCall]?
@@ -101,7 +101,7 @@ package struct StreamChunk: Sendable {
     }
 }
 
-package enum MLXLoadStage: String {
+public enum MLXLoadStage: String {
     case checkingCache = "checking cache"
     case downloading = "downloading"
     case resuming = "resuming download"
@@ -109,7 +109,7 @@ package enum MLXLoadStage: String {
     case ready = "ready"
 }
 
-package enum MLXServiceError: Error, LocalizedError {
+public enum MLXServiceError: Error, LocalizedError {
     case invalidModel(String)
     case modelNotFoundInCache(String)
     case downloadFailed(String)
@@ -208,7 +208,7 @@ private final class StreamingScratch: @unchecked Sendable {
     var streamStatStoppedBySequence = false
 }
 
-package final class MLXModelService: @unchecked Sendable {
+public final class MLXModelService: @unchecked Sendable {
     private struct ConstrainedDecodingSetup {
         let processor: GrammarLogitProcessor
         let mode: String
@@ -524,7 +524,7 @@ package final class MLXModelService: @unchecked Sendable {
     /// Release a reserved slot (call if request fails before generation starts).
     public func releaseSlot() { scheduler?.releaseReservation() }
 
-    package func admissionSnapshot() async -> AFMAdmissionSnapshot {
+    public func admissionSnapshot() async -> AFMAdmissionSnapshot {
         let scheduler = withStateLock { self.scheduler }
         let acceptsNewOperations = withStateLock { !isShuttingDown }
 
@@ -565,7 +565,7 @@ package final class MLXModelService: @unchecked Sendable {
         )
     }
 
-    package func telemetrySnapshot() async -> AFMTelemetrySnapshot {
+    public func telemetrySnapshot() async -> AFMTelemetrySnapshot {
         let activeOperations = withStateLock { self.activeOperations }
         let loadedModelID = withStateLock { currentModelID }
         let schedulerEnabled = withStateLock { scheduler != nil }

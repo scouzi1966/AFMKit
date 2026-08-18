@@ -1,12 +1,12 @@
 import Foundation
 
-package enum AFMMLXCurrentModelReloadPlan: Equatable, Sendable {
+public enum AFMMLXCurrentModelReloadPlan: Equatable, Sendable {
     case unavailable
     case imported(name: String, path: String, isVision: Bool)
     case repository(repoID: String, isVision: Bool, forceLLMOnly: Bool)
 }
 
-package enum AFMMLXCurrentModelReloadPolicy {
+public enum AFMMLXCurrentModelReloadPolicy {
     public static func make(
         loadedModelRepoID: String?,
         targetVLM: Bool

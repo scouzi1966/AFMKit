@@ -5,7 +5,7 @@ import Foundation
 /// Debug logging is controlled by the AFM_DEBUG environment variable.
 /// When AFM_DEBUG=1, debug messages are printed to stdout with a "DEBUG:" prefix.
 /// This allows for consistent debugging across all components without affecting normal operation.
-package struct DebugLogger {
+public struct DebugLogger {
 
     /// Logs a debug message if AFM_DEBUG environment variable is set to "1"
     ///

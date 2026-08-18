@@ -1,6 +1,6 @@
 import Foundation
 
-package struct AFMMLXLegacyStartupModelCandidate: Equatable, Sendable {
+public struct AFMMLXLegacyStartupModelCandidate: Equatable, Sendable {
     public let name: String
     public let id: String
     public let isAvailable: Bool
@@ -12,7 +12,7 @@ package struct AFMMLXLegacyStartupModelCandidate: Equatable, Sendable {
     }
 }
 
-package struct AFMMLXLegacyStartupSelection: Equatable, Sendable {
+public struct AFMMLXLegacyStartupSelection: Equatable, Sendable {
     public let modelName: String
     public let afm27ModelID: String
 
@@ -22,7 +22,7 @@ package struct AFMMLXLegacyStartupSelection: Equatable, Sendable {
     }
 }
 
-package enum AFMMLXLegacyStartupSelectionPolicy {
+public enum AFMMLXLegacyStartupSelectionPolicy {
     public static func select(
         loadedModelName: String?,
         loadedModelRepoID: String?,

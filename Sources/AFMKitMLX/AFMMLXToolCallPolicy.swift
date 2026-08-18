@@ -1,7 +1,7 @@
 import AFMOpenAICompat
 import MLXLMCommon
 
-package enum AFMMLXToolCallPolicy {
+public enum AFMMLXToolCallPolicy {
     public static func isToolCallParserDisabled(_ parser: String?) -> Bool {
         parser?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "none"
     }

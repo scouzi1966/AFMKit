@@ -1,4 +1,4 @@
-package enum AFMMLXClearablePackagePolicy {
+public enum AFMMLXClearablePackagePolicy {
     public static func packageIdentifiers(
         from discoveredModels: [AFMMLXDiscoveredModel]
     ) -> [String] {

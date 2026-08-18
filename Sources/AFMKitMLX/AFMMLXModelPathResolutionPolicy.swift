@@ -1,12 +1,12 @@
 import Foundation
 
-package enum AFMMLXCurrentModelPathResolution: Equatable, Sendable {
+public enum AFMMLXCurrentModelPathResolution: Equatable, Sendable {
     case noLoadedModel
     case resolved(path: String)
     case missing(modelName: String)
 }
 
-package struct AFMMLXDownloadedModelLookupCandidate: Hashable, Sendable {
+public struct AFMMLXDownloadedModelLookupCandidate: Hashable, Sendable {
     public let id: String
     public let name: String
 
@@ -16,7 +16,7 @@ package struct AFMMLXDownloadedModelLookupCandidate: Hashable, Sendable {
     }
 }
 
-package enum AFMMLXLocalModelDirectoryLookup: Hashable, Sendable {
+public enum AFMMLXLocalModelDirectoryLookup: Hashable, Sendable {
     case importedPath(String)
     case customRepositoryID(String)
     case repositoryID(String)
@@ -24,7 +24,7 @@ package enum AFMMLXLocalModelDirectoryLookup: Hashable, Sendable {
     case modelName(String)
 }
 
-package enum AFMMLXModelPathResolutionPolicy {
+public enum AFMMLXModelPathResolutionPolicy {
     public static func localModelDirectoryLookups(
         forSelection selection: String,
         customModelPath: String? = nil,

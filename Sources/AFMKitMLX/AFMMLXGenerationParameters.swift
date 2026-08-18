@@ -1,7 +1,7 @@
 import Foundation
 @preconcurrency import MLXLMCommon
 
-package struct AFMMLXGenerationParameterRequest: Equatable, Sendable {
+public struct AFMMLXGenerationParameterRequest: Equatable, Sendable {
     public let maxTokens: Int?
     public let maxKVSize: Int?
     public let kvBits: Int?
@@ -47,7 +47,7 @@ package struct AFMMLXGenerationParameterRequest: Equatable, Sendable {
     }
 }
 
-package enum AFMMLXGenerationParameterFactory {
+public enum AFMMLXGenerationParameterFactory {
     public static func make(
         maxTokens: Int?,
         maxKVSize: Int? = nil,

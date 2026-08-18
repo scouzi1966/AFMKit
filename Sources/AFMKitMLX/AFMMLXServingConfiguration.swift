@@ -2,13 +2,13 @@ import Foundation
 import AFMOpenAICompat
 import MLXLMCommon
 
-package enum AFMMLXResponseChannelFormat: String, Sendable, Equatable {
+public enum AFMMLXResponseChannelFormat: String, Sendable, Equatable {
     case none
     case harmony
     case muse
 }
 
-package struct AFMMLXServingConfiguration: Sendable, Equatable {
+public struct AFMMLXServingConfiguration: Sendable, Equatable {
     public var toolCallParser: String?
     public var supportsStrictToolGrammar: Bool
     public var thinkStartTag: String?
@@ -42,14 +42,14 @@ package struct AFMMLXServingConfiguration: Sendable, Equatable {
     }
 }
 
-package protocol AFMMLXServingConfigurationProviding: Sendable {
+public protocol AFMMLXServingConfigurationProviding: Sendable {
     var servingConfiguration: AFMMLXServingConfiguration { get }
 
     func normalizeModel(_ raw: String) -> String
     func resolvedToolCallParser(logBypass: Bool) -> String?
 }
 
-package extension AFMMLXServingConfigurationProviding {
+public extension AFMMLXServingConfigurationProviding {
     var toolCallParser: String? { servingConfiguration.toolCallParser }
     var supportsStrictToolGrammar: Bool { servingConfiguration.supportsStrictToolGrammar }
     var thinkStartTag: String? { servingConfiguration.thinkStartTag }

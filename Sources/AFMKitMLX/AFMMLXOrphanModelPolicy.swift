@@ -1,7 +1,7 @@
 import Foundation
 import AFMKitCore
 
-package struct AFMMLXOrphanModelCandidate: Hashable, Sendable {
+public struct AFMMLXOrphanModelCandidate: Hashable, Sendable {
     public var id: String
     public var name: String
     public var author: String
@@ -23,7 +23,7 @@ package struct AFMMLXOrphanModelCandidate: Hashable, Sendable {
     }
 }
 
-package enum AFMMLXOrphanModelPolicy {
+public enum AFMMLXOrphanModelPolicy {
     public static func candidate(
         from discovered: AFMMLXDiscoveredModel,
         includeSpecialty: Bool,

@@ -1,6 +1,6 @@
 import Foundation
 
-package struct AFMMLXGenerationHiddenOverrides: Equatable, Sendable {
+public struct AFMMLXGenerationHiddenOverrides: Equatable, Sendable {
     public let maxKVSize: Int?
     public let kvBits: Int?
     public let kvGroupSize: Int?
@@ -25,7 +25,7 @@ package struct AFMMLXGenerationHiddenOverrides: Equatable, Sendable {
     }
 }
 
-package enum AFMMLXThinkingContext: Equatable, Sendable {
+public enum AFMMLXThinkingContext: Equatable, Sendable {
     case enableThinking(Bool)
 
     public var additionalContext: [String: any Sendable] {
@@ -36,7 +36,7 @@ package enum AFMMLXThinkingContext: Equatable, Sendable {
     }
 }
 
-package struct AFMMLXGenerationPlan: Equatable, Sendable {
+public struct AFMMLXGenerationPlan: Equatable, Sendable {
     public let hasReasoningOutput: Bool
     public let thinkingContext: AFMMLXThinkingContext?
     public let parameters: AFMMLXGenerationParameterRequest
@@ -56,7 +56,7 @@ package struct AFMMLXGenerationPlan: Equatable, Sendable {
     }
 }
 
-package enum AFMMLXGenerationPlanner {
+public enum AFMMLXGenerationPlanner {
     public static func make(
         maxTokens: Int?,
         temperature: Double,

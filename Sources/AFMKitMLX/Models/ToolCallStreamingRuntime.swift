@@ -2,19 +2,19 @@ import Foundation
 import AFMOpenAICompat
 import MLXLMCommon
 
-package enum ToolCallStreamingEvent: Sendable {
+public enum ToolCallStreamingEvent: Sendable {
     case started
     case delta(StreamDeltaToolCall)
     case appendCollected(ResponseToolCall)
     case replaceCollected(index: Int, toolCall: ResponseToolCall)
 }
 
-package struct ToolCallStreamingOutput: Sendable {
-    package let handled: Bool
-    package let events: [ToolCallStreamingEvent]
-    package let passthroughText: String?
+public struct ToolCallStreamingOutput: Sendable {
+    public let handled: Bool
+    public let events: [ToolCallStreamingEvent]
+    public let passthroughText: String?
 
-    package init(
+    public init(
         handled: Bool,
         events: [ToolCallStreamingEvent],
         passthroughText: String? = nil
@@ -25,18 +25,18 @@ package struct ToolCallStreamingOutput: Sendable {
     }
 }
 
-package final class ToolCallStreamingRuntime {
+public final class ToolCallStreamingRuntime {
     private let toolCallStartTag: String
     private let toolCallEndTag: String
     private let toolCallParser: String?
     private let tools: [RequestTool]?
-    package private(set) var paramNameMapping: [String: String]
+    public private(set) var paramNameMapping: [String: String]
     private let applyFixToolArgs: @Sendable (ResponseToolCall) -> ResponseToolCall
     private let remapSingleKey: @Sendable (String, String) -> String
 
-    package private(set) var inToolCall = false
-    package private(set) var madeToolCall = false
-    package private(set) var hasToolCalls = false
+    public private(set) var inToolCall = false
+    public private(set) var madeToolCall = false
+    public private(set) var hasToolCalls = false
 
     private var currentToolText = ""
     private var incrementalEmittedFirst = false
@@ -50,7 +50,7 @@ package final class ToolCallStreamingRuntime {
     private var pendingStartProbe = ""
     private var finalizedCurrentToolCall = false
 
-    package init(
+    public init(
         toolCallStartTag: String,
         toolCallEndTag: String,
         toolCallParser: String?,
@@ -82,7 +82,7 @@ package final class ToolCallStreamingRuntime {
         self.paramNameMapping = mapping
     }
 
-    package func process(piece: String) -> ToolCallStreamingOutput {
+    public func process(piece: String) -> ToolCallStreamingOutput {
         if !inToolCall {
             let candidate = pendingStartProbe + piece
             if let startRange = candidate.range(of: toolCallStartTag) {
@@ -131,7 +131,7 @@ package final class ToolCallStreamingRuntime {
         return consumeToolBodyFragment(piece, prependStarted: false)
     }
 
-    package func finishIncompleteToolCall() -> [ToolCallStreamingEvent] {
+    public func finishIncompleteToolCall() -> [ToolCallStreamingEvent] {
         guard inToolCall, !currentToolText.isEmpty, !finalizedCurrentToolCall else { return [] }
 
         defer { resetState() }

@@ -1,6 +1,6 @@
 import Foundation
 
-package struct AFMMLXSpeculativeRuntimeSetupState: Equatable, Sendable {
+public struct AFMMLXSpeculativeRuntimeSetupState: Equatable, Sendable {
     public let availability: [AFMMLXSpeculativeDecodingMode: AFMMLXSpeculativeModeAvailability]
     public let statusKind: AFMMLXSpeculativeRuntimeKind
     public let statusText: String
@@ -19,7 +19,7 @@ package struct AFMMLXSpeculativeRuntimeSetupState: Equatable, Sendable {
     }
 }
 
-package struct AFMMLXSpeculativeRuntimeSetupPlan: Equatable, Sendable {
+public struct AFMMLXSpeculativeRuntimeSetupPlan: Equatable, Sendable {
     public let initialState: AFMMLXSpeculativeRuntimeSetupState
     public let shouldAttemptMTP: Bool
     public let shouldStopAfterMTPFailure: Bool
@@ -44,7 +44,7 @@ package struct AFMMLXSpeculativeRuntimeSetupPlan: Equatable, Sendable {
     }
 }
 
-package struct AFMMLXEagle3DrafterDownloadState: Equatable, Sendable {
+public struct AFMMLXEagle3DrafterDownloadState: Equatable, Sendable {
     public let isDownloading: Bool
     public let progress: Double
     public let statusText: String
@@ -63,7 +63,7 @@ package struct AFMMLXEagle3DrafterDownloadState: Equatable, Sendable {
     }
 }
 
-package enum AFMMLXEagle3DrafterDownloadPolicy {
+public enum AFMMLXEagle3DrafterDownloadPolicy {
     public static func missingLoadedModelState() -> AFMMLXEagle3DrafterDownloadState {
         AFMMLXEagle3DrafterDownloadState(
             isDownloading: false,
@@ -119,7 +119,7 @@ package enum AFMMLXEagle3DrafterDownloadPolicy {
     }
 }
 
-package enum AFMMLXSpeculativeRuntimeSetupPlanner {
+public enum AFMMLXSpeculativeRuntimeSetupPlanner {
     public static func unloadedState(
         selectedMode: AFMMLXSpeculativeDecodingMode
     ) -> AFMMLXSpeculativeRuntimeSetupState {

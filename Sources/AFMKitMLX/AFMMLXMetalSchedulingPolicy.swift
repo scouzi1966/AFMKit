@@ -1,7 +1,7 @@
 import Darwin
 import Foundation
 
-package struct AFMMLXMetalSchedulingLimits: Equatable, Sendable {
+public struct AFMMLXMetalSchedulingLimits: Equatable, Sendable {
     public let maxOperationsPerBuffer: Int
     public let maxMegabytesPerBuffer: Int
 
@@ -11,7 +11,7 @@ package struct AFMMLXMetalSchedulingLimits: Equatable, Sendable {
     }
 }
 
-package enum AFMMLXMetalSchedulingPolicy {
+public enum AFMMLXMetalSchedulingPolicy {
     public static let operationsEnvironmentKey = "MLX_MAX_OPS_PER_BUFFER"
     public static let megabytesEnvironmentKey = "MLX_MAX_MB_PER_BUFFER"
 

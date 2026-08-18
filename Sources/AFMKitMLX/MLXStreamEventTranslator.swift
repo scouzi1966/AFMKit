@@ -2,7 +2,7 @@ import AFMKitCore
 import AFMOpenAICompat
 import Foundation
 
-package struct MLXStreamEventTranslator {
+public struct MLXStreamEventTranslator {
     private struct ToolState {
         var id: String
         var name: String

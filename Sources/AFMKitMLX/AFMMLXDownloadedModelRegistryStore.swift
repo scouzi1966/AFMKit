@@ -1,6 +1,6 @@
 import Foundation
 
-package struct AFMMLXDownloadedModelRegistryLoad<Model> {
+public struct AFMMLXDownloadedModelRegistryLoad<Model> {
     public let models: [Model]
     public let originalCount: Int
 
@@ -14,7 +14,7 @@ package struct AFMMLXDownloadedModelRegistryLoad<Model> {
     }
 }
 
-package struct AFMMLXDownloadedModelRegistryStore {
+public struct AFMMLXDownloadedModelRegistryStore {
     private let defaults: UserDefaults
 
     public init(defaults: UserDefaults = .standard) {

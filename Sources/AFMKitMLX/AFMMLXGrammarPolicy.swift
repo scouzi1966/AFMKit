@@ -1,6 +1,6 @@
 import AFMOpenAICompat
 
-package enum AFMMLXGrammarPolicy {
+public enum AFMMLXGrammarPolicy {
     /// Check whether any tool in the request has `strict: true`.
     public static func hasStrictTools(_ tools: [RequestTool]?) -> Bool {
         tools?.contains { $0.function.strict == true } ?? false

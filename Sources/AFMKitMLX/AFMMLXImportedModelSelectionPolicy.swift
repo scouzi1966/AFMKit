@@ -1,4 +1,4 @@
-package struct AFMMLXImportedModelSelectionPlan: Equatable, Sendable {
+public struct AFMMLXImportedModelSelectionPlan: Equatable, Sendable {
     public let name: String
     public let path: String
     public let isVision: Bool
@@ -17,7 +17,7 @@ package struct AFMMLXImportedModelSelectionPlan: Equatable, Sendable {
     }
 }
 
-package enum AFMMLXImportedModelSelectionPolicy {
+public enum AFMMLXImportedModelSelectionPolicy {
     public static func make(
         name: String,
         path: String,

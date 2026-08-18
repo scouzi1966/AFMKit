@@ -83,7 +83,7 @@ public struct AFMMLXGenerationPreset: Hashable, Sendable {
     }
 }
 
-package struct AFMMLXLocalModelMetadata: Hashable, Sendable {
+public struct AFMMLXLocalModelMetadata: Hashable, Sendable {
     public var modelType: String?
     public var contextWindow: Int?
     public var generationPreset: AFMMLXGenerationPreset?

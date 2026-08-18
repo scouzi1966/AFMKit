@@ -1,7 +1,7 @@
 import Foundation
 import AFMKitCore
 
-package struct AFMMLXRuntimeInfo: Equatable, Sendable {
+public struct AFMMLXRuntimeInfo: Equatable, Sendable {
     public let promptTime: Double
     public let tokensPerSecond: Double
 
@@ -14,14 +14,14 @@ package struct AFMMLXRuntimeInfo: Equatable, Sendable {
     }
 }
 
-package enum AFMMLXRuntimeEvent: Equatable, Sendable {
+public enum AFMMLXRuntimeEvent: Equatable, Sendable {
     case chunk(String)
     case info(AFMMLXRuntimeInfo)
     case toolCall
     case tokenLogprobs
 }
 
-package struct AFMMLXReducedGenerationProgress: Sendable {
+public struct AFMMLXReducedGenerationProgress: Sendable {
     public let accumulatedText: String
     public let reasoningUpdate: AFMReasoningPendingUpdate?
 
@@ -34,7 +34,7 @@ package struct AFMMLXReducedGenerationProgress: Sendable {
     }
 }
 
-package struct AFMMLXReducedGenerationResult: Sendable {
+public struct AFMMLXReducedGenerationResult: Sendable {
     public let finalState: AFMReasoningStreamFinalState
     public let finalReasoningUpdate: AFMReasoningPendingUpdate?
     public let tokenCount: Int
@@ -56,6 +56,6 @@ package struct AFMMLXReducedGenerationResult: Sendable {
     }
 }
 
-package enum AFMMLXRuntimePolicy {
+public enum AFMMLXRuntimePolicy {
     public static let defaultImageProcessingSize = 1024
 }

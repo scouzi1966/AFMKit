@@ -157,7 +157,7 @@ public struct AFMMLXRuntimeConfiguration: Sendable {
         }
     }
 
-    package func apply(to service: MLXModelService) {
+    public func apply(to service: MLXModelService) {
         service.kvBits = kvBits
         service.enablePrefixCaching = enablePrefixCaching
         service.kernelEngine = kernelEngine
@@ -203,7 +203,7 @@ public struct AFMMLXRuntimeConfiguration: Sendable {
     }
 }
 
-package final class AFMMLXRuntime: @unchecked Sendable {
+public final class AFMMLXRuntime: @unchecked Sendable {
     public let modelID: String
     public let descriptor: AFMModelDescriptor
     public let service: MLXModelService
@@ -288,7 +288,7 @@ package final class AFMMLXRuntime: @unchecked Sendable {
         return descriptor
     }
 
-    package func prewarm(
+    public func prewarm(
         messages: [Message] = [Message(role: "user", content: "warmup")],
         maxTokens: Int = 4
     ) async throws {

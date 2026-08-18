@@ -1,4 +1,4 @@
-package enum AFMMLXSettingsSelectionPolicy {
+public enum AFMMLXSettingsSelectionPolicy {
     public static func syncedModelID(
         currentModelID: String,
         selectedLegacyModelID: String,

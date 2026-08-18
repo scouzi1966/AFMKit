@@ -1,6 +1,6 @@
 import Foundation
 
-package struct AFMMLXQuickCuratedLoadCandidate: Equatable, Sendable {
+public struct AFMMLXQuickCuratedLoadCandidate: Equatable, Sendable {
     public let id: String
     public let name: String
     public let repoID: String
@@ -12,14 +12,14 @@ package struct AFMMLXQuickCuratedLoadCandidate: Equatable, Sendable {
     }
 }
 
-package enum AFMMLXQuickReloadPlan: Equatable, Sendable {
+public enum AFMMLXQuickReloadPlan: Equatable, Sendable {
     case imported(rawPath: String)
     case curated(selectionID: String)
     case userDownloaded(repoID: String)
     case unavailable
 }
 
-package struct AFMMLXImportedFallbackAccess: Equatable, Sendable {
+public struct AFMMLXImportedFallbackAccess: Equatable, Sendable {
     public let rawPath: String
     public let name: String
     public let isVision: Bool
@@ -31,7 +31,7 @@ package struct AFMMLXImportedFallbackAccess: Equatable, Sendable {
     }
 }
 
-package enum AFMMLXQuickReloadPolicy {
+public enum AFMMLXQuickReloadPolicy {
     public static func make(
         loadedModelRepoID: String?,
         loadedModelName: String?,

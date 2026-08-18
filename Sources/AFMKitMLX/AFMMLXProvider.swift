@@ -11,7 +11,7 @@ public struct AFMMLXProviderFactory: AFMProviderFactory {
         self.resolver = .init()
     }
 
-    package init(resolver: MLXCacheResolver) {
+    public init(resolver: MLXCacheResolver) {
         self.resolver = resolver
     }
 
@@ -66,19 +66,19 @@ public struct AFMMLXProviderFactory: AFMProviderFactory {
     }
 }
 
-package struct AFMMLXExecutionHarness: Sendable {
-    package let descriptor: AFMModelDescriptor
-    package let load:
+public struct AFMMLXExecutionHarness: Sendable {
+    public let descriptor: AFMModelDescriptor
+    public let load:
         @Sendable ((@Sendable (Double) -> Void)?) async throws -> AFMModelDescriptor
-    package let stream:
+    public let stream:
         @Sendable (AFMRequest, String?) async throws
         -> AsyncThrowingStream<AFMGenerationEvent, Error>
-    package let unload: @Sendable () async -> Void
-    package let tokenize: @Sendable (String) async throws -> [Int]
-    package let admissionSnapshot: @Sendable () async -> AFMAdmissionSnapshot
-    package let telemetrySnapshot: @Sendable () async -> AFMTelemetrySnapshot
+    public let unload: @Sendable () async -> Void
+    public let tokenize: @Sendable (String) async throws -> [Int]
+    public let admissionSnapshot: @Sendable () async -> AFMAdmissionSnapshot
+    public let telemetrySnapshot: @Sendable () async -> AFMTelemetrySnapshot
 
-    package init(
+    public init(
         descriptor: AFMModelDescriptor,
         load: @escaping @Sendable
             ((@Sendable (Double) -> Void)?) async throws -> AFMModelDescriptor,
@@ -112,7 +112,7 @@ public final class AFMMLXModel: AFMModel, AFMTextTokenizing, AFMPrewarmableModel
     public let descriptor: AFMModelDescriptor
 
     private let runtime: AFMMLXRuntime?
-    package let service: MLXModelService?
+    public let service: MLXModelService?
     private let modelID: String
     private let harness: AFMMLXExecutionHarness?
 
@@ -149,7 +149,7 @@ public final class AFMMLXModel: AFMModel, AFMTextTokenizing, AFMPrewarmableModel
         self.harness = nil
     }
 
-    package init(
+    public init(
         modelID: AFMModelID,
         configuration: AFMProviderConfiguration,
         resolver: MLXCacheResolver,
@@ -170,7 +170,7 @@ public final class AFMMLXModel: AFMModel, AFMTextTokenizing, AFMPrewarmableModel
     }
 
     /// Wrap a host-owned service without mutating its established runtime settings.
-    package init(
+    public init(
         modelID: AFMModelID,
         resolver: MLXCacheResolver = .init(),
         attachedService service: MLXModelService
@@ -188,7 +188,7 @@ public final class AFMMLXModel: AFMModel, AFMTextTokenizing, AFMPrewarmableModel
         self.harness = nil
     }
 
-    package init(harness: AFMMLXExecutionHarness) {
+    public init(harness: AFMMLXExecutionHarness) {
         self.runtime = nil
         self.service = nil
         self.modelID = harness.descriptor.modelID.rawValue
@@ -258,6 +258,13 @@ public final class AFMMLXModel: AFMModel, AFMTextTokenizing, AFMPrewarmableModel
     public func prewarm() async throws {
         let stream = executionStream(for: Self.prewarmRequest, requestID: "afmkit-prewarm")
         for try await _ in stream {}
+    }
+
+    public func normalizeModel(_ raw: String) -> String {
+        guard let service else {
+            preconditionFailure("AFMMLXModel.normalizeModel requires a concrete MLX service.")
+        }
+        return service.normalizeModel(raw)
     }
 
     public func admissionSnapshot() async -> AFMAdmissionSnapshot {
@@ -416,7 +423,7 @@ public final class AFMMLXModel: AFMModel, AFMTextTokenizing, AFMPrewarmableModel
         )
     }
 
-    package static func collectResponse(
+    public static func collectResponse(
         from stream: AsyncThrowingStream<AFMGenerationEvent, Error>
     ) async throws -> AFMModelResponse {
         var response = AFMModelResponse()
@@ -582,7 +589,7 @@ enum AFMMLXToolPolicy {
     }
 }
 
-package enum AFMMLXModelDescriptor {
+public enum AFMMLXModelDescriptor {
     public static func describe(
         modelID: String,
         resolver: MLXCacheResolver = .init()

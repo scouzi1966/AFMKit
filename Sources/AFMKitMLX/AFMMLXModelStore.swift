@@ -363,8 +363,8 @@ public struct AFMMLXModelStore: Sendable {
         return packageDirectory(containing: reference.localDirectory)
     }
 
-    /// Deletes the local package for a model that resolves through the shared
-    /// store. This intentionally operates on the package directory rather than
+    /// Deletes the local public for a model that resolves through the shared
+    /// store. This intentionally operates on the public directory rather than
     /// the load directory so HF snapshot caches are removed as a unit.
     @discardableResult
     public func deleteLocalModelPackage(for modelID: String) throws -> AFMMLXModelDeleteResult {
@@ -395,7 +395,7 @@ public struct AFMMLXModelStore: Sendable {
 
     /// Downloads a Hugging Face MLX model into the shared AFMKit/Hugging Face
     /// cache and returns the same load reference hosts should pass to MLX.
-    /// If a complete local package already exists, this returns immediately
+    /// If a complete local public already exists, this returns immediately
     /// without invoking the downloader.
     public func downloadModelPackage(
         for modelID: String,
@@ -433,8 +433,8 @@ public struct AFMMLXModelStore: Sendable {
         throw AFMMLXModelStoreError.modelNotFound(trimmed)
     }
 
-    /// Downloads a Hugging Face MLX TTS/speech package using AFMKit's shared
-    /// specialty-model package shape.
+    /// Downloads a Hugging Face MLX TTS/speech public using AFMKit's shared
+    /// specialty-model public shape.
     public func downloadTTSModelPackage(
         for modelID: String,
         progress: (@Sendable (Progress) -> Void)? = nil
@@ -752,7 +752,7 @@ public struct AFMMLXModelStore: Sendable {
     }
 
     /// Returns a complete snapshot directory for a specific revision inside a
-    /// Hugging Face package root.
+    /// Hugging Face public root.
     public static func completeSnapshotDirectory(
         in repositoryDirectory: URL,
         revision: String
@@ -764,7 +764,7 @@ public struct AFMMLXModelStore: Sendable {
     }
 
     /// Returns the newest complete snapshot directory inside a Hugging Face
-    /// package root. Modification date wins; path name is a deterministic
+    /// public root. Modification date wins; path name is a deterministic
     /// fallback for equal dates.
     public static func newestCompleteSnapshotDirectory(
         in repositoryDirectory: URL

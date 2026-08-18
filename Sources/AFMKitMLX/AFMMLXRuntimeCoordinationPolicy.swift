@@ -1,6 +1,6 @@
 import Foundation
 
-package struct AFMMLXRuntimeStartupPolicy: Equatable, Sendable {
+public struct AFMMLXRuntimeStartupPolicy: Equatable, Sendable {
     public static let isolateLegacyRuntimeArgument = "--afm27-mlx-isolate-legacy-runtime"
 
     public let shouldInitializeLegacyRuntime: Bool
@@ -19,14 +19,14 @@ package struct AFMMLXRuntimeStartupPolicy: Equatable, Sendable {
     }
 }
 
-package enum AFMMLXLegacyRuntimeReleaseOutcome: Equatable, Sendable {
+public enum AFMMLXLegacyRuntimeReleaseOutcome: Equatable, Sendable {
     case releasedLegacyRuntime
     case skippedMissingLegacyRuntime
     case skippedProviderDoesNotUseMLX
     case skippedLegacyRuntimeNotLoaded
 }
 
-package struct AFMMLXLegacyRuntimeReleasePlan: Equatable, Sendable {
+public struct AFMMLXLegacyRuntimeReleasePlan: Equatable, Sendable {
     public let outcome: AFMMLXLegacyRuntimeReleaseOutcome
 
     public init(outcome: AFMMLXLegacyRuntimeReleaseOutcome) {
@@ -38,7 +38,7 @@ package struct AFMMLXLegacyRuntimeReleasePlan: Equatable, Sendable {
     }
 }
 
-package struct AFMMLXRuntimeCacheKey: Equatable, Sendable {
+public struct AFMMLXRuntimeCacheKey: Equatable, Sendable {
     public let modelName: String
     public let isVision: Bool
     public let value: String
@@ -51,7 +51,7 @@ package struct AFMMLXRuntimeCacheKey: Equatable, Sendable {
     }
 }
 
-package struct AFMMLXRuntimeUnloadState: Equatable, Sendable {
+public struct AFMMLXRuntimeUnloadState: Equatable, Sendable {
     public let loadedModelName: String?
     public let isModelLoaded: Bool
     public let isLoadedModelVLM: Bool
@@ -97,7 +97,7 @@ package struct AFMMLXRuntimeUnloadState: Equatable, Sendable {
     }
 }
 
-package struct AFMMLXRuntimeLoadingState: Equatable, Sendable {
+public struct AFMMLXRuntimeLoadingState: Equatable, Sendable {
     public let isLoadingModel: Bool
     public let loadingModelName: String?
     public let isDownloadingPhase: Bool
@@ -122,7 +122,7 @@ package struct AFMMLXRuntimeLoadingState: Equatable, Sendable {
     }
 }
 
-package struct AFMMLXRuntimeCancellationState: Equatable, Sendable {
+public struct AFMMLXRuntimeCancellationState: Equatable, Sendable {
     public let shouldCancelLoading: Bool
     public let loadingState: AFMMLXRuntimeLoadingState
 
@@ -135,7 +135,7 @@ package struct AFMMLXRuntimeCancellationState: Equatable, Sendable {
     }
 }
 
-package struct AFMMLXRuntimeLoadedState: Equatable, Sendable {
+public struct AFMMLXRuntimeLoadedState: Equatable, Sendable {
     public let loadedModelName: String
     public let loadedModelRepoID: String
     public let isModelLoaded: Bool
@@ -166,7 +166,7 @@ package struct AFMMLXRuntimeLoadedState: Equatable, Sendable {
     }
 }
 
-package struct AFMMLXRuntimeProgressState: Equatable, Sendable {
+public struct AFMMLXRuntimeProgressState: Equatable, Sendable {
     public let shouldPublish: Bool
     public let downloadProgress: Double
     public let lastReportedProgress: Double
@@ -182,7 +182,7 @@ package struct AFMMLXRuntimeProgressState: Equatable, Sendable {
     }
 }
 
-package enum AFMMLXRuntimeCoordinationPolicy {
+public enum AFMMLXRuntimeCoordinationPolicy {
     public nonisolated static let defaultProgressPublicationThreshold = 0.01
     public nonisolated static let defaultCompletionProgressThreshold = 0.99
     public nonisolated static let defaultCancellationMessage = "Model download cancelled by user"

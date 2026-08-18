@@ -1,6 +1,6 @@
 import Foundation
 
-package enum AFMMLXHelperModelPathPolicy {
+public enum AFMMLXHelperModelPathPolicy {
     public static func modelPath(
         repoID: String?,
         loadedModelName: String?,

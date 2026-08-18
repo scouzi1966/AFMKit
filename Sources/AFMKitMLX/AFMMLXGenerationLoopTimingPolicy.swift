@@ -1,6 +1,6 @@
 import Foundation
 
-package struct AFMMLXGenerationLoopTimingSummary: Equatable, Sendable {
+public struct AFMMLXGenerationLoopTimingSummary: Equatable, Sendable {
     public let tokenCount: Int
     public let totalGenerationTime: TimeInterval
     public let totalLoopOverhead: TimeInterval
@@ -22,7 +22,7 @@ package struct AFMMLXGenerationLoopTimingSummary: Equatable, Sendable {
     }
 }
 
-package struct AFMMLXGenerationLoopTimingState: Equatable, Sendable {
+public struct AFMMLXGenerationLoopTimingState: Equatable, Sendable {
     public let generationStartTime: TimeInterval
     public private(set) var totalLoopOverhead: TimeInterval
 
@@ -60,7 +60,7 @@ package struct AFMMLXGenerationLoopTimingState: Equatable, Sendable {
     }
 }
 
-package enum AFMMLXGenerationLoopTimingPolicy {
+public enum AFMMLXGenerationLoopTimingPolicy {
     public static func iterationOverhead(
         startTime: TimeInterval,
         endTime: TimeInterval

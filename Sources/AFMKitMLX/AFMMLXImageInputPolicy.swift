@@ -1,6 +1,6 @@
 import Foundation
 
-package struct AFMMLXRemoteImageCachePlan: Equatable, Sendable {
+public struct AFMMLXRemoteImageCachePlan: Equatable, Sendable {
     public let sourceURL: URL
     public let cacheDirectory: URL
     public let destinationURL: URL
@@ -16,7 +16,7 @@ package struct AFMMLXRemoteImageCachePlan: Equatable, Sendable {
     }
 }
 
-package enum AFMMLXImageInputPlan: Equatable, Sendable {
+public enum AFMMLXImageInputPlan: Equatable, Sendable {
     case none
     case localFile(URL)
     case remoteImage(AFMMLXRemoteImageCachePlan)
@@ -31,7 +31,7 @@ package enum AFMMLXImageInputPlan: Equatable, Sendable {
     }
 }
 
-package enum AFMMLXImageInputPolicy {
+public enum AFMMLXImageInputPolicy {
     public static func plan(
         imageURL: URL?,
         cacheDirectory: URL,

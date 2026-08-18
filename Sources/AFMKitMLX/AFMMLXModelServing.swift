@@ -3,7 +3,7 @@ import AFMOpenAICompat
 
 // MARK: - Stable serving facade
 
-package extension AFMMLXModel {
+public extension AFMMLXModel {
     private var concreteService: MLXModelService {
         guard let service else {
             preconditionFailure("AFMMLXModelServing requires a concrete MLX service.")
@@ -19,10 +19,6 @@ package extension AFMMLXModel {
 
     var defaultGuidedJsonSchema: ResponseFormat? {
         concreteService.defaultGuidedJsonSchema
-    }
-
-    func normalizeModel(_ raw: String) -> String {
-        concreteService.normalizeModel(raw)
     }
 
     func resolvedToolCallParser(logBypass: Bool) -> String? {

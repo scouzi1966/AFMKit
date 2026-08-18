@@ -6,7 +6,7 @@ import MLXLLM
 import MLXVLM
 import Tokenizers
 
-package enum AFMMLXSpeculativeRuntime {
+public enum AFMMLXSpeculativeRuntime {
     case none
     case mtpLLM(Qwen3_5MoEMTPGenerator)
     case mtpVLM(MTPGenerator)
@@ -23,7 +23,7 @@ package enum AFMMLXSpeculativeRuntime {
 
 extension AFMMLXSpeculativeRuntime: @unchecked Sendable {}
 
-package struct AFMMLXRuntimeAdapter: Sendable {
+public struct AFMMLXRuntimeAdapter: Sendable {
     public typealias RuntimeEvent = AFMMLXRuntimeEvent
     public nonisolated static let imageProcessingSize = AFMMLXRuntimePolicy.defaultImageProcessingSize
 

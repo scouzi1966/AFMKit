@@ -4,7 +4,7 @@ import Foundation
 ///
 /// Server and app consumers use this contract without depending on the
 /// concrete `MLXModelService` scheduler implementation.
-package protocol AFMMLXRequestScheduling: Sendable {
+public protocol AFMMLXRequestScheduling: Sendable {
     var maxConcurrent: Int { get }
 
     func tryReserveSlot() -> Bool
@@ -12,7 +12,7 @@ package protocol AFMMLXRequestScheduling: Sendable {
     func releaseSlot()
 }
 
-package extension AFMMLXRequestScheduling {
+public extension AFMMLXRequestScheduling {
     func waitForSlot(timeout: TimeInterval) async -> Bool {
         if Task.isCancelled { return false }
         if timeout <= 0 {
@@ -42,7 +42,7 @@ package extension AFMMLXRequestScheduling {
 /// A successful `ensureBatchMode` call owns one reference that must be paired
 /// with `releaseBatchReference`, including when generation fails or is
 /// cancelled.
-package protocol AFMMLXBatchControlling: Sendable {
+public protocol AFMMLXBatchControlling: Sendable {
     func ensureBatchMode(concurrency: Int) async throws
     func releaseBatchReference()
     func cancelBatchSlots(ids: Set<UUID>) async

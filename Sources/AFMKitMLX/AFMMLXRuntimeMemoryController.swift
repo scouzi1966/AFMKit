@@ -3,7 +3,7 @@ import Metal
 import MLX
 import Cmlx
 
-package struct AFMMLXRuntimeMemoryUsage: Equatable, Sendable {
+public struct AFMMLXRuntimeMemoryUsage: Equatable, Sendable {
     public let activeMemoryGB: Double
 
     public init(activeMemoryGB: Double) {
@@ -17,7 +17,7 @@ package struct AFMMLXRuntimeMemoryUsage: Equatable, Sendable {
     }
 }
 
-package struct AFMMLXRuntimeMemoryDefaults: Equatable, Sendable {
+public struct AFMMLXRuntimeMemoryDefaults: Equatable, Sendable {
     public let compileEnabled: Bool?
     public let cacheLimitBytes: Int
     public let wiredLimitBytes: Int
@@ -42,7 +42,7 @@ package struct AFMMLXRuntimeMemoryDefaults: Equatable, Sendable {
     }
 }
 
-package enum AFMMLXRuntimeMemoryController {
+public enum AFMMLXRuntimeMemoryController {
     public nonisolated static let bytesPerMB = 1024 * 1024
     public nonisolated static let bytesPerGB = 1024 * 1024 * 1024
     public nonisolated static let defaultWiredLimitPercent = 90

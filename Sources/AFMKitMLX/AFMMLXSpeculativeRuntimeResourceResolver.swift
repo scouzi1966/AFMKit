@@ -1,6 +1,6 @@
 import Foundation
 
-package enum AFMMLXSpeculativeRuntimeResourceResolver {
+public enum AFMMLXSpeculativeRuntimeResourceResolver {
     public struct MTPQuantization: Equatable, Sendable {
         public let groupSize: Int
         public let bits: Int

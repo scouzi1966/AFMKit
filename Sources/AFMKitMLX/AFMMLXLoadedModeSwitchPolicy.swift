@@ -1,6 +1,6 @@
 import Foundation
 
-package enum AFMMLXLoadedModeSwitchPlan: Equatable, Sendable {
+public enum AFMMLXLoadedModeSwitchPlan: Equatable, Sendable {
     case imported(rawPath: String, targetVLM: Bool)
     case currentLoadedModel(targetVLM: Bool)
 
@@ -12,7 +12,7 @@ package enum AFMMLXLoadedModeSwitchPlan: Equatable, Sendable {
     }
 }
 
-package enum AFMMLXLoadedModeSwitchPolicy {
+public enum AFMMLXLoadedModeSwitchPolicy {
     public static func make(
         loadedModelRepoID: String?,
         loadedModelType: String?,
@@ -35,12 +35,12 @@ package enum AFMMLXLoadedModeSwitchPolicy {
     }
 }
 
-package enum AFMMLXModelFactoryKind: Equatable, Sendable {
+public enum AFMMLXModelFactoryKind: Equatable, Sendable {
     case llm
     case vlm
 }
 
-package enum AFMMLXModelFactoryPolicy {
+public enum AFMMLXModelFactoryPolicy {
     public static func initialFactory(
         forceVLM: Bool,
         architecture: AFMMLXModelArchitecturePreflight
@@ -52,13 +52,13 @@ package enum AFMMLXModelFactoryPolicy {
     }
 }
 
-package enum AFMMLXRequestMediaKind: Hashable, Sendable {
+public enum AFMMLXRequestMediaKind: Hashable, Sendable {
     case image
     case video
     case audio
 }
 
-package enum AFMMLXRequestMediaPolicy {
+public enum AFMMLXRequestMediaPolicy {
     private static let videoModelTypes: Set<String> = [
         "qwen2_vl",
         "qwen2_5_vl",

@@ -1,6 +1,6 @@
 import Foundation
 
-package enum AFMMLXQuickLoadPlan: Equatable, Sendable {
+public enum AFMMLXQuickLoadPlan: Equatable, Sendable {
     case imported(rawPath: String)
     case curatedStandard(selectionID: String)
     case curatedDualMode(repoID: String, isVision: Bool, forceLLMOnly: Bool)
@@ -8,7 +8,7 @@ package enum AFMMLXQuickLoadPlan: Equatable, Sendable {
     case fallback(path: String, name: String)
 }
 
-package struct AFMMLXSelectedLoadDownloadedCandidate: Equatable, Sendable {
+public struct AFMMLXSelectedLoadDownloadedCandidate: Equatable, Sendable {
     public let id: String
     public let name: String
 
@@ -18,19 +18,19 @@ package struct AFMMLXSelectedLoadDownloadedCandidate: Equatable, Sendable {
     }
 }
 
-package enum AFMMLXSelectedLoadPlan: Equatable, Sendable {
+public enum AFMMLXSelectedLoadPlan: Equatable, Sendable {
     case imported(rawPath: String)
     case userDownloaded(repoID: String, isVisionOverride: Bool?)
     case curated
 }
 
-package enum AFMMLXNamedLoadPlan: Equatable, Sendable {
+public enum AFMMLXNamedLoadPlan: Equatable, Sendable {
     case userDownloaded(repoID: String)
     case curated(modelName: String)
     case unavailable
 }
 
-package struct AFMMLXCuratedSelection: Equatable, Sendable {
+public struct AFMMLXCuratedSelection: Equatable, Sendable {
     public let modelName: String
     public let afm27ModelID: String
 
@@ -40,7 +40,7 @@ package struct AFMMLXCuratedSelection: Equatable, Sendable {
     }
 }
 
-package struct AFMMLXSelectedNameChangePlan: Equatable, Sendable {
+public struct AFMMLXSelectedNameChangePlan: Equatable, Sendable {
     public let shouldUnloadLoadedModel: Bool
     public let curatedModelName: String?
 
@@ -50,7 +50,7 @@ package struct AFMMLXSelectedNameChangePlan: Equatable, Sendable {
     }
 }
 
-package struct AFMMLXQuickSelectionCandidate: Equatable, Sendable {
+public struct AFMMLXQuickSelectionCandidate: Equatable, Sendable {
     public let id: String
     public let isVision: Bool
 
@@ -60,7 +60,7 @@ package struct AFMMLXQuickSelectionCandidate: Equatable, Sendable {
     }
 }
 
-package struct AFMMLXQuickSelection: Equatable, Sendable {
+public struct AFMMLXQuickSelection: Equatable, Sendable {
     public let id: String
     public let loadAsVLM: Bool
 
@@ -70,14 +70,14 @@ package struct AFMMLXQuickSelection: Equatable, Sendable {
     }
 }
 
-package enum AFMMLXQuickPickerSection: Int, Equatable, Sendable {
+public enum AFMMLXQuickPickerSection: Int, Equatable, Sendable {
     case loaded
     case curated
     case downloaded
     case imported
 }
 
-package struct AFMMLXQuickPickerCandidate: Equatable, Sendable {
+public struct AFMMLXQuickPickerCandidate: Equatable, Sendable {
     public let id: String
     public let name: String
     public let isVision: Bool
@@ -91,7 +91,7 @@ package struct AFMMLXQuickPickerCandidate: Equatable, Sendable {
     }
 }
 
-package struct AFMMLXQuickPickerOption: Identifiable, Equatable, Sendable {
+public struct AFMMLXQuickPickerOption: Identifiable, Equatable, Sendable {
     public let id: String
     public let displayName: String
     public let isVision: Bool
@@ -105,7 +105,7 @@ package struct AFMMLXQuickPickerOption: Identifiable, Equatable, Sendable {
     }
 }
 
-package enum AFMMLXLoadSelectionPolicy {
+public enum AFMMLXLoadSelectionPolicy {
     public static func quickLoadPlan(
         for selectionID: String,
         curatedCandidates: [AFMMLXQuickCuratedLoadCandidate],

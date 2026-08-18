@@ -1,6 +1,6 @@
 import Foundation
 
-package struct AFMMLXToolDownloadedModel: Equatable, Sendable {
+public struct AFMMLXToolDownloadedModel: Equatable, Sendable {
     public let id: String
     public let name: String
     public let isVision: Bool
@@ -12,7 +12,7 @@ package struct AFMMLXToolDownloadedModel: Equatable, Sendable {
     }
 }
 
-package struct AFMMLXToolImportedModel: Equatable, Sendable {
+public struct AFMMLXToolImportedModel: Equatable, Sendable {
     public let id: String
     public let name: String
     public let path: String
@@ -24,7 +24,7 @@ package struct AFMMLXToolImportedModel: Equatable, Sendable {
     }
 }
 
-package struct AFMMLXToolModelListEntry: Equatable, Sendable {
+public struct AFMMLXToolModelListEntry: Equatable, Sendable {
     public let id: String
     public let name: String
     public let onDisk: Bool
@@ -49,14 +49,14 @@ package struct AFMMLXToolModelListEntry: Equatable, Sendable {
     }
 }
 
-package enum AFMMLXToolModelResolution: Equatable, Sendable {
+public enum AFMMLXToolModelResolution: Equatable, Sendable {
     case downloaded(id: String, displayName: String)
     case repositoryOnDisk(id: String, displayName: String, isVision: Bool)
     case imported(id: String, name: String, path: String)
     case missing(modelID: String)
 }
 
-package enum AFMMLXToolModelPolicy {
+public enum AFMMLXToolModelPolicy {
     public static func modelListEntries(
         downloadedModels: [AFMMLXToolDownloadedModel],
         importedModels: [AFMMLXToolImportedModel]

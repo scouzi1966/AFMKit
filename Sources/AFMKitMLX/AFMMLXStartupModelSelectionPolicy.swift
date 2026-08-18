@@ -1,6 +1,6 @@
 import Foundation
 
-package enum AFMMLXStartupModelSelectionPolicy {
+public enum AFMMLXStartupModelSelectionPolicy {
     public static func select(
         options: [AFMMLXModelSelectionOption],
         selectedDisplayName: String,

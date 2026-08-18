@@ -1,7 +1,7 @@
 import Foundation
 @preconcurrency import MLXLMCommon
 
-package struct AFMMLXPreparedChatHistory {
+public struct AFMMLXPreparedChatHistory {
     public let history: [Chat.Message]
     public let snapshot: [Chat.Message]
 
@@ -11,7 +11,7 @@ package struct AFMMLXPreparedChatHistory {
     }
 }
 
-package enum AFMMLXChatHistoryPolicy {
+public enum AFMMLXChatHistoryPolicy {
     public static let defaultSystemPrompt = "You are a helpful assistant!"
 
     public static func reset(systemPrompt: String = defaultSystemPrompt) -> [Chat.Message] {
