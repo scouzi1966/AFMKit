@@ -1,11 +1,12 @@
 # AFMKit Transition Plan
 
-Last updated: 2026-08-17
+Last updated: 2026-08-18
 
 Extraction baseline: `maclocal-api` commit `2581e82410f50c2427a6a11c19344738856850e9`.
 
-Current synchronization baseline: `maclocal-api` commit `224125f`, including the Qwen 3.8
-tool-call and automatic MTP-sidecar runtime changes from `cd2fdba` and `bc343f6`.
+Current synchronization baseline: `maclocal-api` commit `30c1ce3`, including the Qwen 3.8
+tool-call and automatic MTP-sidecar runtime changes from `cd2fdba` and `bc343f6`, plus the
+first server-owned AFMKit serving facade split.
 
 ## Objective
 
@@ -166,6 +167,11 @@ Current `AFMKitMLX` checkpoint:
 - The provider-level MTP policy, resource resolution, local path resolution, and configuration
   propagation are covered by focused Release tests in this repository. HTTP `tool_choice` and
   response-finalization policy remains in maclocal-api because it is a server concern.
+- Provider-level runtime telemetry is currently exposed through runtime snapshots and counters
+  owned by `AFMKitMLX`. This is intentionally not part of `AFMKitCore`, and it must not grow
+  HTTP, Prometheus, vLLM, GuideLLM, Vapor, or WebUI presentation responsibilities. Before a public
+  AFMKit 1.0 tag, this surface should either be renamed as provider runtime observations or moved
+  behind a small provider-neutral telemetry event contract.
 
 Current `AFMKitDwarfStar` checkpoint:
 
@@ -210,6 +216,21 @@ targets. The MLX runtime is synchronized through the current maclocal-api baseli
 `0.31.6-afm.3` compatibility tag. Tagged-package migration for maclocal-api and Vesta remains
 outstanding.
 
+Current maclocal-api consumer-migration checkpoint:
+
+- Branch `codex/afmkit-consumer-migration`, based on checkpoint `30c1ce3`, imports `AFMKitCore`
+  and `AFMKitMLX` from AFMKit, while keeping OpenAI HTTP routing, Vapor request lifecycle, response files,
+  cancellable request tasks, dashboard rendering, and Prometheus/vLLM/GuideLLM-compatible
+  exposition in maclocal-api.
+- `AFMServer` owns the `AFMChatServing` facade and server transport DTOs. It converts typed
+  provider events into OpenAI-compatible HTTP responses instead of reaching into MLX internals or
+  parsing provider-specific raw tool-call text in the controller.
+- The focused Release migration gate passed for streaming controllers, batch dispatch,
+  reasoning propagation, MLX provider facade behavior, and concurrent batch behavior.
+- The worktree still shows the expected patched `vendor/mlx-swift-lm` submodule state. That is a
+  legacy maclocal-api build detail and should disappear when maclocal-api fully consumes tagged
+  AFMKit and tagged AFM-compatible MLX packages.
+
 Scope:
 
 - Make maclocal-api consume AFMKit packages from tags.
@@ -233,9 +254,36 @@ Exit criteria:
 - macOS 26 builds must not import macOS 27-only symbols outside guarded provider packages.
 - Provider streams should emit structured events for text, reasoning, tool calls, structured output, generated media, usage, timing, progress, completion, and errors.
 - Runtime-specific capabilities must be explicit. Swapping engines should not silently remove tool calling, reasoning, structured JSON, or multimodal support without advertising that limitation.
+- Server and transport observability are not core-provider responsibilities. `AFMKitCore` must
+  not define HTTP, Prometheus, vLLM, GuideLLM, Vapor, WebUI, or dashboard concepts. Provider
+  packages may expose runtime observations; maclocal-api turns those observations into `/metrics`
+  and benchmark-compatible server surfaces.
+
+## Issue #192 Observability Boundary
+
+The transition target for vLLM Playground and GuideLLM compatibility is:
+
+- `AFMKitCore`: portable requests, responses, capabilities, generation events, usage, timing,
+  cancellation, and provider lifecycle only.
+- Runtime packages such as `AFMKitMLX` and `AFMKitDwarfStar`: provider-owned runtime observations
+  such as queue depth, token counts, cache hits, prefill/decode timings, and engine-specific
+  capability metadata. These must remain structured Swift data and avoid HTTP or Prometheus
+  presentation details.
+- `AFMOpenAICompat`: portable OpenAI DTOs and policy normalization when the behavior is genuinely
+  model/provider-agnostic.
+- `maclocal-api` / `AFMServer`: OpenAI HTTP routes, streaming framing, active HTTP connection
+  lifecycle, `/metrics`, Prometheus text exposition, vLLM-compatible metric names, GuideLLM
+  request semantics, WebUI state, release harnesses, and benchmark adapters.
+
+Fields such as `ignore_eos`, `continuous_usage_stats`, benchmark concurrency knobs, and active
+connection gauges are server/transport policy unless they can be reduced to a provider-neutral
+generation control. If they remain vLLM-specific, they belong in maclocal-api compatibility layers,
+not in `AFMKitCore`.
 
 ## Open Questions
 
 - Whether `AFMKitApple` should be one package with guarded files or two products: macOS 26 FoundationModels compatibility and macOS 27 advanced providers.
 - Whether AFMKit should own a small download abstraction or leave all Hugging Face/Xet transport in runtime adapters.
 - Whether patched MLX functionality should live in an AFM-compatible fork, upstream MLX packages, or a narrow adapter package with generated patch application.
+- Whether provider runtime telemetry should stay as per-provider implementation detail or become a
+  small `AFMKitCore` observation protocol after the maclocal-api `/metrics` adapter is stable.

@@ -107,7 +107,8 @@ public struct AFMMLXExecutionHarness: Sendable {
 }
 
 public final class AFMMLXModel: AFMModel, AFMTextTokenizing, AFMPrewarmableModel,
-    AFMAdmissionReportingModel, AFMTelemetryReportingModel, @unchecked Sendable
+    AFMAdmissionReportingModel, AFMTelemetryReportingModel, AFMMLXOpenAIChatServing,
+    @unchecked Sendable
 {
     public let descriptor: AFMModelDescriptor
 

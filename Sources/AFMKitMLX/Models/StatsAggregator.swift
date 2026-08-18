@@ -15,15 +15,15 @@ import os
 /// authored against `vllm:*` work against `afm:*` after a search-and-replace
 /// of the namespace prefix.
 ///
-/// The server presents snapshots from this type through `GET /metrics`;
-/// the Prometheus exposition renderer intentionally lives in AFMServer so
-/// AFMKit stays a structured-runtime layer instead of an HTTP presentation
-/// layer.
+/// Presentation layers may render snapshots from this type through their
+/// own transport-specific metrics endpoint. The Prometheus exposition
+/// renderer intentionally lives outside AFMKit so the package stays a
+/// structured-runtime layer instead of an HTTP presentation layer.
 ///
 /// Both the batched code path (`BatchScheduler`) and the serial
 /// single-sequence path (`MLXModelService.generate*`) call into the
-/// same singleton so `/metrics` always reflects the complete server
-/// activity regardless of which path served the request.
+/// same singleton so runtime observations reflect activity regardless of
+/// which path served the request.
 ///
 /// Live-state gauges (inflight, queue depth, gpu cache usage) are read
 /// through closures registered at startup by whichever component owns
@@ -161,11 +161,6 @@ public final class StatsAggregator: @unchecked Sendable {
         public var gpuCacheUsage: FractionReader?
         public var radixCacheFill: FractionReader?
         public var batchSizePeak: Int = 0
-        // Active HTTP connections — incremented when a request enters
-        // the Vapor pipeline, decremented when its response finalizes.
-        // Maintained by `ActiveConnectionsMiddleware` in Server.swift.
-        public var activeConnections: Int = 0
-        public var activeConnectionsPeak: Int = 0
     }
 
     private let counters = OSAllocatedUnfairLock(initialState: Counters())
@@ -217,25 +212,6 @@ public final class StatsAggregator: @unchecked Sendable {
     /// when not registered (e.g. when `--enable-prefix-caching` is off).
     public func registerRadixCacheFillReader(_ reader: @escaping FractionReader) {
         gauges.withLock { $0.radixCacheFill = reader }
-    }
-
-    /// Increment the active-HTTP-connection gauge. Called by the request
-    /// middleware on entry. Also tracks an all-time peak.
-    public func connectionStarted() {
-        gauges.withLock { g in
-            g.activeConnections += 1
-            if g.activeConnections > g.activeConnectionsPeak {
-                g.activeConnectionsPeak = g.activeConnections
-            }
-        }
-    }
-
-    /// Decrement the active-HTTP-connection gauge. Called by the request
-    /// middleware when the response finalizes (success or failure).
-    public func connectionEnded() {
-        gauges.withLock { g in
-            if g.activeConnections > 0 { g.activeConnections -= 1 }
-        }
     }
 
     /// Reset counters and histograms (for long-running processes that
@@ -404,8 +380,6 @@ public final class StatsAggregator: @unchecked Sendable {
         public let numRunning: Int
         public let numWaiting: Int
         public let batchSizePeak: Int
-        public let activeConnections: Int
-        public let activeConnectionsPeak: Int
         public let gpuCacheUsage: Double?
         public let radixCacheFill: Double?
         public let genTokensTotal: UInt64
@@ -434,14 +408,14 @@ public final class StatsAggregator: @unchecked Sendable {
         let c = counters.withLock { $0 }
         let h = histograms.withLock { $0 }
         let m = meta.withLock { $0 }
-        let (running, waiting, peak, gpuCache, radixFill, conns, connsPeak) = gauges.withLock {
-            g -> (Int, Int, Int, Double?, Double?, Int, Int) in
+        let (running, waiting, peak, gpuCache, radixFill) = gauges.withLock {
+            g -> (Int, Int, Int, Double?, Double?) in
             let r = g.running?() ?? 0
             let w = g.waiting?() ?? 0
             let cache = g.gpuCacheUsage?()
             let radix = g.radixCacheFill?()
             if r > g.batchSizePeak { g.batchSizePeak = r }
-            return (r, w, g.batchSizePeak, cache, radix, g.activeConnections, g.activeConnectionsPeak)
+            return (r, w, g.batchSizePeak, cache, radix)
         }
         return Snapshot(
             timestampMs: Int64(Date().timeIntervalSince1970 * 1000),
@@ -451,8 +425,6 @@ public final class StatsAggregator: @unchecked Sendable {
             numRunning: running,
             numWaiting: waiting,
             batchSizePeak: peak,
-            activeConnections: conns,
-            activeConnectionsPeak: connsPeak,
             gpuCacheUsage: gpuCache,
             radixCacheFill: radixFill,
             genTokensTotal: c.genTokensTotal,
