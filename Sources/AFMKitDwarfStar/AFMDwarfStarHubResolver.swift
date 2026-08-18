@@ -27,13 +27,13 @@ package struct AFMDwarfStarHubArtifact: Equatable, Sendable {
     }
 }
 
-package enum AFMDwarfStarHubSelectionError: LocalizedError, Equatable {
+public enum AFMDwarfStarHubSelectionError: LocalizedError, Equatable {
     case invalidRepositoryID(String)
     case noModelGGUF(String)
     case requestedFileNotFound(String)
     case modelExceedsMemoryBudget(path: String, size: Int64, budget: Int64)
 
-    package var errorDescription: String? {
+    public var errorDescription: String? {
         switch self {
         case .invalidRepositoryID(let id):
             return "Invalid Hugging Face repository ID: \(id)"
@@ -100,14 +100,14 @@ package enum AFMDwarfStarHubSelector {
     }
 }
 
-package struct AFMDwarfStarHubResolver: Sendable {
+public struct AFMDwarfStarHubResolver: Sendable {
     private let cacheDirectory: URL
 
-    package init(cacheDirectory: URL = Self.defaultCacheDirectory()) {
+    public init(cacheDirectory: URL = Self.defaultCacheDirectory()) {
         self.cacheDirectory = cacheDirectory
     }
 
-    package func resolve(
+    public func resolve(
         repositoryID: String,
         requestedPath: String? = nil,
         progress: (@Sendable (Progress) -> Void)? = nil
@@ -296,7 +296,7 @@ package struct AFMDwarfStarHubResolver: Sendable {
         return value
     }
 
-    package static func defaultCacheDirectory() -> URL {
+    public static func defaultCacheDirectory() -> URL {
         let environment = ProcessInfo.processInfo.environment
         if let value = environment["HF_HUB_CACHE"] ?? environment["HUGGINGFACE_HUB_CACHE"],
            !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {

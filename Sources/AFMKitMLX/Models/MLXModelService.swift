@@ -109,7 +109,7 @@ package enum MLXLoadStage: String {
     case ready = "ready"
 }
 
-package enum MLXServiceError: Error, LocalizedError {
+public enum MLXServiceError: Error, LocalizedError {
     case invalidModel(String)
     case modelNotFoundInCache(String)
     case downloadFailed(String)

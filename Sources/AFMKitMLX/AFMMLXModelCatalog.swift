@@ -4,7 +4,7 @@ import MLXLMCommon
 import MLXLLM
 import MLXVLM
 
-package struct AFMMLXGenerationPreset: Hashable, Sendable {
+public struct AFMMLXGenerationPreset: Hashable, Sendable {
     public var temperature: Double?
     public var topP: Double?
     public var topK: Int?
@@ -179,7 +179,7 @@ package struct AFMMLXLocalModelMetadata: Hashable, Sendable {
     }
 }
 
-package struct AFMMLXCuratedModel: Hashable, Identifiable, Sendable {
+public struct AFMMLXCuratedModel: Hashable, Identifiable, Sendable {
     public var id: String { repoID }
 
     public var displayName: String
@@ -238,7 +238,7 @@ package struct AFMMLXCuratedModel: Hashable, Identifiable, Sendable {
     }
 }
 
-package enum AFMMLXModelCatalog {
+public enum AFMMLXModelCatalog {
     public static let defaultModelID = "mlx-community/Qwen3-VL-4B-Instruct-5bit"
 
     public static let textModels: [AFMMLXCuratedModel] = [

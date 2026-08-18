@@ -3,13 +3,13 @@ import AFMKitCore
 import Hub
 import HuggingFace
 
-package typealias AFMMLXModelDownloadSnapshot = @Sendable (
+public typealias AFMMLXModelDownloadSnapshot = @Sendable (
     _ modelID: String,
     _ matching: [String],
     _ progress: (@Sendable (Progress) -> Void)?
 ) async throws -> URL
 
-package enum AFMMLXModelOrigin: String, Hashable, Sendable {
+public enum AFMMLXModelOrigin: String, Hashable, Sendable {
     case configuredCache
     case huggingFace
     case swiftHub
@@ -32,7 +32,7 @@ package enum AFMMLXModelOrigin: String, Hashable, Sendable {
     }
 }
 
-package struct AFMMLXDiscoveryLocation: Hashable, Sendable {
+public struct AFMMLXDiscoveryLocation: Hashable, Sendable {
     public enum Layout: Hashable, Sendable {
         case flat
         case huggingFaceHub
@@ -53,7 +53,7 @@ package struct AFMMLXDiscoveryLocation: Hashable, Sendable {
     }
 }
 
-package struct AFMMLXDiscoveredModel: Hashable, Sendable {
+public struct AFMMLXDiscoveredModel: Hashable, Sendable {
     public var id: AFMModelID
     public var loadIdentifier: String
     public var localDirectory: URL
@@ -81,7 +81,7 @@ package struct AFMMLXDiscoveredModel: Hashable, Sendable {
     }
 }
 
-package struct AFMMLXModelLoadReference: Hashable, Sendable {
+public struct AFMMLXModelLoadReference: Hashable, Sendable {
     public var requestedID: String
     public var loadIdentifier: String
     public var localDirectory: URL
@@ -100,7 +100,7 @@ package struct AFMMLXModelLoadReference: Hashable, Sendable {
     }
 }
 
-package struct AFMMLXModelPresentation: Hashable, Sendable {
+public struct AFMMLXModelPresentation: Hashable, Sendable {
     public var configuredID: String
     public var localDirectory: URL
     public var descriptor: AFMModelDescriptor
@@ -164,7 +164,7 @@ package struct AFMMLXModelPresentation: Hashable, Sendable {
     }
 }
 
-package struct AFMMLXModelDeleteResult: Hashable, Sendable {
+public struct AFMMLXModelDeleteResult: Hashable, Sendable {
     public var requestedID: String
     public var removedDirectory: URL
     public var deleted: Bool
@@ -180,7 +180,7 @@ package struct AFMMLXModelDeleteResult: Hashable, Sendable {
     }
 }
 
-package struct AFMMLXModelDownloadResult: Hashable, Sendable {
+public struct AFMMLXModelDownloadResult: Hashable, Sendable {
     public var requestedID: String
     public var downloadedDirectory: URL
     public var loadReference: AFMMLXModelLoadReference
@@ -196,7 +196,7 @@ package struct AFMMLXModelDownloadResult: Hashable, Sendable {
     }
 }
 
-package struct AFMMLXModelCandidate: Hashable, Sendable {
+public struct AFMMLXModelCandidate: Hashable, Sendable {
     public var id: String
     public var displayName: String?
     public var sourceTag: String
@@ -212,7 +212,7 @@ package struct AFMMLXModelCandidate: Hashable, Sendable {
     }
 }
 
-package struct AFMMLXModelSelectionOption: Hashable, Sendable {
+public struct AFMMLXModelSelectionOption: Hashable, Sendable {
     public var id: String
     public var displayName: String
     public var sourceTag: String
@@ -235,7 +235,7 @@ package struct AFMMLXModelSelectionOption: Hashable, Sendable {
     }
 }
 
-package enum AFMMLXModelStoreError: Error, LocalizedError, Sendable {
+public enum AFMMLXModelStoreError: Error, LocalizedError, Sendable {
     case modelNotFound(String)
     case invalidRepositoryID(String)
     case invalidModelConfiguration(String)
@@ -260,7 +260,7 @@ package enum AFMMLXModelStoreError: Error, LocalizedError, Sendable {
 /// Hosts may supply model identifiers from their own curated lists or UI
 /// registries, then use this store as the single source of truth for whether
 /// those identifiers resolve to complete local model assets.
-package struct AFMMLXModelStore: Sendable {
+public struct AFMMLXModelStore: Sendable {
     public static let defaultDownloadPatterns = [
         "*.json",
         "*.jinja",

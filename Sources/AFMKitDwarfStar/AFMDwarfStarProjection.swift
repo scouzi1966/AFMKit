@@ -3,7 +3,7 @@ import Foundation
 /// A zero-copy projection of AFM safetensor shards into the contiguous address
 /// layout expected by DwarfStar. The metadata file is small; tensor bytes stay
 /// in their original shard files.
-package struct AFMDwarfStarProjection: Sendable {
+public struct AFMDwarfStarProjection: Sendable {
     package struct Region: Sendable, Equatable {
         package let path: String
         package let virtualOffset: UInt64
@@ -29,7 +29,7 @@ package struct AFMDwarfStarProjection: Sendable {
     /// Copies only the GGUF metadata and tensor descriptors needed to project
     /// AFM safetensor shards. The resulting file is typically a few MiB and
     /// makes an executor checkpoint self-contained without duplicating weights.
-    package static func writeMetadataTemplate(
+    public static func writeMetadataTemplate(
         from sourceGGUF: URL,
         to outputURL: URL
     ) throws {

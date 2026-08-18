@@ -5,7 +5,7 @@ import MLXLMCommon
 
 /// Resumable, shard-streaming conversion of an official DeepSeek V4 checkpoint
 /// into the tensor layout consumed directly by AFMKit's MLX provider.
-package struct DeepseekV4CheckpointConverter {
+public struct DeepseekV4CheckpointConverter {
     public typealias ProgressHandler = (String) -> Void
     private static let currentFormatVersion = 11
 

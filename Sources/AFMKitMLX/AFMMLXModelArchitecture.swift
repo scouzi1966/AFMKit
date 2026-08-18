@@ -1,6 +1,6 @@
 import Foundation
 
-package struct AFMMLXModelArchitecturePreflight: Hashable, Sendable {
+public struct AFMMLXModelArchitecturePreflight: Hashable, Sendable {
     public var modelID: String
     public var modelType: String
     public var canonicalModelType: String
@@ -22,7 +22,7 @@ package struct AFMMLXModelArchitecturePreflight: Hashable, Sendable {
     }
 }
 
-package struct AFMMLXRemoteModelLoadPlan: Hashable, Sendable {
+public struct AFMMLXRemoteModelLoadPlan: Hashable, Sendable {
     public let repoID: String
     public let modelName: String
     public let isVision: Bool
@@ -47,7 +47,7 @@ package struct AFMMLXRemoteModelLoadPlan: Hashable, Sendable {
     }
 }
 
-package enum AFMMLXModelArchitecturePreflightError: Error, LocalizedError, Sendable {
+public enum AFMMLXModelArchitecturePreflightError: Error, LocalizedError, Sendable {
     case invalidConfiguration(String)
     case draftOnlyArchitecture(architecture: String, modelID: String)
     case unsupportedArchitecture(modelType: String, modelID: String)
@@ -67,7 +67,7 @@ package enum AFMMLXModelArchitecturePreflightError: Error, LocalizedError, Senda
     }
 }
 
-package enum AFMMLXRemoteModelLoadPolicy {
+public enum AFMMLXRemoteModelLoadPolicy {
     public static func modelName(from repoID: String) -> String {
         String(repoID.split(separator: "/").last ?? Substring(repoID))
     }
@@ -96,7 +96,7 @@ package enum AFMMLXRemoteModelLoadPolicy {
     }
 }
 
-package enum AFMMLXModelArchitecture {
+public enum AFMMLXModelArchitecture {
     public static func draftOnlyArchitecture(in config: [String: Any]) -> String? {
         let architectures = (config["architectures"] as? [String]) ?? []
         if let architecture = architectures.first(where: {

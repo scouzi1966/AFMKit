@@ -4,8 +4,8 @@ import Foundation
 ///
 /// The catalog retains file-backed tensor locations so a fixed-schedule runtime
 /// can map shard payloads directly without first materializing a second model.
-package struct AFMDwarfStarCheckpointCatalog: Sendable {
-    package static let bundledTemplateFilename = "dwarfstar-template.gguf"
+public struct AFMDwarfStarCheckpointCatalog: Sendable {
+    public static let bundledTemplateFilename = "dwarfstar-template.gguf"
 
     private struct SafetensorHeader {
         let tensors: [String: Any]
@@ -70,17 +70,17 @@ package struct AFMDwarfStarCheckpointCatalog: Sendable {
     }
 
     /// Returns true when the file has a readable GGUF v3 container header.
-    package static func isGGUF(at url: URL) -> Bool {
+    public static func isGGUF(at url: URL) -> Bool {
         ggufArchitecture(at: url) != nil
     }
 
     /// Reads the model architecture from GGUF metadata without loading tensor
     /// data. This is the runtime auto-selection signal; filenames are ignored.
-    package static func ggufArchitecture(at url: URL) -> String? {
+    public static func ggufArchitecture(at url: URL) -> String? {
         try? GGUFMetadataReader(url: url.resolvingSymlinksInPath()).architecture()
     }
 
-    package static func isDwarfStarCompatibleGGUF(at url: URL) -> Bool {
+    public static func isDwarfStarCompatibleGGUF(at url: URL) -> Bool {
         ggufArchitecture(at: url) == "deepseek4"
     }
 

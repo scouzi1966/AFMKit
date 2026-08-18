@@ -3,14 +3,14 @@ import Darwin
 
 /// Error thrown while resolving/installing the MLX Metal shader library.
 /// (Plain Swift error so AFMKit stays free of the ArgumentParser dependency.)
-package struct MetalLibraryError: Error, CustomStringConvertible {
+public struct MetalLibraryError: Error, CustomStringConvertible {
     public let message: String
     public init(_ message: String) { self.message = message }
     public var description: String { message }
     public var errorDescription: String? { message }
 }
 
-package enum MLXMetalLibrary {
+public enum MLXMetalLibrary {
     private static let lock = NSLock()
     nonisolated(unsafe) private static var initialized = false
     private static let resourceBundleNames = [

@@ -2,14 +2,14 @@ import Foundation
 import AFMOpenAICompat
 import MLXLMCommon
 
-package enum ToolCallStreamingEvent: Sendable {
+public enum ToolCallStreamingEvent: Sendable {
     case started
     case delta(StreamDeltaToolCall)
     case appendCollected(ResponseToolCall)
     case replaceCollected(index: Int, toolCall: ResponseToolCall)
 }
 
-package struct ToolCallStreamingOutput: Sendable {
+public struct ToolCallStreamingOutput: Sendable {
     public let handled: Bool
     public let events: [ToolCallStreamingEvent]
     public let passthroughText: String?
@@ -25,7 +25,7 @@ package struct ToolCallStreamingOutput: Sendable {
     }
 }
 
-package final class ToolCallStreamingRuntime {
+public final class ToolCallStreamingRuntime {
     private let toolCallStartTag: String
     private let toolCallEndTag: String
     private let toolCallParser: String?

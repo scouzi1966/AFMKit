@@ -29,7 +29,7 @@ import os
 /// through closures registered at startup by whichever component owns
 /// the state. This lets presentation layers pull live values from existing
 /// nonisolated locks without hopping through any actor.
-package final class StatsAggregator: @unchecked Sendable {
+public final class StatsAggregator: @unchecked Sendable {
 
     /// Process-wide singleton. All increment calls are O(1) under a
     /// single unfair lock; contention is negligible vs the Metal

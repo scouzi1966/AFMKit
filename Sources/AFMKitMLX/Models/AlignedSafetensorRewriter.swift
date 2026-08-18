@@ -3,7 +3,7 @@ import Foundation
 /// Rewrites safetensor shards so every tensor payload begins on a 32-byte
 /// boundary. Fixed-schedule Metal executors consume GGUF-aligned tensor ABIs;
 /// ordinary safetensor JSON headers do not guarantee that alignment.
-package enum AlignedSafetensorRewriter {
+public enum AlignedSafetensorRewriter {
     public typealias ProgressHandler = (String) -> Void
 
     private static let tensorAlignment = 32
