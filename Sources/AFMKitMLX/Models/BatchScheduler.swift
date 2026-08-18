@@ -492,6 +492,14 @@ actor BatchScheduler {
         _inFlightCount.withLock { $0 }
     }
 
+    nonisolated var pendingSlotCount: Int {
+        _pendingQueue.withLock { $0.count }
+    }
+
+    nonisolated var acceptsNewRequests: Bool {
+        !_isShutdown.withLock { $0 }
+    }
+
     /// Cancel pending or active scheduler slots. This is nonisolated so an SSE
     /// stream's termination handler can signal the synchronous GPU loop.
     nonisolated func cancelSlots(ids: Set<UUID>) {

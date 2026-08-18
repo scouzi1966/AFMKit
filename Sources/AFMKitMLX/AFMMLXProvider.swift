@@ -66,14 +66,55 @@ public struct AFMMLXProviderFactory: AFMProviderFactory {
     }
 }
 
+package struct AFMMLXExecutionHarness: Sendable {
+    package let descriptor: AFMModelDescriptor
+    package let load:
+        @Sendable ((@Sendable (Double) -> Void)?) async throws -> AFMModelDescriptor
+    package let stream:
+        @Sendable (AFMRequest, String?) async throws
+        -> AsyncThrowingStream<AFMGenerationEvent, Error>
+    package let unload: @Sendable () async -> Void
+    package let tokenize: @Sendable (String) async throws -> [Int]
+    package let admissionSnapshot: @Sendable () async -> AFMAdmissionSnapshot
+    package let telemetrySnapshot: @Sendable () async -> AFMTelemetrySnapshot
+
+    package init(
+        descriptor: AFMModelDescriptor,
+        load: @escaping @Sendable
+            ((@Sendable (Double) -> Void)?) async throws -> AFMModelDescriptor,
+        stream: @escaping @Sendable
+            (AFMRequest, String?) async throws
+            -> AsyncThrowingStream<AFMGenerationEvent, Error>,
+        unload: @escaping @Sendable () async -> Void = {},
+        tokenize: @escaping @Sendable (String) async throws -> [Int] = { _ in
+            throw AFMError.unsupportedCapability("tokenization")
+        },
+        admissionSnapshot: @escaping @Sendable () async -> AFMAdmissionSnapshot = {
+            AFMAdmissionSnapshot(executionMode: .serial)
+        },
+        telemetrySnapshot: @escaping @Sendable () async -> AFMTelemetrySnapshot = {
+            AFMTelemetrySnapshot()
+        }
+    ) {
+        self.descriptor = descriptor
+        self.load = load
+        self.stream = stream
+        self.unload = unload
+        self.tokenize = tokenize
+        self.admissionSnapshot = admissionSnapshot
+        self.telemetrySnapshot = telemetrySnapshot
+    }
+}
+
 public final class AFMMLXModel: AFMModel, AFMTextTokenizing, AFMPrewarmableModel,
-    AFMMLXOpenAIChatServing, @unchecked Sendable
+    AFMAdmissionReportingModel, AFMTelemetryReportingModel, @unchecked Sendable
 {
     public let descriptor: AFMModelDescriptor
 
-    private let runtime: AFMMLXRuntime
-    package let service: MLXModelService
+    private let runtime: AFMMLXRuntime?
+    package let service: MLXModelService?
     private let modelID: String
+    private let harness: AFMMLXExecutionHarness?
 
     public convenience init(
         modelID: AFMModelID,
@@ -89,7 +130,7 @@ public final class AFMMLXModel: AFMModel, AFMTextTokenizing, AFMPrewarmableModel
 
     /// Creates a model with the complete MLX runtime configuration used by
     /// server and app hosts. The concrete engine service remains private to
-    /// AFMKitMLX; callers interact through `AFMMLXOpenAIChatServing`.
+    /// AFMKitMLX; callers interact through the neutral `AFMModel` contract.
     public init(
         modelID: AFMModelID,
         runtimeConfiguration: AFMMLXRuntimeConfiguration,
@@ -105,6 +146,7 @@ public final class AFMMLXModel: AFMModel, AFMTextTokenizing, AFMPrewarmableModel
         self.service = runtime.service
         self.modelID = runtime.modelID
         self.descriptor = runtime.descriptor
+        self.harness = nil
     }
 
     package init(
@@ -124,6 +166,7 @@ public final class AFMMLXModel: AFMModel, AFMTextTokenizing, AFMPrewarmableModel
         self.service = runtime.service
         self.modelID = runtime.modelID
         self.descriptor = runtime.descriptor
+        self.harness = nil
     }
 
     /// Wrap a host-owned service without mutating its established runtime settings.
@@ -142,6 +185,15 @@ public final class AFMMLXModel: AFMModel, AFMTextTokenizing, AFMPrewarmableModel
         self.service = service
         self.modelID = runtime.modelID
         self.descriptor = runtime.descriptor
+        self.harness = nil
+    }
+
+    package init(harness: AFMMLXExecutionHarness) {
+        self.runtime = nil
+        self.service = nil
+        self.modelID = harness.descriptor.modelID.rawValue
+        self.descriptor = harness.descriptor
+        self.harness = harness
     }
 
     public func availability() async -> AFMModelAvailability {
@@ -152,6 +204,12 @@ public final class AFMMLXModel: AFMModel, AFMTextTokenizing, AFMPrewarmableModel
         progress: (@Sendable (Double) -> Void)?
     ) async throws -> AFMModelDescriptor {
         do {
+            if let harness {
+                return try await harness.load(progress)
+            }
+            guard let runtime else {
+                throw AFMError.loadingFailed("MLX runtime is unavailable.")
+            }
             return try await runtime.load(
                 progress: { progress?($0.fractionCompleted) }
             )
@@ -162,7 +220,7 @@ public final class AFMMLXModel: AFMModel, AFMTextTokenizing, AFMPrewarmableModel
 
     public func respond(to request: AFMRequest) async throws -> AFMModelResponse {
         do {
-            return try await Self.collectResponse(from: streamResponse(to: request))
+            return try await Self.collectResponse(from: executionStream(for: request))
         } catch let error as AFMError {
             throw error
         } catch is CancellationError {
@@ -175,13 +233,81 @@ public final class AFMMLXModel: AFMModel, AFMTextTokenizing, AFMPrewarmableModel
     public func streamResponse(
         to request: AFMRequest
     ) -> AsyncThrowingStream<AFMGenerationEvent, Error> {
+        executionStream(for: request)
+    }
+
+    public func unload() async {
+        if let harness {
+            await harness.unload()
+            return
+        }
+        await runtime?.unload()
+    }
+
+    public func tokenize(text: String) async throws -> [Int] {
+        _ = try await load(progress: nil)
+        if let harness {
+            return try await harness.tokenize(text)
+        }
+        guard let service else {
+            throw AFMError.unsupportedCapability("tokenization")
+        }
+        return try await service.tokenize(text: text)
+    }
+
+    public func prewarm() async throws {
+        let stream = executionStream(for: Self.prewarmRequest, requestID: "afmkit-prewarm")
+        for try await _ in stream {}
+    }
+
+    public func admissionSnapshot() async -> AFMAdmissionSnapshot {
+        if let harness {
+            return await harness.admissionSnapshot()
+        }
+        guard let service else {
+            return AFMAdmissionSnapshot(
+                executionMode: .serial,
+                acceptsNewOperations: false
+            )
+        }
+        return await service.admissionSnapshot()
+    }
+
+    public func telemetrySnapshot() async -> AFMTelemetrySnapshot {
+        if let harness {
+            return await harness.telemetrySnapshot()
+        }
+        guard let service else {
+            return AFMTelemetrySnapshot()
+        }
+        return await service.telemetrySnapshot()
+    }
+
+    private var providerModelID: String { modelID }
+
+    private func executionStream(
+        for request: AFMRequest,
+        requestID: String? = nil
+    ) -> AsyncThrowingStream<AFMGenerationEvent, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
                     _ = try await load(progress: nil)
+                    if let harness {
+                        let stream = try await harness.stream(request, requestID)
+                        for try await event in stream {
+                            try Task.checkCancellation()
+                            continuation.yield(event)
+                        }
+                        continuation.finish()
+                        return
+                    }
+                    guard let service else {
+                        throw AFMError.generationFailed("MLX service is unavailable.")
+                    }
                     let tools = request.effectiveOpenAITools()
                     let result = try await service.generateStreaming(
-                        model: modelID,
+                        model: providerModelID,
                         messages: try request.openAIMessages(),
                         temperature: request.options.temperature,
                         maxTokens: request.options.maximumResponseTokens,
@@ -198,7 +324,7 @@ public final class AFMMLXModel: AFMModel, AFMTextTokenizing, AFMPrewarmableModel
                         stop: request.options.stopSequences,
                         responseFormat: request.openAIResponseFormat(),
                         chatTemplateKwargs: request.chatTemplateKwargs(),
-                        requestId: nil
+                        requestId: requestID
                     )
                     var translator = MLXStreamEventTranslator(
                         thinkStartTag: result.thinkStartTag,
@@ -278,17 +404,16 @@ public final class AFMMLXModel: AFMModel, AFMTextTokenizing, AFMPrewarmableModel
         }
     }
 
-    public func unload() async {
-        await runtime.unload()
-    }
-
-    public func tokenize(text: String) async throws -> [Int] {
-        _ = try await load(progress: nil)
-        return try await service.tokenize(text: text)
-    }
-
-    public func prewarm() async throws {
-        try await runtime.prewarm()
+    private static var prewarmRequest: AFMRequest {
+        AFMRequest(
+            messages: [
+                AFMMessage(role: .user, text: "warmup")
+            ],
+            options: AFMGenerationOptions(
+                temperature: 0,
+                maximumResponseTokens: 4
+            )
+        )
     }
 
     package static func collectResponse(

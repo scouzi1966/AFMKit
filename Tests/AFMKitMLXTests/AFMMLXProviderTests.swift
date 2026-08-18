@@ -255,7 +255,7 @@ final class AFMMLXProviderTests: XCTestCase {
         requirePortableTokenizer(model)
     }
 
-    func testMLXModelIsThePublicServingFacade() {
+    func testMLXModelExposesNeutralCoreCapabilities() async {
         let model = AFMMLXModel(
             modelID: "test/model",
             runtimeConfiguration: AFMMLXRuntimeConfiguration(
@@ -267,11 +267,160 @@ final class AFMMLXProviderTests: XCTestCase {
             )
         )
 
-        requireOpenAIChatServingContract(model)
-        XCTAssertEqual(model.maxConcurrent, 8)
-        XCTAssertEqual(model.servingConfiguration.toolCallParser, "qwen3_xml")
-        XCTAssertTrue(model.servingConfiguration.grammarConstraintsEnabled)
-        XCTAssertTrue(model.servingConfiguration.fixToolArguments)
+        requirePortableTokenizer(model)
+        requireAdmissionReportingContract(model)
+        requireTelemetryReportingContract(model)
+
+        let admission = await model.admissionSnapshot()
+        XCTAssertEqual(admission.executionMode, .serial)
+        XCTAssertEqual(admission.maximumConcurrentOperations, 1)
+        XCTAssertEqual(admission.availableOperationSlots, 1)
+        XCTAssertEqual(admission.metadata["scheduler"], .string("serial"))
+
+        let telemetry = await model.telemetrySnapshot()
+        XCTAssertEqual(telemetry.activeOperations, 0)
+        XCTAssertEqual(telemetry.metadata["runtime"], .string("mlx-swift"))
+        XCTAssertEqual(telemetry.metadata["prefixCachingEnabled"], .bool(true))
+        XCTAssertEqual(telemetry.metadata["grammarConstraintsEnabled"], .bool(true))
+        XCTAssertEqual(telemetry.metadata["toolCallParser"], .string("qwen3_xml"))
+    }
+
+    func testHarnessBackedModelRespondAndStreamCanRunConcurrently() async throws {
+        let state = HarnessState()
+        let descriptor = mlxStaticTestDescriptor()
+        let model = AFMMLXModel(
+            harness: AFMMLXExecutionHarness(
+                descriptor: descriptor,
+                load: { progress in
+                    progress?(1)
+                    return descriptor
+                },
+                stream: { request, requestID in
+                    await state.recordRequestID(requestID)
+                    return AsyncThrowingStream { continuation in
+                        let task = Task {
+                            await state.begin()
+                            defer { Task { await state.end() } }
+                            continuation.yield(.responseText(
+                                action: .append,
+                                text: request.messages.first?.textContent ?? "ok",
+                                tokenCount: 1
+                            ))
+                            try? await Task.sleep(nanoseconds: 50_000_000)
+                            continuation.yield(.completed(.stop))
+                            continuation.finish()
+                        }
+                        continuation.onTermination = { _ in task.cancel() }
+                    }
+                },
+                tokenize: { text in [text.count] },
+                admissionSnapshot: {
+                    let activeCount = await state.activeCount()
+                    return AFMAdmissionSnapshot(
+                        executionMode: .concurrent,
+                        maximumConcurrentOperations: 2,
+                        activeOperations: activeCount,
+                        queuedOperations: 0,
+                        availableOperationSlots: max(0, 2 - activeCount)
+                    )
+                },
+                telemetrySnapshot: {
+                    AFMTelemetrySnapshot(activeOperations: await state.activeCount())
+                }
+            )
+        )
+
+        async let response = model.respond(to: AFMRequest(messages: [.init(role: .user, text: "one")]))
+        async let streamedText: String = collectGenerationText(
+            from: model.streamResponse(to: AFMRequest(messages: [.init(role: .user, text: "two")]))
+        )
+
+        let (resolvedResponse, resolvedStreamedText) = try await (response, streamedText)
+        XCTAssertEqual(resolvedResponse.text, "one")
+        XCTAssertEqual(resolvedStreamedText, "two")
+        let maximumActiveCount = await state.maximumActiveCount()
+        XCTAssertEqual(maximumActiveCount, 2)
+    }
+
+    func testHarnessBackedModelPrewarmUsesUnifiedExecutionPathAndRequestID() async throws {
+        let state = HarnessState()
+        let descriptor = mlxStaticTestDescriptor()
+        let model = AFMMLXModel(
+            harness: AFMMLXExecutionHarness(
+                descriptor: descriptor,
+                load: { progress in
+                    progress?(1)
+                    return descriptor
+                },
+                stream: { _, requestID in
+                    await state.recordRequestID(requestID)
+                    return AsyncThrowingStream { continuation in
+                        continuation.yield(.completed(.stop))
+                        continuation.finish()
+                    }
+                }
+            )
+        )
+
+        try await model.prewarm()
+
+        let requestIDs = await state.requestIDs()
+        XCTAssertEqual(requestIDs, ["afmkit-prewarm"])
+    }
+
+    func testHarnessBackedModelCancellationCancelsActualWork() async {
+        let state = HarnessState()
+        let descriptor = mlxStaticTestDescriptor()
+        let model = AFMMLXModel(
+            harness: AFMMLXExecutionHarness(
+                descriptor: descriptor,
+                load: { _ in descriptor },
+                stream: { _, _ in
+                    AsyncThrowingStream { continuation in
+                        let task = Task {
+                            await state.begin()
+                            defer { Task { await state.end() } }
+                            do {
+                                try await Task.sleep(nanoseconds: 5_000_000_000)
+                                continuation.yield(.completed(.stop))
+                                continuation.finish()
+                            } catch {
+                                continuation.finish(throwing: CancellationError())
+                            }
+                        }
+                        continuation.onTermination = { _ in
+                            task.cancel()
+                            Task { await state.markCancelled() }
+                        }
+                    }
+                }
+            )
+        )
+
+        let task = Task {
+            for try await _ in model.streamResponse(
+                to: AFMRequest(messages: [.init(role: .user, text: "cancel")])
+            ) {}
+        }
+
+        await waitForHarnessState(
+            until: { await state.activeCount() == 1 },
+            failureMessage: "Expected harness work to start"
+        )
+        task.cancel()
+        let result = await task.result
+        if case .failure(let error) = result, !(error is CancellationError) {
+            XCTFail("Unexpected error: \(error)")
+        }
+
+        await waitForHarnessState(
+            until: { await state.activeCount() == 0 },
+            failureMessage: "Expected harness work to stop after cancellation"
+        )
+        let wasCancelled = await state.wasCancelled()
+        let activeCount = await state.activeCount()
+        XCTAssertTrue(wasCancelled)
+        XCTAssertEqual(activeCount, 0)
     }
 
     func testMLXModelServiceExposesAFMKitProfilingContract() {
@@ -707,6 +856,14 @@ final class AFMMLXProviderTests: XCTestCase {
         _ tokenizer: Tokenizer
     ) {}
 
+    private func requireAdmissionReportingContract<Model: AFMAdmissionReportingModel>(
+        _ model: Model
+    ) {}
+
+    private func requireTelemetryReportingContract<Model: AFMTelemetryReportingModel>(
+        _ model: Model
+    ) {}
+
     private func requireProfilingContract<Profiler: AFMMLXAPIProfiling>(
         _ profiler: Profiler
     ) {}
@@ -751,4 +908,83 @@ final class AFMMLXProviderTests: XCTestCase {
     private func writeJSON(_ value: [String: Any], to url: URL) throws {
         try JSONSerialization.data(withJSONObject: value).write(to: url)
     }
+
+}
+
+private actor HarnessState {
+    private var active = 0
+    private var maxActive = 0
+    private var cancelled = false
+    private var ids: [String?] = []
+
+    func begin() {
+        active += 1
+        maxActive = max(maxActive, active)
+    }
+
+    func end() {
+        active = max(0, active - 1)
+    }
+
+    func markCancelled() {
+        cancelled = true
+    }
+
+    func recordRequestID(_ id: String?) {
+        ids.append(id)
+    }
+
+    func activeCount() -> Int { active }
+    func maximumActiveCount() -> Int { maxActive }
+    func wasCancelled() -> Bool { cancelled }
+    func requestIDs() -> [String?] { ids }
+}
+
+private extension AFMMessage {
+    var textContent: String? {
+        content.compactMap {
+            guard case .text(let text) = $0 else { return nil }
+            return text
+        }.joined()
+    }
+}
+
+private func mlxStaticTestDescriptor() -> AFMModelDescriptor {
+    AFMModelDescriptor(
+        providerID: "mlx",
+        modelID: "test/model",
+        displayName: "test/model",
+        capabilities: [.text, .streaming],
+        privacyBoundary: .device
+    )
+}
+
+private func collectGenerationText(
+    from stream: AsyncThrowingStream<AFMGenerationEvent, Error>
+) async throws -> String {
+    var text = ""
+    for try await event in stream {
+        if case .responseText(_, let chunk, _) = event {
+            text += chunk
+        }
+    }
+    return text
+}
+
+private func waitForHarnessState(
+    until condition: @escaping @Sendable () async -> Bool,
+    failureMessage: String,
+    timeoutNanoseconds: UInt64 = 1_000_000_000,
+    pollIntervalNanoseconds: UInt64 = 10_000_000,
+    file: StaticString = #filePath,
+    line: UInt = #line
+) async {
+    let deadline = DispatchTime.now().uptimeNanoseconds + timeoutNanoseconds
+    while DispatchTime.now().uptimeNanoseconds < deadline {
+        if await condition() {
+            return
+        }
+        try? await Task.sleep(nanoseconds: pollIntervalNanoseconds)
+    }
+    XCTFail(failureMessage, file: file, line: line)
 }

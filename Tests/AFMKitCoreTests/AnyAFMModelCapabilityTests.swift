@@ -14,6 +14,14 @@ final class AnyAFMModelCapabilityTests: XCTestCase {
         try await model.prewarm()
         let prewarmCount = await state.prewarmCount()
         XCTAssertEqual(prewarmCount, 1)
+
+        let admission = try await model.admissionSnapshot()
+        XCTAssertEqual(admission.executionMode, .concurrent)
+        XCTAssertEqual(admission.maximumConcurrentOperations, 4)
+
+        let telemetry = try await model.telemetrySnapshot()
+        XCTAssertEqual(telemetry.activeOperations, 1)
+        XCTAssertEqual(telemetry.metadata["runtime"], .string("test"))
     }
 
     func testUnsupportedCapabilitiesFailExplicitly() async {
@@ -22,14 +30,24 @@ final class AnyAFMModelCapabilityTests: XCTestCase {
 
         XCTAssertFalse(model.supportsTokenization)
         XCTAssertFalse(model.supportsPrewarming)
+        XCTAssertFalse(model.supportsAdmissionReporting)
+        XCTAssertFalse(model.supportsTelemetryReporting)
         XCTAssertNil(erased as? any AFMTextTokenizing)
         XCTAssertNil(erased as? any AFMPrewarmableModel)
+        XCTAssertNil(erased as? any AFMAdmissionReportingModel)
+        XCTAssertNil(erased as? any AFMTelemetryReportingModel)
 
         await XCTAssertThrowsErrorAsync(try await model.tokenize(text: "hello")) { error in
             XCTAssertEqual(error as? AFMError, .unsupportedCapability("tokenization"))
         }
         await XCTAssertThrowsErrorAsync(try await model.prewarm()) { error in
             XCTAssertEqual(error as? AFMError, .unsupportedCapability("prewarming"))
+        }
+        await XCTAssertThrowsErrorAsync(try await model.admissionSnapshot()) { error in
+            XCTAssertEqual(error as? AFMError, .unsupportedCapability("admission reporting"))
+        }
+        await XCTAssertThrowsErrorAsync(try await model.telemetrySnapshot()) { error in
+            XCTAssertEqual(error as? AFMError, .unsupportedCapability("telemetry reporting"))
         }
     }
 
@@ -44,6 +62,12 @@ final class AnyAFMModelCapabilityTests: XCTestCase {
         XCTAssertEqual(tokens, [5])
         XCTAssertFalse(basic.supportsTokenization)
         XCTAssertFalse(basic.supportsPrewarming)
+        XCTAssertTrue(capable.supportsAdmissionReporting)
+        XCTAssertTrue(capable.supportsTelemetryReporting)
+        XCTAssertFalse(basic.supportsAdmissionReporting)
+        XCTAssertFalse(basic.supportsTelemetryReporting)
+        XCTAssertNil((capable as any AFMModel) as? any AFMAdmissionReportingModel)
+        XCTAssertNil((basic as any AFMModel) as? any AFMTelemetryReportingModel)
     }
 }
 
@@ -59,7 +83,9 @@ private actor CapabilityState {
     }
 }
 
-private struct CapableModel: AFMModel, AFMTextTokenizing, AFMPrewarmableModel {
+private struct CapableModel: AFMModel, AFMTextTokenizing, AFMPrewarmableModel,
+    AFMAdmissionReportingModel, AFMTelemetryReportingModel
+{
     let state: CapabilityState
     let descriptor = testDescriptor(modelID: "capable")
 
@@ -80,6 +106,22 @@ private struct CapableModel: AFMModel, AFMTextTokenizing, AFMPrewarmableModel {
     }
     func tokenize(text: String) async throws -> [Int] { [text.count] }
     func prewarm() async throws { await state.markPrewarmed() }
+    func admissionSnapshot() async -> AFMAdmissionSnapshot {
+        AFMAdmissionSnapshot(
+            executionMode: .concurrent,
+            maximumConcurrentOperations: 4,
+            activeOperations: 1,
+            queuedOperations: 0,
+            availableOperationSlots: 3
+        )
+    }
+    func telemetrySnapshot() async -> AFMTelemetrySnapshot {
+        AFMTelemetrySnapshot(
+            activeOperations: 1,
+            peakMemoryGib: 2.5,
+            metadata: ["runtime": .string("test")]
+        )
+    }
 }
 
 private struct BasicModel: AFMModel {

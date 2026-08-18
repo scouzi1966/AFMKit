@@ -35,6 +35,19 @@ public protocol AFMPrewarmableModel: Sendable {
     func prewarm() async throws
 }
 
+/// Optional capability for providers that expose provider-owned admission state.
+///
+/// Capacity and queueing policies stay provider-owned. Hosts can inspect a
+/// neutral snapshot without reserving scheduler-specific slots directly.
+public protocol AFMAdmissionReportingModel: Sendable {
+    func admissionSnapshot() async -> AFMAdmissionSnapshot
+}
+
+/// Optional capability for providers that expose neutral runtime telemetry.
+public protocol AFMTelemetryReportingModel: Sendable {
+    func telemetrySnapshot() async -> AFMTelemetrySnapshot
+}
+
 public extension AFMModel {
     func load() async throws -> AFMModelDescriptor {
         try await load(progress: nil)
@@ -54,6 +67,8 @@ public struct AnyAFMModel: AFMModel, Sendable {
     private let unloadOperation: @Sendable () async -> Void
     private let tokenizeOperation: (@Sendable (String) async throws -> [Int])?
     private let prewarmOperation: (@Sendable () async throws -> Void)?
+    private let admissionSnapshotOperation: (@Sendable () async -> AFMAdmissionSnapshot)?
+    private let telemetrySnapshotOperation: (@Sendable () async -> AFMTelemetrySnapshot)?
 
     public init<Model: AFMModel>(_ model: Model) {
         if let erasedModel = model as? AnyAFMModel {
@@ -80,11 +95,27 @@ public struct AnyAFMModel: AFMModel, Sendable {
         } else {
             prewarmOperation = nil
         }
+        if let admissionReporting = model as? any AFMAdmissionReportingModel {
+            admissionSnapshotOperation = {
+                await admissionReporting.admissionSnapshot()
+            }
+        } else {
+            admissionSnapshotOperation = nil
+        }
+        if let telemetryReporting = model as? any AFMTelemetryReportingModel {
+            telemetrySnapshotOperation = {
+                await telemetryReporting.telemetrySnapshot()
+            }
+        } else {
+            telemetrySnapshotOperation = nil
+        }
     }
 
     public var descriptor: AFMModelDescriptor { descriptorValue }
     public var supportsTokenization: Bool { tokenizeOperation != nil }
     public var supportsPrewarming: Bool { prewarmOperation != nil }
+    public var supportsAdmissionReporting: Bool { admissionSnapshotOperation != nil }
+    public var supportsTelemetryReporting: Bool { telemetrySnapshotOperation != nil }
 
     public func availability() async -> AFMModelAvailability {
         await availabilityOperation()
@@ -122,6 +153,20 @@ public struct AnyAFMModel: AFMModel, Sendable {
             throw AFMError.unsupportedCapability("prewarming")
         }
         try await prewarmOperation()
+    }
+
+    public func admissionSnapshot() async throws -> AFMAdmissionSnapshot {
+        guard let admissionSnapshotOperation else {
+            throw AFMError.unsupportedCapability("admission reporting")
+        }
+        return await admissionSnapshotOperation()
+    }
+
+    public func telemetrySnapshot() async throws -> AFMTelemetrySnapshot {
+        guard let telemetrySnapshotOperation else {
+            throw AFMError.unsupportedCapability("telemetry reporting")
+        }
+        return await telemetrySnapshotOperation()
     }
 }
 

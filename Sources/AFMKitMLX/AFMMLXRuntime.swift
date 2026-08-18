@@ -37,7 +37,6 @@ public struct AFMMLXRuntimeConfiguration: Sendable {
     public var gpuProfileBandwidth: Bool
     public var defaultChatTemplateKwargs: [String: AFMJSONValue]?
     public var forceDisableThinking: Bool
-    public var defaultGuidedJsonSchema: ResponseFormat?
 
     public init(
         kvBits: Int? = nil,
@@ -61,8 +60,7 @@ public struct AFMMLXRuntimeConfiguration: Sendable {
         gpuProfile: Bool = false,
         gpuProfileBandwidth: Bool = false,
         defaultChatTemplateKwargs: [String: AFMJSONValue]? = nil,
-        forceDisableThinking: Bool = false,
-        defaultGuidedJsonSchema: ResponseFormat? = nil
+        forceDisableThinking: Bool = false
     ) {
         self.kvBits = kvBits
         self.enablePrefixCaching = enablePrefixCaching
@@ -86,7 +84,6 @@ public struct AFMMLXRuntimeConfiguration: Sendable {
         self.gpuProfileBandwidth = gpuProfileBandwidth
         self.defaultChatTemplateKwargs = defaultChatTemplateKwargs
         self.forceDisableThinking = forceDisableThinking
-        self.defaultGuidedJsonSchema = defaultGuidedJsonSchema
     }
 
     public init(providerConfiguration configuration: AFMProviderConfiguration) {
@@ -184,7 +181,6 @@ public struct AFMMLXRuntimeConfiguration: Sendable {
         service.defaultChatTemplateKwargs =
             defaultChatTemplateKwargs?.mapValues(Self.anyValue)
         service.forceDisableThinking = forceDisableThinking
-        service.defaultGuidedJsonSchema = defaultGuidedJsonSchema
     }
 
     private static func anyValue(_ value: AFMJSONValue) -> Any {
@@ -249,8 +245,7 @@ package final class AFMMLXRuntime: @unchecked Sendable {
             mtpModelID: service.mtpModelID,
             maxConcurrent: service.maxConcurrent,
             enableGrammarConstraints: service.enableGrammarConstraints,
-            forceDisableThinking: service.forceDisableThinking,
-            defaultGuidedJsonSchema: service.defaultGuidedJsonSchema
+            forceDisableThinking: service.forceDisableThinking
         )
         self.initializesSchedulerOnLoad = false
         self.service = service
@@ -293,7 +288,7 @@ package final class AFMMLXRuntime: @unchecked Sendable {
         return descriptor
     }
 
-    public func prewarm(
+    package func prewarm(
         messages: [Message] = [Message(role: "user", content: "warmup")],
         maxTokens: Int = 4
     ) async throws {

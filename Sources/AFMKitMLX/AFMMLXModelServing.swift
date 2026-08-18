@@ -3,51 +3,58 @@ import AFMOpenAICompat
 
 // MARK: - Stable serving facade
 
-public extension AFMMLXModel {
-    var maxConcurrent: Int { service.maxConcurrent }
+package extension AFMMLXModel {
+    private var concreteService: MLXModelService {
+        guard let service else {
+            preconditionFailure("AFMMLXModelServing requires a concrete MLX service.")
+        }
+        return service
+    }
+
+    var maxConcurrent: Int { concreteService.maxConcurrent }
 
     var servingConfiguration: AFMMLXServingConfiguration {
-        service.servingConfiguration
+        concreteService.servingConfiguration
     }
 
     var defaultGuidedJsonSchema: ResponseFormat? {
-        service.defaultGuidedJsonSchema
+        concreteService.defaultGuidedJsonSchema
     }
 
     func normalizeModel(_ raw: String) -> String {
-        service.normalizeModel(raw)
+        concreteService.normalizeModel(raw)
     }
 
     func resolvedToolCallParser(logBypass: Bool) -> String? {
-        service.resolvedToolCallParser(logBypass: logBypass)
+        concreteService.resolvedToolCallParser(logBypass: logBypass)
     }
 
     func tryReserveSlot() -> Bool {
-        service.tryReserveSlot()
+        concreteService.tryReserveSlot()
     }
 
     func waitForSlot(timeout: TimeInterval) async -> Bool {
-        await service.waitForSlot(timeout: timeout)
+        await concreteService.waitForSlot(timeout: timeout)
     }
 
     func releaseSlot() {
-        service.releaseSlot()
+        concreteService.releaseSlot()
     }
 
     func ensureBatchMode(concurrency: Int) async throws {
-        try await service.ensureBatchMode(concurrency: concurrency)
+        try await concreteService.ensureBatchMode(concurrency: concurrency)
     }
 
     func releaseBatchReference() {
-        service.releaseBatchReference()
+        concreteService.releaseBatchReference()
     }
 
     func cancelBatchSlots(ids: Set<UUID>) async {
-        await service.cancelBatchSlots(ids: ids)
+        await concreteService.cancelBatchSlots(ids: ids)
     }
 
     func startAPIProfile() {
-        service.startAPIProfile()
+        concreteService.startAPIProfile()
     }
 
     func stopAPIProfile(
@@ -56,7 +63,7 @@ public extension AFMMLXModel {
         promptTime: Double,
         generateTime: Double
     ) -> AFMProfile {
-        service.stopAPIProfile(
+        concreteService.stopAPIProfile(
             promptTokens: promptTokens,
             completionTokens: completionTokens,
             promptTime: promptTime,
@@ -70,7 +77,7 @@ public extension AFMMLXModel {
         promptTime: Double,
         generateTime: Double
     ) -> AFMProfileExtended {
-        service.stopAPIProfileExtended(
+        concreteService.stopAPIProfileExtended(
             promptTokens: promptTokens,
             completionTokens: completionTokens,
             promptTime: promptTime,
@@ -79,15 +86,15 @@ public extension AFMMLXModel {
     }
 
     func resetRequestPeakMemory() {
-        service.resetRequestPeakMemory()
+        concreteService.resetRequestPeakMemory()
     }
 
     func currentRequestPeakMemoryGib() -> Double? {
-        service.currentRequestPeakMemoryGib()
+        concreteService.currentRequestPeakMemoryGib()
     }
 
     func effectiveResponseFormat(requestFormat: ResponseFormat?) -> ResponseFormat? {
-        service.effectiveResponseFormat(requestFormat: requestFormat)
+        concreteService.effectiveResponseFormat(requestFormat: requestFormat)
     }
 
     func generate(
@@ -110,7 +117,7 @@ public extension AFMMLXModel {
         chatTemplateKwargs: [String: AnyCodable]?
     ) async throws -> AFMMLXChatGenerationResult {
         _ = try await load(progress: nil)
-        return try await service.generate(
+        return try await concreteService.generate(
             model: model,
             messages: messages,
             temperature: temperature,
@@ -153,7 +160,7 @@ public extension AFMMLXModel {
         requestId: String?
     ) async throws -> AFMMLXChatStreamingResult {
         _ = try await load(progress: nil)
-        return try await service.generateStreaming(
+        return try await concreteService.generateStreaming(
             model: model,
             messages: messages,
             temperature: temperature,

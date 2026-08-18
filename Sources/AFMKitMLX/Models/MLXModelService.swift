@@ -55,7 +55,7 @@ final class Eagle3Runtime: @unchecked Sendable {
 }
 
 /// Resolved log probability entry with token strings (ready for API response).
-public struct ResolvedLogprob: Sendable {
+package struct ResolvedLogprob: Sendable {
     public let token: String
     public let tokenId: Int
     public let logprob: Float
@@ -75,7 +75,7 @@ public struct ResolvedLogprob: Sendable {
 }
 
 /// A chunk of streaming output, optionally carrying per-token log probabilities or tool calls.
-public struct StreamChunk: Sendable {
+package struct StreamChunk: Sendable {
     public let text: String
     public let logprobs: [ResolvedLogprob]?
     public let toolCalls: [ResponseToolCall]?
@@ -109,7 +109,7 @@ package enum MLXLoadStage: String {
     case ready = "ready"
 }
 
-public enum MLXServiceError: Error, LocalizedError {
+package enum MLXServiceError: Error, LocalizedError {
     case invalidModel(String)
     case modelNotFoundInCache(String)
     case downloadFailed(String)
@@ -523,6 +523,71 @@ package final class MLXModelService: @unchecked Sendable {
     }
     /// Release a reserved slot (call if request fails before generation starts).
     public func releaseSlot() { scheduler?.releaseReservation() }
+
+    package func admissionSnapshot() async -> AFMAdmissionSnapshot {
+        let scheduler = withStateLock { self.scheduler }
+        let acceptsNewOperations = withStateLock { !isShuttingDown }
+
+        if let scheduler {
+            let maximumConcurrentOperations = max(1, maxConcurrent)
+            let queuedOperations = scheduler.pendingSlotCount
+            let activeOperations = max(0, scheduler.activeSlotCount - queuedOperations)
+            let availableOperationSlots = max(
+                0,
+                maximumConcurrentOperations - scheduler.activeSlotCount
+            )
+            return AFMAdmissionSnapshot(
+                executionMode: .concurrent,
+                maximumConcurrentOperations: maximumConcurrentOperations,
+                activeOperations: activeOperations,
+                queuedOperations: queuedOperations,
+                availableOperationSlots: availableOperationSlots,
+                acceptsNewOperations: acceptsNewOperations && scheduler.acceptsNewRequests,
+                metadata: [
+                    "runtime": .string("mlx-swift"),
+                    "scheduler": .string("batch")
+                ]
+            )
+        }
+
+        let activeOperations = withStateLock { self.activeOperations }
+        return AFMAdmissionSnapshot(
+            executionMode: .serial,
+            maximumConcurrentOperations: 1,
+            activeOperations: min(activeOperations, 1),
+            queuedOperations: max(0, activeOperations - 1),
+            availableOperationSlots: activeOperations == 0 ? 1 : 0,
+            acceptsNewOperations: acceptsNewOperations,
+            metadata: [
+                "runtime": .string("mlx-swift"),
+                "scheduler": .string("serial")
+            ]
+        )
+    }
+
+    package func telemetrySnapshot() async -> AFMTelemetrySnapshot {
+        let activeOperations = withStateLock { self.activeOperations }
+        let loadedModelID = withStateLock { currentModelID }
+        let schedulerEnabled = withStateLock { scheduler != nil }
+        let prefixCacheEntries = withStateLock { radixCache?.count ?? 0 }
+        let batchReferences = _activeBatchCount.withLock { $0 }
+
+        return AFMTelemetrySnapshot(
+            activeOperations: activeOperations,
+            peakMemoryGib: currentRequestPeakMemoryGib(),
+            metadata: [
+                "runtime": .string("mlx-swift"),
+                "loadedModelID": loadedModelID.map(AFMJSONValue.string) ?? .null,
+                "schedulerEnabled": .bool(schedulerEnabled),
+                "prefixCachingEnabled": .bool(enablePrefixCaching),
+                "prefixCacheEntries": .integer(prefixCacheEntries),
+                "activeBatchReferences": .integer(batchReferences),
+                "grammarConstraintsEnabled": .bool(enableGrammarConstraints),
+                "toolCallParser": toolCallParser.map(AFMJSONValue.string) ?? .null
+            ]
+        )
+    }
+
     public init(resolver: MLXCacheResolver) {
         _ = Self.registerModelFactoriesOnce
         self.resolver = resolver

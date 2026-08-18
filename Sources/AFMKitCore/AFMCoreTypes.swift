@@ -104,6 +104,55 @@ public struct AFMModelDescriptor: Hashable, Sendable {
     }
 }
 
+public enum AFMExecutionMode: String, Codable, Hashable, Sendable {
+    case serial
+    case concurrent
+}
+
+public struct AFMAdmissionSnapshot: Hashable, Sendable {
+    public var executionMode: AFMExecutionMode
+    public var maximumConcurrentOperations: Int?
+    public var activeOperations: Int
+    public var queuedOperations: Int
+    public var availableOperationSlots: Int?
+    public var acceptsNewOperations: Bool
+    public var metadata: [String: AFMJSONValue]
+
+    public init(
+        executionMode: AFMExecutionMode,
+        maximumConcurrentOperations: Int? = nil,
+        activeOperations: Int = 0,
+        queuedOperations: Int = 0,
+        availableOperationSlots: Int? = nil,
+        acceptsNewOperations: Bool = true,
+        metadata: [String: AFMJSONValue] = [:]
+    ) {
+        self.executionMode = executionMode
+        self.maximumConcurrentOperations = maximumConcurrentOperations
+        self.activeOperations = activeOperations
+        self.queuedOperations = queuedOperations
+        self.availableOperationSlots = availableOperationSlots
+        self.acceptsNewOperations = acceptsNewOperations
+        self.metadata = metadata
+    }
+}
+
+public struct AFMTelemetrySnapshot: Hashable, Sendable {
+    public var activeOperations: Int
+    public var peakMemoryGib: Double?
+    public var metadata: [String: AFMJSONValue]
+
+    public init(
+        activeOperations: Int = 0,
+        peakMemoryGib: Double? = nil,
+        metadata: [String: AFMJSONValue] = [:]
+    ) {
+        self.activeOperations = activeOperations
+        self.peakMemoryGib = peakMemoryGib
+        self.metadata = metadata
+    }
+}
+
 public struct AFMProviderDescriptor: Hashable, Sendable {
     public var id: AFMProviderID
     public var displayName: String

@@ -2,7 +2,7 @@ import Foundation
 import AFMOpenAICompat
 import MLX
 
-public protocol AFMMLXOpenAIChatGenerating: Sendable {
+package protocol AFMMLXOpenAIChatGenerating: Sendable {
     func generate(
         model: String,
         messages: [Message],
@@ -90,7 +90,7 @@ public protocol AFMMLXOpenAIChatGenerating: Sendable {
     ) async throws -> AFMMLXChatStreamingResult
 }
 
-public protocol AFMMLXOpenAIChatServing:
+package protocol AFMMLXOpenAIChatServing:
     AFMMLXAPIProfiling,
     AFMMLXRequestScheduling,
     AFMMLXBatchControlling,
@@ -109,7 +109,7 @@ public protocol AFMMLXOpenAIChatServing:
     func effectiveResponseFormat(requestFormat: ResponseFormat?) -> ResponseFormat?
 }
 
-public extension AFMMLXOpenAIChatServing {
+package extension AFMMLXOpenAIChatServing {
     var defaultGuidedJsonSchema: ResponseFormat? { nil }
 
     func resetRequestPeakMemory() {}
@@ -124,7 +124,7 @@ public extension AFMMLXOpenAIChatServing {
     }
 }
 
-public extension AFMMLXOpenAIChatGenerating {
+package extension AFMMLXOpenAIChatGenerating {
     func generate(
         model: String,
         messages: [Message],
@@ -255,11 +255,11 @@ public extension AFMMLXOpenAIChatGenerating {
 }
 
 extension MLXModelService: AFMMLXOpenAIChatServing {
-    public func resetRequestPeakMemory() {
+    package func resetRequestPeakMemory() {
         GPU.resetPeakMemory()
     }
 
-    public func currentRequestPeakMemoryGib() -> Double? {
+    package func currentRequestPeakMemoryGib() -> Double? {
         let gib = 1024.0 * 1024.0 * 1024.0
         return (Double(Memory.snapshot().peakMemory) / gib * 10).rounded() / 10
     }
