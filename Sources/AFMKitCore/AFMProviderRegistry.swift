@@ -26,6 +26,15 @@ public protocol AFMTextTokenizing: Sendable {
     func tokenize(text: String) async throws -> [Int]
 }
 
+/// Optional capability for providers that can perform a small warm-up request.
+///
+/// Prewarming is intentionally separate from `AFMModel.load()`: loading makes
+/// resources available, while prewarming allows a provider to compile or prime
+/// its first inference path without exposing provider-specific runtime types.
+public protocol AFMPrewarmableModel: Sendable {
+    func prewarm() async throws
+}
+
 public extension AFMModel {
     func load() async throws -> AFMModelDescriptor {
         try await load(progress: nil)
@@ -34,7 +43,7 @@ public extension AFMModel {
     func unload() async {}
 }
 
-public struct AnyAFMModel: AFMModel, Sendable {
+public struct AnyAFMModel: AFMModel, AFMTextTokenizing, AFMPrewarmableModel, Sendable {
     private let descriptorValue: AFMModelDescriptor
     private let availabilityOperation: @Sendable () async -> AFMModelAvailability
     private let loadOperation:
@@ -43,6 +52,8 @@ public struct AnyAFMModel: AFMModel, Sendable {
     private let streamOperation:
         @Sendable (AFMRequest) -> AsyncThrowingStream<AFMGenerationEvent, Error>
     private let unloadOperation: @Sendable () async -> Void
+    private let tokenizeOperation: (@Sendable (String) async throws -> [Int])?
+    private let prewarmOperation: (@Sendable () async throws -> Void)?
 
     public init<Model: AFMModel>(_ model: Model) {
         descriptorValue = model.descriptor
@@ -51,9 +62,25 @@ public struct AnyAFMModel: AFMModel, Sendable {
         respondOperation = { request in try await model.respond(to: request) }
         streamOperation = { request in model.streamResponse(to: request) }
         unloadOperation = { await model.unload() }
+        if let tokenizer = model as? any AFMTextTokenizing {
+            tokenizeOperation = { text in
+                try await tokenizer.tokenize(text: text)
+            }
+        } else {
+            tokenizeOperation = nil
+        }
+        if let prewarmable = model as? any AFMPrewarmableModel {
+            prewarmOperation = {
+                try await prewarmable.prewarm()
+            }
+        } else {
+            prewarmOperation = nil
+        }
     }
 
     public var descriptor: AFMModelDescriptor { descriptorValue }
+    public var supportsTokenization: Bool { tokenizeOperation != nil }
+    public var supportsPrewarming: Bool { prewarmOperation != nil }
 
     public func availability() async -> AFMModelAvailability {
         await availabilityOperation()
@@ -77,6 +104,20 @@ public struct AnyAFMModel: AFMModel, Sendable {
 
     public func unload() async {
         await unloadOperation()
+    }
+
+    public func tokenize(text: String) async throws -> [Int] {
+        guard let tokenizeOperation else {
+            throw AFMError.unsupportedCapability("tokenization")
+        }
+        return try await tokenizeOperation(text)
+    }
+
+    public func prewarm() async throws {
+        guard let prewarmOperation else {
+            throw AFMError.unsupportedCapability("prewarming")
+        }
+        try await prewarmOperation()
     }
 }
 

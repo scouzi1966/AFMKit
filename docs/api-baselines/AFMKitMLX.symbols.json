@@ -30,6 +30,12 @@
     {
       "kind": "conformsTo",
       "source": "s:9AFMKitMLX11AFMMLXModelC",
+      "target": "s:10AFMKitCore19AFMPrewarmableModelP",
+      "targetFallback": "AFMKitCore.AFMPrewarmableModel"
+    },
+    {
+      "kind": "conformsTo",
+      "source": "s:9AFMKitMLX11AFMMLXModelC",
       "target": "s:10AFMKitCore8AFMModelP",
       "targetFallback": "AFMKitCore.AFMModel"
     },
@@ -159,6 +165,15 @@
     {
       "kind": "memberOf",
       "source": "s:9AFMKitMLX11AFMMLXModelC7modelID13configurationAC0A4Core08AFMModelE0V_AF24AFMProviderConfigurationVtcfc",
+      "target": "s:9AFMKitMLX11AFMMLXModelC"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX11AFMMLXModelC7prewarmyyYaKF",
+      "sourceOrigin": {
+        "displayName": "AFMPrewarmableModel.prewarm()",
+        "identifier": "s:10AFMKitCore19AFMPrewarmableModelP7prewarmyyYaKF"
+      },
       "target": "s:9AFMKitMLX11AFMMLXModelC"
     },
     {
@@ -5290,6 +5305,92 @@
       "pathComponents": [
         "AFMMLXRuntimeConfiguration",
         "prefillStepSize"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "identifier",
+          "spelling": "prewarm"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "async"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "func"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "throws"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "text",
+          "spelling": "() "
+        }
+      ],
+      "functionSignature": {
+        "returns": [
+          {
+            "kind": "text",
+            "spelling": "()"
+          }
+        ]
+      },
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX11AFMMLXModelC7prewarmyyYaKF"
+      },
+      "kind": {
+        "displayName": "Instance Method",
+        "identifier": "swift.method"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "identifier",
+            "spelling": "prewarm"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "async"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "func"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "throws"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "text",
+            "spelling": "() "
+          }
+        ],
+        "title": "prewarm()"
+      },
+      "pathComponents": [
+        "AFMMLXModel",
+        "prewarm()"
       ]
     },
     {

@@ -162,6 +162,16 @@
     {
       "kind": "conformsTo",
       "source": "s:10AFMKitCore11AnyAFMModelV",
+      "target": "s:10AFMKitCore17AFMTextTokenizingP"
+    },
+    {
+      "kind": "conformsTo",
+      "source": "s:10AFMKitCore11AnyAFMModelV",
+      "target": "s:10AFMKitCore19AFMPrewarmableModelP"
+    },
+    {
+      "kind": "conformsTo",
+      "source": "s:10AFMKitCore11AnyAFMModelV",
       "target": "s:10AFMKitCore8AFMModelP"
     },
     {
@@ -599,6 +609,18 @@
     {
       "kind": "conformsTo",
       "source": "s:10AFMKitCore18AFMProviderFactoryP",
+      "target": "s:s8SendableP",
+      "targetFallback": "Swift.Sendable"
+    },
+    {
+      "kind": "conformsTo",
+      "source": "s:10AFMKitCore19AFMPrewarmableModelP",
+      "target": "s:s16SendableMetatypeP",
+      "targetFallback": "Swift.SendableMetatype"
+    },
+    {
+      "kind": "conformsTo",
+      "source": "s:10AFMKitCore19AFMPrewarmableModelP",
       "target": "s:s8SendableP",
       "targetFallback": "Swift.Sendable"
     },
@@ -1308,6 +1330,16 @@
     },
     {
       "kind": "memberOf",
+      "source": "s:10AFMKitCore11AnyAFMModelV18supportsPrewarmingSbvp",
+      "target": "s:10AFMKitCore11AnyAFMModelV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:10AFMKitCore11AnyAFMModelV20supportsTokenizationSbvp",
+      "target": "s:10AFMKitCore11AnyAFMModelV"
+    },
+    {
+      "kind": "memberOf",
       "source": "s:10AFMKitCore11AnyAFMModelV4load8progressAA0D10DescriptorVySdYbcSg_tYaKF",
       "sourceOrigin": {
         "displayName": "AFMModel.load(progress:)",
@@ -1326,10 +1358,28 @@
     },
     {
       "kind": "memberOf",
+      "source": "s:10AFMKitCore11AnyAFMModelV7prewarmyyYaKF",
+      "sourceOrigin": {
+        "displayName": "AFMPrewarmableModel.prewarm()",
+        "identifier": "s:10AFMKitCore19AFMPrewarmableModelP7prewarmyyYaKF"
+      },
+      "target": "s:10AFMKitCore11AnyAFMModelV"
+    },
+    {
+      "kind": "memberOf",
       "source": "s:10AFMKitCore11AnyAFMModelV7respond2toAA0D8ResponseVAA10AFMRequestV_tYaKF",
       "sourceOrigin": {
         "displayName": "AFMModel.respond(to:)",
         "identifier": "s:10AFMKitCore8AFMModelP7respond2toAA0C8ResponseVAA10AFMRequestV_tYaKF"
+      },
+      "target": "s:10AFMKitCore11AnyAFMModelV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:10AFMKitCore11AnyAFMModelV8tokenize4textSaySiGSS_tYaKF",
+      "sourceOrigin": {
+        "displayName": "AFMTextTokenizing.tokenize(text:)",
+        "identifier": "s:10AFMKitCore17AFMTextTokenizingP8tokenize4textSaySiGSS_tYaKF"
       },
       "target": "s:10AFMKitCore11AnyAFMModelV"
     },
@@ -2623,6 +2673,11 @@
       "kind": "requirementOf",
       "source": "s:10AFMKitCore18AFMProviderFactoryP9makeModel2id13configurationAA11AnyAFMModelVAA0J2IDV_AA0C13ConfigurationVtKF",
       "target": "s:10AFMKitCore18AFMProviderFactoryP"
+    },
+    {
+      "kind": "requirementOf",
+      "source": "s:10AFMKitCore19AFMPrewarmableModelP7prewarmyyYaKF",
+      "target": "s:10AFMKitCore19AFMPrewarmableModelP"
     },
     {
       "kind": "requirementOf",
@@ -18141,6 +18196,181 @@
       },
       "identifier": {
         "interfaceLanguage": "swift",
+        "precise": "s:10AFMKitCore11AnyAFMModelV8tokenize4textSaySiGSS_tYaKF"
+      },
+      "kind": {
+        "displayName": "Instance Method",
+        "identifier": "swift.method"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "externalParam",
+            "spelling": "text"
+          },
+          {
+            "kind": "identifier",
+            "spelling": "tokenize"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "async"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "func"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "throws"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "text",
+            "spelling": " -> ["
+          },
+          {
+            "kind": "text",
+            "spelling": "("
+          },
+          {
+            "kind": "text",
+            "spelling": ") "
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "text",
+            "spelling": "]"
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:SS",
+            "spelling": "String"
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Si",
+            "spelling": "Int"
+          }
+        ],
+        "title": "tokenize(text:)"
+      },
+      "pathComponents": [
+        "AnyAFMModel",
+        "tokenize(text:)"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "externalParam",
+          "spelling": "text"
+        },
+        {
+          "kind": "identifier",
+          "spelling": "tokenize"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "async"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "func"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "throws"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "text",
+          "spelling": " -> ["
+        },
+        {
+          "kind": "text",
+          "spelling": "("
+        },
+        {
+          "kind": "text",
+          "spelling": ") "
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "text",
+          "spelling": "]"
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:SS",
+          "spelling": "String"
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Si",
+          "spelling": "Int"
+        }
+      ],
+      "functionSignature": {
+        "parameters": [
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "text"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:SS",
+                "spelling": "String"
+              }
+            ],
+            "name": "text"
+          }
+        ],
+        "returns": [
+          {
+            "kind": "text",
+            "spelling": "["
+          },
+          {
+            "kind": "text",
+            "spelling": "]"
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Si",
+            "spelling": "Int"
+          }
+        ]
+      },
+      "identifier": {
+        "interfaceLanguage": "swift",
         "precise": "s:10AFMKitCore17AFMTextTokenizingP8tokenize4textSaySiGSS_tYaKF"
       },
       "kind": {
@@ -20120,6 +20350,86 @@
       },
       "pathComponents": [
         "AFMModelResponse"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "identifier",
+          "spelling": "AFMPrewarmableModel"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "protocol"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "text",
+          "spelling": " : "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:s8SendableP",
+          "spelling": "Sendable"
+        }
+      ],
+      "docComment": {
+        "lines": [
+          {
+            "text": ""
+          },
+          {
+            "text": "Optional capability for providers that can perform a small warm-up request."
+          },
+          {
+            "text": "Prewarming is intentionally separate from `AFMModel.load()`: loading makes"
+          },
+          {
+            "text": "its first inference path without exposing provider-specific runtime types."
+          },
+          {
+            "text": "resources available, while prewarming allows a provider to compile or prime"
+          }
+        ],
+        "module": "AFMKitCore"
+      },
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:10AFMKitCore19AFMPrewarmableModelP"
+      },
+      "kind": {
+        "displayName": "Protocol",
+        "identifier": "swift.protocol"
+      },
+      "names": {
+        "navigator": [
+          {
+            "kind": "identifier",
+            "spelling": "AFMPrewarmableModel"
+          }
+        ],
+        "subHeading": [
+          {
+            "kind": "identifier",
+            "spelling": "AFMPrewarmableModel"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "protocol"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          }
+        ],
+        "title": "AFMPrewarmableModel"
+      },
+      "pathComponents": [
+        "AFMPrewarmableModel"
       ]
     },
     {
@@ -29776,6 +30086,178 @@
       "declarationFragments": [
         {
           "kind": "identifier",
+          "spelling": "prewarm"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "async"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "func"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "throws"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "text",
+          "spelling": "() "
+        }
+      ],
+      "functionSignature": {
+        "returns": [
+          {
+            "kind": "text",
+            "spelling": "()"
+          }
+        ]
+      },
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:10AFMKitCore11AnyAFMModelV7prewarmyyYaKF"
+      },
+      "kind": {
+        "displayName": "Instance Method",
+        "identifier": "swift.method"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "identifier",
+            "spelling": "prewarm"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "async"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "func"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "throws"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "text",
+            "spelling": "() "
+          }
+        ],
+        "title": "prewarm()"
+      },
+      "pathComponents": [
+        "AnyAFMModel",
+        "prewarm()"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "identifier",
+          "spelling": "prewarm"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "async"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "func"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "throws"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "text",
+          "spelling": "() "
+        }
+      ],
+      "functionSignature": {
+        "returns": [
+          {
+            "kind": "text",
+            "spelling": "()"
+          }
+        ]
+      },
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:10AFMKitCore19AFMPrewarmableModelP7prewarmyyYaKF"
+      },
+      "kind": {
+        "displayName": "Instance Method",
+        "identifier": "swift.method"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "identifier",
+            "spelling": "prewarm"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "async"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "func"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "throws"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "text",
+            "spelling": "() "
+          }
+        ],
+        "title": "prewarm()"
+      },
+      "pathComponents": [
+        "AFMPrewarmableModel",
+        "prewarm()"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "identifier",
           "spelling": "privacyBoundary"
         },
         {
@@ -32471,6 +32953,158 @@
       "pathComponents": [
         "AFMModelCapabilities",
         "structuredOutput"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "identifier",
+          "spelling": "supportsPrewarming"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "get"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "var"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "text",
+          "spelling": " { "
+        },
+        {
+          "kind": "text",
+          "spelling": " }"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Sb",
+          "spelling": "Bool"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:10AFMKitCore11AnyAFMModelV18supportsPrewarmingSbvp"
+      },
+      "kind": {
+        "displayName": "Instance Property",
+        "identifier": "swift.property"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "identifier",
+            "spelling": "supportsPrewarming"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "var"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Sb",
+            "spelling": "Bool"
+          }
+        ],
+        "title": "supportsPrewarming"
+      },
+      "pathComponents": [
+        "AnyAFMModel",
+        "supportsPrewarming"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "identifier",
+          "spelling": "supportsTokenization"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "get"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "var"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "text",
+          "spelling": " { "
+        },
+        {
+          "kind": "text",
+          "spelling": " }"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Sb",
+          "spelling": "Bool"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:10AFMKitCore11AnyAFMModelV20supportsTokenizationSbvp"
+      },
+      "kind": {
+        "displayName": "Instance Property",
+        "identifier": "swift.property"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "identifier",
+            "spelling": "supportsTokenization"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "var"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Sb",
+            "spelling": "Bool"
+          }
+        ],
+        "title": "supportsTokenization"
+      },
+      "pathComponents": [
+        "AnyAFMModel",
+        "supportsTokenization"
       ]
     },
     {

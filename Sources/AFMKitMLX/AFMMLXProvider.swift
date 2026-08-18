@@ -66,7 +66,7 @@ public struct AFMMLXProviderFactory: AFMProviderFactory {
     }
 }
 
-public final class AFMMLXModel: AFMModel, AFMTextTokenizing, @unchecked Sendable {
+public final class AFMMLXModel: AFMModel, AFMTextTokenizing, AFMPrewarmableModel, @unchecked Sendable {
     public let descriptor: AFMModelDescriptor
 
     private let runtime: AFMMLXRuntime
@@ -328,6 +328,11 @@ public final class AFMMLXModel: AFMModel, AFMTextTokenizing, @unchecked Sendable
     public func tokenize(text: String) async throws -> [Int] {
         _ = try await load(progress: nil)
         return try await service.tokenize(text: text)
+    }
+
+    public func prewarm() async throws {
+        _ = try await load(progress: nil)
+        try await runtime.prewarm()
     }
 
     private static func splitReasoning(
