@@ -5,6 +5,35 @@ import MLXLMCommon
 import XCTest
 
 final class AFMMLXProviderTests: XCTestCase {
+    func testResponseCollectorPreservesStructuredStreamingResult() async throws {
+        let stream = AsyncThrowingStream<AFMGenerationEvent, Error> { continuation in
+            continuation.yield(.reasoningText(action: .append, text: "plan", tokenCount: 1))
+            continuation.yield(.responseText(action: .append, text: "old", tokenCount: 1))
+            continuation.yield(.responseText(action: .replace, text: "answer", tokenCount: 1))
+            continuation.yield(.tokenLogprobs([
+                AFMTokenLogProbability(token: "answer", tokenID: 42, logprob: -0.1)
+            ]))
+            continuation.yield(.toolCall(
+                call: AFMToolCall(id: "call_1", name: "lookup", arguments: #"{"q":"x"}"#),
+                stage: .completed
+            ))
+            continuation.yield(.usage(AFMUsage(inputTokens: 3, outputTokens: 2)))
+            continuation.yield(.metadata(["runtime": .string("mlx")]))
+            continuation.yield(.completed(.toolCalls))
+            continuation.finish()
+        }
+
+        let response = try await AFMMLXModel.collectResponse(from: stream)
+
+        XCTAssertEqual(response.text, "answer")
+        XCTAssertEqual(response.reasoning, "plan")
+        XCTAssertEqual(response.toolCalls.map(\.name), ["lookup"])
+        XCTAssertEqual(response.usage, AFMUsage(inputTokens: 3, outputTokens: 2))
+        XCTAssertEqual(response.finishReason, .toolCalls)
+        XCTAssertEqual(response.tokenLogprobs?.map(\.tokenID), [42])
+        XCTAssertEqual(response.metadata["runtime"], .string("mlx"))
+    }
+
     func testTranslatorCoercesCompleteVendorToolDeltaUsingSchema() throws {
         let tools = [
             RequestTool(

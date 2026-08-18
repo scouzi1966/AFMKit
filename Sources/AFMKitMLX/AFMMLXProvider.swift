@@ -139,83 +139,12 @@ public final class AFMMLXModel: AFMModel, AFMTextTokenizing, AFMPrewarmableModel
     }
 
     public func respond(to request: AFMRequest) async throws -> AFMModelResponse {
-        _ = try await load(progress: nil)
         do {
-            let tools = request.effectiveOpenAITools()
-            let result = try await service.generate(
-                model: modelID,
-                messages: try request.openAIMessages(),
-                temperature: request.options.temperature,
-                maxTokens: request.options.maximumResponseTokens,
-                topP: request.options.topP,
-                repetitionPenalty: request.options.repetitionPenalty,
-                topK: request.options.topK,
-                minP: request.options.minP,
-                presencePenalty: request.options.presencePenalty,
-                seed: request.options.seed,
-                logprobs: request.options.logprobs,
-                topLogprobs: request.options.topLogprobs,
-                tools: tools,
-                parallelToolCalls: request.parallelToolCalls,
-                stop: request.options.stopSequences,
-                responseFormat: request.openAIResponseFormat(),
-                chatTemplateKwargs: request.chatTemplateKwargs()
-            )
-            let split = Self.splitReasoning(
-                result.content,
-                startTag: service.thinkStartTag,
-                endTag: service.thinkEndTag
-            )
-            let toolCalls = (result.toolCalls ?? []).map {
-                AFMToolCall(
-                    id: $0.id,
-                    name: Self.sanitizedToolName($0.function.name),
-                    arguments: $0.function.arguments
-                )
-            }
-            try AFMMLXToolPolicy.validateCompletedToolCalls(
-                toolCalls,
-                for: request
-            )
-            let finishReason = Self.finishReason(
-                toolCalls: result.toolCalls,
-                stoppedBySequence: result.stoppedBySequence,
-                completionTokens: result.completionTokens,
-                maximumResponseTokens: request.options.maximumResponseTokens
-            )
-            return AFMModelResponse(
-                text: split.text,
-                reasoning: split.reasoning,
-                toolCalls: toolCalls,
-                usage: AFMUsage(
-                    inputTokens: result.promptTokens,
-                    cachedInputTokens: result.cachedTokens,
-                    outputTokens: result.completionTokens
-                ),
-                finishReason: finishReason,
-                tokenLogprobs: result.tokenLogprobs?.map {
-                    AFMTokenLogProbability(
-                        token: $0.token,
-                        tokenID: $0.tokenId,
-                        logprob: $0.logprob,
-                        topTokens: $0.topTokens.map {
-                            AFMTopLogProbability(
-                                token: $0.token,
-                                tokenID: $0.tokenId,
-                                logprob: $0.logprob
-                            )
-                        }
-                    )
-                },
-                metadata: [
-                    "modelID": .string(result.modelID),
-                    "promptTime": .number(result.promptTime),
-                    "generateTime": .number(result.generateTime),
-                    "stoppedBySequence": .bool(result.stoppedBySequence)
-                ]
-            )
+            return try await Self.collectResponse(from: streamResponse(to: request))
         } catch let error as AFMError {
             throw error
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
             throw AFMError.generationFailed(error.localizedDescription)
         }
@@ -313,8 +242,14 @@ public final class AFMMLXModel: AFMModel, AFMTextTokenizing, AFMPrewarmableModel
                         continuation.yield(event)
                     }
                     continuation.finish()
-                } catch {
+                } catch is CancellationError {
+                    continuation.finish(throwing: CancellationError())
+                } catch let error as AFMError {
                     continuation.finish(throwing: error)
+                } catch {
+                    continuation.finish(
+                        throwing: AFMError.generationFailed(error.localizedDescription)
+                    )
                 }
             }
             continuation.onTermination = { _ in task.cancel() }
@@ -331,37 +266,46 @@ public final class AFMMLXModel: AFMModel, AFMTextTokenizing, AFMPrewarmableModel
     }
 
     public func prewarm() async throws {
-        _ = try await load(progress: nil)
         try await runtime.prewarm()
     }
 
-    private static func splitReasoning(
-        _ value: String,
-        startTag: String?,
-        endTag: String?
-    ) -> (text: String, reasoning: String?) {
-        guard let startTag, let endTag else { return (value, nil) }
-        var translator = MLXStreamEventTranslator(
-            thinkStartTag: startTag,
-            thinkEndTag: endTag,
-            maximumResponseTokens: nil
-        )
-        let events = translator.consume(StreamChunk(text: value)) + translator.finish()
-        var text = ""
-        var reasoning = ""
-        for event in events {
+    package static func collectResponse(
+        from stream: AsyncThrowingStream<AFMGenerationEvent, Error>
+    ) async throws -> AFMModelResponse {
+        var response = AFMModelResponse()
+        var toolCalls: [String: AFMToolCall] = [:]
+        var toolOrder: [String] = []
+
+        for try await event in stream {
+            try Task.checkCancellation()
             switch event {
-            case .responseText(_, let delta, _):
-                text += delta
-            case .reasoningText(_, let delta, _):
-                reasoning += delta
-            default:
+            case .responseText(let action, let text, _):
+                response.text = action == .replace ? text : response.text + text
+            case .reasoningText(let action, let text, _):
+                let existing = response.reasoning ?? ""
+                response.reasoning = action == .replace ? text : existing + text
+            case .tokenLogprobs(let values):
+                response.tokenLogprobs = (response.tokenLogprobs ?? []) + values
+            case .toolCall(let call, let stage):
+                if stage == .retracted {
+                    toolCalls.removeValue(forKey: call.id)
+                    toolOrder.removeAll { $0 == call.id }
+                } else {
+                    if toolCalls[call.id] == nil { toolOrder.append(call.id) }
+                    toolCalls[call.id] = call
+                }
+            case .usage(let usage):
+                response.usage = usage
+            case .metadata(let metadata):
+                response.metadata.merge(metadata) { _, new in new }
+            case .completed(let reason):
+                response.finishReason = reason
+            case .custom:
                 break
             }
         }
-        let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        let trimmedReasoning = reasoning.trimmingCharacters(in: .whitespacesAndNewlines)
-        return (trimmedText, trimmedReasoning.isEmpty ? nil : trimmedReasoning)
+        response.toolCalls = toolOrder.compactMap { toolCalls[$0] }
+        return response
     }
 
     static func sanitizedToolName(_ value: String) -> String {
@@ -383,25 +327,6 @@ public final class AFMMLXModel: AFMModel, AFMTextTokenizing, AFMPrewarmableModel
         )
     }
 
-    private static func finishReason(
-        toolCalls: [ResponseToolCall]?,
-        stoppedBySequence: Bool,
-        completionTokens: Int,
-        maximumResponseTokens: Int?
-    ) -> AFMFinishReason {
-        if toolCalls?.isEmpty == false {
-            return .toolCalls
-        }
-        if stoppedBySequence {
-            return .stop
-        }
-        if let maximumResponseTokens,
-           maximumResponseTokens > 0,
-           completionTokens >= maximumResponseTokens {
-            return .length
-        }
-        return .stop
-    }
 }
 
 /// Converts raw model tool syntax into the same structured chunks produced by

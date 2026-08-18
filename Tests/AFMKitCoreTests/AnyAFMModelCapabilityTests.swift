@@ -18,9 +18,12 @@ final class AnyAFMModelCapabilityTests: XCTestCase {
 
     func testUnsupportedCapabilitiesFailExplicitly() async {
         let model = AnyAFMModel(BasicModel())
+        let erased: any AFMModel = model
 
         XCTAssertFalse(model.supportsTokenization)
         XCTAssertFalse(model.supportsPrewarming)
+        XCTAssertNil(erased as? any AFMTextTokenizing)
+        XCTAssertNil(erased as? any AFMPrewarmableModel)
 
         await XCTAssertThrowsErrorAsync(try await model.tokenize(text: "hello")) { error in
             XCTAssertEqual(error as? AFMError, .unsupportedCapability("tokenization"))
@@ -28,6 +31,19 @@ final class AnyAFMModelCapabilityTests: XCTestCase {
         await XCTAssertThrowsErrorAsync(try await model.prewarm()) { error in
             XCTAssertEqual(error as? AFMError, .unsupportedCapability("prewarming"))
         }
+    }
+
+    func testRepeatedTypeErasurePreservesActualCapabilities() async throws {
+        let state = CapabilityState()
+        let capable = AnyAFMModel(AnyAFMModel(CapableModel(state: state)))
+        let basic = AnyAFMModel(AnyAFMModel(BasicModel()))
+
+        XCTAssertTrue(capable.supportsTokenization)
+        XCTAssertTrue(capable.supportsPrewarming)
+        let tokens = try await capable.tokenize(text: "hello")
+        XCTAssertEqual(tokens, [5])
+        XCTAssertFalse(basic.supportsTokenization)
+        XCTAssertFalse(basic.supportsPrewarming)
     }
 }
 

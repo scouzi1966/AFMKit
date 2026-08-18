@@ -147,7 +147,10 @@ Current `AFMKitMLX` checkpoint:
 
 - The normal public API is limited to `AFMMLXProviderFactory`, `AFMMLXModel`, `AFMMLXKernelEngine`, and `AFMMLXRuntimeConfiguration` (46 normalized public symbols).
 - Model loading, download progress, reasoning, tool calls, structured output, streaming, cancellation, prefix-cache configuration, concurrency configuration, MTP, multimodal model selection, and runtime telemetry flow through the AFMKit provider contract.
-- Server implementation types remain package-scoped. This lets maclocal-api reuse them during Phase 5 without freezing cache, scheduler, converter, and UI policy details as community API.
+- Server implementation types remain package-scoped inside `AFMKitMLX`; Swift `package` access does
+  not cross into maclocal-api. Provider-owned scheduling, cache, and generation tests therefore move
+  with the implementation into AFMKit, while maclocal-api consumes only the public model/event
+  contract and retains HTTP orchestration, request admission, files, and cancellable batch tasks.
 - The full package Release test suite passes against the local AFM-compatible dependency stack.
 - A clean downstream copy resolves the published compatibility tags and passes the full Release test suite without path overrides.
 - Qwen 3.8 MTP heads resolve from checkpoint architecture and quantization metadata rather than

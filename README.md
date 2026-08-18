@@ -48,7 +48,7 @@ AFMKIT_MLX_SWIFT_LM_PATH=/Volumes/edata/dev/git/CODEX/AFMKit-dependencies/mlx-sw
 swift test -c release
 ```
 
-The normal `AFMKitMLX` API intentionally exposes only `AFMMLXProviderFactory`, `AFMMLXModel`, `AFMMLXKernelEngine`, and `AFMMLXRuntimeConfiguration`. Runtime services, cache policies, converters, scheduling internals, and UI-oriented selection policies are package-scoped so maclocal-api can migrate without making them permanent third-party API.
+The normal `AFMKitMLX` API intentionally exposes only `AFMMLXProviderFactory`, `AFMMLXModel`, `AFMMLXKernelEngine`, and `AFMMLXRuntimeConfiguration`. Runtime services, cache policies, converters, scheduling internals, and UI-oriented selection policies stay inside AFMKit. maclocal-api migrates through the public model/event contract and keeps its HTTP and batch orchestration local rather than importing package internals.
 
 The normal `AFMKitDwarfStar` API exposes only `AFMDwarfStarProviderFactory`, `AFMDwarfStarModel`, and `AFMDwarfStarRuntimeConfiguration`. AFMKit pins an unmodified `antirez/ds4` submodule and compiles it behind an AFM-owned C bridge. Hub resolution, checkpoint selection, scheduling, prefix-cache policy, DSpark integration, DSML parsing, and runtime coordination remain package-scoped.
 

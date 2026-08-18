@@ -297,14 +297,31 @@ package final class AFMMLXRuntime: @unchecked Sendable {
         messages: [Message] = [Message(role: "user", content: "warmup")],
         maxTokens: Int = 4
     ) async throws {
-        _ = try await service.generate(
+        _ = try await load()
+        let result = try await service.generateStreaming(
             model: modelID,
             messages: messages,
             temperature: 0,
             maxTokens: maxTokens,
             topP: nil,
-            repetitionPenalty: nil
+            repetitionPenalty: nil,
+            topK: nil,
+            minP: nil,
+            presencePenalty: nil,
+            seed: nil,
+            logprobs: nil,
+            topLogprobs: nil,
+            tools: nil,
+            parallelToolCalls: nil,
+            stop: nil,
+            responseFormat: nil,
+            chatTemplateKwargs: nil,
+            preserveStructuralTags: false,
+            requestId: "afmkit-prewarm"
         )
+        for try await _ in result.stream {
+            try Task.checkCancellation()
+        }
     }
 
     public func unload(

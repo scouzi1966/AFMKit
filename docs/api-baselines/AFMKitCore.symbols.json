@@ -162,16 +162,6 @@
     {
       "kind": "conformsTo",
       "source": "s:10AFMKitCore11AnyAFMModelV",
-      "target": "s:10AFMKitCore17AFMTextTokenizingP"
-    },
-    {
-      "kind": "conformsTo",
-      "source": "s:10AFMKitCore11AnyAFMModelV",
-      "target": "s:10AFMKitCore19AFMPrewarmableModelP"
-    },
-    {
-      "kind": "conformsTo",
-      "source": "s:10AFMKitCore11AnyAFMModelV",
       "target": "s:10AFMKitCore8AFMModelP"
     },
     {
@@ -1359,10 +1349,6 @@
     {
       "kind": "memberOf",
       "source": "s:10AFMKitCore11AnyAFMModelV7prewarmyyYaKF",
-      "sourceOrigin": {
-        "displayName": "AFMPrewarmableModel.prewarm()",
-        "identifier": "s:10AFMKitCore19AFMPrewarmableModelP7prewarmyyYaKF"
-      },
       "target": "s:10AFMKitCore11AnyAFMModelV"
     },
     {
@@ -1377,10 +1363,6 @@
     {
       "kind": "memberOf",
       "source": "s:10AFMKitCore11AnyAFMModelV8tokenize4textSaySiGSS_tYaKF",
-      "sourceOrigin": {
-        "displayName": "AFMTextTokenizing.tokenize(text:)",
-        "identifier": "s:10AFMKitCore17AFMTextTokenizingP8tokenize4textSaySiGSS_tYaKF"
-      },
       "target": "s:10AFMKitCore11AnyAFMModelV"
     },
     {

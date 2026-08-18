@@ -43,7 +43,7 @@ public extension AFMModel {
     func unload() async {}
 }
 
-public struct AnyAFMModel: AFMModel, AFMTextTokenizing, AFMPrewarmableModel, Sendable {
+public struct AnyAFMModel: AFMModel, Sendable {
     private let descriptorValue: AFMModelDescriptor
     private let availabilityOperation: @Sendable () async -> AFMModelAvailability
     private let loadOperation:
@@ -56,6 +56,10 @@ public struct AnyAFMModel: AFMModel, AFMTextTokenizing, AFMPrewarmableModel, Sen
     private let prewarmOperation: (@Sendable () async throws -> Void)?
 
     public init<Model: AFMModel>(_ model: Model) {
+        if let erasedModel = model as? AnyAFMModel {
+            self = erasedModel
+            return
+        }
         descriptorValue = model.descriptor
         availabilityOperation = { await model.availability() }
         loadOperation = { progress in try await model.load(progress: progress) }
