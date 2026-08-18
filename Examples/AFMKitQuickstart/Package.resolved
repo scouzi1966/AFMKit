@@ -1,5 +1,5 @@
 {
-  "originHash" : "5fa08efd6d45de4f242b38d0ab2579b4e8ade6cc9f3b493bf5b213af358e439f",
+  "originHash" : "e52b5de4453b25a83403b174f4fbbfc56c37191aea836a0d3391b74fdcf318cd",
   "pins" : [
     {
       "identity" : "async-http-client",
@@ -33,8 +33,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/scouzi1966/mlx-swift-lm.git",
       "state" : {
-        "revision" : "90303ec548cb5d0dd6da16b86c82dad03240bd44",
-        "version" : "0.31.6-afm.2"
+        "revision" : "e0d7fa71bc5e422a416f191c297264f698391561",
+        "version" : "0.31.6-afm.3"
       }
     },
     {

@@ -2,7 +2,10 @@
 
 Last updated: 2026-08-17
 
-Source baseline: `maclocal-api` commit `2581e82410f50c2427a6a11c19344738856850e9`.
+Extraction baseline: `maclocal-api` commit `2581e82410f50c2427a6a11c19344738856850e9`.
+
+Current synchronization baseline: `maclocal-api` commit `224125f`, including the Qwen 3.8
+tool-call and automatic MTP-sidecar runtime changes from `cd2fdba` and `bc343f6`.
 
 ## Objective
 
@@ -120,8 +123,9 @@ Current `AFMKitApple` checkpoint:
   test because the entitlement belongs to the consuming app's code signature.
 - The normalized `AFMKitApple` symbol graph includes the intentional provider, model, managed
   capability, and configuration-key additions with no removed public symbols.
-- The focused Release suite passes 65 Apple tests. The full Release suite passes 236 tests across
-  Core, OpenAI compatibility, Apple, MLX, and DwarfStar.
+- The focused Release suite passes 65 Apple tests. The full Release suite passes 250 tests across
+  Core, OpenAI compatibility, Apple, MLX, and DwarfStar. All five public API baselines and the
+  clean downstream quickstart build also pass against the published dependency graph.
 
 ## Phase 4: Runtime Adapters
 
@@ -146,6 +150,15 @@ Current `AFMKitMLX` checkpoint:
 - Server implementation types remain package-scoped. This lets maclocal-api reuse them during Phase 5 without freezing cache, scheduler, converter, and UI policy details as community API.
 - The full package Release test suite passes against the local AFM-compatible dependency stack.
 - A clean downstream copy resolves the published compatibility tags and passes the full Release test suite without path overrides.
+- Qwen 3.8 MTP heads resolve from checkpoint architecture and quantization metadata rather than
+  repository names. A host can override the sidecar with `mtpModelID`; direct files require a
+  sibling quantization configuration.
+- MTP generators are bound to the loaded model/container identity, so retries and model switches
+  cannot reuse a stale process-global generator. Disabled MTP prefetches a matching head without
+  delaying base-model startup; explicit MTP resolves synchronously and fails closed.
+- The provider-level MTP policy, resource resolution, local path resolution, and configuration
+  propagation are covered by focused Release tests in this repository. HTTP `tool_choice` and
+  response-finalization policy remains in maclocal-api because it is a server concern.
 
 Current `AFMKitDwarfStar` checkpoint:
 
@@ -162,13 +175,20 @@ AFM-compatible dependency checkpoint:
 | `mlx-afm` | `/Volumes/edata/dev/git/CODEX/AFMKit-dependencies/mlx-afm` | `0.31.6-afm.1` | `b9af157b016a470be1ca609531693b822d40f95f` | AFM-compatible MLX C++/Metal source |
 | `mlx-c-afm` | `/Volumes/edata/dev/git/CODEX/AFMKit-dependencies/mlx-c-afm` | `0.31.6-afm.1` | `1692252c78e634a90ae09bd77a9f68929982b8a0` | C bridge pinning `mlx-afm` |
 | `mlx-swift-afm` | `/Volumes/edata/dev/git/CODEX/AFMKit-dependencies/mlx-swift-afm` | `0.31.6-afm.1` | `6000b7b26b70be2713c74e9ec2adeb89be07b9e5` | Swift MLX bindings and bundled Metal runtime |
-| `mlx-swift-lm` compatibility branch | `/Volumes/edata/dev/git/CODEX/AFMKit-dependencies/mlx-swift-lm-afm` | `0.31.6-afm.2` | `90303ec548cb5d0dd6da16b86c82dad03240bd44` | AFM model architectures, parsers, and generation behavior |
+| `mlx-swift-lm` compatibility branch | `/Volumes/edata/dev/git/CODEX/AFMKit-dependencies/mlx-swift-lm-afm` | `0.31.6-afm.3` | `e0d7fa7` | AFM model architectures, parsers, generation behavior, and quantization-aware Qwen MTP loading |
+
+The compatibility repositories are AFM-owned distribution dependencies. Changes are published as
+immutable AFM tags after their own Release build/test gate; AFMKit pins exact tags. They do not
+require pull requests against upstream MLX repositories. maclocal-api's legacy source-patch workflow
+remains in place until the consumer migration proves that the tagged graph covers its release build.
 
 ## Phase 5: Consumer Migration
 
 Status: in progress. A provider-neutral quickstart now compiles against the public registry and
 runtime adapters, and exercises Apple on-device generation without importing maclocal-api server
-targets. Tagged-package migration for maclocal-api and Vesta remains outstanding.
+targets. The MLX runtime is synchronized through the current maclocal-api baseline and pins the
+`0.31.6-afm.3` compatibility tag. Tagged-package migration for maclocal-api and Vesta remains
+outstanding.
 
 Scope:
 

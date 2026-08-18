@@ -25,7 +25,7 @@ if let localMLXSwiftLMPath = ProcessInfo.processInfo.environment["AFMKIT_MLX_SWI
 } else {
     mlxSwiftLMDependency = .package(
         url: "https://github.com/scouzi1966/mlx-swift-lm.git",
-        exact: "0.31.6-afm.2"
+        exact: "0.31.6-afm.3"
     )
     mlxSwiftLMPackageIdentity = "mlx-swift-lm"
 }

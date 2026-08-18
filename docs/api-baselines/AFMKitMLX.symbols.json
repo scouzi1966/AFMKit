@@ -257,6 +257,11 @@
     },
     {
       "kind": "memberOf",
+      "source": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV10mtpModelIDSSSgvp",
+      "target": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV"
+    },
+    {
+      "kind": "memberOf",
       "source": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV12kernelEngineAA012AFMMLXKernelF0Ovp",
       "target": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV"
     },
@@ -347,7 +352,7 @@
     },
     {
       "kind": "memberOf",
-      "source": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV6kvBits19enablePrefixCaching12kernelEngine10mtpEnabled0L5Depth17eagle3DrafterPath13maxConcurrent14toolCallParser0G18GrammarConstraints15prefillStepSize0E14EvictionPolicy16fixToolArguments8forceVLM012cacheProfileQ05trace010gpuCaptureQ016gpuTraceDuration10gpuProfile19gpuProfileBandwidth25defaultChatTemplateKwargs20forceDisableThinking23defaultGuidedJsonSchemaACSiSg_SbAA012AFMMLXKernelK0OSbSiSSSgSiA1_SbAZSSS2bA1_SbA1_AZS2bSDySS0A4Core12AFMJSONValueOGSgSb15AFMOpenAICompat14ResponseFormatVSgtcfc",
+      "source": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV6kvBits19enablePrefixCaching12kernelEngine10mtpEnabled0L5Depth0L7ModelID17eagle3DrafterPath13maxConcurrent14toolCallParser0G18GrammarConstraints15prefillStepSize0E14EvictionPolicy16fixToolArguments8forceVLM012cacheProfileS05trace010gpuCaptureS016gpuTraceDuration10gpuProfile19gpuProfileBandwidth25defaultChatTemplateKwargs20forceDisableThinking23defaultGuidedJsonSchemaACSiSg_SbAA012AFMMLXKernelK0OSbSiSSSgA2_SiA2_SbA_SSS2bA2_SbA2_A_S2bSDySS0A4Core12AFMJSONValueOGSgSb15AFMOpenAICompat14ResponseFormatVSgtcfc",
       "target": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV"
     },
     {
@@ -778,6 +783,10 @@
         },
         {
           "kind": "externalParam",
+          "spelling": "mtpModelID"
+        },
+        {
+          "kind": "externalParam",
           "spelling": "prefillStepSize"
         },
         {
@@ -938,11 +947,19 @@
         },
         {
           "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "text",
           "spelling": ": ["
         },
         {
           "kind": "text",
           "spelling": "? = nil)"
+        },
+        {
+          "kind": "text",
+          "spelling": "? = nil, "
         },
         {
           "kind": "text",
@@ -990,6 +1007,11 @@
           "kind": "typeIdentifier",
           "preciseIdentifier": "s:9AFMKitMLX18AFMMLXKernelEngineO",
           "spelling": "AFMMLXKernelEngine"
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:SS",
+          "spelling": "String"
         },
         {
           "kind": "typeIdentifier",
@@ -1477,6 +1499,28 @@
             "declarationFragments": [
               {
                 "kind": "identifier",
+                "spelling": "mtpModelID"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "text",
+                "spelling": "?"
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:SS",
+                "spelling": "String"
+              }
+            ],
+            "name": "mtpModelID"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
                 "spelling": "prefillStepSize"
               },
               {
@@ -1539,7 +1583,7 @@
       },
       "identifier": {
         "interfaceLanguage": "swift",
-        "precise": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV6kvBits19enablePrefixCaching12kernelEngine10mtpEnabled0L5Depth17eagle3DrafterPath13maxConcurrent14toolCallParser0G18GrammarConstraints15prefillStepSize0E14EvictionPolicy16fixToolArguments8forceVLM012cacheProfileQ05trace010gpuCaptureQ016gpuTraceDuration10gpuProfile19gpuProfileBandwidth25defaultChatTemplateKwargs20forceDisableThinking23defaultGuidedJsonSchemaACSiSg_SbAA012AFMMLXKernelK0OSbSiSSSgSiA1_SbAZSSS2bA1_SbA1_AZS2bSDySS0A4Core12AFMJSONValueOGSgSb15AFMOpenAICompat14ResponseFormatVSgtcfc"
+        "precise": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV6kvBits19enablePrefixCaching12kernelEngine10mtpEnabled0L5Depth0L7ModelID17eagle3DrafterPath13maxConcurrent14toolCallParser0G18GrammarConstraints15prefillStepSize0E14EvictionPolicy16fixToolArguments8forceVLM012cacheProfileS05trace010gpuCaptureS016gpuTraceDuration10gpuProfile19gpuProfileBandwidth25defaultChatTemplateKwargs20forceDisableThinking23defaultGuidedJsonSchemaACSiSg_SbAA012AFMMLXKernelK0OSbSiSSSgA2_SiA2_SbA_SSS2bA2_SbA2_A_S2bSDySS0A4Core12AFMJSONValueOGSgSb15AFMOpenAICompat14ResponseFormatVSgtcfc"
       },
       "kind": {
         "displayName": "Initializer",
@@ -1622,6 +1666,10 @@
           {
             "kind": "externalParam",
             "spelling": "mtpEnabled"
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "mtpModelID"
           },
           {
             "kind": "externalParam",
@@ -1785,11 +1833,19 @@
           },
           {
             "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "text",
             "spelling": ": ["
           },
           {
             "kind": "text",
             "spelling": "?)"
+          },
+          {
+            "kind": "text",
+            "spelling": "?, "
           },
           {
             "kind": "text",
@@ -1837,6 +1893,11 @@
             "kind": "typeIdentifier",
             "preciseIdentifier": "s:9AFMKitMLX18AFMMLXKernelEngineO",
             "spelling": "AFMMLXKernelEngine"
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:SS",
+            "spelling": "String"
           },
           {
             "kind": "typeIdentifier",
@@ -1939,11 +2000,11 @@
             "spelling": "Int"
           }
         ],
-        "title": "init(kvBits:enablePrefixCaching:kernelEngine:mtpEnabled:mtpDepth:eagle3DrafterPath:maxConcurrent:toolCallParser:enableGrammarConstraints:prefillStepSize:kvEvictionPolicy:fixToolArguments:forceVLM:cacheProfilePath:trace:gpuCapturePath:gpuTraceDuration:gpuProfile:gpuProfileBandwidth:defaultChatTemplateKwargs:forceDisableThinking:defaultGuidedJsonSchema:)"
+        "title": "init(kvBits:enablePrefixCaching:kernelEngine:mtpEnabled:mtpDepth:mtpModelID:eagle3DrafterPath:maxConcurrent:toolCallParser:enableGrammarConstraints:prefillStepSize:kvEvictionPolicy:fixToolArguments:forceVLM:cacheProfilePath:trace:gpuCapturePath:gpuTraceDuration:gpuProfile:gpuProfileBandwidth:defaultChatTemplateKwargs:forceDisableThinking:defaultGuidedJsonSchema:)"
       },
       "pathComponents": [
         "AFMMLXRuntimeConfiguration",
-        "init(kvBits:enablePrefixCaching:kernelEngine:mtpEnabled:mtpDepth:eagle3DrafterPath:maxConcurrent:toolCallParser:enableGrammarConstraints:prefillStepSize:kvEvictionPolicy:fixToolArguments:forceVLM:cacheProfilePath:trace:gpuCapturePath:gpuTraceDuration:gpuProfile:gpuProfileBandwidth:defaultChatTemplateKwargs:forceDisableThinking:defaultGuidedJsonSchema:)"
+        "init(kvBits:enablePrefixCaching:kernelEngine:mtpEnabled:mtpDepth:mtpModelID:eagle3DrafterPath:maxConcurrent:toolCallParser:enableGrammarConstraints:prefillStepSize:kvEvictionPolicy:fixToolArguments:forceVLM:cacheProfilePath:trace:gpuCapturePath:gpuTraceDuration:gpuProfile:gpuProfileBandwidth:defaultChatTemplateKwargs:forceDisableThinking:defaultGuidedJsonSchema:)"
       ]
     },
     {
@@ -5039,6 +5100,78 @@
       "pathComponents": [
         "AFMMLXRuntimeConfiguration",
         "mtpEnabled"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "identifier",
+          "spelling": "mtpModelID"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "var"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "text",
+          "spelling": "?"
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:SS",
+          "spelling": "String"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV10mtpModelIDSSSgvp"
+      },
+      "kind": {
+        "displayName": "Instance Property",
+        "identifier": "swift.property"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "identifier",
+            "spelling": "mtpModelID"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "var"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "text",
+            "spelling": "?"
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:SS",
+            "spelling": "String"
+          }
+        ],
+        "title": "mtpModelID"
+      },
+      "pathComponents": [
+        "AFMMLXRuntimeConfiguration",
+        "mtpModelID"
       ]
     },
     {
