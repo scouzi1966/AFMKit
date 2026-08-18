@@ -185,6 +185,19 @@ immutable AFM tags after their own Release build/test gate; AFMKit pins exact ta
 require pull requests against upstream MLX repositories. maclocal-api's legacy source-patch workflow
 remains in place until the consumer migration proves that the tagged graph covers its release build.
 
+During the atomic maclocal-api consumer migration, AFMKit supports two build-only path overrides:
+
+- `AFMKIT_MLX_SWIFT_PATH` selects a persistent checkout of AFM's MLX fork. The patched
+  `mlx-swift-lm` manifest consumes this same environment variable, ensuring that both dependency
+  chains resolve one package path and identity.
+- `AFMKIT_MLX_SWIFT_LM_PATH` selects maclocal-api's persistent patched `vendor/mlx-swift-lm`
+  checkout. AFMKit derives the SwiftPM package identity from the directory name so product lookup
+  remains correct for either the legacy checkout or the tagged compatibility package.
+
+These switches are not runtime configuration and do not change the normal published-package graph.
+They exist only to let maclocal-api replace its embedded Core, OpenAI, MLX, and DwarfStar targets in
+one change. They should be removed after maclocal-api consumes the tagged AFM-compatible MLX stack.
+
 ## Phase 5: Consumer Migration
 
 Status: in progress. A provider-neutral quickstart now compiles against the public registry and

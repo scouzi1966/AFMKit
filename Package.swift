@@ -5,23 +5,25 @@ import Foundation
 let packageDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent().path
 let mlxSwiftDependency: Package.Dependency
 let mlxSwiftLMDependency: Package.Dependency
-let mlxSwiftPackageIdentity = "mlx-swift-afm"
+let mlxSwiftPackageIdentity: String
 let mlxSwiftLMPackageIdentity: String
 
 if let localMLXSwiftPath = ProcessInfo.processInfo.environment["AFMKIT_MLX_SWIFT_PATH"],
    !localMLXSwiftPath.isEmpty {
     mlxSwiftDependency = .package(path: localMLXSwiftPath)
+    mlxSwiftPackageIdentity = URL(fileURLWithPath: localMLXSwiftPath).lastPathComponent.lowercased()
 } else {
     mlxSwiftDependency = .package(
         url: "https://github.com/scouzi1966/mlx-swift-afm",
         exact: "0.31.6-afm.1"
     )
+    mlxSwiftPackageIdentity = "mlx-swift-afm"
 }
 
 if let localMLXSwiftLMPath = ProcessInfo.processInfo.environment["AFMKIT_MLX_SWIFT_LM_PATH"],
    !localMLXSwiftLMPath.isEmpty {
     mlxSwiftLMDependency = .package(path: localMLXSwiftLMPath)
-    mlxSwiftLMPackageIdentity = "mlx-swift-lm-afm"
+    mlxSwiftLMPackageIdentity = URL(fileURLWithPath: localMLXSwiftLMPath).lastPathComponent.lowercased()
 } else {
     mlxSwiftLMDependency = .package(
         url: "https://github.com/scouzi1966/mlx-swift-lm.git",
