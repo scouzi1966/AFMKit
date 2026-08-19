@@ -14,6 +14,9 @@ public enum MLXMetalLibrary {
     private static let lock = NSLock()
     nonisolated(unsafe) private static var initialized = false
     private static let resourceBundleNames = [
+        "AFMKit_AFMKitMLX.bundle",
+        // Compatibility with maclocal-api packages produced before AFMKit
+        // became the owner of the provider resource bundle.
         "MacLocalAPI_AFMKitMLX.bundle",
         "MacLocalAPI_AFMKit.bundle",
     ]

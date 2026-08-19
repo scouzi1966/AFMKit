@@ -140,8 +140,10 @@ Scope:
 
 Known transition blockers:
 
-- maclocal-api currently uses `Scripts/apply-mlx-patches.sh` to patch `vendor/mlx-swift-lm`.
-- maclocal-api currently uses `Scripts/apply-mlx-cpp-patches.sh` for MLX C++/Metal support that can be lost on clean rebuild.
+- Legacy maclocal-api releases use `Scripts/apply-mlx-patches.sh` and
+  `Scripts/apply-mlx-cpp-patches.sh`. The consumer-migration branch disables those mutation steps
+  by default and keeps them only as explicit compatibility maintenance commands until its clean
+  release gate passes.
 - Clean downstream apps selecting `AFMKitMLX` inherit the tagged AFM-compatible MLX graph; apps selecting `AFMKitDwarfStar` inherit the vanilla DwarfStar engine. Neither provider product inherits Vapor.
 - A clean showcase app found that focused FoundationModels-style usage is practical, while full MLX downstream use still exposes patched-runtime coupling.
 
@@ -172,6 +174,9 @@ Current `AFMKitMLX` checkpoint:
   HTTP, Prometheus, vLLM, GuideLLM, Vapor, or WebUI presentation responsibilities. Before a public
   AFMKit 1.0 tag, this surface should either be renamed as provider runtime observations or moved
   behind a small provider-neutral telemetry event contract.
+- `AFMKitMLX` owns its committed `default.metallib`, canonical SwiftPM bundle lookup, and
+  `Scripts/rebuild-mlx-metallib.sh`. Consumer builds package the immutable provider bundle; only
+  AFMKit maintainers rebuild the Metal artifact.
 
 Current `AFMKitDwarfStar` checkpoint:
 
@@ -210,26 +215,27 @@ one change. They should be removed after maclocal-api consumes the tagged AFM-co
 
 ## Phase 5: Consumer Migration
 
-Status: in progress. A provider-neutral quickstart now compiles against the public registry and
-runtime adapters, and exercises Apple on-device generation without importing maclocal-api server
-targets. The MLX runtime is synchronized through the current maclocal-api baseline and pins the
-`0.31.6-afm.3` compatibility tag. Tagged-package migration for maclocal-api and Vesta remains
-outstanding.
+Status: in progress. A provider-neutral quickstart compiles against the public registry and runtime
+adapters, and exercises Apple on-device generation without importing maclocal-api server targets.
+Vesta consumes AFMKit provider events directly. The maclocal-api migration branch consumes AFMKit
+products from an immutable revision and has removed its tracked shadow copies of `AFMKitCore`,
+`AFMKitMLX`, and `AFMKitDwarfStar`; clean release and packaging validation remains outstanding.
 
 Current maclocal-api consumer-migration checkpoint:
 
-- Branch `codex/afmkit-consumer-migration`, based on checkpoint `30c1ce3`, imports `AFMKitCore`
-  and `AFMKitMLX` from AFMKit, while keeping OpenAI HTTP routing, Vapor request lifecycle, response files,
-  cancellable request tasks, dashboard rendering, and Prometheus/vLLM/GuideLLM-compatible
-  exposition in maclocal-api.
+- Branch `codex/afmkit-consumer-migration` imports `AFMKitCore`, `AFMOpenAICompat`, `AFMKitMLX`,
+  and `AFMKitDwarfStar` from AFMKit. It keeps OpenAI HTTP routing, Vapor request lifecycle,
+  response files, cancellable request tasks, dashboard rendering, and
+  Prometheus/vLLM/GuideLLM-compatible exposition in maclocal-api.
 - `AFMServer` owns the `AFMChatServing` facade and server transport DTOs. It converts typed
   provider events into OpenAI-compatible HTTP responses instead of reaching into MLX internals or
   parsing provider-specific raw tool-call text in the controller.
 - The focused Release migration gate passed for streaming controllers, batch dispatch,
   reasoning propagation, MLX provider facade behavior, and concurrent batch behavior.
-- The worktree still shows the expected patched `vendor/mlx-swift-lm` submodule state. That is a
-  legacy maclocal-api build detail and should disappear when maclocal-api fully consumes tagged
-  AFMKit and tagged AFM-compatible MLX packages.
+- AFMKit now owns MLX and DwarfStar provider resources and maintenance scripts. The consumer branch
+  resolves and packages the AFMKit SwiftPM bundles instead of rebuilding or copying local shadow
+  targets. Its pre-existing dirty `vendor/mlx-swift-lm` checkout remains a legacy worktree artifact,
+  not an input to the normal immutable dependency path.
 
 Scope:
 
