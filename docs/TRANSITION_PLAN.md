@@ -1,12 +1,12 @@
 # AFMKit Transition Plan
 
-Last updated: 2026-08-18
+Last updated: 2026-08-19
 
 Extraction baseline: `maclocal-api` commit `2581e82410f50c2427a6a11c19344738856850e9`.
 
-Current synchronization baseline: `maclocal-api` commit `30c1ce3`, including the Qwen 3.8
-tool-call and automatic MTP-sidecar runtime changes from `cd2fdba` and `bc343f6`, plus the
-first server-owned AFMKit serving facade split.
+Current synchronization baseline: `maclocal-api` consumer-migration commit `a197c3d`, including
+the Qwen 3.8 tool-call and automatic MTP-sidecar runtime changes, the server-owned AFMKit serving
+facade, removal of the tracked AFMKit shadow targets, and clean Release packaging validation.
 
 ## Objective
 
@@ -49,7 +49,7 @@ Exit criteria:
 
 ## Phase 2: Extract `AFMOpenAICompat`
 
-Status: extracted and verified in this repository; downstream adoption is intentionally deferred to Phase 5.
+Status: extracted, verified, and consumed by maclocal-api and Vesta.
 
 Scope:
 
@@ -78,12 +78,13 @@ Current checkpoint:
 
 - Public API has a normalized Swift symbol-graph baseline.
 - Unit tests pass without server or inference dependencies.
-- maclocal-api adoption remains deferred until the Apple/provider packages are extracted, so its release cadence is not tied to a partially split package graph.
+- maclocal-api imports the package from the immutable AFMKit revision used by the completed
+  consumer-migration checkpoint.
 
 ## Phase 3: Apple and macOS 27 Provider Surface
 
-Status: extracted and verified in this repository; the common AFM provider adapter is implemented,
-and downstream Vesta adoption remains in Phase 5.
+Status: extracted and verified in this repository. The common AFM provider adapter is implemented,
+and Vesta consumes the typed AFMKit provider event surface directly.
 
 Scope:
 
@@ -111,7 +112,8 @@ Deliberate app boundary:
 - AFMKit provides an app-agnostic current-process entitlement reader and also accepts an injected
   entitlement check for tests and specialized hosts.
 - Vesta continues to own provisioning profiles, entitlement files, provider selection UI, route metadata, and chat workflow DTOs.
-- Vesta's native request factory can migrate to the AFMKit runtime in Phase 5 without copying those app concerns into the SDK.
+- Vesta's native request factory and AFM27 chat reducer consume AFMKit runtime events while those
+  app concerns remain outside the SDK.
 
 Current `AFMKitApple` checkpoint:
 
@@ -124,7 +126,7 @@ Current `AFMKitApple` checkpoint:
   test because the entitlement belongs to the consuming app's code signature.
 - The normalized `AFMKitApple` symbol graph includes the intentional provider, model, managed
   capability, and configuration-key additions with no removed public symbols.
-- The focused Release suite passes 65 Apple tests. The full Release suite passes 251 XCTest cases
+- The focused Release suite passes 67 Apple tests. The full Release suite passes 271 XCTest cases
   plus 8 Swift Testing cases across Core, OpenAI compatibility, Apple, MLX, and DwarfStar. All five
   public API baselines and the clean downstream quickstart build also pass against the published
   dependency graph.
@@ -138,14 +140,15 @@ Scope:
 - `AFMKitMLX`: expose model loading, download progress, reasoning, tool calling, streaming, cancellation, prefix-cache/concurrency capability metadata, and multimodal descriptors without requiring consumers to depend on the full AFM server.
 - `AFMKitDwarfStar`: expose the same AFMKit provider contract on top of vanilla DwarfStar. Interface-level adapter patches are acceptable; underlying engine patches should remain upstream or documented as limitations.
 
-Known transition blockers:
+Resolved transition blockers:
 
-- Legacy maclocal-api releases use `Scripts/apply-mlx-patches.sh` and
+- Legacy maclocal-api releases used `Scripts/apply-mlx-patches.sh` and
   `Scripts/apply-mlx-cpp-patches.sh`. The consumer-migration branch disables those mutation steps
-  by default and keeps them only as explicit compatibility maintenance commands until its clean
-  release gate passes.
+  by default; its clean Release and packaging gates resolve the normal build through immutable
+  AFM-compatible packages.
 - Clean downstream apps selecting `AFMKitMLX` inherit the tagged AFM-compatible MLX graph; apps selecting `AFMKitDwarfStar` inherit the vanilla DwarfStar engine. Neither provider product inherits Vapor.
-- A clean showcase app found that focused FoundationModels-style usage is practical, while full MLX downstream use still exposes patched-runtime coupling.
+- The downstream quickstart and clean maclocal-api checkout both resolve the immutable
+  AFM-compatible MLX graph without source mutation or local package-path overrides.
 
 Current `AFMKitMLX` checkpoint:
 
@@ -197,8 +200,8 @@ AFM-compatible dependency checkpoint:
 
 The compatibility repositories are AFM-owned distribution dependencies. Changes are published as
 immutable AFM tags after their own Release build/test gate; AFMKit pins exact tags. They do not
-require pull requests against upstream MLX repositories. maclocal-api's legacy source-patch workflow
-remains in place until the consumer migration proves that the tagged graph covers its release build.
+require pull requests against upstream MLX repositories. The consumer migration has proved that
+the tagged graph covers the clean maclocal-api Release build and packaging paths.
 
 During the atomic maclocal-api consumer migration, AFMKit supports two build-only path overrides:
 
@@ -215,11 +218,12 @@ one change. They should be removed after maclocal-api consumes the tagged AFM-co
 
 ## Phase 5: Consumer Migration
 
-Status: in progress. A provider-neutral quickstart compiles against the public registry and runtime
-adapters, and exercises Apple on-device generation without importing maclocal-api server targets.
-Vesta consumes AFMKit provider events directly. The maclocal-api migration branch consumes AFMKit
-products from an immutable revision and has removed its tracked shadow copies of `AFMKitCore`,
-`AFMKitMLX`, and `AFMKitDwarfStar`; clean release and packaging validation remains outstanding.
+Status: implementation-complete at the pre-tag checkpoint. A provider-neutral quickstart compiles
+against the public registry and runtime adapters, and exercises Apple on-device generation without
+importing maclocal-api server targets. Vesta consumes AFMKit provider events directly. The
+maclocal-api migration branch consumes AFMKit products from an immutable revision, has removed its
+tracked shadow copies of `AFMKitCore`, `AFMKitMLX`, and `AFMKitDwarfStar`, and passes clean Release,
+direct-install, relocated-tarball, WebUI, and provider-resource packaging validation.
 
 Current maclocal-api consumer-migration checkpoint:
 
@@ -236,6 +240,15 @@ Current maclocal-api consumer-migration checkpoint:
   resolves and packages the AFMKit SwiftPM bundles instead of rebuilding or copying local shadow
   targets. Its pre-existing dirty `vendor/mlx-swift-lm` checkout remains a legacy worktree artifact,
   not an input to the normal immutable dependency path.
+- The clean migration checkout builds `afm` in Release as `v0.9.17-a6e358c`, packages both
+  `AFMKit_AFMKitMLX.bundle` and `AFMKit_AFMKitDwarfStar.bundle`, verifies the MLX Metal library and
+  WebUI, and passes a relocated tarball smoke test from persistent external storage.
+- The Vesta consumer resolves AFMKit revision `dfeab23`, builds unsigned Release with Xcode 27
+  Beta 3, embeds the AFMKit MLX Metal resource bundle, and passes 1,003 Release unit tests with
+  coverage enabled (six environment-dependent tests skipped, zero failures).
+- maclocal-api's Python distribution gate builds an Apple-Silicon wheel with the explicit
+  `py3-none-macosx_26_0_arm64` compatibility tag rather than incorrectly advertising the native
+  AFM executable and provider resources as a platform-independent wheel.
 
 Scope:
 
@@ -252,6 +265,15 @@ Exit criteria:
 - maclocal-api release builds from tagged AFMKit packages.
 - Vesta release builds against the same tags.
 - A new Swift app can use `AFMKitCore` and at least one provider package from a clean checkout.
+
+Pre-tag exit status:
+
+- The implementation and clean-checkout evidence for all three criteria are complete.
+- Replacing immutable revision pins with the first AFMKit release tags, merging the consumer
+  branches, and publishing release artifacts remain explicit maintainer-controlled release actions.
+- A signed Vesta Release still requires the consuming app's Apple Development identity and managed
+  PCC provisioning profile. The unsigned Xcode 27 Beta 3 Release build is the architecture gate;
+  signing is deliberately not an AFMKit package concern.
 
 ## Compatibility Rules
 
