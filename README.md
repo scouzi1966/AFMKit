@@ -2,7 +2,11 @@
 
 AFMKit is the provider SDK being extracted from maclocal-api. The goal is to make the AFM provider contract usable by Swift applications without pulling in the full AFM server, patched MLX runtime, DwarfStar adapter, Vapor stack, or model download machinery.
 
-The private development checkpoint contains dependency-free provider and OpenAI-compatible API surfaces, an Apple provider package, and extracted MLX and DwarfStar provider adapters. Both runtime adapters are usable through the stable AFMKit provider contract while their implementation details remain package-scoped.
+The private development checkpoint contains dependency-free provider and OpenAI-compatible API surfaces, an Apple provider package, and extracted MLX and DwarfStar provider adapters. Both runtime adapters are usable through the stable AFMKit provider contract. Some advanced MLX engine types are still public during extraction; they are provider-specific APIs, not part of the stable cross-provider boundary.
+
+The canonical architecture description, interface boundaries, macOS 27 feature
+map, dependency ledger, runtime diagrams, and decisions are in
+[`Architecture/`](Architecture/README.md).
 
 ## Current Products
 
@@ -12,6 +16,7 @@ The private development checkpoint contains dependency-free provider and OpenAI-
 | `AFMOpenAICompat` | Extracted | Swift Foundation only |
 | `AFMKitApple` | Extracted | Apple FoundationModels, on-device execution, and macOS 27 Private Cloud Compute |
 | `AFMKitMLX` | Extracted and Release-verified | Tagged AFM-compatible MLX package stack |
+| `AFMKitFoundationModelsMLX` | Experimental, extracted and tested | macOS 27 `LanguageModel` / `LanguageModelExecutor` bridge backed by AFMKitMLX |
 | `AFMKitDwarfStar` | Extracted and Release-verified | Vanilla DwarfStar submodule plus AFM-owned Swift/C adapter |
 
 ## Build
@@ -51,8 +56,9 @@ swift test -c release
 The normal `AFMKitMLX` entry point is `AFMMLXModel`. It implements the provider-neutral
 `AFMModel` contract and the public `AFMMLXOpenAIChatServing` contract used by server and app hosts.
 The serving contract covers OpenAI-compatible generation and streaming, request admission, batch
-lifecycle, response-format and tool policy, and request profiling. The concrete engine service,
-cache implementations, checkpoint converters, and scheduler internals remain package-scoped.
+lifecycle, response-format and tool policy, and request profiling. Some concrete engine and
+model-service APIs are still public for advanced consumers; applications should isolate them because
+the intended stable facade is narrower than the module's complete public symbol graph.
 maclocal-api therefore keeps HTTP routing, Prometheus exposure, files, and request orchestration
 local while consuming a stable AFMKit model facade instead of importing MLX engine internals.
 
