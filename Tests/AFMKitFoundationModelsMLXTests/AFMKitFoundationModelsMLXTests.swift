@@ -180,6 +180,50 @@ final class AFMKitFoundationModelsMLXTests: XCTestCase {
         )
     }
 
+    func testRequestMapsGreedySampling() throws {
+        let adapted = try adaptedRequest(
+            generationOptions: GenerationOptions(
+                samplingMode: .greedy,
+                temperature: 0.9,
+                maximumResponseTokens: 64
+            )
+        )
+
+        XCTAssertEqual(adapted.options.temperature, 0)
+        XCTAssertNil(adapted.options.topK)
+        XCTAssertNil(adapted.options.topP)
+        XCTAssertNil(adapted.options.seed)
+    }
+
+    func testRequestMapsProbabilityThresholdSampling() throws {
+        let adapted = try adaptedRequest(
+            generationOptions: GenerationOptions(
+                samplingMode: .random(probabilityThreshold: 0.82, seed: 73),
+                temperature: 0.6,
+                maximumResponseTokens: 64
+            )
+        )
+
+        XCTAssertEqual(adapted.options.temperature, 0.6)
+        XCTAssertEqual(adapted.options.topP, 0.82)
+        XCTAssertNil(adapted.options.topK)
+        XCTAssertEqual(adapted.options.seed, 73)
+    }
+
+    func testRequestLeavesUnspecifiedSamplingUnset() throws {
+        let adapted = try adaptedRequest(
+            generationOptions: GenerationOptions(
+                temperature: 0.45,
+                maximumResponseTokens: 64
+            )
+        )
+
+        XCTAssertEqual(adapted.options.temperature, 0.45)
+        XCTAssertNil(adapted.options.topK)
+        XCTAssertNil(adapted.options.topP)
+        XCTAssertNil(adapted.options.seed)
+    }
+
     func testEventAdapterCoalescesAppendText() {
         var adapter = AFMFoundationModelsEventChannelAdapter()
         var plans: [AFMFoundationModelsEventChannelAdapter.ChannelPlan] = []
@@ -241,6 +285,26 @@ final class AFMKitFoundationModelsMLXTests: XCTestCase {
             guard case .text(let value) = part else { return nil }
             return value
         }.joined()
+    }
+
+    private func adaptedRequest(
+        generationOptions: GenerationOptions
+    ) throws -> AFMRequest {
+        let model = MLXLanguageModel(
+            modelID: "mlx-community/test-model",
+            defaultMaximumResponseTokens: 2_048
+        )
+        let request = LanguageModelExecutorGenerationRequest(
+            id: UUID(),
+            transcript: Transcript(entries: [
+                .prompt(.init(segments: [.text(.init(content: "Question"))]))
+            ]),
+            enabledTools: [],
+            generationOptions: generationOptions,
+            contextOptions: ContextOptions(),
+            metadata: [:]
+        )
+        return try AFMFoundationModelsRequestAdapter.request(from: request, model: model)
     }
 }
 #endif

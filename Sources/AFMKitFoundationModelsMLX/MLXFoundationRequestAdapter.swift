@@ -11,24 +11,23 @@ public enum AFMFoundationModelsRequestAdapter {
         from request: LanguageModelExecutorGenerationRequest,
         model: Model
     ) throws -> AFMRequest {
-        let mode = request.generationOptions.samplingMode?.kind
         var temperature = request.generationOptions.temperature
         var topP: Double?
         var topK: Int?
         var seed: Int?
-        switch mode {
-        case .greedy:
-            temperature = 0
-        case .randomTopK(let value, let randomSeed):
-            topK = value
-            seed = randomSeed.flatMap { Int(exactly: $0) }
-        case .randomProbabilityThreshold(let value, let randomSeed):
-            topP = value
-            seed = randomSeed.flatMap { Int(exactly: $0) }
-        case nil:
-            break
-        @unknown default:
-            break
+        if let mode = request.generationOptions.samplingMode?.kind {
+            switch mode {
+            case .greedy:
+                temperature = 0
+            case .randomTopK(let value, let randomSeed):
+                topK = value
+                seed = randomSeed.flatMap { Int(exactly: $0) }
+            case .randomProbabilityThreshold(let value, let randomSeed):
+                topP = value
+                seed = randomSeed.flatMap { Int(exactly: $0) }
+            @unknown default:
+                break
+            }
         }
 
         let toolCallingMode: String?
