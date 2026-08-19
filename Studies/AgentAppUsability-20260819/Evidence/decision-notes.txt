@@ -1,0 +1,10 @@
+Desktop beta decision notes
+
+The team agreed that internal dogfood must precede the invited customer beta.
+The dogfood group has 40 volunteers and a seven-day observation window.
+Customer support requested a written rollback playbook before external invitations begin.
+Crash-free session data is available, but the meeting has not selected a minimum threshold.
+The release owner can stage invitations in two cohorts; cohort sizes are not decided.
+
+Open conflict: product wants external invitations on September 8, while support says the
+rollback playbook will be reviewed on September 10.

@@ -36,3 +36,30 @@
 - Decision: Complete, validate, commit, and push the Phase A app against commit `7bd1101` before making any AFMKit SDK or documentation improvement.
 - Rationale: This preserves causal evidence and keeps app-only changes separate from Phase B SDK/docs changes.
 
+## D-006: Reject worktree-specific package identity
+
+- Date: 2026-08-19
+- Phase: Phase A supervising review
+- Decision: Name the relative SwiftPM dependency explicitly as `AFMKit` instead of naming products against `afmkit-agent-app-study`.
+- Rationale: The sub-agent's workaround compiles only while the checkout directory has this study-specific name. A downstream sample must remain reproducible in a normal `AFMKit` checkout.
+
+## D-007: Package a real app bundle without changing AFMKit
+
+- Date: 2026-08-19
+- Phase: Phase A supervising review
+- Decision: Keep the SwiftPM app source layout but add an app-owned Release bundling script and `Info.plist` to produce an ad-hoc-signed `DecisionBrief.app`.
+- Rationale: This closes the acceptance gap without altering the Phase A SDK baseline or adding a generated Xcode project to the study.
+
+## D-008: Preserve AFMKit stream semantics at the app boundary
+
+- Date: 2026-08-19
+- Phase: Phase A supervising review
+- Decision: Carry append-versus-replace semantics through the app-owned model event and reject a stream that ends without AFMKit's terminal completion event.
+- Rationale: The initial implementation discarded public event semantics and could display incorrect or falsely completed output.
+
+## D-009: Disable Qwen thinking for the focused pre-read
+
+- Date: 2026-08-19
+- Phase: Phase A live validation
+- Decision: Use AFMKitMLX's existing `chatTemplateKwargs.enable_thinking = false` request metadata for Phase A, retain a 768-token response cap, and fail visibly if completion contains no response text.
+- Rationale: The first observed live run reached completion with no usable response. DecisionBrief needs concise grounded output, not hidden reasoning, and the public core options do not expose a reasoning toggle at baseline.
