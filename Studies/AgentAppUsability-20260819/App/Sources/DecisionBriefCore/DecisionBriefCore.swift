@@ -197,12 +197,10 @@ public final class AFMKitDecisionModelService: DecisionModelService, @unchecked 
                 do {
                     let request = AFMRequest(
                         messages: [AFMMessage(role: .user, text: prompt)],
-                        options: AFMGenerationOptions(maximumResponseTokens: 768),
-                        metadata: [
-                            "chatTemplateKwargs": .object([
-                                "enable_thinking": .bool(false),
-                            ]),
-                        ]
+                        options: AFMGenerationOptions(
+                            maximumResponseTokens: 768,
+                            reasoningEnabled: false
+                        )
                     )
                     for try await event in model.streamResponse(to: request) {
                         switch event {

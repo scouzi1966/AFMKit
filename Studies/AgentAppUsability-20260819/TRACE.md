@@ -314,3 +314,12 @@ Scripts/check-downstream-example.sh
 - DecisionBrief Release suite against the Phase B SDK: exit `0`; 10 tests, 0 failures. Recompilation reported about 2,565 planning nodes and took 145.35 seconds before tests.
 - Downstream example check: exit `0`; incremental Release build completed and printed `AFMKit downstream example built successfully.`
 - Known non-fatal output remained: CoreData XPC messages during tests, AFMKitMLX/MLX compile warnings, and Xcode 27 explicit-precompiled-module path warnings already classified in F-006/F-007.
+
+## T-013: Typed-option app migration
+
+- Committed and pushed the Phase B SDK/docs/findings checkpoint as `9a07381` before changing the app.
+- Replaced DecisionBrief's Phase A `metadata["chatTemplateKwargs"]["enable_thinking"] = false` workaround with `AFMGenerationOptions(reasoningEnabled: false)`. No other app behavior or safety boundary changed.
+- This migration is intentionally isolated from the SDK commit so the final history preserves both the baseline workaround and the downstream adoption step.
+- `swift test --package-path Studies/AgentAppUsability-20260819/App -c release --disable-swift-testing`: exit `0`; 10 tests, 0 failures.
+- `Studies/AgentAppUsability-20260819/App/Scripts/build-release-app.sh`: exit `0`; the Release product build reported 127.20 seconds and produced the app bundle.
+- `codesign --verify --deep --strict --verbose=2 Studies/AgentAppUsability-20260819/App/.build/DecisionBrief.app`: exit `0`; valid on disk and satisfied its designated requirement.
