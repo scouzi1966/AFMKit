@@ -125,8 +125,10 @@ metadata can carry additional diagnostics without making them universal fields.
 - Provider discovery and pre-load availability guarantees are not uniform; apps
   must follow the provider contract documented in
   `08-provider-contracts-and-configuration.md`.
-- AFMKit depends on AFM-compatible MLX forks; the delta from upstream must remain
-  documented and reducible.
+- AFMKit's distributable package depends on tagged AFM-compatible MLX
+  materializations. The authoritative delta remains in maclocal-api's patch
+  catalog; each tag must be reproducible from a recorded upstream base and patch
+  commit. Runtime materialization publication is not fully automated yet.
 - DwarfStar model discovery currently requires stronger catalog semantics than an
   empty provider descriptor list.
 - No first-party Core AI provider exists yet.

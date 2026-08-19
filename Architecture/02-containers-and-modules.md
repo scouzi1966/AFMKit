@@ -42,7 +42,7 @@ package-target dependencies. The consumer chooses products explicitly; importing
 | `AFMKitCore` | Provider-neutral domain and lifecycle. | `AFMModel`, `AFMProviderFactory`, `AFMProviderRegistry`, request/event/descriptor types. | AFMKit. |
 | `AFMOpenAICompat` | OpenAI-compatible wire DTOs independent of HTTP. | Chat, stream, tool, response-format, file, batch, embedding, error, timing DTOs. | AFMKit; transport remains host-owned. |
 | `AFMKitApple` | Apple on-device and PCC provider. | `AFMFoundationProviderFactory`, `AFMFoundationModel`, capability probes. | AFMKit over Apple frameworks. |
-| `AFMKitMLX` | Native local MLX provider and advanced serving surface. | `AFMMLXProviderFactory`, `AFMMLXModel`, `AFMMLXRuntimeConfiguration`. | AFMKit plus pinned MLX forks. |
+| `AFMKitMLX` | Native local MLX provider and advanced serving surface. | `AFMMLXProviderFactory`, `AFMMLXModel`, `AFMMLXRuntimeConfiguration`. | AFMKit plus tagged materializations generated from upstream MLX and the maclocal-api patch catalog. |
 | `AFMKitFoundationModelsMLX` | macOS 27 custom `LanguageModel` bridge backed by MLX. | `MLXLanguageModel`, `MLXLanguageModelExecutor`, projection plan. | AFMKit over Apple + MLX APIs. |
 | `AFMKitDwarfStar` | DwarfStar/DS4 local provider. | `AFMDwarfStarProviderFactory`, `AFMDwarfStarModel`, runtime configuration. | AFMKit adapter around vanilla ds4. |
 | `AFMXGrammar` | Swift/C++ bridge to xgrammar. | Used by MLX guided generation. | Internal support target. |
