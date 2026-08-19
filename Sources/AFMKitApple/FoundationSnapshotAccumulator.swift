@@ -1,8 +1,10 @@
 #if canImport(FoundationModels)
 import Foundation
+import AFMKitCore
 
 @available(macOS 27.0, *)
 public struct AFMFoundationSnapshotUpdate<ProgressState: Equatable & Sendable>: Equatable, Sendable {
+    public let responseAction: AFMTextUpdateAction?
     public let responseDelta: String?
     public let shouldYieldProgressUpdate: Bool
     public let firstChunkStarted: Bool
@@ -36,6 +38,7 @@ public struct AFMFoundationSnapshotAccumulator<ProgressState: Equatable & Sendab
         progressState = newProgressState
 
         var responseDelta: String?
+        var responseAction: AFMTextUpdateAction?
         var firstChunkStarted = false
 
         let reasoningChanged = newReasoningContent != previousReasoningSnapshot
@@ -47,24 +50,27 @@ public struct AFMFoundationSnapshotAccumulator<ProgressState: Equatable & Sendab
             isInReasoningPhase = !newReasoningContent.isEmpty
         }
 
-        if content.count >= previousResponseSnapshot.count {
+        if content.hasPrefix(previousResponseSnapshot) {
             let delta = String(content.dropFirst(previousResponseSnapshot.count))
             if !delta.isEmpty {
                 streamChunkCount += 1
                 firstChunkStarted = true
+                responseAction = .append
                 responseDelta = delta
                 isInReasoningPhase = false
             }
             previousResponseSnapshot = content
-        } else {
+        } else if content != previousResponseSnapshot {
             streamChunkCount += 1
             firstChunkStarted = true
+            responseAction = .replace
             responseDelta = content
             previousResponseSnapshot = content
             isInReasoningPhase = false
         }
 
         return AFMFoundationSnapshotUpdate(
+            responseAction: responseAction,
             responseDelta: responseDelta,
             shouldYieldProgressUpdate: responseDelta == nil && (progressChanged || reasoningChanged),
             firstChunkStarted: firstChunkStarted,

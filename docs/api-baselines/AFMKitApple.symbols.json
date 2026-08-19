@@ -1030,6 +1030,11 @@
     },
     {
       "kind": "memberOf",
+      "source": "s:11AFMKitApple27AFMFoundationSnapshotUpdateV14responseAction0A4Core07AFMTexteG0OSgvp",
+      "target": "s:11AFMKitApple27AFMFoundationSnapshotUpdateV"
+    },
+    {
+      "kind": "memberOf",
       "source": "s:11AFMKitApple27AFMFoundationSnapshotUpdateV16reasoningContentSSvp",
       "target": "s:11AFMKitApple27AFMFoundationSnapshotUpdateV"
     },
@@ -34044,6 +34049,87 @@
       "pathComponents": [
         "AFMFoundationToolInvocationStatus",
         "requested"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "availability": [
+        {
+          "domain": "macOS",
+          "introduced": {
+            "major": 27,
+            "minor": 0
+          }
+        }
+      ],
+      "declarationFragments": [
+        {
+          "kind": "identifier",
+          "spelling": "responseAction"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "let"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "text",
+          "spelling": "?"
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:10AFMKitCore19AFMTextUpdateActionO",
+          "spelling": "AFMTextUpdateAction"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:11AFMKitApple27AFMFoundationSnapshotUpdateV14responseAction0A4Core07AFMTexteG0OSgvp"
+      },
+      "kind": {
+        "displayName": "Instance Property",
+        "identifier": "swift.property"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "identifier",
+            "spelling": "responseAction"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "let"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "text",
+            "spelling": "?"
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:10AFMKitCore19AFMTextUpdateActionO",
+            "spelling": "AFMTextUpdateAction"
+          }
+        ],
+        "title": "responseAction"
+      },
+      "pathComponents": [
+        "AFMFoundationSnapshotUpdate",
+        "responseAction"
       ]
     },
     {
