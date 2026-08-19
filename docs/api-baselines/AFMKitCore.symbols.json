@@ -2032,7 +2032,7 @@
     },
     {
       "kind": "memberOf",
-      "source": "s:10AFMKitCore20AFMGenerationOptionsV11temperature21maximumResponseTokens4topP0I1K4minP17repetitionPenalty08presenceL04seed8logprobs0I8Logprobs13stopSequences18responseConstraintACSdSg_SiSgApq3pQSbSgAQSaySSGAA011AFMResponseT0OSgtcfc",
+      "source": "s:10AFMKitCore20AFMGenerationOptionsV11temperature21maximumResponseTokens16reasoningEnabled4topP0K1K4minP17repetitionPenalty08presenceN04seed8logprobs0K8Logprobs13stopSequences18responseConstraintACSdSg_SiSgSbSgAqr3qrsRSaySSGAA011AFMResponseV0OSgtcfc",
       "target": "s:10AFMKitCore20AFMGenerationOptionsV"
     },
     {
@@ -2053,6 +2053,11 @@
     {
       "kind": "memberOf",
       "source": "s:10AFMKitCore20AFMGenerationOptionsV15presencePenaltySdSgvp",
+      "target": "s:10AFMKitCore20AFMGenerationOptionsV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:10AFMKitCore20AFMGenerationOptionsV16reasoningEnabledSbSgvp",
       "target": "s:10AFMKitCore20AFMGenerationOptionsV"
     },
     {
@@ -15608,6 +15613,10 @@
         },
         {
           "kind": "externalParam",
+          "spelling": "reasoningEnabled"
+        },
+        {
+          "kind": "externalParam",
           "spelling": "repetitionPenalty"
         },
         {
@@ -15645,6 +15654,10 @@
         {
           "kind": "text",
           "spelling": "("
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
         },
         {
           "kind": "text",
@@ -15740,6 +15753,10 @@
         },
         {
           "kind": "text",
+          "spelling": "? = nil, "
+        },
+        {
+          "kind": "text",
           "spelling": "] = [], "
         },
         {
@@ -15751,6 +15768,11 @@
           "kind": "typeIdentifier",
           "preciseIdentifier": "s:SS",
           "spelling": "String"
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Sb",
+          "spelling": "Bool"
         },
         {
           "kind": "typeIdentifier",
@@ -15892,6 +15914,28 @@
               }
             ],
             "name": "presencePenalty"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "reasoningEnabled"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "text",
+                "spelling": "?"
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:Sb",
+                "spelling": "Bool"
+              }
+            ],
+            "name": "reasoningEnabled"
           },
           {
             "declarationFragments": [
@@ -16073,7 +16117,7 @@
       },
       "identifier": {
         "interfaceLanguage": "swift",
-        "precise": "s:10AFMKitCore20AFMGenerationOptionsV11temperature21maximumResponseTokens4topP0I1K4minP17repetitionPenalty08presenceL04seed8logprobs0I8Logprobs13stopSequences18responseConstraintACSdSg_SiSgApq3pQSbSgAQSaySSGAA011AFMResponseT0OSgtcfc"
+        "precise": "s:10AFMKitCore20AFMGenerationOptionsV11temperature21maximumResponseTokens16reasoningEnabled4topP0K1K4minP17repetitionPenalty08presenceN04seed8logprobs0K8Logprobs13stopSequences18responseConstraintACSdSg_SiSgSbSgAqr3qrsRSaySSGAA011AFMResponseV0OSgtcfc"
       },
       "kind": {
         "displayName": "Initializer",
@@ -16096,6 +16140,10 @@
           {
             "kind": "externalParam",
             "spelling": "presencePenalty"
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "reasoningEnabled"
           },
           {
             "kind": "externalParam",
@@ -16136,6 +16184,10 @@
           {
             "kind": "text",
             "spelling": "("
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
           },
           {
             "kind": "text",
@@ -16231,6 +16283,10 @@
           },
           {
             "kind": "text",
+            "spelling": "?, "
+          },
+          {
+            "kind": "text",
             "spelling": "], "
           },
           {
@@ -16242,6 +16298,11 @@
             "kind": "typeIdentifier",
             "preciseIdentifier": "s:SS",
             "spelling": "String"
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Sb",
+            "spelling": "Bool"
           },
           {
             "kind": "typeIdentifier",
@@ -16294,11 +16355,11 @@
             "spelling": "Int"
           }
         ],
-        "title": "init(temperature:maximumResponseTokens:topP:topK:minP:repetitionPenalty:presencePenalty:seed:logprobs:topLogprobs:stopSequences:responseConstraint:)"
+        "title": "init(temperature:maximumResponseTokens:reasoningEnabled:topP:topK:minP:repetitionPenalty:presencePenalty:seed:logprobs:topLogprobs:stopSequences:responseConstraint:)"
       },
       "pathComponents": [
         "AFMGenerationOptions",
-        "init(temperature:maximumResponseTokens:topP:topK:minP:repetitionPenalty:presencePenalty:seed:logprobs:topLogprobs:stopSequences:responseConstraint:)"
+        "init(temperature:maximumResponseTokens:reasoningEnabled:topP:topK:minP:repetitionPenalty:presencePenalty:seed:logprobs:topLogprobs:stopSequences:responseConstraint:)"
       ]
     },
     {
@@ -33624,6 +33685,86 @@
       "pathComponents": [
         "AFMReasoningChunkProcessResult",
         "reasoningDuration"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "identifier",
+          "spelling": "reasoningEnabled"
+        },
+        {
+          "kind": "keyword",
+          "spelling": "var"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "text",
+          "spelling": "?"
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Sb",
+          "spelling": "Bool"
+        }
+      ],
+      "docComment": {
+        "lines": [
+          {
+            "text": "Enables or disables model reasoning when supported. `nil` preserves the provider default."
+          }
+        ],
+        "module": "AFMKitCore"
+      },
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:10AFMKitCore20AFMGenerationOptionsV16reasoningEnabledSbSgvp"
+      },
+      "kind": {
+        "displayName": "Instance Property",
+        "identifier": "swift.property"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "identifier",
+            "spelling": "reasoningEnabled"
+          },
+          {
+            "kind": "keyword",
+            "spelling": "var"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "text",
+            "spelling": "?"
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Sb",
+            "spelling": "Bool"
+          }
+        ],
+        "title": "reasoningEnabled"
+      },
+      "pathComponents": [
+        "AFMGenerationOptions",
+        "reasoningEnabled"
       ]
     },
     {

@@ -192,5 +192,25 @@ final class FoundationProviderTests: XCTestCase {
             XCTAssertTrue(detail.contains("weather"))
         }
     }
+
+    func testAdapterRejectsReasoningEnabledOption() {
+        XCTAssertThrowsError(
+            try AFMFoundationProviderRequestAdapter.plan(
+                request: AFMRequest(
+                    messages: [AFMMessage(role: .user, text: "Analyze this")],
+                    options: AFMGenerationOptions(reasoningEnabled: false)
+                ),
+                provider: .appleOnDevice,
+                configuredSystemPrompt: "",
+                configuredReasoningLevel: .automatic,
+                availableToolNames: []
+            )
+        ) { error in
+            guard case .unsupportedCapability(let detail) = error as? AFMError else {
+                return XCTFail("Expected unsupportedCapability, got \(error)")
+            }
+            XCTAssertTrue(detail.contains("reasoningEnabled"))
+        }
+    }
 }
 #endif

@@ -274,3 +274,43 @@ codesign --verify --deep --strict Studies/AgentAppUsability-20260819/App/.build/
 - Static production-source audit searched for file mutation, process/shell execution, network clients, scripting/automation, telemetry, account persistence, URL opening, and external-service APIs. No prohibited capability matched. The only file access is explicit user-selected security-scoped `Data(contentsOf:options:.mappedIfSafe)` reading with format and size validation. AFMKit model download/cache writes remain the documented exception.
 - Tests create and remove only their own temporary fixtures. The app-owned packaging script replaces only its generated `.build/DecisionBrief.app`; it is developer tooling and is not linked into or callable by the product runtime.
 - `git diff --check` passed. No AFMKit source, test, API-baseline, or public documentation path had been changed at this Phase A boundary.
+
+## T-010: Phase B first focused test attempt
+
+- Phase A was committed and pushed as `e72f6bc` before any AFMKit source or public documentation edit.
+- Implemented the evidence-derived `AFMGenerationOptions.reasoningEnabled` draft, MLX mapping, Apple unsupported-option validation, focused tests, explicit quickstart package identity, and quickstart guidance.
+- Command:
+
+```bash
+DEVELOPER_DIR=/Applications/Xcode-27.0.0-Beta.3.app/Contents/Developer \
+swift test -c release --disable-swift-testing --filter AFMKitMLXProviderTests
+```
+
+- Result: failed during test compilation after planning about 2,941 nodes. Four new MLX test fixtures omitted the required `AFMRequest.messages` argument. No test executable ran.
+- Retry decision: pass `messages: []` in those fixtures and rerun the same focused Release test before continuing to Apple, quickstart, or API-baseline validation.
+
+## T-011: Phase B focused tests and API baseline
+
+- Corrected the four test fixtures and reran with the Xcode 27 beta 3 developer directory selected.
+- `swift test -c release --disable-swift-testing --filter AFMMLXProviderTests`: exit `0`; 41 tests, 0 failures. This included typed false/true mapping, typed-over-metadata precedence, and nil preserving legacy metadata.
+- `swift test -c release --disable-swift-testing --filter FoundationProviderTests`: exit `0`; 10 tests, 0 failures. This included explicit rejection of unsupported `reasoningEnabled` by the Apple adapter.
+- `swift build -c release --package-path Examples/AFMKitQuickstart`: exit `0`; the independently resolved quickstart built from the study worktree with its explicit relative package name.
+- First API-check wrapper invoked `Scripts/check-afmkit-core-api.sh AFMKitCore`, then failed when it attempted to assign the checker exit code to zsh's read-only `status` parameter. The checker itself had completed and produced the expected intentional API mismatch; the wrapper changed no source or baseline.
+- Structured symbol-identifier comparison found exactly two additions and one replacement: the new `reasoningEnabled` property, the initializer including that argument, and the prior initializer symbol removed. Relationship count increased from 517 to 518.
+- Replaced `docs/api-baselines/AFMKitCore.symbols.json` with the normalized generated graph after that review.
+- `Scripts/check-afmkit-core-api.sh AFMKitCore`: exit `0`; `AFMKitCore public API matches its checked-in baseline.`
+
+## T-012: Phase B broad validation
+
+Commands used Xcode 27 beta 3 through `DEVELOPER_DIR`:
+
+```bash
+swift test -c release --disable-swift-testing
+swift test --package-path Studies/AgentAppUsability-20260819/App -c release --disable-swift-testing
+Scripts/check-downstream-example.sh
+```
+
+- Full AFMKit Release suite: exit `0`; 275 tests across 6 test executables, 0 failures.
+- DecisionBrief Release suite against the Phase B SDK: exit `0`; 10 tests, 0 failures. Recompilation reported about 2,565 planning nodes and took 145.35 seconds before tests.
+- Downstream example check: exit `0`; incremental Release build completed and printed `AFMKit downstream example built successfully.`
+- Known non-fatal output remained: CoreData XPC messages during tests, AFMKitMLX/MLX compile warnings, and Xcode 27 explicit-precompiled-module path warnings already classified in F-006/F-007.

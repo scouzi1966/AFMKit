@@ -249,6 +249,8 @@ public enum AFMResponseConstraint: Hashable, Sendable {
 public struct AFMGenerationOptions: Hashable, Sendable {
     public var temperature: Double?
     public var maximumResponseTokens: Int?
+    /// Enables or disables model reasoning when supported. `nil` preserves the provider default.
+    public var reasoningEnabled: Bool?
     public var topP: Double?
     public var topK: Int?
     public var minP: Double?
@@ -263,6 +265,7 @@ public struct AFMGenerationOptions: Hashable, Sendable {
     public init(
         temperature: Double? = nil,
         maximumResponseTokens: Int? = nil,
+        reasoningEnabled: Bool? = nil,
         topP: Double? = nil,
         topK: Int? = nil,
         minP: Double? = nil,
@@ -276,6 +279,7 @@ public struct AFMGenerationOptions: Hashable, Sendable {
     ) {
         self.temperature = temperature
         self.maximumResponseTokens = maximumResponseTokens
+        self.reasoningEnabled = reasoningEnabled
         self.topP = topP
         self.topK = topK
         self.minP = minP

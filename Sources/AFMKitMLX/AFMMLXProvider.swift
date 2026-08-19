@@ -784,6 +784,9 @@ extension AFMRequest {
                 values.mapValues { AnyCodable($0.foundationValue) }
             ) { _, new in new }
         }
+        if let reasoningEnabled = options.reasoningEnabled {
+            result["enable_thinking"] = AnyCodable(reasoningEnabled)
+        }
         return result
     }
 

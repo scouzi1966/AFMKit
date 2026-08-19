@@ -5,6 +5,55 @@ import MLXLMCommon
 import XCTest
 
 final class AFMMLXProviderTests: XCTestCase {
+    func testTypedReasoningOptionMapsToChatTemplateKwarg() throws {
+        let disabled = try XCTUnwrap(
+            AFMRequest(messages: [], options: .init(reasoningEnabled: false))
+                .chatTemplateKwargs()?["enable_thinking"]
+        )
+        let enabled = try XCTUnwrap(
+            AFMRequest(messages: [], options: .init(reasoningEnabled: true))
+                .chatTemplateKwargs()?["enable_thinking"]
+        )
+
+        guard case .bool(false) = disabled.value else {
+            return XCTFail("Expected enable_thinking=false, got \(disabled.value)")
+        }
+        guard case .bool(true) = enabled.value else {
+            return XCTFail("Expected enable_thinking=true, got \(enabled.value)")
+        }
+    }
+
+    func testTypedReasoningOptionOverridesLegacyMetadata() throws {
+        let value = try XCTUnwrap(
+            AFMRequest(
+                messages: [],
+                options: .init(reasoningEnabled: false),
+                metadata: [
+                    "chatTemplateKwargs": .object(["enable_thinking": .bool(true)])
+                ]
+            ).chatTemplateKwargs()?["enable_thinking"]
+        )
+
+        guard case .bool(false) = value.value else {
+            return XCTFail("Expected typed reasoning option to take precedence, got \(value.value)")
+        }
+    }
+
+    func testNilReasoningOptionPreservesLegacyMetadata() throws {
+        let value = try XCTUnwrap(
+            AFMRequest(
+                messages: [],
+                metadata: [
+                    "chatTemplateKwargs": .object(["enable_thinking": .bool(true)])
+                ]
+            ).chatTemplateKwargs()?["enable_thinking"]
+        )
+
+        guard case .bool(true) = value.value else {
+            return XCTFail("Expected legacy metadata to remain supported, got \(value.value)")
+        }
+    }
+
     func testResponseCollectorPreservesStructuredStreamingResult() async throws {
         let stream = AsyncThrowingStream<AFMGenerationEvent, Error> { continuation in
             continuation.yield(.reasoningText(action: .append, text: "plan", tokenCount: 1))

@@ -14,6 +14,10 @@ swift run -c release \
   "Why is the sky blue?"
 ```
 
+The MLX quickstart sets `reasoningEnabled: false` so its 512-token response budget is available for
+the visible answer. Apps that want model reasoning can pass `true`; omitting the option preserves
+the provider's model-specific default.
+
 On macOS 27, the same generation loop can use Apple Intelligence on device:
 
 ```bash
@@ -40,8 +44,15 @@ The example deliberately uses `AFMProviderRegistry`. An app can therefore keep i
 provider-neutral and select another AFMKit provider by changing registration and configuration
 rather than rewriting its generation loop.
 
-The relative package dependency is for development inside this repository. A downstream app should
-replace it with the tagged repository dependency after AFMKit's first package tag is published:
+The relative package dependency is named explicitly so it also resolves from a worktree whose
+directory is not named `AFMKit`. After cloning source, initialize declared submodules before building:
+
+```bash
+git submodule update --init --recursive
+```
+
+A downstream app should replace it with the tagged repository dependency after AFMKit's first
+package tag is published:
 
 ```swift
 .package(url: "https://github.com/scouzi1966/AFMKit.git", from: "0.1.0")

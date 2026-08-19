@@ -189,6 +189,7 @@ enum AFMFoundationProviderRequestAdapter {
         if options.seed != nil { unsupported.append("seed") }
         if options.logprobs != nil { unsupported.append("logprobs") }
         if options.topLogprobs != nil { unsupported.append("topLogprobs") }
+        if options.reasoningEnabled != nil { unsupported.append("reasoningEnabled") }
         if !options.stopSequences.isEmpty { unsupported.append("stopSequences") }
         if case .grammar? = options.responseConstraint { unsupported.append("grammar") }
         if case .jsonObject? = options.responseConstraint { unsupported.append("jsonObject") }

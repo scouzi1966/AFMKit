@@ -57,7 +57,7 @@ struct AFMKitQuickstart {
                 "maxConcurrent": .integer(1),
             ])
         )
-        try await generate(model: model, prompt: prompt)
+        try await generate(model: model, prompt: prompt, reasoningEnabled: false)
     }
 
     @available(macOS 27.0, *)
@@ -77,7 +77,11 @@ struct AFMKitQuickstart {
         try await generate(model: model, prompt: prompt)
     }
 
-    private static func generate(model: AnyAFMModel, prompt: String) async throws {
+    private static func generate(
+        model: AnyAFMModel,
+        prompt: String,
+        reasoningEnabled: Bool? = nil
+    ) async throws {
         let descriptor = try await model.load { progress in
             let percentage = Int((progress * 100).rounded())
             FileHandle.standardError.write(Data("\rLoading \(percentage)%".utf8))
@@ -86,7 +90,10 @@ struct AFMKitQuickstart {
 
         let request = AFMRequest(
             messages: [AFMMessage(role: .user, text: prompt)],
-            options: AFMGenerationOptions(maximumResponseTokens: 512)
+            options: AFMGenerationOptions(
+                maximumResponseTokens: 512,
+                reasoningEnabled: reasoningEnabled
+            )
         )
         for try await event in model.streamResponse(to: request) {
             render(event)

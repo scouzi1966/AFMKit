@@ -63,3 +63,10 @@
 - Phase: Phase A live validation
 - Decision: Use AFMKitMLX's existing `chatTemplateKwargs.enable_thinking = false` request metadata for Phase A, retain a 768-token response cap, and fail visibly if completion contains no response text.
 - Rationale: The first observed live run reached completion with no usable response. DecisionBrief needs concise grounded output, not hidden reasoning, and the public core options do not expose a reasoning toggle at baseline.
+
+## D-010: Promote reasoning control into the provider-neutral options
+
+- Date: 2026-08-19
+- Phase: Phase B
+- Decision: Add optional `reasoningEnabled` to `AFMGenerationOptions`; `nil` preserves the provider default, and an explicit typed value overrides the legacy MLX metadata key.
+- Rationale: A live Qwen failure established the need, while retaining metadata compatibility avoids breaking existing callers. Typed precedence gives callers deterministic behavior without requiring provider-internal knowledge.
