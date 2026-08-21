@@ -209,7 +209,13 @@ let package = Package(
                 "AFMKitMLX",
                 "AFMKitCore",
                 "AFMOpenAICompat",
-                .product(name: "MLXLMCommon", package: mlxSwiftLMPackageIdentity)
+                .product(name: "MLX", package: mlxSwiftPackageIdentity),
+                .product(name: "MLXFast", package: mlxSwiftPackageIdentity),
+                .product(name: "MLXNN", package: mlxSwiftPackageIdentity),
+                .product(name: "MLXLLM", package: mlxSwiftLMPackageIdentity),
+                .product(name: "MLXVLM", package: mlxSwiftLMPackageIdentity),
+                .product(name: "MLXLMCommon", package: mlxSwiftLMPackageIdentity),
+                .product(name: "Tokenizers", package: "swift-transformers")
             ]
         ),
         .testTarget(
@@ -224,6 +230,7 @@ let package = Package(
             dependencies: [
                 "AFMKitCore",
                 "AFMKitDwarfStar",
+                "AFMKitMLX",
                 "CDwarfStar"
             ]
         )

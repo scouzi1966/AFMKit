@@ -1,6 +1,6 @@
 import Foundation
-@testable import AFMKitMLX
 import XCTest
+import AFMKitMLX
 
 final class AFMMLXSpeculativeRuntimeResourceResolverTests: XCTestCase {
     private func makeQwen38Config(
@@ -18,38 +18,89 @@ final class AFMMLXSpeculativeRuntimeResourceResolverTests: XCTestCase {
                 "model_type": "qwen3_5_text",
                 "hidden_size": hiddenSize,
                 "num_hidden_layers": layerCount,
-                "mtp_num_hidden_layers": mtpLayerCount,
-            ],
+                "mtp_num_hidden_layers": mtpLayerCount
+            ]
         ]
         if let quantization {
             config["quantization"] = quantization
         }
-        try JSONSerialization.data(withJSONObject: config)
-            .write(to: directory.appendingPathComponent("config.json"))
+        let data = try JSONSerialization.data(withJSONObject: config)
+        try data.write(to: directory.appendingPathComponent("config.json"))
         addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
         return directory
     }
 
-    func testCurrentLoadedModelDirectoryUsesImportedPathOrRepositoryResolver() {
-        let imported = "/Volumes/edata/models/Qwen3.8"
-        XCTAssertEqual(
+    func testCurrentLoadedModelDirectoryIsUnavailableForMissingOrBlankID() {
+        XCTAssertNil(
             AFMMLXSpeculativeRuntimeResourceResolver.currentLoadedModelDirectory(
-                loadedModelRepoID: imported,
-                repositoryDirectory: { _ in XCTFail("Repository resolver should not run"); return nil }
-            )?.path,
-            imported
+                loadedModelRepoID: nil,
+                repositoryDirectory: { _ in XCTFail("Repository resolver should not be called"); return nil }
+            )
         )
 
-        let expected = URL(fileURLWithPath: "/cache/mlx-community/Qwen3.8")
-        XCTAssertEqual(
+        XCTAssertNil(
             AFMMLXSpeculativeRuntimeResourceResolver.currentLoadedModelDirectory(
-                loadedModelRepoID: "mlx-community/Qwen3.8",
-                repositoryDirectory: { repositoryID in
-                    XCTAssertEqual(repositoryID, "mlx-community/Qwen3.8")
-                    return expected
+                loadedModelRepoID: "   ",
+                repositoryDirectory: { _ in XCTFail("Repository resolver should not be called"); return nil }
+            )
+        )
+    }
+
+    func testCurrentLoadedModelDirectoryUsesImportedPathDirectly() {
+        let path = "/Volumes/edata/models/Qwen3.5"
+
+        let directory = AFMMLXSpeculativeRuntimeResourceResolver.currentLoadedModelDirectory(
+            loadedModelRepoID: "  \(path)  ",
+            repositoryDirectory: { _ in XCTFail("Repository resolver should not be called"); return nil }
+        )
+
+        XCTAssertEqual(directory?.path, path)
+    }
+
+    func testCurrentLoadedModelDirectoryResolvesRepositoryID() {
+        let expected = URL(fileURLWithPath: "/cache/mlx-community/Qwen3.5")
+
+        let directory = AFMMLXSpeculativeRuntimeResourceResolver.currentLoadedModelDirectory(
+            loadedModelRepoID: "  mlx-community/Qwen3.5  ",
+            repositoryDirectory: { repoID in
+                XCTAssertEqual(repoID, "mlx-community/Qwen3.5")
+                return expected
+            }
+        )
+
+        XCTAssertEqual(directory, expected)
+    }
+
+    func testMTPSidecarPathRequiresDirectoryAndExistingSidecar() {
+        let directory = URL(fileURLWithPath: "/cache/model", isDirectory: true)
+        let expectedPath = "/cache/model/\(AFMMLXSpeculativeRuntimeResourceResolver.mtpSidecarFilename)"
+
+        XCTAssertNil(
+            AFMMLXSpeculativeRuntimeResourceResolver.mtpSidecarPath(
+                modelDirectory: nil,
+                fileExists: { _ in true }
+            )
+        )
+
+        XCTAssertNil(
+            AFMMLXSpeculativeRuntimeResourceResolver.mtpSidecarPath(
+                modelDirectory: directory,
+                fileExists: { path in
+                    XCTAssertEqual(path, expectedPath)
+                    return false
+                }
+            )
+        )
+
+        XCTAssertEqual(
+            AFMMLXSpeculativeRuntimeResourceResolver.mtpSidecarPath(
+                modelDirectory: directory,
+                fileExists: { path in
+                    XCTAssertEqual(path, expectedPath)
+                    return true
                 }
             ),
-            expected
+            expectedPath
         )
     }
 
@@ -60,7 +111,7 @@ final class AFMMLXSpeculativeRuntimeResourceResolverTests: XCTestCase {
             (["mode": "mxfp4"], "mxfp4"),
             (["mode": "mxfp8"], "mxfp8"),
             (["mode": "nvfp4"], "nvfp4"),
-            (nil, "bf16"),
+            (nil, "bf16")
         ]
 
         for (quantization, suffix) in cases {
@@ -72,6 +123,30 @@ final class AFMMLXSpeculativeRuntimeResourceResolverTests: XCTestCase {
                 "mlx-community/Qwen3.8-27B-MTP-\(suffix)"
             )
         }
+    }
+
+    func testAutomaticQwen38MTPRepositoryUsesConfigRatherThanDirectoryName() throws {
+        let directory = try makeQwen38Config(quantization: ["mode": "mxfp4"])
+
+        XCTAssertEqual(
+            AFMMLXSpeculativeRuntimeResourceResolver.automaticMTPRepositoryID(
+                modelDirectory: directory
+            ),
+            "mlx-community/Qwen3.8-27B-MTP-mxfp4"
+        )
+    }
+
+    func testMTPQuantizationReadsExactCheckpointLayout() throws {
+        let directory = try makeQwen38Config(
+            quantization: ["mode": "mxfp4", "bits": 4, "group_size": 32]
+        )
+
+        XCTAssertEqual(
+            AFMMLXSpeculativeRuntimeResourceResolver.mtpQuantization(
+                resourceDirectory: directory
+            ),
+            .init(groupSize: 32, bits: 4, mode: "mxfp4")
+        )
     }
 
     func testAutomaticQwen38MTPRepositoryRejectsIncompatibleArchitecture() throws {
@@ -87,19 +162,6 @@ final class AFMMLXSpeculativeRuntimeResourceResolverTests: XCTestCase {
             AFMMLXSpeculativeRuntimeResourceResolver.automaticMTPRepositoryID(
                 modelDirectory: noMTP
             )
-        )
-    }
-
-    func testMTPQuantizationReadsExactCheckpointLayout() throws {
-        let directory = try makeQwen38Config(
-            quantization: ["mode": "mxfp4", "bits": 4, "group_size": 32]
-        )
-
-        XCTAssertEqual(
-            AFMMLXSpeculativeRuntimeResourceResolver.mtpQuantization(
-                resourceDirectory: directory
-            ),
-            .init(groupSize: 32, bits: 4, mode: "mxfp4")
         )
     }
 

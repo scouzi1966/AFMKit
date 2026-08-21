@@ -19,19 +19,14 @@ The private development checkpoint contains dependency-free provider and OpenAI-
 ```bash
 git clone --recurse-submodules git@github.com:scouzi1966/AFMKit.git
 cd AFMKit
-swift test
-Scripts/check-afmkit-core-api.sh
-Scripts/check-afmkit-core-api.sh AFMOpenAICompat
-Scripts/check-afmkit-core-api.sh AFMKitApple
-Scripts/check-afmkit-core-api.sh AFMKitMLX
-Scripts/check-afmkit-core-api.sh AFMKitDwarfStar
+Scripts/test-release.sh
+Scripts/check-api-baselines.sh
 ```
 
 Normal consumers resolve the tagged AFM-compatible MLX stack directly:
 
-```bash
-swift test -c release
-```
+`Scripts/test-release.sh` builds the Release test products, stages the MLX Metal library beside
+each test executable, and then runs the requested full or filtered test suite.
 
 The standalone [MLX quickstart](Examples/AFMKitQuickstart/README.md) shows the downstream provider
 registry and structured streaming path without linking the maclocal-api server, CLI, or WebUI:
@@ -55,6 +50,8 @@ lifecycle, response-format and tool policy, and request profiling. The concrete 
 cache implementations, checkpoint converters, and scheduler internals remain package-scoped.
 maclocal-api therefore keeps HTTP routing, Prometheus exposure, files, and request orchestration
 local while consuming a stable AFMKit model facade instead of importing MLX engine internals.
+Provider regressions and public API baselines are enforced in this repository. Downstream
+consumers should test only the public provider contract and their own transport integration.
 
 The normal `AFMKitDwarfStar` API exposes only `AFMDwarfStarProviderFactory`, `AFMDwarfStarModel`, and `AFMDwarfStarRuntimeConfiguration`. AFMKit pins an unmodified `antirez/ds4` submodule and compiles it behind an AFM-owned C bridge. Hub resolution, checkpoint selection, scheduling, prefix-cache policy, DSpark integration, DSML parsing, and runtime coordination remain package-scoped.
 
