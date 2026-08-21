@@ -5,10 +5,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MODULES=(
     AFMKitCore
     AFMOpenAICompat
-    AFMKitApple
     AFMKitMLX
     AFMKitFoundationModelsMLX
-    AFMKitDwarfStar
 )
 
 for MODULE in "${MODULES[@]}"; do

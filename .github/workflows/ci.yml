@@ -24,7 +24,7 @@ jobs:
         run: Scripts/test-api-gate.sh
       - name: Check Foundation Models MLX API from a clean build
         run: Scripts/check-afmkit-core-api.sh AFMKitFoundationModelsMLX
-      - name: Check all public API baselines
+      - name: Check merge-gating API baselines
         run: Scripts/check-api-baselines.sh
 
   package-tests:

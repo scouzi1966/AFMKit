@@ -42,8 +42,9 @@ Normal consumers resolve the tagged AFM-compatible MLX stack directly:
 swift test -c release
 ```
 
-Release qualification runs the API-gate regressions, all six API baselines,
-Release package tests, and the downstream quickstart build:
+Release qualification runs the API-gate regressions, the Core, OpenAICompat,
+MLX, and FoundationModelsMLX API baselines, Release package tests, and the
+downstream quickstart build:
 
 ```bash
 Scripts/validate-release.sh

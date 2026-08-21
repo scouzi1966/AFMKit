@@ -60,8 +60,11 @@ The baselines are toolchain-qualified by `docs/api-baselines/toolchain.env`.
 `Scripts/check-api-baselines.sh` rejects any Xcode or macOS SDK build mismatch
 before extraction and rebuilds every requested target through SwiftPM. Pull
 requests run `AFMKitFoundationModelsMLX` first from a clean recursive checkout,
-then run the aggregate six-product gate; release-tag validation invokes the same
-aggregate gate through `Scripts/validate-release.sh`.
+then run the aggregate Core, OpenAICompat, MLX, and FoundationModelsMLX gate;
+release-tag validation invokes the same aggregate gate through
+`Scripts/validate-release.sh`. Apple and DwarfStar baselines remain available as
+explicit per-module checks while their release qualification is managed with
+their provider-specific matrices.
 
 The stable compatibility center is `AFMKitCore`. Provider-specific public APIs
 may evolve faster, but still require baseline review.
