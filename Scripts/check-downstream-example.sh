@@ -185,6 +185,10 @@ qualify_package() {
             --product "$product"
         TOTAL_PRODUCT_COUNT=$((TOTAL_PRODUCT_COUNT + 1))
     done < "$consumer/validator-products.txt"
+
+    if [[ "${AFMKIT_KEEP_DOWNSTREAM_BUILD:-0}" != "1" ]]; then
+        rm -rf "$consumer_build"
+    fi
 }
 
 ROOT_REVISION="$(git --git-dir="$ROOT_REMOTE" rev-parse "$TAG_NAME^{commit}")"

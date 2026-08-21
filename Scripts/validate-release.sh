@@ -29,6 +29,7 @@ run_release_tests() {
         --disable-automatic-resolution \
         --disable-swift-testing \
         -c release
+    clean_build_configuration "$package_build_root" release
 }
 
 afmkit_release_begin_immutable_worktree "$ROOT"
@@ -72,6 +73,12 @@ for package_build_root in \
     clean_build_configuration "$package_build_root" debug
 done
 "$ROOT/Scripts/check-api-baselines.sh"
+for package_build_root in \
+    "$BUILD_ROOT/public" \
+    "$BUILD_ROOT/dwarfstar" \
+    "$BUILD_ROOT/mlx"; do
+    clean_build_configuration "$package_build_root" debug
+done
 rm -rf \
     "$BUILD_ROOT/api-current" \
     "$BUILD_ROOT/api-current-raw" \

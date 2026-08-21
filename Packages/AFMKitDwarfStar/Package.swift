@@ -28,6 +28,31 @@ let releaseDependencyPins: [Package.Dependency] = [
     .package(url: "https://github.com/swift-server/swift-service-lifecycle", exact: "2.11.0"),
     .package(url: "https://github.com/apple/swift-system.git", exact: "1.8.1")
 ]
+let releaseGraphProductPins: [Target.Dependency] = [
+    .product(name: "AsyncHTTPClient", package: "async-http-client"),
+    .product(name: "EventSource", package: "eventsource"),
+    .product(name: "Algorithms", package: "swift-algorithms"),
+    .product(name: "SwiftASN1", package: "swift-asn1"),
+    .product(name: "AsyncAlgorithms", package: "swift-async-algorithms"),
+    .product(name: "Atomics", package: "swift-atomics"),
+    .product(name: "X509", package: "swift-certificates"),
+    .product(name: "Collections", package: "swift-collections"),
+    .product(name: "Configuration", package: "swift-configuration"),
+    .product(name: "Crypto", package: "swift-crypto"),
+    .product(name: "Instrumentation", package: "swift-distributed-tracing"),
+    .product(name: "StructuredFieldValues", package: "swift-http-structured-headers"),
+    .product(name: "HTTPTypes", package: "swift-http-types"),
+    .product(name: "Logging", package: "swift-log"),
+    .product(name: "NIOCore", package: "swift-nio"),
+    .product(name: "NIOExtras", package: "swift-nio-extras"),
+    .product(name: "NIOHTTP2", package: "swift-nio-http2"),
+    .product(name: "NIOSSL", package: "swift-nio-ssl"),
+    .product(name: "NIOTransportServices", package: "swift-nio-transport-services"),
+    .product(name: "Numerics", package: "swift-numerics"),
+    .product(name: "ServiceContextModule", package: "swift-service-context"),
+    .product(name: "ServiceLifecycle", package: "swift-service-lifecycle"),
+    .product(name: "SystemPackage", package: "swift-system")
+]
 
 if let publicPackagePath = ProcessInfo.processInfo.environment["AFMKIT_PUBLIC_PATH"],
    !publicPackagePath.isEmpty {
@@ -81,10 +106,15 @@ let package = Package(
             ]
         ),
         .target(
+            name: "AFMKitDwarfStarReleaseGraph",
+            dependencies: releaseGraphProductPins
+        ),
+        .target(
             name: "AFMKitDwarfStar",
             dependencies: [
                 .product(name: "AFMKitCore", package: "AFMKit"),
                 "CDwarfStar",
+                "AFMKitDwarfStarReleaseGraph",
                 .product(name: "HuggingFace", package: "swift-huggingface"),
                 .product(name: "Xet", package: "swift-xet")
             ],
