@@ -121,6 +121,23 @@ jobs:
           path: ${{ runner.temp }}/provider-mirrors
           github-token: ${{ github.token }}
           run-id: ${{ github.run_id }}
+      - name: Record immutable publication intent
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        env:
+          QUALIFIED_SHA: ${{ needs.qualify.outputs.qualified_sha }}
+          TAG_NAME: ${{ needs.qualify.outputs.tag }}
+        with:
+          script: |
+            const publication = require(process.env.GITHUB_WORKSPACE + "/Scripts/release-publication.js");
+            const result = await publication.ensurePublicationIntent({
+              github,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tagName: process.env.TAG_NAME,
+              qualifiedSha: process.env.QUALIFIED_SHA,
+              defaultBranch: context.payload.repository.default_branch,
+            });
+            core.info(JSON.stringify(result));
       - name: Publish provider package tags idempotently
         env:
           AFMKIT_PROVIDER_PUBLISH_TOKEN: ${{ secrets.AFMKIT_PROVIDER_PUBLISH_TOKEN }}

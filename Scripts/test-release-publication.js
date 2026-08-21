@@ -4,8 +4,10 @@
 const assert = require("node:assert/strict");
 const {
     assertReleaseCandidate,
+    ensurePublicationIntent,
     ensureReleaseTag,
     publishRelease,
+    publicationIntentRef,
     releaseSemVer,
 } = require("./release-publication");
 
@@ -20,14 +22,17 @@ function fakeGitHub(options = {}) {
     const state = {
         branchSha: options.branchSha || SHA,
         tagRef: options.tagRef || null,
+        intentRef: options.intentRef || null,
         tagObjects: new Map(options.tagObjects || []),
         release: options.release || null,
         latestRelease: options.latestRelease || options.release || null,
         createRefRace: Boolean(options.createRefRace),
+        createIntentRace: Boolean(options.createIntentRace),
         createReleaseRace: Boolean(options.createReleaseRace),
         calls: {
             createTag: 0,
             createRef: 0,
+            createIntent: 0,
             createRelease: 0,
             createReleaseArguments: null,
         },
@@ -46,6 +51,12 @@ function fakeGitHub(options = {}) {
                         }
                         return { data: { object: state.tagRef } };
                     }
+                    if (ref === "tags/afmkit-publication-v1.2.3") {
+                        if (!state.intentRef) {
+                            throw apiError(404);
+                        }
+                        return { data: { object: state.intentRef } };
+                    }
                     throw apiError(404);
                 },
                 async getTag({ tag_sha: tagSha }) {
@@ -60,7 +71,16 @@ function fakeGitHub(options = {}) {
                     state.tagObjects.set("annotated-tag", { type: "commit", sha: object });
                     return { data: { sha: "annotated-tag" } };
                 },
-                async createRef() {
+                async createRef(arguments_) {
+                    if (arguments_.ref === "refs/tags/afmkit-publication-v1.2.3") {
+                        state.calls.createIntent += 1;
+                        state.intentRef = { type: "commit", sha: arguments_.sha };
+                        if (state.createIntentRace) {
+                            state.createIntentRace = false;
+                            throw apiError(422);
+                        }
+                        return { data: { ref: arguments_.ref } };
+                    }
                     state.calls.createRef += 1;
                     state.tagRef = { type: "tag", sha: "annotated-tag" };
                     if (state.createRefRace) {
@@ -191,6 +211,78 @@ async function run() {
         /refusing to tag stale candidate/
     );
 
+    fixture = fakeGitHub({
+        branchSha: OTHER_SHA,
+        intentRef: { type: "commit", sha: SHA },
+    });
+    result = await assertReleaseCandidate({
+        github: fixture.github,
+        owner: "owner",
+        repo: "repo",
+        tagName: "v1.2.3",
+        qualifiedSha: SHA,
+        defaultBranch: "main",
+    });
+    assert.equal(result.recoverablePublication, true);
+    result = await ensureReleaseTag({
+        github: fixture.github,
+        owner: "owner",
+        repo: "repo",
+        tagName: "v1.2.3",
+        qualifiedSha: SHA,
+        defaultBranch: "main",
+    });
+    assert.equal(result.created, true);
+
+    fixture = fakeGitHub({
+        branchSha: OTHER_SHA,
+        intentRef: { type: "commit", sha: OTHER_SHA },
+    });
+    await assert.rejects(
+        () => assertReleaseCandidate({
+            github: fixture.github,
+            owner: "owner",
+            repo: "repo",
+            tagName: "v1.2.3",
+            qualifiedSha: SHA,
+            defaultBranch: "main",
+        }),
+        /Publication intent.*not/
+    );
+
+    fixture = fakeGitHub();
+    result = await ensurePublicationIntent({
+        github: fixture.github,
+        owner: "owner",
+        repo: "repo",
+        tagName: "v1.2.3",
+        qualifiedSha: SHA,
+        defaultBranch: "main",
+    });
+    assert.equal(result.created, true);
+    assert.equal(fixture.state.calls.createIntent, 1);
+    result = await ensurePublicationIntent({
+        github: fixture.github,
+        owner: "owner",
+        repo: "repo",
+        tagName: "v1.2.3",
+        qualifiedSha: SHA,
+        defaultBranch: "main",
+    });
+    assert.equal(result.created, false);
+    assert.equal(fixture.state.calls.createIntent, 1);
+
+    fixture = fakeGitHub({ createIntentRace: true });
+    result = await ensurePublicationIntent({
+        github: fixture.github,
+        owner: "owner",
+        repo: "repo",
+        tagName: "v1.2.3",
+        qualifiedSha: SHA,
+        defaultBranch: "main",
+    });
+    assert.equal(result.recoveredRace, true);
+
     fixture = fakeGitHub({ createRefRace: true });
     result = await ensureReleaseTag({
         github: fixture.github,
@@ -278,8 +370,9 @@ async function run() {
     assert.deepEqual(releaseSemVer("v1.2.3"), { prerelease: false });
     assert.deepEqual(releaseSemVer("v1.2.3-rc.1"), { prerelease: true });
     assert.throws(() => releaseSemVer("v1.2.3+build.1"), /not SwiftPM-compatible/);
+    assert.equal(publicationIntentRef("v1.2.3"), "tags/afmkit-publication-v1.2.3");
 
-    console.log("13 release publication regression scenarios passed.");
+    console.log("18 release publication regression scenarios passed.");
 }
 
 run().catch((error) => {

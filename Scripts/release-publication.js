@@ -27,6 +27,29 @@ function releaseSemVer(tagName) {
     return { prerelease: Boolean(match[1]) };
 }
 
+function publicationIntentRef(tagName) {
+    releaseSemVer(tagName);
+    return `tags/afmkit-publication-${tagName}`;
+}
+
+async function getPublicationIntentCommit(github, owner, repo, tagName) {
+    const refName = publicationIntentRef(tagName);
+    try {
+        const ref = await github.rest.git.getRef({ owner, repo, ref: refName });
+        if (ref.data.object.type !== "commit") {
+            throw new Error(
+                `Publication intent ${refName} must point directly to a commit.`
+            );
+        }
+        return ref.data.object.sha;
+    } catch (error) {
+        if (statusIs(error, 404)) {
+            return null;
+        }
+        throw error;
+    }
+}
+
 async function getTagCommit(github, owner, repo, tagName) {
     let object;
     try {
@@ -69,12 +92,29 @@ async function assertReleaseCandidate({
     defaultBranch,
 }) {
     validateQualifiedSha(qualifiedSha);
+    releaseSemVer(tagName);
     const taggedSha = await getTagCommit(github, owner, repo, tagName);
     if (taggedSha !== null) {
         if (taggedSha !== qualifiedSha) {
             throw new Error(`Tag ${tagName} already points to ${taggedSha}, not ${qualifiedSha}.`);
         }
         return { recoverableTag: true };
+    }
+
+    const intentSha = await getPublicationIntentCommit(
+        github,
+        owner,
+        repo,
+        tagName
+    );
+    if (intentSha !== null) {
+        if (intentSha !== qualifiedSha) {
+            throw new Error(
+                `Publication intent for ${tagName} points to ${intentSha}, ` +
+                `not ${qualifiedSha}.`
+            );
+        }
+        return { recoverableTag: false, recoverablePublication: true };
     }
 
     const branch = await github.rest.git.getRef({
@@ -88,7 +128,59 @@ async function assertReleaseCandidate({
             `refusing to tag stale candidate ${qualifiedSha}.`
         );
     }
-    return { recoverableTag: false };
+    return { recoverableTag: false, recoverablePublication: false };
+}
+
+async function ensurePublicationIntent({
+    github,
+    owner,
+    repo,
+    tagName,
+    qualifiedSha,
+    defaultBranch,
+}) {
+    const candidate = await assertReleaseCandidate({
+        github,
+        owner,
+        repo,
+        tagName,
+        qualifiedSha,
+        defaultBranch,
+    });
+    if (candidate.recoverableTag) {
+        return { created: false, finalTagExists: true };
+    }
+    if (candidate.recoverablePublication) {
+        return { created: false };
+    }
+
+    const refName = publicationIntentRef(tagName);
+    try {
+        await github.rest.git.createRef({
+            owner,
+            repo,
+            ref: `refs/${refName}`,
+            sha: qualifiedSha,
+        });
+        return { created: true };
+    } catch (error) {
+        if (!statusIs(error, 422)) {
+            throw error;
+        }
+        const racedSha = await getPublicationIntentCommit(
+            github,
+            owner,
+            repo,
+            tagName
+        );
+        if (racedSha !== qualifiedSha) {
+            throw new Error(
+                `Publication intent for ${tagName} was created concurrently for ` +
+                `${racedSha}, not ${qualifiedSha}.`
+            );
+        }
+        return { created: false, recoveredRace: true };
+    }
 }
 
 async function ensureReleaseTag({
@@ -271,8 +363,11 @@ async function publishRelease({
 module.exports = {
     assertReleaseCandidate,
     ensureGitHubRelease,
+    ensurePublicationIntent,
     ensureReleaseTag,
+    getPublicationIntentCommit,
     getTagCommit,
+    publicationIntentRef,
     publishRelease,
     releaseSemVer,
     validateReleaseRecord,

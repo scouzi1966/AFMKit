@@ -92,6 +92,11 @@ assert "stage-tag:" not in release
 assert "qualify-remote-tag:" not in release
 assert "AFMKIT_RELEASE_MIRROR_OUTPUT" in release
 assert "publish-provider-mirrors.sh" in release
+assert "Record immutable publication intent" in release
+assert "ensurePublicationIntent" in release
+assert release.index("Record immutable publication intent") < release.index(
+    "Publish provider package tags idempotently"
+)
 assert release.index("Publish provider package tags idempotently") < release.index(
     "Publish root tag and GitHub release last"
 )
