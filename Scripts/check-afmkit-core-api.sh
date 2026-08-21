@@ -3,12 +3,13 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MODULE="${1:-AFMKitCore}"
-BUILD_DIR="$ROOT/.build"
+BUILD_DIR="${AFMKIT_BUILD_ROOT:-$ROOT/.build}"
 BASELINE="$ROOT/docs/api-baselines/$MODULE.symbols.json"
 CURRENT_DIR="$BUILD_DIR/api-current"
 RAW_CURRENT_DIR="$BUILD_DIR/api-current-raw"
 MODULE_CACHE="$BUILD_DIR/api-module-cache"
 TOOLCHAIN_HELPER="$ROOT/Scripts/verify-qualified-toolchain.sh"
+NORMALIZER="$ROOT/Scripts/normalize-symbol-graph.py"
 
 if [[ "${AFMKIT_API_SKIP_BUILD:-0}" != "0" ]]; then
     echo "AFMKIT_API_SKIP_BUILD is no longer supported." >&2
@@ -33,11 +34,13 @@ export CLANG_MODULE_CACHE_PATH="$BUILD_DIR/clang-module-cache"
 
 cd "$ROOT"
 afmkit_run_qualified_swift build \
+    --scratch-path "$BUILD_DIR" \
     --build-system native \
     --disable-automatic-resolution \
     --target "$MODULE"
 PRODUCTS_DIR="$(
     afmkit_run_qualified_swift build \
+        --scratch-path "$BUILD_DIR" \
         --build-system native \
         --disable-automatic-resolution \
         --show-bin-path
@@ -116,39 +119,9 @@ env -u TOOLCHAINS "$AFMKIT_SWIFT_SYMBOLGRAPH_EXECUTABLE" \
     -module-cache-path "$MODULE_CACHE" \
     "${EXTRACTOR_FLAGS[@]}"
 
-python3 - "$RAW_CURRENT_DIR/$MODULE.symbols.json" "$CURRENT_DIR/$MODULE.symbols.json" <<'PY'
-import json
-import sys
-
-raw_path, normalized_path = sys.argv[1:3]
-VOLATILE_KEYS = {"generator", "location", "uri", "range"}
-
-
-def normalize(value):
-    if isinstance(value, dict):
-        return {
-            key: normalize(value[key])
-            for key in sorted(value)
-            if key not in VOLATILE_KEYS
-        }
-    if isinstance(value, list):
-        normalized = [normalize(item) for item in value]
-        if all(isinstance(item, dict) for item in normalized):
-            return sorted(
-                normalized,
-                key=lambda item: json.dumps(item, sort_keys=True, separators=(",", ":")),
-            )
-        return normalized
-    return value
-
-
-with open(raw_path, "r", encoding="utf-8") as handle:
-    raw = json.load(handle)
-
-with open(normalized_path, "w", encoding="utf-8") as handle:
-    json.dump(normalize(raw), handle, indent=2, sort_keys=True)
-    handle.write("\n")
-PY
+/usr/bin/python3 "$NORMALIZER" \
+    "$RAW_CURRENT_DIR/$MODULE.symbols.json" \
+    "$CURRENT_DIR/$MODULE.symbols.json"
 
 if [[ ! -f "$BASELINE" ]]; then
     echo "$MODULE has no checked-in API baseline at $BASELINE" >&2

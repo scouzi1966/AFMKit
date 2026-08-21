@@ -1,5 +1,31 @@
 #!/bin/bash
 
+afmkit_release_validate_tag() {
+    local tag_name="${1:-}"
+
+    /usr/bin/python3 - "$tag_name" <<'PY'
+import re
+import sys
+
+tag = sys.argv[1]
+numeric = r"(?:0|[1-9][0-9]*)"
+alphanumeric = r"(?:[0-9]*[A-Za-z-][0-9A-Za-z-]*)"
+prerelease_identifier = rf"(?:{numeric}|{alphanumeric})"
+build_identifier = r"[0-9A-Za-z-]+"
+pattern = re.compile(
+    rf"^v{numeric}\.{numeric}\.{numeric}"
+    rf"(?:-{prerelease_identifier}(?:\.{prerelease_identifier})*)?"
+    rf"(?:\+{build_identifier}(?:\.{build_identifier})*)?$"
+)
+
+if not pattern.fullmatch(tag):
+    raise SystemExit(
+        "Release tag must be strict SemVer with a v prefix "
+        "(for example, v1.2.3-rc.1+build.5)."
+    )
+PY
+}
+
 afmkit_release_reject_local_overrides() {
     local variable
     for variable in AFMKIT_MLX_SWIFT_PATH AFMKIT_MLX_SWIFT_LM_PATH; do

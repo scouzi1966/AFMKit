@@ -7,7 +7,9 @@ AGGREGATE="$ROOT/Scripts/check-api-baselines.sh"
 COVERAGE_CHECKER="$ROOT/Scripts/check-api-baseline-coverage.sh"
 MODULE_PARSER="$ROOT/Scripts/public-library-modules.py"
 TOOLCHAIN_HELPER="$ROOT/Scripts/verify-qualified-toolchain.sh"
-SANDBOX_ROOT="$ROOT/.build/api-gate-tests.$$"
+BUILD_ROOT="${AFMKIT_BUILD_ROOT:-$ROOT/.build}"
+NORMALIZER="$ROOT/Scripts/normalize-symbol-graph.py"
+SANDBOX_ROOT="$BUILD_ROOT/api-gate-tests.$$"
 PASSED=0
 
 cleanup() {
@@ -24,6 +26,7 @@ copy_gate_fixture() {
     local destination="$1"
     mkdir -p "$destination/Scripts" "$destination/docs/api-baselines"
     cp "$CHECKER" "$destination/Scripts/check-afmkit-core-api.sh"
+    cp "$NORMALIZER" "$destination/Scripts/normalize-symbol-graph.py"
     cp "$TOOLCHAIN_HELPER" "$destination/Scripts/verify-qualified-toolchain.sh"
     cp "$ROOT/docs/api-baselines/toolchain.env" "$destination/docs/api-baselines/toolchain.env"
 }
@@ -34,7 +37,7 @@ SKIP_FIXTURE="$SANDBOX_ROOT/skip-build"
 copy_gate_fixture "$SKIP_FIXTURE"
 mkdir -p "$SKIP_FIXTURE/.build/out/Products/Debug/AFMKitCore.swiftmodule"
 printf 'unrelated artifact\n' > "$SKIP_FIXTURE/.build/out/Products/Debug/AFMKitCore.swiftmodule/arm64.swiftmodule"
-if AFMKIT_API_SKIP_BUILD=1 \
+if AFMKIT_BUILD_ROOT="$SKIP_FIXTURE/.build" AFMKIT_API_SKIP_BUILD=1 \
     "$SKIP_FIXTURE/Scripts/check-afmkit-core-api.sh" AFMKitCore \
     > "$SANDBOX_ROOT/skip-build.log" 2>&1; then
     fail "AFMKIT_API_SKIP_BUILD accepted a pre-existing .swiftmodule"
@@ -48,7 +51,8 @@ copy_gate_fixture "$MISMATCH_FIXTURE"
 sed 's/API_BASELINE_XCODE_BUILD=.*/API_BASELINE_XCODE_BUILD=not-the-current-build/' \
     "$ROOT/docs/api-baselines/toolchain.env" \
     > "$MISMATCH_FIXTURE/docs/api-baselines/toolchain.env"
-if "$MISMATCH_FIXTURE/Scripts/check-afmkit-core-api.sh" AFMKitCore \
+if AFMKIT_BUILD_ROOT="$MISMATCH_FIXTURE/.build" \
+    "$MISMATCH_FIXTURE/Scripts/check-afmkit-core-api.sh" AFMKitCore \
     > "$SANDBOX_ROOT/toolchain-mismatch.log" 2>&1; then
     fail "a mismatched API baseline toolchain was accepted"
 fi
@@ -189,12 +193,69 @@ printf '{}\n' > "$OUTPUT_DIR/$MODULE.symbols.json"
 SH
 
 chmod +x "$CLEAN_FIXTURE/Scripts/verify-qualified-toolchain.sh" "$FAKE_BIN"/*
-FAKE_ROOT="$CLEAN_FIXTURE" FAKE_BIN="$FAKE_BIN" \
+AFMKIT_BUILD_ROOT="$CLEAN_FIXTURE/.build" \
+    FAKE_ROOT="$CLEAN_FIXTURE" FAKE_BIN="$FAKE_BIN" \
     "$CLEAN_FIXTURE/Scripts/check-afmkit-core-api.sh" AFMKitFoundationModelsMLX \
     > "$SANDBOX_ROOT/clean-first-run.log" 2>&1 \
     || fail "clean first-run extraction did not discover _NumericsShims after build"
 grep -q "public API matches its checked-in baseline" "$SANDBOX_ROOT/clean-first-run.log" \
     || fail "clean first-run extraction did not complete"
+PASSED=$((PASSED + 1))
+
+NORMALIZATION_FIXTURE="$SANDBOX_ROOT/normalization"
+mkdir -p "$NORMALIZATION_FIXTURE"
+cat > "$NORMALIZATION_FIXTURE/raw.json" <<'JSON'
+{
+  "metadata": {"generator": "volatile"},
+  "symbols": [
+    {
+      "identifier": {"precise": "z.symbol"},
+      "pathComponents": ["Outer", "Inner"],
+      "declarationFragments": [
+        {"kind": "keyword", "spelling": "func"},
+        {"kind": "text", "spelling": " ordered"}
+      ],
+      "functionSignature": {
+        "parameters": [
+          {"name": "second", "declarationFragments": [{"spelling": "second"}]},
+          {"name": "first", "declarationFragments": [{"spelling": "first"}]}
+        ]
+      }
+    },
+    {"identifier": {"precise": "a.symbol"}}
+  ],
+  "relationships": [
+    {"source": "z.symbol", "target": "a.symbol", "kind": "memberOf"},
+    {"source": "a.symbol", "target": "root", "kind": "memberOf"}
+  ]
+}
+JSON
+/usr/bin/python3 "$NORMALIZER" \
+    "$NORMALIZATION_FIXTURE/raw.json" "$NORMALIZATION_FIXTURE/normalized.json"
+/usr/bin/python3 - "$NORMALIZATION_FIXTURE/normalized.json" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    graph = json.load(handle)
+
+assert "generator" not in graph["metadata"]
+assert [item["identifier"]["precise"] for item in graph["symbols"]] == [
+    "a.symbol",
+    "z.symbol",
+]
+assert [item["source"] for item in graph["relationships"]] == ["a.symbol", "z.symbol"]
+ordered = graph["symbols"][1]
+assert ordered["pathComponents"] == ["Outer", "Inner"]
+assert [item["spelling"] for item in ordered["declarationFragments"]] == [
+    "func",
+    " ordered",
+]
+assert [item["name"] for item in ordered["functionSignature"]["parameters"]] == [
+    "second",
+    "first",
+]
+PY
 PASSED=$((PASSED + 1))
 
 AGGREGATE_FIXTURE="$SANDBOX_ROOT/aggregate"
