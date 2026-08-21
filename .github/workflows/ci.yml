@@ -17,7 +17,7 @@ jobs:
     name: API baselines (clean Xcode 27 Beta 3)
     runs-on: ${{ vars.AFMKIT_XCODE_RUNNER || 'xcode-27' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           submodules: recursive
       - name: Configure private dependency access
@@ -40,7 +40,7 @@ jobs:
     name: Package tests
     runs-on: ${{ vars.AFMKIT_XCODE_RUNNER || 'xcode-27' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           submodules: recursive
       - name: Configure private dependency access
@@ -59,7 +59,7 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ${{ vars.AFMKIT_XCODE_RUNNER || 'xcode-27' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           submodules: recursive
       - name: Configure private dependency access
