@@ -5,10 +5,10 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MODULE="${1:-AFMKitCore}"
 BUILD_DIR="$ROOT/.build"
 BASELINE="$ROOT/docs/api-baselines/$MODULE.symbols.json"
-TOOLCHAIN_PROVENANCE="$ROOT/docs/api-baselines/toolchain.env"
 CURRENT_DIR="$BUILD_DIR/api-current"
 RAW_CURRENT_DIR="$BUILD_DIR/api-current-raw"
 MODULE_CACHE="$BUILD_DIR/api-module-cache"
+TOOLCHAIN_HELPER="$ROOT/Scripts/verify-qualified-toolchain.sh"
 
 if [[ "${AFMKIT_API_SKIP_BUILD:-0}" != "0" ]]; then
     echo "AFMKIT_API_SKIP_BUILD is no longer supported." >&2
@@ -16,58 +16,38 @@ if [[ "${AFMKIT_API_SKIP_BUILD:-0}" != "0" ]]; then
     exit 1
 fi
 
-if [[ ! -f "$TOOLCHAIN_PROVENANCE" ]]; then
-    echo "Missing API baseline toolchain provenance: $TOOLCHAIN_PROVENANCE" >&2
+if [[ ! -f "$TOOLCHAIN_HELPER" ]]; then
+    echo "Missing qualified toolchain helper: $TOOLCHAIN_HELPER" >&2
     exit 1
 fi
 
 # shellcheck source=/dev/null
-source "$TOOLCHAIN_PROVENANCE"
-for REQUIRED_VARIABLE in \
-    API_BASELINE_XCODE_VERSION \
-    API_BASELINE_XCODE_BUILD \
-    API_BASELINE_MACOS_SDK_VERSION \
-    API_BASELINE_MACOS_SDK_BUILD; do
-    if [[ -z "${!REQUIRED_VARIABLE:-}" ]]; then
-        echo "Missing $REQUIRED_VARIABLE in $TOOLCHAIN_PROVENANCE" >&2
-        exit 1
-    fi
-done
+source "$TOOLCHAIN_HELPER"
+afmkit_verify_qualified_toolchain "$ROOT"
 
-XCODE_VERSION_OUTPUT="$(xcodebuild -version)"
-ACTUAL_XCODE_VERSION="$(printf '%s\n' "$XCODE_VERSION_OUTPUT" | sed -n 's/^Xcode //p')"
-ACTUAL_XCODE_BUILD="$(printf '%s\n' "$XCODE_VERSION_OUTPUT" | sed -n 's/^Build version //p')"
-ACTUAL_SDK_VERSION="$(xcrun --sdk macosx --show-sdk-version)"
-ACTUAL_SDK_BUILD="$(xcrun --sdk macosx --show-sdk-build-version)"
-
-if [[ "$ACTUAL_XCODE_VERSION" != "$API_BASELINE_XCODE_VERSION" ]] || \
-   [[ "$ACTUAL_XCODE_BUILD" != "$API_BASELINE_XCODE_BUILD" ]] || \
-   [[ "$ACTUAL_SDK_VERSION" != "$API_BASELINE_MACOS_SDK_VERSION" ]] || \
-   [[ "$ACTUAL_SDK_BUILD" != "$API_BASELINE_MACOS_SDK_BUILD" ]]; then
-    cat >&2 <<EOF
-API baseline toolchain mismatch.
-Required: Xcode $API_BASELINE_XCODE_VERSION ($API_BASELINE_XCODE_BUILD), macOS SDK $API_BASELINE_MACOS_SDK_VERSION ($API_BASELINE_MACOS_SDK_BUILD)
-Current:  Xcode ${ACTUAL_XCODE_VERSION:-unknown} (${ACTUAL_XCODE_BUILD:-unknown}), macOS SDK ${ACTUAL_SDK_VERSION:-unknown} (${ACTUAL_SDK_BUILD:-unknown})
-Select Xcode 27 Beta 3, for example:
-  export DEVELOPER_DIR=/Applications/Xcode_27_beta_3.app/Contents/Developer
-Then rerun the gate. To qualify a different toolchain, intentionally regenerate and review every API baseline and update:
-  $TOOLCHAIN_PROVENANCE
-EOF
-    exit 1
-fi
-
-SDK="$(xcrun --sdk macosx --show-sdk-path)"
+SDK="$($AFMKIT_XCRUN_EXECUTABLE --sdk macosx --show-sdk-path)"
 ARCH="$(uname -m)"
 
 export SWIFTPM_MODULECACHE_OVERRIDE="$BUILD_DIR/swiftpm-module-cache"
 export CLANG_MODULE_CACHE_PATH="$BUILD_DIR/clang-module-cache"
 
 cd "$ROOT"
-swift build --target "$MODULE"
-PRODUCTS_DIR="$(swift build --show-bin-path)"
+afmkit_run_qualified_swift build \
+    --build-system native \
+    --disable-automatic-resolution \
+    --target "$MODULE"
+PRODUCTS_DIR="$(
+    afmkit_run_qualified_swift build \
+        --build-system native \
+        --disable-automatic-resolution \
+        --show-bin-path
+)"
 
-if [[ ! -d "$PRODUCTS_DIR/$MODULE.swiftmodule" ]]; then
-    echo "SwiftPM completed without producing $PRODUCTS_DIR/$MODULE.swiftmodule" >&2
+MODULE_SEARCH_DIR="$PRODUCTS_DIR"
+if [[ -e "$PRODUCTS_DIR/Modules/$MODULE.swiftmodule" ]]; then
+    MODULE_SEARCH_DIR="$PRODUCTS_DIR/Modules"
+elif [[ ! -e "$PRODUCTS_DIR/$MODULE.swiftmodule" ]]; then
+    echo "SwiftPM completed without producing a $MODULE.swiftmodule under $PRODUCTS_DIR" >&2
     exit 1
 fi
 
@@ -112,7 +92,10 @@ done
 
 GENERATED_MODULE_MAPS="$BUILD_DIR/out/Intermediates.noindex/GeneratedModuleMaps"
 for C_MODULE in CAsyncHTTPClient CDwarfStar CNIOAtomics CNIOBoringSSLShims CNIODarwin CNIOExtrasZlib CNIOFreeBSD CNIOLLHTTP CNIOLinux CNIOOpenBSD CNIOPosix CNIOWASI CNIOWindows yyjson; do
-    MODULE_MAP="$GENERATED_MODULE_MAPS/$C_MODULE.modulemap"
+    MODULE_MAP="$PRODUCTS_DIR/$C_MODULE.build/module.modulemap"
+    if [[ ! -f "$MODULE_MAP" ]]; then
+        MODULE_MAP="$GENERATED_MODULE_MAPS/$C_MODULE.modulemap"
+    fi
     [[ -f "$MODULE_MAP" ]] || continue
     EXTRACTOR_FLAGS+=(-Xcc "-fmodule-map-file=$MODULE_MAP")
 done
@@ -120,9 +103,9 @@ done
 rm -rf "$CURRENT_DIR" "$RAW_CURRENT_DIR" "$MODULE_CACHE"
 mkdir -p "$CURRENT_DIR" "$RAW_CURRENT_DIR" "$MODULE_CACHE"
 
-xcrun swift-symbolgraph-extract \
+env -u TOOLCHAINS "$AFMKIT_SWIFT_SYMBOLGRAPH_EXECUTABLE" \
     -module-name "$MODULE" \
-    -I "$PRODUCTS_DIR" \
+    -I "$MODULE_SEARCH_DIR" \
     -output-dir "$RAW_CURRENT_DIR" \
     -minimum-access-level public \
     -skip-synthesized-members \

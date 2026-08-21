@@ -6,11 +6,39 @@ import FoundationModels
 import ImageIO
 import UniformTypeIdentifiers
 
+struct AFMRuntimeSymbolResolver: Sendable {
+    private let isPresent: @Sendable (String) -> Bool
+
+    init(isPresent: @escaping @Sendable (String) -> Bool) {
+        self.isPresent = isPresent
+    }
+
+    func contains(_ symbol: String) -> Bool {
+        isPresent(symbol)
+    }
+
+    static let process = AFMRuntimeSymbolResolver { symbol in
+        dlsym(UnsafeMutableRawPointer(bitPattern: -2), symbol) != nil
+    }
+}
+
 @available(macOS 27.0, *)
 public enum AFMFoundationModelsRequestAdapter {
     public static func request<Model: AFMFoundationModelsModelConfiguration>(
         from request: LanguageModelExecutorGenerationRequest,
         model: Model
+    ) throws -> AFMRequest {
+        try Self.request(
+            from: request,
+            model: model,
+            metadataAccessorAvailable: requestMetadataAccessorAvailable
+        )
+    }
+
+    static func request<Model: AFMFoundationModelsModelConfiguration>(
+        from request: LanguageModelExecutorGenerationRequest,
+        model: Model,
+        metadataAccessorAvailable: Bool
     ) throws -> AFMRequest {
         var temperature = request.generationOptions.temperature
         var topP: Double?
@@ -63,11 +91,11 @@ public enum AFMFoundationModelsRequestAdapter {
                 "enable_thinking": .bool(explicitReasoningRequested)
             ])
         }
-        if requestMetadataAccessorAvailable {
-            for (key, value) in afmMetadata(request.metadata) {
-                metadata[key] = value
-            }
-        }
+        mergeRequestMetadata(
+            into: &metadata,
+            accessorAvailable: metadataAccessorAvailable,
+            read: { request.metadata }
+        )
 
         let definitions = request.generationOptions.toolCallingMode?.kind == .disallowed
             ? []
@@ -285,13 +313,23 @@ public enum AFMFoundationModelsRequestAdapter {
         return result
     }
 
+    static func mergeRequestMetadata(
+        into metadata: inout [String: AFMJSONValue],
+        accessorAvailable: Bool,
+        read: () -> [String: any Sendable & Codable & Equatable]
+    ) {
+        guard accessorAvailable else { return }
+        for (key, value) in afmMetadata(read()) {
+            metadata[key] = value
+        }
+    }
+
     // Xcode 27 Beta 3 declares this getter, but some macOS 27 beta runtimes do
     // not export it. Calling the weak-linked accessor in those runtimes jumps
     // to address zero, so metadata forwarding must be capability-gated.
-    static let requestMetadataAccessorAvailable = dlsym(
-        UnsafeMutableRawPointer(bitPattern: -2),
+    static let requestMetadataAccessorAvailable = AFMRuntimeSymbolResolver.process.contains(
         "$s16FoundationModels38LanguageModelExecutorGenerationRequestV8metadataSDySSSe_SESQs8SendablepGvg"
-    ) != nil
+    )
 
     private static func unsupported(
         entry: Transcript.Entry,

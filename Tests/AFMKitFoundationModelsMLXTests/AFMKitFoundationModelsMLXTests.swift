@@ -173,15 +173,52 @@ final class AFMKitFoundationModelsMLXTests: XCTestCase {
         XCTAssertEqual(adapted.metadata["includeSchemaInPrompt"], .bool(false))
         XCTAssertEqual(adapted.metadata["toolCallingMode"], .string("disallowed"))
         XCTAssertEqual(adapted.metadata["reasoningLevel"], .string("deep"))
-        if AFMFoundationModelsRequestAdapter.requestMetadataAccessorAvailable {
-            XCTAssertEqual(adapted.metadata["requestID"], .string("request-1"))
-        } else {
-            XCTAssertNil(adapted.metadata["requestID"])
-        }
         XCTAssertEqual(
             adapted.metadata["chatTemplateKwargs"],
             .object(["enable_thinking": .bool(true)])
         )
+    }
+
+    func testInjectedRuntimeSymbolResolverDistinguishesPresentAndMissingSymbols() {
+        let resolver = AFMRuntimeSymbolResolver { symbol in
+            symbol == "known-present"
+        }
+
+        XCTAssertTrue(resolver.contains("known-present"))
+        XCTAssertFalse(resolver.contains("known-missing"))
+    }
+
+    func testProcessRuntimeSymbolResolverFindsKnownPresentAndMissingSymbols() {
+        XCTAssertTrue(AFMRuntimeSymbolResolver.process.contains("malloc"))
+        XCTAssertFalse(
+            AFMRuntimeSymbolResolver.process.contains(
+                "afmkit_known_missing_symbol_45E021B7_164A_4604_A329_D9285DDFF5B8"
+            )
+        )
+    }
+
+    func testMetadataMergeReadsOnlyWhenAccessorIsAvailable() {
+        var availableMetadata: [String: AFMJSONValue] = [:]
+        AFMFoundationModelsRequestAdapter.mergeRequestMetadata(
+            into: &availableMetadata,
+            accessorAvailable: true,
+            read: { ["requestID": "request-1"] }
+        )
+
+        var unavailableMetadata: [String: AFMJSONValue] = [:]
+        var unavailableRead = false
+        AFMFoundationModelsRequestAdapter.mergeRequestMetadata(
+            into: &unavailableMetadata,
+            accessorAvailable: false,
+            read: {
+                unavailableRead = true
+                return ["requestID": "should-not-be-read"]
+            }
+        )
+
+        XCTAssertEqual(availableMetadata["requestID"], .string("request-1"))
+        XCTAssertFalse(unavailableRead)
+        XCTAssertNil(unavailableMetadata["requestID"])
     }
 
     func testRequestMapsGreedySampling() throws {
