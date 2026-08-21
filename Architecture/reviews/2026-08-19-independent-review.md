@@ -13,7 +13,7 @@ tests.
 | Finding | Documentation response | Follow-up disposition |
 | --- | --- | --- |
 | MLX implementation types are public beyond the claimed facade. | Added explicit stability tiers and identified `MLXModelService` exposure. | Narrow through a future compatibility-reviewed change; do not misstate current access. |
-| `AFMKitFoundationModelsMLX` is a shipping product but omitted from product governance and lacks an API baseline. | Added it to all module/product views and marked it experimental. | Add a symbol baseline before declaring its public API stable. |
+| `AFMKitFoundationModelsMLX` was a shipping product but omitted from product governance and lacked an API baseline. | Added it to all module/product views and established a checked-in symbol baseline. | Completed; future public changes require intentional baseline review. |
 | Core capabilities include audio/embeddings without dedicated executable contracts. | Documented reserved vocabulary and no-over-advertising rule. | Add capability-specific protocols/events before portable use. |
 | Apple, MLX, and DwarfStar discovery/availability semantics differ. | Added a provider behavior matrix and clarified what `.available` means. | Improve provider guarantees and tests without forcing false uniformity. |
 | Not all Git dependencies are exact-pinned for downstream consumers. | Dependency ledger distinguishes exact/revision pins from semver ranges. | Decide whether release-critical semver ranges should become exact pins. |

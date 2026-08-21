@@ -23,6 +23,7 @@ EXTRACTOR_FLAGS=()
 for SHIMS_DIR in "$NUMERICS_SHIMS" "$ATOMICS_SHIMS" "$SYSTEM_SHIMS" "$NIO_WINDOWS" "$CMLX" "$AFM_XGRAMMAR"; do
     [[ -f "$SHIMS_DIR/module.modulemap" ]] || continue
     EXTRACTOR_FLAGS+=(
+        -I "$SHIMS_DIR"
         -Xcc "-fmodule-map-file=$SHIMS_DIR/module.modulemap"
         -Xcc "-I$SHIMS_DIR"
     )
@@ -39,7 +40,14 @@ export SWIFTPM_MODULECACHE_OVERRIDE="$BUILD_DIR/swiftpm-module-cache"
 export CLANG_MODULE_CACHE_PATH="$BUILD_DIR/clang-module-cache"
 
 cd "$ROOT"
-swift build --target "$MODULE"
+if [[ "${AFMKIT_API_SKIP_BUILD:-0}" == "1" ]]; then
+    if [[ ! -d "$PRODUCTS_DIR/$MODULE.swiftmodule" ]]; then
+        echo "AFMKIT_API_SKIP_BUILD=1 requires an existing $MODULE build in $PRODUCTS_DIR" >&2
+        exit 1
+    fi
+else
+    swift build --target "$MODULE"
+fi
 
 rm -rf "$CURRENT_DIR" "$RAW_CURRENT_DIR"
 mkdir -p "$CURRENT_DIR" "$RAW_CURRENT_DIR" "$MODULE_CACHE"

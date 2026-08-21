@@ -118,8 +118,6 @@ metadata can carry additional diagnostics without making them universal fields.
 ## Known architectural debt
 
 - Some MLX/provider implementation types are public beyond the preferred facade.
-- `AFMKitFoundationModelsMLX` is a shipping product without a checked-in public
-  API symbol baseline; it remains experimental until that gate is established.
 - Core capability vocabulary includes audio and embeddings without dedicated
   executable protocols for every capability; providers must not over-advertise.
 - Provider discovery and pre-load availability guarantees are not uniform; apps

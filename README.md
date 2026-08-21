@@ -16,7 +16,7 @@ map, dependency ledger, runtime diagrams, and decisions are in
 | `AFMOpenAICompat` | Extracted | Swift Foundation only |
 | `AFMKitApple` | Extracted | Apple FoundationModels, on-device execution, and macOS 27 Private Cloud Compute |
 | `AFMKitMLX` | Extracted and Release-verified | Tagged AFM-compatible MLX package stack |
-| `AFMKitFoundationModelsMLX` | Experimental, extracted and tested | macOS 27 `LanguageModel` / `LanguageModelExecutor` bridge backed by AFMKitMLX |
+| `AFMKitFoundationModelsMLX` | Extracted, tested, and API-baselined | macOS 27 `LanguageModel` / `LanguageModelExecutor` bridge backed by AFMKitMLX |
 | `AFMKitDwarfStar` | Extracted and Release-verified | Vanilla DwarfStar submodule plus AFM-owned Swift/C adapter |
 
 ## Build
@@ -29,6 +29,7 @@ Scripts/check-afmkit-core-api.sh
 Scripts/check-afmkit-core-api.sh AFMOpenAICompat
 Scripts/check-afmkit-core-api.sh AFMKitApple
 Scripts/check-afmkit-core-api.sh AFMKitMLX
+Scripts/check-afmkit-core-api.sh AFMKitFoundationModelsMLX
 Scripts/check-afmkit-core-api.sh AFMKitDwarfStar
 ```
 
