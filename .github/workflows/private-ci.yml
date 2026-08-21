@@ -1,0 +1,139 @@
+name: Private graph qualification
+
+on:
+  workflow_run:
+    workflows:
+      - CI
+    types:
+      - completed
+
+permissions:
+  contents: read
+
+jobs:
+  availability:
+    name: Detect private qualification access
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      (github.event.workflow_run.event == 'pull_request' ||
+       github.event.workflow_run.event == 'push')
+    runs-on: ubuntu-latest
+    outputs:
+      available: ${{ steps.secret.outputs.available }}
+    steps:
+      - name: Detect dependency token without exposing it
+        id: secret
+        env:
+          AFMKIT_DEPENDENCY_TOKEN: ${{ secrets.AFMKIT_DEPENDENCY_TOKEN }}
+        run: |
+          if [[ -n "$AFMKIT_DEPENDENCY_TOKEN" ]]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Private graph qualification is unavailable until AFMKIT_DEPENDENCY_TOKEN is configured."
+          fi
+
+  qualify:
+    name: Trusted private graph qualification
+    needs: availability
+    if: needs.availability.outputs.available == 'true'
+    runs-on: ${{ vars.AFMKIT_XCODE_RUNNER || 'xcode-27' }}
+    steps:
+      - name: Bind candidate to triggering run
+        id: metadata
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        with:
+          script: |
+            const run = context.payload.workflow_run;
+            if (run.event === "push") {
+              const eligible = run.head_branch === context.payload.repository.default_branch;
+              core.setOutput("eligible", String(eligible));
+              core.setOutput("trusted_sha", run.head_sha);
+              core.setOutput("candidate_sha", run.head_sha);
+              core.setOutput("candidate_repo", context.repo.owner + "/" + context.repo.repo);
+              return;
+            }
+
+            const pulls = run.pull_requests || [];
+            if (pulls.length !== 1) {
+              core.setFailed("Expected one pull request for run " + run.id + "; found " + pulls.length + ".");
+              return;
+            }
+            const response = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: pulls[0].number,
+            });
+            const pull = response.data;
+            const candidateRepo = pull.head.repo.full_name;
+            const eligible = candidateRepo === context.repo.owner + "/" + context.repo.repo;
+            if (!eligible) {
+              core.notice("Private graph qualification does not expose dependency source to fork pull requests.");
+            }
+            core.setOutput("eligible", String(eligible));
+            core.setOutput("trusted_sha", pull.base.sha);
+            core.setOutput("candidate_sha", pull.head.sha);
+            core.setOutput("candidate_repo", candidateRepo);
+
+      - name: Check out trusted base
+        if: steps.metadata.outputs.eligible == 'true'
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ steps.metadata.outputs.trusted_sha }}
+          path: trusted
+          persist-credentials: false
+          submodules: recursive
+
+      - name: Check out exact candidate
+        if: steps.metadata.outputs.eligible == 'true'
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          repository: ${{ steps.metadata.outputs.candidate_repo }}
+          ref: ${{ steps.metadata.outputs.candidate_sha }}
+          path: candidate
+          persist-credentials: false
+          submodules: recursive
+
+      - name: Require the trusted dependency lock
+        if: steps.metadata.outputs.eligible == 'true'
+        run: |
+          cmp trusted/Package.resolved candidate/Package.resolved
+          test ! -e candidate/.build
+
+      - name: Provision locked dependencies with trusted code
+        if: steps.metadata.outputs.eligible == 'true'
+        env:
+          AFMKIT_DEPENDENCY_TOKEN: ${{ secrets.AFMKIT_DEPENDENCY_TOKEN }}
+        run: |
+          trusted/Scripts/with-private-dependency-auth.sh \
+            /bin/bash -ceu '
+              trusted/Scripts/verify-qualified-toolchain.sh
+              /usr/bin/xcrun --toolchain XcodeDefault swift package resolve \
+                --package-path trusted \
+                --scratch-path trusted/.build
+            '
+
+      - name: Transfer credential-free resolved graph
+        if: steps.metadata.outputs.eligible == 'true'
+        run: |
+          test ! -e candidate/.build
+          mv trusted/.build candidate/.build
+
+      - name: Validate candidate API baselines without credentials
+        if: steps.metadata.outputs.eligible == 'true'
+        working-directory: candidate
+        env:
+          AFMKIT_BUILD_ROOT: ${{ github.workspace }}/candidate/.build
+        run: Scripts/check-api-baselines.sh
+
+      - name: Test candidate package without credentials
+        if: steps.metadata.outputs.eligible == 'true'
+        working-directory: candidate
+        run: |
+          Scripts/verify-qualified-toolchain.sh
+          /usr/bin/xcrun --toolchain XcodeDefault swift test \
+            --package-path . \
+            --scratch-path .build \
+            --build-system native \
+            --disable-automatic-resolution \
+            --disable-swift-testing

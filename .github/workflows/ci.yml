@@ -15,7 +15,7 @@ jobs:
     name: Token-independent gates
     runs-on: ${{ vars.AFMKIT_XCODE_RUNNER || 'xcode-27' }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           persist-credentials: false
           submodules: recursive
@@ -27,44 +27,13 @@ jobs:
         run: Scripts/test-private-dependency-auth.sh
       - name: Test release qualification guards
         run: Scripts/test-release-qualification.sh
+      - name: Test idempotent release publication
+        run: node Scripts/test-release-publication.js
+      - name: Test workflow trust boundaries
+        run: Scripts/test-workflow-security.sh
       - name: Check script syntax and whitespace
         run: |
           bash -n Scripts/*.sh
-          python3 -m py_compile Scripts/public-library-modules.py
+          python3 -m py_compile Scripts/*.py
+          node --check Scripts/*.js
           git diff --check
-
-  api-baselines:
-    name: API baselines (private graph)
-    needs: public-gates
-    runs-on: ${{ vars.AFMKIT_XCODE_RUNNER || 'xcode-27' }}
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          persist-credentials: false
-          submodules: recursive
-      - name: Check all public API baselines
-        env:
-          AFMKIT_DEPENDENCY_TOKEN: ${{ secrets.AFMKIT_DEPENDENCY_TOKEN }}
-        run: Scripts/with-private-dependency-auth.sh Scripts/check-api-baselines.sh
-
-  package-tests:
-    name: Debug package tests (private graph)
-    needs: public-gates
-    runs-on: ${{ vars.AFMKIT_XCODE_RUNNER || 'xcode-27' }}
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          persist-credentials: false
-          submodules: recursive
-      - name: Run pinned Debug package tests
-        env:
-          AFMKIT_DEPENDENCY_TOKEN: ${{ secrets.AFMKIT_DEPENDENCY_TOKEN }}
-        run: |
-          Scripts/with-private-dependency-auth.sh \
-            /bin/bash -ceu '
-            Scripts/verify-qualified-toolchain.sh
-            /usr/bin/xcrun --toolchain XcodeDefault swift test \
-              --build-system native \
-              --disable-automatic-resolution \
-              --disable-swift-testing
-            '

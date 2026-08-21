@@ -38,14 +38,13 @@ asks SwiftPM to build the requested target; `AFMKIT_API_SKIP_BUILD` is rejected
 so a stale or unrelated `.swiftmodule` cannot satisfy the gate.
 
 CI always runs token-independent manifest/baseline coverage, API-gate failure
-modes, credential-cleanup tests, release-guard tests, and syntax checks. Full
-package tests and symbol extraction additionally require the
-`AFMKIT_DEPENDENCY_TOKEN` Actions secret with read access to the two private
-AFM-compatible MLX repositories. Those jobs fail with an explicit prerequisite
-when the secret is unavailable; the independent checks still produce useful
-results and CI does not report full qualification as green. Authentication uses
-a temporary `GIT_CONFIG_GLOBAL` file whose URL rewrites are limited to those two
-repositories. The file is removed even when the wrapped command fails.
+modes, credential-cleanup tests, release/publication regressions, and syntax
+checks. A separate default-branch `workflow_run` performs private-graph
+qualification only after public CI succeeds. It resolves the trusted base lock
+while `AFMKIT_DEPENDENCY_TOKEN` is present, removes the temporary credential
+configuration, and only then executes candidate code against the credential-free
+graph. If the secret is unavailable, that qualification is skipped rather than
+making every pull request red. Fork pull requests never receive private source.
 
 GitHub's `xcode-27` hosted image is rolling. When it no longer carries build
 `27A5218g`, set `AFMKIT_XCODE_RUNNER` to a runner label with the qualified Xcode
@@ -69,10 +68,12 @@ isolated AFMKit Git tag and explicitly builds all six public products:
 Scripts/validate-release.sh
 ```
 
-Tags and GitHub releases are created only by the manual **Qualify and publish
-release** workflow, after qualification succeeds for the exact commit SHA. A
-repository tag ruleset must prevent direct `v*` pushes from bypassing that
-workflow. See [docs/RELEASING.md](docs/RELEASING.md).
+Maintainers manually run the tokenless **Request release** workflow on `main`.
+The privileged **Qualify and publish release** workflow is triggered through
+`workflow_run`, so GitHub loads its trusted default-branch definition rather than
+an arbitrary dispatched branch. It qualifies the exact request SHA, creates or
+recovers its tag, validates the clean GitHub tag graph, and idempotently creates
+the release. See [docs/RELEASING.md](docs/RELEASING.md).
 
 The standalone [MLX quickstart](Examples/AFMKitQuickstart/README.md) shows the
 downstream provider registry and structured streaming path without linking the

@@ -1,14 +1,16 @@
 name: Qualify and publish release
 
 on:
-  workflow_dispatch:
-    inputs:
-      tag:
-        description: Release tag to create after qualification (for example, v1.0.0)
-        required: true
-        type: string
+  workflow_run:
+    workflows:
+      - Request release
+    types:
+      - completed
+    branches:
+      - main
 
 permissions:
+  actions: read
   contents: read
 
 concurrency:
@@ -17,91 +19,154 @@ concurrency:
 
 jobs:
   qualify:
-    name: Qualify untagged commit
+    name: Qualify trusted default-branch commit
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'workflow_dispatch' &&
+      github.event.workflow_run.head_branch == github.event.repository.default_branch
     runs-on: ${{ vars.AFMKIT_XCODE_RUNNER || 'xcode-27' }}
     outputs:
-      qualified_sha: ${{ steps.qualified.outputs.sha }}
+      qualified_sha: ${{ github.event.workflow_run.head_sha }}
+      tag: ${{ steps.request.outputs.tag }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
+          ref: ${{ github.event.workflow_run.head_sha }}
           fetch-depth: 0
           persist-credentials: false
           submodules: recursive
-      - name: Validate requested tag
+      - name: Download exact release request
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          name: release-request-${{ github.event.workflow_run.id }}
+          path: ${{ runner.temp }}/release-request
+          github-token: ${{ github.token }}
+          run-id: ${{ github.event.workflow_run.id }}
+      - name: Validate request provenance and tag
+        id: request
         env:
-          TAG_NAME: ${{ inputs.tag }}
+          REQUEST_PATH: ${{ runner.temp }}/release-request/request.json
+          EXPECTED_RUN_ID: ${{ github.event.workflow_run.id }}
+          EXPECTED_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
-          if [[ ! "$TAG_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
-            echo "::error::Release tag must be a semantic version beginning with v."
-            exit 1
-          fi
-      - name: Reject an existing tag
-        uses: actions/github-script@v8
+          python3 - <<'PY'
+          import json
+          import os
+
+          with open(os.environ["REQUEST_PATH"], encoding="utf-8") as handle:
+              request = json.load(handle)
+          expected = {
+              "run_id": int(os.environ["EXPECTED_RUN_ID"]),
+              "sha": os.environ["EXPECTED_SHA"],
+          }
+          for key, value in expected.items():
+              if request.get(key) != value:
+                  raise SystemExit(f"Release request {key} does not match triggering workflow.")
+          tag = request.get("tag", "")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"tag={tag}\n")
+          PY
+          Scripts/validate-release-tag.sh "$(python3 -c 'import json,os; print(json.load(open(os.environ["REQUEST_PATH"]))["tag"])')"
+      - name: Reject stale or conflicting candidate
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         env:
-          TAG_NAME: ${{ inputs.tag }}
+          QUALIFIED_SHA: ${{ github.event.workflow_run.head_sha }}
+          TAG_NAME: ${{ steps.request.outputs.tag }}
         with:
           script: |
-            try {
-              await github.rest.git.getRef({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                ref: `tags/${process.env.TAG_NAME}`,
-              });
-              core.setFailed(`Tag ${process.env.TAG_NAME} already exists.`);
-            } catch (error) {
-              if (error.status !== 404) throw error;
-            }
+            const publication = require(process.env.GITHUB_WORKSPACE + "/Scripts/release-publication.js");
+            await publication.assertReleaseCandidate({
+              github,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tagName: process.env.TAG_NAME,
+              qualifiedSha: process.env.QUALIFIED_SHA,
+              defaultBranch: context.payload.repository.default_branch,
+            });
       - name: Run full release qualification
         env:
+          AFMKIT_BUILD_ROOT: ${{ runner.temp }}/afmkit-release-${{ github.event.workflow_run.head_sha }}
           AFMKIT_DEPENDENCY_TOKEN: ${{ secrets.AFMKIT_DEPENDENCY_TOKEN }}
         run: Scripts/with-private-dependency-auth.sh Scripts/validate-release.sh
-      - name: Record qualified commit
-        id: qualified
-        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
-  publish:
-    name: Create tag and GitHub release
+  stage-tag:
+    name: Stage exact qualified tag
     needs: qualify
     runs-on: ubuntu-latest
-    environment: release
     permissions:
       contents: write
     steps:
-      - name: Publish exact qualified commit
-        uses: actions/github-script@v8
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ needs.qualify.outputs.qualified_sha }}
+          persist-credentials: false
+      - name: Create or recover exact tag
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         env:
           QUALIFIED_SHA: ${{ needs.qualify.outputs.qualified_sha }}
-          TAG_NAME: ${{ inputs.tag }}
+          TAG_NAME: ${{ needs.qualify.outputs.tag }}
         with:
           script: |
-            const owner = context.repo.owner;
-            const repo = context.repo.repo;
-            const tagName = process.env.TAG_NAME;
-            const qualifiedSha = process.env.QUALIFIED_SHA;
-            if (!/^[0-9a-f]{40}$/.test(qualifiedSha)) {
-              throw new Error(`Invalid qualified commit SHA: ${qualifiedSha}`);
-            }
+            const publication = require(process.env.GITHUB_WORKSPACE + "/Scripts/release-publication.js");
+            const result = await publication.ensureReleaseTag({
+              github,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tagName: process.env.TAG_NAME,
+              qualifiedSha: process.env.QUALIFIED_SHA,
+              defaultBranch: context.payload.repository.default_branch,
+            });
+            core.info(JSON.stringify(result));
 
-            const tag = await github.rest.git.createTag({
-              owner,
-              repo,
-              tag: tagName,
-              message: `AFMKit ${tagName}`,
-              object: qualifiedSha,
-              type: "commit",
+  qualify-remote-tag:
+    name: Qualify clean remote tag graph
+    needs:
+      - qualify
+      - stage-tag
+    runs-on: ${{ vars.AFMKIT_XCODE_RUNNER || 'xcode-27' }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ needs.qualify.outputs.qualified_sha }}
+          persist-credentials: false
+      - name: Build all products from clean GitHub tag
+        env:
+          AFMKIT_BUILD_ROOT: ${{ runner.temp }}/afmkit-remote-tag-${{ needs.qualify.outputs.qualified_sha }}
+          AFMKIT_DEPENDENCY_TOKEN: ${{ secrets.AFMKIT_DEPENDENCY_TOKEN }}
+          AFMKIT_SOURCE_TOKEN: ${{ github.token }}
+          AFMKIT_SOURCE_URL: https://github.com/${{ github.repository }}.git
+          AFMKIT_DOWNSTREAM_URL: https://github.com/${{ github.repository }}.git
+          AFMKIT_DOWNSTREAM_TAG: ${{ needs.qualify.outputs.tag }}
+          AFMKIT_DOWNSTREAM_SHA: ${{ needs.qualify.outputs.qualified_sha }}
+        run: Scripts/with-private-dependency-auth.sh Scripts/check-downstream-example.sh
+
+  publish:
+    name: Create or recover GitHub release
+    needs:
+      - qualify
+      - qualify-remote-tag
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ needs.qualify.outputs.qualified_sha }}
+          persist-credentials: false
+      - name: Publish idempotently
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        env:
+          QUALIFIED_SHA: ${{ needs.qualify.outputs.qualified_sha }}
+          TAG_NAME: ${{ needs.qualify.outputs.tag }}
+        with:
+          script: |
+            const publication = require(process.env.GITHUB_WORKSPACE + "/Scripts/release-publication.js");
+            const result = await publication.publishRelease({
+              github,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tagName: process.env.TAG_NAME,
+              qualifiedSha: process.env.QUALIFIED_SHA,
+              defaultBranch: context.payload.repository.default_branch,
             });
-            await github.rest.git.createRef({
-              owner,
-              repo,
-              ref: `refs/tags/${tagName}`,
-              sha: tag.data.sha,
-            });
-            await github.rest.repos.createRelease({
-              owner,
-              repo,
-              tag_name: tagName,
-              target_commitish: qualifiedSha,
-              name: `AFMKit ${tagName}`,
-              generate_release_notes: true,
-              draft: false,
-            });
+            core.info(JSON.stringify(result));

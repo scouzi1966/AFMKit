@@ -44,4 +44,31 @@ if git config --global --get-regexp 'test-token-not-a-secret' >/dev/null 2>&1; t
     exit 1
 fi
 
-echo "2 private dependency auth regression tests passed."
+set +e
+TMPDIR="$SANDBOX/tmp" \
+    AFMKIT_DEPENDENCY_TOKEN="test-token-not-a-secret" \
+    AFMKIT_SOURCE_TOKEN="source-token-not-a-secret" \
+    AFMKIT_SOURCE_URL="https://github.com/example/AFMKit.git" \
+    "$WRAPPER" bash -c '
+        set -euo pipefail
+        test -z "${AFMKIT_DEPENDENCY_TOKEN:-}"
+        test -z "${AFMKIT_SOURCE_TOKEN:-}"
+        test -z "${AFMKIT_SOURCE_URL:-}"
+        test "$(git config --global --get url.https://x-access-token:source-token-not-a-secret@github.com/example/AFMKit.git.insteadof)" = "https://github.com/example/AFMKit.git"
+        test "$(git config --global --get-regexp "^url\." | wc -l | tr -d " ")" = 3
+        exit 43
+    '
+STATUS=$?
+set -e
+[[ $STATUS -eq 43 ]] \
+    || { echo "Private auth regression failed: source credential status was not preserved." >&2; exit 1; }
+if find "$SANDBOX/tmp" -mindepth 1 -print -quit | grep -q .; then
+    echo "Private auth regression failed: source credential config survived a command failure." >&2
+    exit 1
+fi
+if git config --global --get-regexp 'source-token-not-a-secret' >/dev/null 2>&1; then
+    echo "Private auth regression failed: source credential reached persistent global Git config." >&2
+    exit 1
+fi
+
+echo "3 private dependency auth regression tests passed."
