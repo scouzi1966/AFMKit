@@ -133,14 +133,6 @@ let package = Package(
             resources: [
                 .copy("Resources/default.metallib")
             ],
-            swiftSettings: [
-                .unsafeFlags(["-cross-module-optimization"], .when(configuration: .release)),
-                .unsafeFlags(["-O"], .when(configuration: .release)),
-                .unsafeFlags(
-                    ["-file-prefix-map", "\(packageDirectory)/="],
-                    .when(configuration: .release)
-                )
-            ],
             linkerSettings: [
                 .linkedFramework("Security"),
                 .linkedFramework("IOKit"),
@@ -169,9 +161,6 @@ let package = Package(
                 "CDwarfStarLayerPack.c"
             ],
             publicHeadersPath: "include",
-            cSettings: [
-                .unsafeFlags(["-O3", "-ffast-math"])
-            ],
             linkerSettings: [
                 .linkedFramework("Foundation"),
                 .linkedFramework("Metal")
@@ -187,13 +176,6 @@ let package = Package(
             ],
             resources: [
                 .copy("../../vendor/ds4/metal")
-            ],
-            swiftSettings: [
-                .unsafeFlags(["-O"], .when(configuration: .release)),
-                .unsafeFlags(
-                    ["-file-prefix-map", "\(packageDirectory)/="],
-                    .when(configuration: .release)
-                )
             ]
         ),
         .testTarget(

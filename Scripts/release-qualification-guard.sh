@@ -57,6 +57,13 @@ for dependency in package.get("dependencies", []):
             raise SystemExit(
                 f"Release qualification rejected unstable branch/revision dependency {identity}."
             )
+for target in package.get("targets", []):
+    for setting in target.get("settings", []):
+        if "unsafeFlags" in setting.get("kind", {}):
+            name = target.get("name", "unknown")
+            raise SystemExit(
+                f"Release qualification rejected unsafe build flags in target {name}."
+            )
 '
 }
 

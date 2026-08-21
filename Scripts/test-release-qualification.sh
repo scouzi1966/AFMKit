@@ -123,6 +123,16 @@ fi
 grep -q "rejected unstable branch/revision dependency" "$SANDBOX/revision-manifest.log"
 PASSED=$((PASSED + 1))
 
+printf '%s\n' '{"dependencies":[],"targets":[{"name":"UnsafeTarget","settings":[{"kind":{"unsafeFlags":{"_0":["-O3"]}},"tool":"c"}]}]}' \
+    > "$SANDBOX/unsafe-manifest.json"
+if afmkit_release_validate_manifest < "$SANDBOX/unsafe-manifest.json" \
+    > "$SANDBOX/unsafe-manifest.log" 2>&1; then
+    echo "Release qualification regression failed: unsafe target flags were accepted." >&2
+    exit 1
+fi
+grep -q "rejected unsafe build flags in target UnsafeTarget" "$SANDBOX/unsafe-manifest.log"
+PASSED=$((PASSED + 1))
+
 FIXTURE="$SANDBOX/worktree"
 mkdir -p "$FIXTURE"
 git -C "$FIXTURE" init -q

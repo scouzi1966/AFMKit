@@ -59,6 +59,7 @@ afmkit_run_qualified_swift package resolve \
     "$CONSUMER/Package.resolved" "$DEPENDENCY_URL" "$VERSION" "$SOURCE_SHA" <<'PY'
 import json
 import sys
+from urllib.parse import urlparse
 
 path, expected_url, expected_version, expected_revision = sys.argv[1:]
 with open(path, encoding="utf-8") as handle:
@@ -70,7 +71,10 @@ if len(pins) != 1:
 
 pin = pins[0]
 state = pin.get("state", {})
-if pin.get("location") != expected_url:
+expected_location = expected_url
+if expected_url.startswith("file://"):
+    expected_location = urlparse(expected_url).path
+if pin.get("location") != expected_location:
     raise SystemExit(f"Downstream AFMKit pin used {pin.get('location')} instead of {expected_url}.")
 if state.get("version") != expected_version:
     raise SystemExit(
