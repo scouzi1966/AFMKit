@@ -62,7 +62,7 @@ public enum AFMFoundationModelsRequestAdapter {
                 "enable_thinking": .bool(explicitReasoningRequested)
             ])
         }
-        metadata.merge(afmMetadata(request.metadata)) { _, new in new }
+        metadata.merge(try afmMetadata(from: request)) { _, new in new }
 
         let definitions = request.generationOptions.toolCallingMode?.kind == .disallowed
             ? []
@@ -265,16 +265,39 @@ public enum AFMFoundationModelsRequestAdapter {
     }
 
     private static func afmMetadata(
-        _ values: [String: any Sendable & Codable & Equatable]
-    ) -> [String: AFMJSONValue] {
-        values.reduce(into: [:]) { result, item in
-            switch item.value {
-            case let value as Bool: result[item.key] = .bool(value)
-            case let value as Int: result[item.key] = .integer(value)
-            case let value as Double: result[item.key] = .number(value)
-            case let value as String: result[item.key] = .string(value)
-            default: result[item.key] = .string(String(describing: item.value))
-            }
+        from request: LanguageModelExecutorGenerationRequest
+    ) throws -> [String: AFMJSONValue] {
+        // Xcode 27 beta 3 declares the metadata getter in its swiftinterface but
+        // omits the implementation from FoundationModels.framework. Read the
+        // stored public representation until the SDK ships a callable accessor.
+        guard let stored = Mirror(reflecting: request).children.first(where: {
+            $0.label == "metadata"
+        })?.value as? [String: GeneratedContent] else {
+            throw AFMError.invalidRequest(
+                "FoundationModels request metadata storage is unavailable."
+            )
+        }
+        return try stored.mapValues { try afmJSONValue(from: $0) }
+    }
+
+    private static func afmJSONValue(from content: GeneratedContent) throws -> AFMJSONValue {
+        switch content.kind {
+        case .null:
+            return .null
+        case .bool(let value):
+            return .bool(value)
+        case .number(let value):
+            return .number(value)
+        case .string(let value):
+            return .string(value)
+        case .array(let values):
+            return .array(try values.map { try afmJSONValue(from: $0) })
+        case .structure(let properties, _):
+            return .object(try properties.mapValues { try afmJSONValue(from: $0) })
+        @unknown default:
+            throw AFMError.invalidRequest(
+                "Unsupported FoundationModels metadata value: \(content)."
+            )
         }
     }
 
