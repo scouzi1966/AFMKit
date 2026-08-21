@@ -36,6 +36,13 @@ when the active toolchain differs. It always asks SwiftPM to build the requested
 target; `AFMKIT_API_SKIP_BUILD` is rejected so a stale or unrelated
 `.swiftmodule` cannot satisfy the gate.
 
+CI requires the `AFMKIT_DEPENDENCY_TOKEN` Actions secret with read access to
+the private AFM-compatible MLX repositories. GitHub's `xcode-27` hosted image is
+rolling; when it no longer carries build `27A5218g`, set the
+`AFMKIT_XCODE_RUNNER` repository variable to the label of a runner that has the
+qualified Xcode 27 Beta 3 toolchain. The provenance preflight intentionally
+blocks instead of comparing baselines under a newer beta.
+
 Normal consumers resolve the tagged AFM-compatible MLX stack directly:
 
 ```bash
