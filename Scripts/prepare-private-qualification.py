@@ -20,6 +20,13 @@ ALLOWED_PREFIXES = (
     "Packages/AFMKitMLX/Tests/",
     "docs/api-baselines/",
 )
+ALLOWED_FILES = {
+    "Package.swift",
+    "Packages/AFMKitDwarfStar/Package.swift",
+    "Packages/AFMKitDwarfStar/Package.resolved",
+    "Packages/AFMKitMLX/Package.swift",
+    "Packages/AFMKitMLX/Package.resolved",
+}
 MAX_FILE_SIZE = 16 * 1024 * 1024
 MAX_TOTAL_SIZE = 96 * 1024 * 1024
 
@@ -31,10 +38,12 @@ def validated_name(raw_name: str) -> pathlib.PurePosixPath:
     if not path.parts or any(part in {"", ".", ".."} for part in path.parts):
         raise SystemExit(f"Unsafe qualification archive path: {raw_name}")
     normalized = path.as_posix()
-    if not any(normalized.startswith(prefix) for prefix in ALLOWED_PREFIXES):
+    if normalized not in ALLOWED_FILES and not any(
+        normalized.startswith(prefix) for prefix in ALLOWED_PREFIXES
+    ):
         raise SystemExit(f"Unexpected qualification archive path: {raw_name}")
-    if path.name == "Package.swift" or re.fullmatch(r"Package@swift-.*\.swift", path.name):
-        raise SystemExit(f"Candidate package manifests are not qualification inputs: {raw_name}")
+    if re.fullmatch(r"Package@swift-.*\.swift", path.name):
+        raise SystemExit(f"Version-specific candidate manifests are not permitted: {raw_name}")
     return path
 
 
@@ -89,6 +98,7 @@ def main() -> int:
             output.chmod(0o644)
 
     required = {
+        *ALLOWED_FILES,
         "Sources/AFMKitCore/AFMCoreTypes.swift",
         "Packages/AFMKitDwarfStar/Sources/AFMKitDwarfStar/AFMDwarfStarProvider.swift",
         "Packages/AFMKitMLX/Sources/AFMKitMLX/AFMMLXProvider.swift",

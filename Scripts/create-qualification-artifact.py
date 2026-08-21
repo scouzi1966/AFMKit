@@ -22,10 +22,22 @@ ARCHIVE_ROOTS = (
     "Packages/AFMKitMLX/Tests",
     "docs/api-baselines",
 )
+ARCHIVE_FILES = (
+    "Package.swift",
+    "Packages/AFMKitDwarfStar/Package.swift",
+    "Packages/AFMKitDwarfStar/Package.resolved",
+    "Packages/AFMKitMLX/Package.swift",
+    "Packages/AFMKitMLX/Package.resolved",
+)
 
 
 def regular_files(root: pathlib.Path) -> list[pathlib.Path]:
     files: list[pathlib.Path] = []
+    for relative_file in ARCHIVE_FILES:
+        path = root / relative_file
+        if not path.is_file() or not stat.S_ISREG(path.lstat().st_mode):
+            raise SystemExit(f"Missing qualification graph input: {relative_file}")
+        files.append(path)
     for relative_root in ARCHIVE_ROOTS:
         source_root = root / relative_root
         if not source_root.is_dir():

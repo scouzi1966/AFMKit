@@ -40,30 +40,42 @@ assert "github.event.pull_request.head.sha || github.sha" in public_ci
 
 private_ci = contents["private-ci.yml"]
 assert "workflow_run:" in private_ci
-assert "github.rest.pulls.get" not in private_ci
 assert "Check out exact candidate" not in private_ci
 assert "candidate/Scripts" not in private_ci
 assert "candidate/Package.swift" not in private_ci
+assert "github.event.workflow_run.status == 'completed'" in private_ci
+assert 'run.status !== "completed"' in private_ci
+assert "github.rest.actions.getWorkflowRun" in private_ci
+assert 'source.path !== ".github/workflows/ci.yml"' in private_ci
+assert "source.repository.full_name !== currentRepository" in private_ci
+assert "pull.base.ref !== defaultBranch" in private_ci
+assert "pull.base.repo.full_name !== currentRepository" in private_ci
+assert "pull.head.sha !== run.head_sha" in private_ci
+assert "github.rest.git.getCommit" in private_ci
+assert "github.rest.repos.compareCommitsWithBasehead" in private_ci
+assert "afmkit-privileged-private-ci" in private_ci
+assert "afmkit-privileged-private-xcode27-ephemeral" in private_ci
+assert "pull-requests: read" in private_ci
 assert "Download exact successful-run artifact" in private_ci
 assert "prepare-private-qualification.py" in private_ci
+assert "validate-private-qualification-graph.py" in private_ci
 assert "Qualification/PrivatePackage.swift" in private_ci
 assert "AFMKitPrivateDependencySeed" in private_ci
 assert "with-private-source-sandbox.sh" in private_ci
 assert "AFMKIT_REQUIRE_SANDBOX_COMPILERS: swiftc,clang" in private_ci
 assert "--build-tests" in private_ci
-assert "xctest \"$TEST_BUNDLE\"" in private_ci
+assert "xctest" not in private_ci
 assert "swift test" not in private_ci
-assert private_ci.index("Remove all private source") < private_ci.index(
-    "Run prebuilt candidate tests"
-)
-assert "checkouts/mlx-swift-afm" in private_ci
-assert "checkouts/mlx-swift-lm" in private_ci
+assert "if: always() && steps.metadata.outputs.eligible == 'true'" in private_ci
+assert "destroy-private-qualification.py" in private_ci
+assert "--path \"$PRIVATE_BUILD_ROOT\"" in private_ci
+assert "--path \"$HARNESS_ROOT\"" in private_ci
 assert "persist-credentials: false" in private_ci
 assert private_ci.index("Prebuild private dependencies") < private_ci.index(
     "Compile candidate without private source access"
 )
 assert private_ci.index("Compile candidate without private source access") < private_ci.index(
-    "Remove all private source"
+    "Destroy private sources, products, and candidate harness"
 )
 
 request = contents["release-request.yml"]
@@ -102,8 +114,25 @@ EXTRACTED="$SANDBOX/extracted"
     --expected-sha "$SHA" \
     --expected-repository owner/AFMKit
 
-if find "$EXTRACTED" -name 'Package*.swift' -o -path '*/Scripts/*' | grep -q .; then
-    echo "Private qualification artifact included candidate executable control files." >&2
+EXPECTED_GRAPH_INPUTS="$(cat <<'EOF'
+Package.swift
+Packages/AFMKitDwarfStar/Package.resolved
+Packages/AFMKitDwarfStar/Package.swift
+Packages/AFMKitMLX/Package.resolved
+Packages/AFMKitMLX/Package.swift
+EOF
+)"
+ACTUAL_GRAPH_INPUTS="$(find "$EXTRACTED" -type f \
+    \( -name 'Package*.swift' -o -name 'Package.resolved' \) \
+    -print | sed "s|^$EXTRACTED/||" | sort)"
+if [[ "$ACTUAL_GRAPH_INPUTS" != "$EXPECTED_GRAPH_INPUTS" ]]; then
+    echo "Private qualification artifact did not preserve the exact graph inputs." >&2
+    diff -u <(printf '%s\n' "$EXPECTED_GRAPH_INPUTS") \
+        <(printf '%s\n' "$ACTUAL_GRAPH_INPUTS") || true
+    exit 1
+fi
+if find "$EXTRACTED" -path '*/Scripts/*' -o -name 'Package@swift-*.swift' | grep -q .; then
+    echo "Private qualification artifact included candidate executable controls." >&2
     exit 1
 fi
 
@@ -119,8 +148,52 @@ if "$ROOT/Scripts/prepare-private-qualification.py" \
 fi
 grep -q "provenance mismatch" "$SANDBOX/provenance.log"
 
+"$ROOT/Scripts/validate-private-qualification-graph.py" \
+    --candidate "$EXTRACTED" \
+    --trusted "$ROOT" \
+    --qualification-manifest "$ROOT/Qualification/PrivatePackage.swift" \
+    > "$SANDBOX/graph.log"
+grep -q "Candidate manifests and locks equal the trusted graph" "$SANDBOX/graph.log"
+
+cp -R "$EXTRACTED" "$SANDBOX/tampered-graph"
+printf '\n// candidate dependency control\n' \
+    >> "$SANDBOX/tampered-graph/Packages/AFMKitMLX/Package.swift"
+if "$ROOT/Scripts/validate-private-qualification-graph.py" \
+    --candidate "$SANDBOX/tampered-graph" \
+    --trusted "$ROOT" \
+    --qualification-manifest "$ROOT/Qualification/PrivatePackage.swift" \
+    > "$SANDBOX/manifest-equality.log" 2>&1; then
+    echo "Private qualification accepted a candidate-controlled manifest." >&2
+    exit 1
+fi
+grep -q "differs from the trusted default-branch copy" \
+    "$SANDBOX/manifest-equality.log"
+
+cp -R "$EXTRACTED" "$SANDBOX/tampered-lock"
+/usr/bin/python3 - "$SANDBOX/tampered-lock/Packages/AFMKitMLX/Package.resolved" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+with open(path, encoding="utf-8") as handle:
+    lock = json.load(handle)
+lock["pins"][0]["state"]["revision"] = "f" * 40
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(lock, handle)
+PY
+if "$ROOT/Scripts/validate-private-qualification-graph.py" \
+    --candidate "$SANDBOX/tampered-lock" \
+    --trusted "$ROOT" \
+    --qualification-manifest "$ROOT/Qualification/PrivatePackage.swift" \
+    > "$SANDBOX/lock-equality.log" 2>&1; then
+    echo "Private qualification accepted a candidate-controlled lock." >&2
+    exit 1
+fi
+grep -q "differs from the trusted default-branch copy" "$SANDBOX/lock-equality.log"
+
 cp "$ROOT/Qualification/PrivatePackage.swift" "$SANDBOX/Package.swift"
 cp -R "$ROOT/Qualification/TrustedSeed" "$SANDBOX/TrustedSeed"
+cp "$EXTRACTED/Packages/AFMKitMLX/Package.resolved" "$SANDBOX/Package.resolved"
 mv "$EXTRACTED" "$SANDBOX/Candidate"
 /usr/bin/xcrun --toolchain XcodeDefault swift package dump-package \
     --package-path "$SANDBOX" > /dev/null
@@ -144,5 +217,24 @@ if AFMKIT_REQUIRE_SANDBOX_COMPILERS=clang \
     exit 1
 fi
 grep -Eq "Operation not permitted|not found" "$SANDBOX/compiler-sandbox.log"
+
+CLEANUP_ROOT="$SANDBOX/cleanup-root"
+OUTSIDE_ROOT="$SANDBOX/outside-root"
+mkdir -p "$CLEANUP_ROOT/private-products" "$OUTSIDE_ROOT"
+printf 'must survive\n' > "$OUTSIDE_ROOT/sentinel"
+ln -s "$OUTSIDE_ROOT" "$CLEANUP_ROOT/private-products/outside-link"
+"$ROOT/Scripts/destroy-private-qualification.py" \
+    --root "$CLEANUP_ROOT" \
+    --path "$CLEANUP_ROOT/private-products"
+test -f "$OUTSIDE_ROOT/sentinel"
+test ! -e "$CLEANUP_ROOT/private-products"
+if "$ROOT/Scripts/destroy-private-qualification.py" \
+    --root "$CLEANUP_ROOT" \
+    --path "$OUTSIDE_ROOT" \
+    > "$SANDBOX/cleanup-boundary.log" 2>&1; then
+    echo "Private cleanup accepted a path outside its runner root." >&2
+    exit 1
+fi
+grep -q "outside cleanup root" "$SANDBOX/cleanup-boundary.log"
 
 echo "Workflow trust boundaries and qualification artifact checks passed."
