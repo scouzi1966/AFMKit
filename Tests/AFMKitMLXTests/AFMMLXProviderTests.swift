@@ -328,6 +328,7 @@ final class AFMMLXProviderTests: XCTestCase {
 
         let telemetry = await model.telemetrySnapshot()
         XCTAssertEqual(telemetry.activeOperations, 0)
+        XCTAssertNil(telemetry.peakMemoryGib)
         XCTAssertEqual(telemetry.metadata["runtime"], .string("mlx-swift"))
         XCTAssertEqual(telemetry.metadata["prefixCachingEnabled"], .bool(true))
         XCTAssertEqual(telemetry.metadata["grammarConstraintsEnabled"], .bool(true))

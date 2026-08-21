@@ -233,6 +233,7 @@ public final class MLXModelService: @unchecked Sendable {
     private var activeOperations: Int = 0
     private var isShuttingDown = false
     private var gpuInitialized = false
+    var hasInitializedGPU: Bool { withStateLock { gpuInitialized } }
     private var radixCache: RadixTreeCache?
     private var currentToolCallFormat: ToolCallFormat?
     public var prefillStepSize: Int = 1024

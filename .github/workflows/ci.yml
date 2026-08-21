@@ -5,70 +5,67 @@ on:
   push:
     branches:
       - main
-    tags:
-      - "v*"
   workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
-  api-baselines:
-    name: API baselines (clean Xcode 27 Beta 3)
+  public-gates:
+    name: Token-independent gates
     runs-on: ${{ vars.AFMKIT_XCODE_RUNNER || 'xcode-27' }}
     steps:
       - uses: actions/checkout@v5
         with:
+          persist-credentials: false
           submodules: recursive
-      - name: Configure private dependency access
-        env:
-          AFMKIT_DEPENDENCY_TOKEN: ${{ secrets.AFMKIT_DEPENDENCY_TOKEN }}
-        run: |
-          if [[ -z "$AFMKIT_DEPENDENCY_TOKEN" ]]; then
-            echo "::error::Set AFMKIT_DEPENDENCY_TOKEN to a token with read access to the private AFM-compatible MLX repositories."
-            exit 1
-          fi
-          git config --global url."https://x-access-token:${AFMKIT_DEPENDENCY_TOKEN}@github.com/".insteadOf "https://github.com/"
+      - name: Verify qualified Xcode and Swift
+        run: Scripts/verify-qualified-toolchain.sh
+      - name: Check public module baseline coverage
+        run: Scripts/check-api-baseline-coverage.sh
       - name: Test API gate failure modes
         run: Scripts/test-api-gate.sh
-      - name: Check Foundation Models MLX API from a clean build
-        run: Scripts/check-afmkit-core-api.sh AFMKitFoundationModelsMLX
-      - name: Check merge-gating API baselines
-        run: Scripts/check-api-baselines.sh
+      - name: Test private dependency auth cleanup
+        run: Scripts/test-private-dependency-auth.sh
+      - name: Test release qualification guards
+        run: Scripts/test-release-qualification.sh
+      - name: Check script syntax and whitespace
+        run: |
+          bash -n Scripts/*.sh
+          python3 -m py_compile Scripts/public-library-modules.py
+          git diff --check
+
+  api-baselines:
+    name: API baselines (private graph)
+    needs: public-gates
+    runs-on: ${{ vars.AFMKIT_XCODE_RUNNER || 'xcode-27' }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+          submodules: recursive
+      - name: Check all public API baselines
+        env:
+          AFMKIT_DEPENDENCY_TOKEN: ${{ secrets.AFMKIT_DEPENDENCY_TOKEN }}
+        run: Scripts/with-private-dependency-auth.sh Scripts/check-api-baselines.sh
 
   package-tests:
-    name: Package tests
+    name: Debug package tests (private graph)
+    needs: public-gates
     runs-on: ${{ vars.AFMKIT_XCODE_RUNNER || 'xcode-27' }}
     steps:
       - uses: actions/checkout@v5
         with:
+          persist-credentials: false
           submodules: recursive
-      - name: Configure private dependency access
+      - name: Verify qualified Xcode and Swift
+        run: Scripts/verify-qualified-toolchain.sh
+      - name: Run pinned Debug package tests
         env:
           AFMKIT_DEPENDENCY_TOKEN: ${{ secrets.AFMKIT_DEPENDENCY_TOKEN }}
         run: |
-          if [[ -z "$AFMKIT_DEPENDENCY_TOKEN" ]]; then
-            echo "::error::Set AFMKIT_DEPENDENCY_TOKEN to a token with read access to the private AFM-compatible MLX repositories."
-            exit 1
-          fi
-          git config --global url."https://x-access-token:${AFMKIT_DEPENDENCY_TOKEN}@github.com/".insteadOf "https://github.com/"
-      - run: swift test --disable-swift-testing
-
-  release-validation:
-    name: Release validation
-    if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ${{ vars.AFMKIT_XCODE_RUNNER || 'xcode-27' }}
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          submodules: recursive
-      - name: Configure private dependency access
-        env:
-          AFMKIT_DEPENDENCY_TOKEN: ${{ secrets.AFMKIT_DEPENDENCY_TOKEN }}
-        run: |
-          if [[ -z "$AFMKIT_DEPENDENCY_TOKEN" ]]; then
-            echo "::error::Set AFMKIT_DEPENDENCY_TOKEN to a token with read access to the private AFM-compatible MLX repositories."
-            exit 1
-          fi
-          git config --global url."https://x-access-token:${AFMKIT_DEPENDENCY_TOKEN}@github.com/".insteadOf "https://github.com/"
-      - run: Scripts/validate-release.sh
+          Scripts/with-private-dependency-auth.sh \
+            /usr/bin/xcrun --toolchain XcodeDefault swift test \
+              --build-system native \
+              --disable-automatic-resolution \
+              --disable-swift-testing

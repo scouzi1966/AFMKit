@@ -3,37 +3,13 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CHECKER="$ROOT/Scripts/check-afmkit-core-api.sh"
-MODULE_PARSER="$ROOT/Scripts/public-library-modules.py"
-
-# shellcheck source=/dev/null
-source "$ROOT/Scripts/verify-qualified-toolchain.sh"
-afmkit_verify_qualified_toolchain "$ROOT"
+COVERAGE_CHECKER="$ROOT/Scripts/check-api-baseline-coverage.sh"
 
 MODULES=()
+MODULE_OUTPUT="$("$COVERAGE_CHECKER" --list)"
 while IFS= read -r MODULE; do
     MODULES+=("$MODULE")
-done < <(
-    afmkit_run_qualified_swift package dump-package --package-path "$ROOT" \
-        | /usr/bin/python3 "$MODULE_PARSER"
-)
-
-if [[ ${#MODULES[@]} -eq 0 ]]; then
-    echo "No public library modules were discovered from Package.swift." >&2
-    exit 1
-fi
-
-BASELINE_MODULES=()
-while IFS= read -r BASELINE; do
-    BASELINE_MODULES+=("$(basename "$BASELINE" .symbols.json)")
-done < <(find "$ROOT/docs/api-baselines" -maxdepth 1 -name '*.symbols.json' -print | sort)
-
-EXPECTED="$(printf '%s\n' "${MODULES[@]}" | sort -u)"
-ACTUAL="$(printf '%s\n' "${BASELINE_MODULES[@]}" | sort -u)"
-if [[ "$EXPECTED" != "$ACTUAL" ]]; then
-    echo "Public library modules and API baselines are not one-to-one." >&2
-    diff -u <(printf '%s\n' "$EXPECTED") <(printf '%s\n' "$ACTUAL") || true
-    exit 1
-fi
+done <<< "$MODULE_OUTPUT"
 
 for MODULE in "${MODULES[@]}"; do
     "$CHECKER" "$MODULE"

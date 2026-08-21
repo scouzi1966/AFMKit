@@ -30,18 +30,27 @@ Scripts/check-api-baselines.sh
 ```
 
 The checked-in symbol graphs are qualified only with Xcode 27 Beta 3 build
-`27A5218g` and macOS SDK 27.0 build `26A5378i`, as recorded in
-`docs/api-baselines/toolchain.env`. The checker fails with selection guidance
-when the active toolchain differs. It always asks SwiftPM to build the requested
-target; `AFMKIT_API_SKIP_BUILD` is rejected so a stale or unrelated
-`.swiftmodule` cannot satisfy the gate.
+`27A5218g`, macOS SDK 27.0 build `26A5378i`, and the recorded Swift compiler
+version and executable digest in `docs/api-baselines/toolchain.env`. The checker
+resolves Swift and `swift-symbolgraph-extract` from that Xcode installation,
+verifies their provenance, and never invokes ambient `PATH` Swift. It always
+asks SwiftPM to build the requested target; `AFMKIT_API_SKIP_BUILD` is rejected
+so a stale or unrelated `.swiftmodule` cannot satisfy the gate.
 
-CI requires the `AFMKIT_DEPENDENCY_TOKEN` Actions secret with read access to
-the private AFM-compatible MLX repositories. GitHub's `xcode-27` hosted image is
-rolling; when it no longer carries build `27A5218g`, set the
-`AFMKIT_XCODE_RUNNER` repository variable to the label of a runner that has the
-qualified Xcode 27 Beta 3 toolchain. The provenance preflight intentionally
-blocks instead of comparing baselines under a newer beta.
+CI always runs token-independent manifest/baseline coverage, API-gate failure
+modes, credential-cleanup tests, release-guard tests, and syntax checks. Full
+package tests and symbol extraction additionally require the
+`AFMKIT_DEPENDENCY_TOKEN` Actions secret with read access to the two private
+AFM-compatible MLX repositories. Those jobs fail with an explicit prerequisite
+when the secret is unavailable; the independent checks still produce useful
+results and CI does not report full qualification as green. Authentication uses
+a temporary `GIT_CONFIG_GLOBAL` file that is removed even when the wrapped
+command fails.
+
+GitHub's `xcode-27` hosted image is rolling. When it no longer carries build
+`27A5218g`, set `AFMKIT_XCODE_RUNNER` to a runner label with the qualified Xcode
+27 Beta 3 toolchain. This exact runner and private dependency read access are
+unavoidable external prerequisites for full qualification.
 
 Normal consumers resolve the tagged AFM-compatible MLX stack directly:
 
@@ -49,13 +58,20 @@ Normal consumers resolve the tagged AFM-compatible MLX stack directly:
 swift test -c release
 ```
 
-Release qualification runs the API-gate regressions, the Core, OpenAICompat,
-MLX, and FoundationModelsMLX API baselines, Release package tests, and the
-downstream quickstart build:
+Release qualification rejects local dependency path overrides, requires both
+resolved files to contain remote revision pins, disables automatic dependency
+resolution, and fails if `Package.resolved`, `HEAD`, or any worktree file changes.
+It runs gate regressions, all six public module baselines, Release package tests,
+and the downstream quickstart build:
 
 ```bash
 Scripts/validate-release.sh
 ```
+
+Tags and GitHub releases are created only by the manual **Qualify and publish
+release** workflow, after qualification succeeds for the exact commit SHA. A
+repository tag ruleset must prevent direct `v*` pushes from bypassing that
+workflow. See [docs/RELEASING.md](docs/RELEASING.md).
 
 The standalone [MLX quickstart](Examples/AFMKitQuickstart/README.md) shows the downstream provider
 registry and structured streaming path without linking the maclocal-api server, CLI, or WebUI:
@@ -81,7 +97,13 @@ the intended stable facade is narrower than the module's complete public symbol 
 maclocal-api therefore keeps HTTP routing, Prometheus exposure, files, and request orchestration
 local while consuming a stable AFMKit model facade instead of importing MLX engine internals.
 
-The normal `AFMKitDwarfStar` API exposes only `AFMDwarfStarProviderFactory`, `AFMDwarfStarModel`, and `AFMDwarfStarRuntimeConfiguration`. AFMKit pins an unmodified `antirez/ds4` submodule and compiles it behind an AFM-owned C bridge. Hub resolution, checkpoint selection, scheduling, prefix-cache policy, DSpark integration, DSML parsing, and runtime coordination remain package-scoped.
+The normal `AFMKitDwarfStar` entry point is `AFMDwarfStarProviderFactory` with
+`AFMDwarfStarModel` and `AFMDwarfStarRuntimeConfiguration`. Hub resolution and
+checkpoint projection utilities are also public provider-specific surfaces and
+are covered by the module baseline. Scheduling, prefix-cache policy, DSpark
+integration, DSML parsing, and runtime coordination remain package-scoped.
+AFMKit pins an unmodified `antirez/ds4` submodule and compiles it behind an
+AFM-owned C bridge.
 
 `AFMKitApple` keeps the package minimum at macOS 26 and runtime-gates macOS 27 APIs. Its reusable native runtime owns Apple model availability and quota snapshots, entitlement-first PCC validation, reasoning selection, and `LanguageModelSession` reuse. The host app still owns its signed entitlements, provisioning profile, provider UI, and app-specific chat/workflow DTOs.
 

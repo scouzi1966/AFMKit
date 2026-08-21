@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CHECKER="$ROOT/Scripts/check-afmkit-core-api.sh"
 AGGREGATE="$ROOT/Scripts/check-api-baselines.sh"
+COVERAGE_CHECKER="$ROOT/Scripts/check-api-baseline-coverage.sh"
 MODULE_PARSER="$ROOT/Scripts/public-library-modules.py"
 TOOLCHAIN_HELPER="$ROOT/Scripts/verify-qualified-toolchain.sh"
 SANDBOX_ROOT="$ROOT/.build/api-gate-tests.$$"
@@ -185,6 +186,7 @@ PASSED=$((PASSED + 1))
 AGGREGATE_FIXTURE="$SANDBOX_ROOT/aggregate"
 mkdir -p "$AGGREGATE_FIXTURE/Scripts" "$AGGREGATE_FIXTURE/docs/api-baselines"
 cp "$AGGREGATE" "$AGGREGATE_FIXTURE/Scripts/check-api-baselines.sh"
+cp "$COVERAGE_CHECKER" "$AGGREGATE_FIXTURE/Scripts/check-api-baseline-coverage.sh"
 cp "$MODULE_PARSER" "$AGGREGATE_FIXTURE/Scripts/public-library-modules.py"
 cat > "$AGGREGATE_FIXTURE/Scripts/verify-qualified-toolchain.sh" <<'SH'
 #!/bin/bash

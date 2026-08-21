@@ -256,10 +256,12 @@ public extension AFMMLXOpenAIChatGenerating {
 
 extension MLXModelService: AFMMLXOpenAIChatServing {
     public func resetRequestPeakMemory() {
+        guard hasInitializedGPU else { return }
         GPU.resetPeakMemory()
     }
 
     public func currentRequestPeakMemoryGib() -> Double? {
+        guard hasInitializedGPU else { return nil }
         let gib = 1024.0 * 1024.0 * 1024.0
         return (Double(Memory.snapshot().peakMemory) / gib * 10).rounded() / 10
     }
