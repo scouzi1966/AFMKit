@@ -25,18 +25,28 @@ map, dependency ledger, runtime diagrams, and decisions are in
 git clone --recurse-submodules git@github.com:scouzi1966/AFMKit.git
 cd AFMKit
 swift test
-Scripts/check-afmkit-core-api.sh
-Scripts/check-afmkit-core-api.sh AFMOpenAICompat
-Scripts/check-afmkit-core-api.sh AFMKitApple
-Scripts/check-afmkit-core-api.sh AFMKitMLX
-Scripts/check-afmkit-core-api.sh AFMKitFoundationModelsMLX
-Scripts/check-afmkit-core-api.sh AFMKitDwarfStar
+Scripts/test-api-gate.sh
+Scripts/check-api-baselines.sh
 ```
+
+The checked-in symbol graphs are qualified only with Xcode 27 Beta 3 build
+`27A5218g` and macOS SDK 27.0 build `26A5378i`, as recorded in
+`docs/api-baselines/toolchain.env`. The checker fails with selection guidance
+when the active toolchain differs. It always asks SwiftPM to build the requested
+target; `AFMKIT_API_SKIP_BUILD` is rejected so a stale or unrelated
+`.swiftmodule` cannot satisfy the gate.
 
 Normal consumers resolve the tagged AFM-compatible MLX stack directly:
 
 ```bash
 swift test -c release
+```
+
+Release qualification runs the API-gate regressions, all six API baselines,
+Release package tests, and the downstream quickstart build:
+
+```bash
+Scripts/validate-release.sh
 ```
 
 The standalone [MLX quickstart](Examples/AFMKitQuickstart/README.md) shows the downstream provider
