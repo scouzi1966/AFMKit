@@ -30,6 +30,37 @@ final class FoundationProviderTests: XCTestCase {
         XCTAssertFalse(AFMFoundationManagedCapabilities.entitlementValueIsEnabled(nil))
     }
 
+    func testPCCEntitlementRequiresValidNonAdHocSignedHost() {
+        XCTAssertTrue(
+            AFMFoundationManagedCapabilities.signedHostEntitlementIsEnabled(
+                signatureIsValid: true,
+                signatureIsAdHoc: false,
+                entitlementValue: true
+            )
+        )
+        XCTAssertFalse(
+            AFMFoundationManagedCapabilities.signedHostEntitlementIsEnabled(
+                signatureIsValid: false,
+                signatureIsAdHoc: false,
+                entitlementValue: true
+            )
+        )
+        XCTAssertFalse(
+            AFMFoundationManagedCapabilities.signedHostEntitlementIsEnabled(
+                signatureIsValid: true,
+                signatureIsAdHoc: true,
+                entitlementValue: true
+            )
+        )
+        XCTAssertFalse(
+            AFMFoundationManagedCapabilities.signedHostEntitlementIsEnabled(
+                signatureIsValid: true,
+                signatureIsAdHoc: false,
+                entitlementValue: "true"
+            )
+        )
+    }
+
     func testFactoryListsOnDeviceAndPCCWithoutToolCapabilityWhenNoToolsExist() async throws {
         let descriptors = try await AFMFoundationProviderFactory().modelDescriptors()
         let byID = Dictionary(uniqueKeysWithValues: descriptors.map { ($0.modelID, $0) })
