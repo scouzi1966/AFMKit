@@ -78,10 +78,6 @@ let package = Package(
             url: "https://github.com/huggingface/swift-xet.git",
             exact: "0.2.3"
         ),
-        .package(
-            url: "https://github.com/mlc-ai/xgrammar",
-            revision: "c1570cdb4f8c867a4dbd07b7ff90581f4a2a432b"
-        ),
         mlxSwiftDependency
     ],
     targets: [
@@ -102,13 +98,22 @@ let package = Package(
         ),
         .target(
             name: "AFMXGrammar",
-            dependencies: [
-                .product(name: "XGrammar", package: "xgrammar")
-            ],
+            dependencies: [],
             path: "Sources/CXGrammar",
-            exclude: ["xgrammar"],
+            sources: [
+                "error_handler.cpp",
+                "grammar_compiler.cpp",
+                "grammar_matcher.cpp",
+                "tokenizer_info.cpp",
+                "xgrammar/cpp"
+            ],
             cxxSettings: [
-                .headerSearchPath("xgrammar/3rdparty/dlpack/include")
+                .headerSearchPath("xgrammar/include"),
+                .headerSearchPath("xgrammar/cpp"),
+                .headerSearchPath("xgrammar/3rdparty/dlpack/include"),
+                .headerSearchPath("xgrammar/3rdparty/picojson"),
+                .define("XGRAMMAR_ENABLE_LOG_DEBUG", to: "0"),
+                .define("XGRAMMAR_ENABLE_CPPTRACE", to: "0")
             ]
         ),
         .target(

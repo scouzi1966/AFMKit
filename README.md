@@ -58,11 +58,12 @@ Normal consumers resolve the tagged AFM-compatible MLX stack directly:
 swift test -c release
 ```
 
-Release qualification rejects local dependency path overrides, requires both
-resolved files to contain remote revision pins, disables automatic dependency
-resolution, and fails if `Package.resolved`, `HEAD`, or any worktree file changes.
-It runs gate regressions, all six public module baselines, Release package tests,
-and the downstream quickstart build:
+Release qualification rejects local dependency path overrides and unstable root
+branch/revision requirements, requires the root lock to contain remote revision
+pins, disables automatic dependency resolution, and fails if `Package.resolved`,
+`HEAD`, or any worktree file changes. It runs gate regressions, all six public
+module baselines, Release package tests, and a fresh consumer that resolves an
+isolated AFMKit Git tag and explicitly builds all six public products:
 
 ```bash
 Scripts/validate-release.sh
@@ -73,8 +74,10 @@ release** workflow, after qualification succeeds for the exact commit SHA. A
 repository tag ruleset must prevent direct `v*` pushes from bypassing that
 workflow. See [docs/RELEASING.md](docs/RELEASING.md).
 
-The standalone [MLX quickstart](Examples/AFMKitQuickstart/README.md) shows the downstream provider
-registry and structured streaming path without linking the maclocal-api server, CLI, or WebUI:
+The standalone [MLX quickstart](Examples/AFMKitQuickstart/README.md) shows the
+downstream provider registry and structured streaming path without linking the
+maclocal-api server, CLI, or WebUI. The release check does not reuse its local
+path dependency or committed lockfile:
 
 ```bash
 Scripts/check-downstream-example.sh

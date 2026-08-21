@@ -51,12 +51,21 @@ for dependency in package.get("dependencies", []):
         if not locations or not all(item.get("urlString", "").startswith("https://") for item in locations):
             identity = entry.get("identity", "unknown")
             raise SystemExit(f"Release qualification rejected non-remote dependency {identity}.")
+        requirement = entry.get("requirement", {})
+        if not requirement or any(key not in {"exact", "range"} for key in requirement):
+            identity = entry.get("identity", "unknown")
+            raise SystemExit(
+                f"Release qualification rejected unstable branch/revision dependency {identity}."
+            )
 '
 }
 
 afmkit_release_validate_resolved_files() {
-    local root="$1"
-    /usr/bin/python3 - "$root/Package.resolved" "$root/Examples/AFMKitQuickstart/Package.resolved" <<'PY'
+    if [[ $# -eq 0 ]]; then
+        echo "Release qualification requires at least one resolved file." >&2
+        return 64
+    fi
+    /usr/bin/python3 - "$@" <<'PY'
 import json
 import re
 import sys

@@ -22,7 +22,7 @@ flowchart TB
     Transformers["huggingface/swift-transformers\nfrom 1.3.0"]
     HF["huggingface/swift-huggingface\nfrom 0.8.1 + Xet trait"]
     Xet["huggingface/swift-xet\n0.2.3"]
-    XGrammar["mlc-ai/xgrammar\nrevision pin"]
+    XGrammar["vendored xgrammar\nreviewed source snapshot"]
     Dwarf["antirez/ds4\ngit submodule pin"]
     Apple["Apple frameworks\nFoundationModels / Metal / Security / IOKit"]
 
@@ -84,7 +84,7 @@ before AFMKit is made public.
 | [`huggingface/swift-transformers`](https://github.com/huggingface/swift-transformers) | `from: 1.3.0` | `AFMKitMLX` | Tokenizers and Hub facilities. | Semver range can advance transitively; lockfile and qualification are required. |
 | [`huggingface/swift-huggingface`](https://github.com/huggingface/swift-huggingface) | `from: 0.8.1`, Xet trait | MLX, DwarfStar | Hub repository metadata/download. | Network/cache behavior belongs to provider layer. |
 | [`huggingface/swift-xet`](https://github.com/huggingface/swift-xet) | Exact `0.2.3` | DwarfStar; also Hub trait path | High-throughput Hub transport. | Retry/resume and filesystem-space behavior need integration tests. |
-| [`mlc-ai/xgrammar`](https://github.com/mlc-ai/xgrammar) | Revision `c1570cdb4f8c867a4dbd07b7ff90581f4a2a432b` | `AFMXGrammar`, MLX | Grammar-constrained generation. | C++ ABI/build risk; revision updates require grammar correctness tests. |
+| [`mlc-ai/xgrammar`](https://github.com/mlc-ai/xgrammar) | Vendored source snapshot from `c1570cdb4f8c867a4dbd07b7ff90581f4a2a432b` | `AFMXGrammar`, MLX | Grammar-constrained generation without an unstable SwiftPM revision dependency. | C++ ABI/build risk; snapshot updates require provenance, license review, and grammar correctness tests. |
 | [`antirez/ds4`](https://github.com/antirez/ds4) | Submodule `84cc882352757baf628a1776badf7cc54d584e28` | DwarfStar | Vanilla DwarfStar Metal source/resources. | Kept unmodified; AFM-specific behavior belongs in AFM-owned bridge/adapter. |
 
 Local development can replace the two tagged MLX materializations through
@@ -113,7 +113,7 @@ network packages:
 - Swift Collections, Algorithms, Atomics, Numerics, System, Log, and service
   lifecycle/context/tracing packages.
 - Jinja and EventSource used by model templates/streaming dependencies.
-- yyjson and xgrammar implementation dependencies.
+- yyjson and the vendored xgrammar implementation.
 
 These are not AFMKit public interfaces. A transitive update can still affect
 binary size, minimum OS support, TLS/network behavior, or build compatibility,
@@ -122,8 +122,8 @@ so `Package.resolved` changes require review.
 ## Dependency policy
 
 1. **Pin execution engines exactly.** MLX compatibility materializations, Xet,
-   xgrammar, and ds4 advance through explicit PRs with model and performance
-   qualification.
+   the xgrammar source snapshot, and ds4 advance through explicit PRs with model
+   and performance qualification.
 2. **Keep vanilla upstreams vanilla.** Do not push AFM changes to ds4; adapt it in
    `CDwarfStar`/`AFMKitDwarfStar`.
 3. **Keep one source of truth.** AFM MLX deltas live in maclocal-api's patch

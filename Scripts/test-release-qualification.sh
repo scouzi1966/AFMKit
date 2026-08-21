@@ -5,6 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 GUARD="$ROOT/Scripts/release-qualification-guard.sh"
 BUILD_ROOT="${AFMKIT_BUILD_ROOT:-$ROOT/.build}"
 TAG_VALIDATOR="$ROOT/Scripts/validate-release-tag.sh"
+DOWNSTREAM_GENERATOR="$ROOT/Scripts/generate-downstream-package.py"
 SANDBOX="$BUILD_ROOT/release-qualification-tests.$$"
 PASSED=0
 
@@ -65,6 +66,43 @@ for TAG in "${INVALID_TAGS[@]}"; do
 done
 PASSED=$((PASSED + 1))
 
+GENERATOR_FIXTURE="$SANDBOX/downstream-generator"
+mkdir -p "$GENERATOR_FIXTURE"
+cat > "$SANDBOX/package.json" <<'JSON'
+{
+  "products": [
+    {"name": "AFMKitCore", "targets": ["AFMKitCore"], "type": {"library": ["automatic"]}},
+    {"name": "AFMOpenAICompat", "targets": ["AFMOpenAICompat"], "type": {"library": ["automatic"]}},
+    {"name": "AFMKitApple", "targets": ["AFMKitApple"], "type": {"library": ["automatic"]}},
+    {"name": "AFMKitMLX", "targets": ["AFMKitMLX"], "type": {"library": ["automatic"]}},
+    {"name": "AFMKitFoundationModelsMLX", "targets": ["AFMKitFoundationModelsMLX"], "type": {"library": ["automatic"]}},
+    {"name": "AFMKitDwarfStar", "targets": ["AFMKitDwarfStar"], "type": {"library": ["automatic"]}},
+    {"name": "IgnoredTool", "targets": ["IgnoredTool"], "type": {"executable": null}}
+  ]
+}
+JSON
+/usr/bin/python3 "$DOWNSTREAM_GENERATOR" \
+    "$GENERATOR_FIXTURE" "https://github.com/example/AFMKit.git" "1.2.3-rc.1+build.5" \
+    < "$SANDBOX/package.json"
+/usr/bin/python3 - "$GENERATOR_FIXTURE" <<'PY'
+import pathlib
+import sys
+
+root = pathlib.Path(sys.argv[1])
+manifest = (root / "Package.swift").read_text(encoding="utf-8")
+products = (root / "validator-products.txt").read_text(encoding="utf-8").splitlines()
+assert len(products) == 6
+assert products == sorted(products)
+assert "IgnoredTool" not in manifest
+assert 'exact: "1.2.3-rc.1+build.5"' in manifest
+sources = list((root / "Sources").glob("*/main.swift"))
+for product in products:
+    public_product = product.removesuffix("Consumer")
+    assert manifest.count(f'.product(name: "{public_product}", package: "AFMKit")') == 1
+    assert any(f"import {public_product}" in path.read_text(encoding="utf-8") for path in sources)
+PY
+PASSED=$((PASSED + 1))
+
 printf '%s\n' '{"dependencies":[{"fileSystem":[{"identity":"local","path":"/tmp/local"}]}]}' \
     > "$SANDBOX/local-manifest.json"
 if afmkit_release_validate_manifest < "$SANDBOX/local-manifest.json" \
@@ -73,6 +111,16 @@ if afmkit_release_validate_manifest < "$SANDBOX/local-manifest.json" \
     exit 1
 fi
 grep -q "requires every root dependency to use remote source control" "$SANDBOX/manifest.log"
+PASSED=$((PASSED + 1))
+
+printf '%s\n' '{"dependencies":[{"sourceControl":[{"identity":"unstable","location":{"remote":[{"urlString":"https://github.com/example/unstable"}]},"requirement":{"revision":["0123456789012345678901234567890123456789"]}}]}]}' \
+    > "$SANDBOX/revision-manifest.json"
+if afmkit_release_validate_manifest < "$SANDBOX/revision-manifest.json" \
+    > "$SANDBOX/revision-manifest.log" 2>&1; then
+    echo "Release qualification regression failed: revision dependency was accepted." >&2
+    exit 1
+fi
+grep -q "rejected unstable branch/revision dependency" "$SANDBOX/revision-manifest.log"
 PASSED=$((PASSED + 1))
 
 FIXTURE="$SANDBOX/worktree"

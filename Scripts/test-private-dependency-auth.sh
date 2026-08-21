@@ -3,7 +3,8 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WRAPPER="$ROOT/Scripts/with-private-dependency-auth.sh"
-SANDBOX="$ROOT/.build/private-auth-tests.$$"
+BUILD_ROOT="${AFMKIT_BUILD_ROOT:-$ROOT/.build}"
+SANDBOX="$BUILD_ROOT/private-auth-tests.$$"
 
 cleanup() {
     rm -rf "$SANDBOX"

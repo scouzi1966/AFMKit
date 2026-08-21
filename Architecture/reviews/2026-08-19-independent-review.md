@@ -25,8 +25,8 @@ tests.
 
 - Add ADRs for event append/replace semantics, Apple stateless versus reusable
   sessions, metadata namespacing, and the API stability tiers.
-- Resolve the excluded duplicate xgrammar source tree under
-  `Sources/CXGrammar/xgrammar` to remove supply-chain ambiguity.
+- Keep the xgrammar source snapshot under `Sources/CXGrammar/xgrammar` as the
+  single compiled copy, with provenance and license review on updates.
 - Add provider-specific discovery, availability, download, validation, and
   capability-confidence contract tests.
 - Ensure signed PCC generation claims are validated in a signed downstream host;
