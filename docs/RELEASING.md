@@ -34,4 +34,5 @@ tag is not a qualification trigger.
 resolved pins, uses `--disable-automatic-resolution`, and verifies that neither
 `HEAD`, `Package.resolved`, nor any tracked or untracked worktree state changed.
 The private dependency token is scoped through a temporary Git configuration
-and is removed on success, failure, interruption, or termination.
+whose URL rewrites match only the two private repositories. It is removed on
+success, failure, interruption, or termination.

@@ -24,7 +24,10 @@ TMPDIR="$SANDBOX/tmp" AFMKIT_DEPENDENCY_TOKEN="test-token-not-a-secret" \
         set -euo pipefail
         test -f "$GIT_CONFIG_GLOBAL"
         test -z "${AFMKIT_DEPENDENCY_TOKEN:-}"
-        test "$(git config --global --get url.https://x-access-token:test-token-not-a-secret@github.com/.insteadof)" = "https://github.com/"
+        test "$(git config --global --get url.https://x-access-token:test-token-not-a-secret@github.com/scouzi1966/mlx-swift-afm.insteadof)" = "https://github.com/scouzi1966/mlx-swift-afm"
+        test "$(git config --global --get url.https://x-access-token:test-token-not-a-secret@github.com/scouzi1966/mlx-swift-lm.git.insteadof)" = "https://github.com/scouzi1966/mlx-swift-lm.git"
+        test "$(git config --global --get-regexp "^url\." | wc -l | tr -d " ")" = 2
+        ! git config --global --get url.https://x-access-token:test-token-not-a-secret@github.com/.insteadof
         exit 42
     '
 STATUS=$?

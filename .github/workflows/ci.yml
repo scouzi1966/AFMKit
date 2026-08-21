@@ -19,8 +19,6 @@ jobs:
         with:
           persist-credentials: false
           submodules: recursive
-      - name: Verify qualified Xcode and Swift
-        run: Scripts/verify-qualified-toolchain.sh
       - name: Check public module baseline coverage
         run: Scripts/check-api-baseline-coverage.sh
       - name: Test API gate failure modes
@@ -58,14 +56,15 @@ jobs:
         with:
           persist-credentials: false
           submodules: recursive
-      - name: Verify qualified Xcode and Swift
-        run: Scripts/verify-qualified-toolchain.sh
       - name: Run pinned Debug package tests
         env:
           AFMKIT_DEPENDENCY_TOKEN: ${{ secrets.AFMKIT_DEPENDENCY_TOKEN }}
         run: |
           Scripts/with-private-dependency-auth.sh \
+            /bin/bash -ceu '
+            Scripts/verify-qualified-toolchain.sh
             /usr/bin/xcrun --toolchain XcodeDefault swift test \
               --build-system native \
               --disable-automatic-resolution \
               --disable-swift-testing
+            '

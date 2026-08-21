@@ -44,8 +44,8 @@ package tests and symbol extraction additionally require the
 AFM-compatible MLX repositories. Those jobs fail with an explicit prerequisite
 when the secret is unavailable; the independent checks still produce useful
 results and CI does not report full qualification as green. Authentication uses
-a temporary `GIT_CONFIG_GLOBAL` file that is removed even when the wrapped
-command fails.
+a temporary `GIT_CONFIG_GLOBAL` file whose URL rewrites are limited to those two
+repositories. The file is removed even when the wrapped command fails.
 
 GitHub's `xcode-27` hosted image is rolling. When it no longer carries build
 `27A5218g`, set `AFMKIT_XCODE_RUNNER` to a runner label with the qualified Xcode

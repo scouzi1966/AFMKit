@@ -25,8 +25,11 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 git config --file "$AUTH_CONFIG" \
-    "url.https://x-access-token:${AFMKIT_DEPENDENCY_TOKEN}@github.com/.insteadOf" \
-    "https://github.com/"
+    "url.https://x-access-token:${AFMKIT_DEPENDENCY_TOKEN}@github.com/scouzi1966/mlx-swift-afm.insteadOf" \
+    "https://github.com/scouzi1966/mlx-swift-afm"
+git config --file "$AUTH_CONFIG" \
+    "url.https://x-access-token:${AFMKIT_DEPENDENCY_TOKEN}@github.com/scouzi1966/mlx-swift-lm.git.insteadOf" \
+    "https://github.com/scouzi1966/mlx-swift-lm.git"
 
 unset AFMKIT_DEPENDENCY_TOKEN
 GIT_CONFIG_GLOBAL="$AUTH_CONFIG" \
