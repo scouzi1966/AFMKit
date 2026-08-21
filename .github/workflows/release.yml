@@ -24,7 +24,9 @@ jobs:
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.event == 'workflow_dispatch' &&
       github.event.workflow_run.head_branch == github.event.repository.default_branch
-    runs-on: ${{ vars.AFMKIT_XCODE_RUNNER || 'xcode-27' }}
+    runs-on:
+      group: afmkit-privileged-release
+      labels: afmkit-privileged-xcode27-ephemeral
     outputs:
       qualified_sha: ${{ github.event.workflow_run.head_sha }}
       tag: ${{ steps.request.outputs.tag }}
@@ -105,6 +107,7 @@ jobs:
     needs: qualify
     runs-on: ubuntu-latest
     permissions:
+      actions: read
       contents: write
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5

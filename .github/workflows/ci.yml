@@ -13,7 +13,9 @@ permissions:
 jobs:
   public-gates:
     name: Token-independent gates
-    runs-on: ${{ vars.AFMKIT_XCODE_RUNNER || 'xcode-27' }}
+    runs-on:
+      group: afmkit-public-untrusted
+      labels: afmkit-public-xcode27-ephemeral
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
@@ -22,6 +24,16 @@ jobs:
           submodules: recursive
       - name: Check public module baseline coverage
         run: Scripts/check-api-baseline-coverage.sh
+      - name: Check every public API baseline
+        run: Scripts/check-api-baselines.sh
+      - name: Run untrusted candidate core tests
+        env:
+          AFMKIT_BUILD_ROOT: ${{ runner.temp }}/afmkit-public-tests
+        run: >-
+          /usr/bin/xcrun --toolchain XcodeDefault swift test
+          --package-path "$GITHUB_WORKSPACE"
+          --scratch-path "$AFMKIT_BUILD_ROOT"
+          --build-system native
       - name: Check unauthenticated Core package boundary
         run: Scripts/check-unauthenticated-core-consumer.sh
       - name: Check DwarfStar release resources
