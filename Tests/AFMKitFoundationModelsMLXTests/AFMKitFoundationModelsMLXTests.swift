@@ -173,7 +173,11 @@ final class AFMKitFoundationModelsMLXTests: XCTestCase {
         XCTAssertEqual(adapted.metadata["includeSchemaInPrompt"], .bool(false))
         XCTAssertEqual(adapted.metadata["toolCallingMode"], .string("disallowed"))
         XCTAssertEqual(adapted.metadata["reasoningLevel"], .string("deep"))
-        XCTAssertEqual(adapted.metadata["requestID"], .string("request-1"))
+        if AFMFoundationModelsRequestAdapter.requestMetadataAccessorAvailable {
+            XCTAssertEqual(adapted.metadata["requestID"], .string("request-1"))
+        } else {
+            XCTAssertNil(adapted.metadata["requestID"])
+        }
         XCTAssertEqual(
             adapted.metadata["chatTemplateKwargs"],
             .object(["enable_thinking": .bool(true)])

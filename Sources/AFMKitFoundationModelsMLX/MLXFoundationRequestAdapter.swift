@@ -1,5 +1,6 @@
 #if canImport(FoundationModels)
 import AFMKitCore
+import Darwin
 import Foundation
 import FoundationModels
 import ImageIO
@@ -62,7 +63,11 @@ public enum AFMFoundationModelsRequestAdapter {
                 "enable_thinking": .bool(explicitReasoningRequested)
             ])
         }
-        metadata.merge(afmMetadata(request.metadata)) { _, new in new }
+        if requestMetadataAccessorAvailable {
+            for (key, value) in afmMetadata(request.metadata) {
+                metadata[key] = value
+            }
+        }
 
         let definitions = request.generationOptions.toolCallingMode?.kind == .disallowed
             ? []
@@ -267,16 +272,26 @@ public enum AFMFoundationModelsRequestAdapter {
     private static func afmMetadata(
         _ values: [String: any Sendable & Codable & Equatable]
     ) -> [String: AFMJSONValue] {
-        values.reduce(into: [:]) { result, item in
-            switch item.value {
-            case let value as Bool: result[item.key] = .bool(value)
-            case let value as Int: result[item.key] = .integer(value)
-            case let value as Double: result[item.key] = .number(value)
-            case let value as String: result[item.key] = .string(value)
-            default: result[item.key] = .string(String(describing: item.value))
+        var result: [String: AFMJSONValue] = [:]
+        for (key, value) in values {
+            switch value {
+            case let value as Bool: result[key] = .bool(value)
+            case let value as Int: result[key] = .integer(value)
+            case let value as Double: result[key] = .number(value)
+            case let value as String: result[key] = .string(value)
+            default: result[key] = .string(String(describing: value))
             }
         }
+        return result
     }
+
+    // Xcode 27 Beta 3 declares this getter, but some macOS 27 beta runtimes do
+    // not export it. Calling the weak-linked accessor in those runtimes jumps
+    // to address zero, so metadata forwarding must be capability-gated.
+    static let requestMetadataAccessorAvailable = dlsym(
+        UnsafeMutableRawPointer(bitPattern: -2),
+        "$s16FoundationModels38LanguageModelExecutorGenerationRequestV8metadataSDySSSe_SESQs8SendablepGvg"
+    ) != nil
 
     private static func unsupported(
         entry: Transcript.Entry,
