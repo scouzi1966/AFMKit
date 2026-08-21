@@ -4,15 +4,11 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MODULE_PARSER="$ROOT/Scripts/public-library-modules.py"
 
-# shellcheck source=/dev/null
-source "$ROOT/Scripts/verify-qualified-toolchain.sh"
-afmkit_verify_qualified_toolchain "$ROOT"
-
 MODULES=()
 while IFS= read -r MODULE; do
     MODULES+=("$MODULE")
 done < <(
-    afmkit_run_qualified_swift package dump-package --package-path "$ROOT" \
+    /usr/bin/xcrun --toolchain XcodeDefault swift package dump-package --package-path "$ROOT" \
         | /usr/bin/python3 "$MODULE_PARSER"
 )
 

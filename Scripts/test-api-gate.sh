@@ -59,7 +59,20 @@ grep -q "Select Xcode 27 Beta 3" "$SANDBOX_ROOT/toolchain-mismatch.log" \
 PASSED=$((PASSED + 1))
 
 AMBIENT_BIN="$SANDBOX_ROOT/ambient-bin"
+AMBIENT_FIXTURE="$SANDBOX_ROOT/ambient-provenance"
 mkdir -p "$AMBIENT_BIN"
+mkdir -p "$AMBIENT_FIXTURE/Scripts" "$AMBIENT_FIXTURE/docs/api-baselines"
+cp "$TOOLCHAIN_HELPER" "$AMBIENT_FIXTURE/Scripts/verify-qualified-toolchain.sh"
+XCODE_VERSION_OUTPUT="$(/usr/bin/xcodebuild -version)"
+QUALIFIED_SWIFT="$(/usr/bin/xcrun --toolchain XcodeDefault --find swift)"
+{
+    printf 'API_BASELINE_XCODE_VERSION=%q\n' "$(printf '%s\n' "$XCODE_VERSION_OUTPUT" | sed -n 's/^Xcode //p')"
+    printf 'API_BASELINE_XCODE_BUILD=%q\n' "$(printf '%s\n' "$XCODE_VERSION_OUTPUT" | sed -n 's/^Build version //p')"
+    printf 'API_BASELINE_MACOS_SDK_VERSION=%q\n' "$(/usr/bin/xcrun --sdk macosx --show-sdk-version)"
+    printf 'API_BASELINE_MACOS_SDK_BUILD=%q\n' "$(/usr/bin/xcrun --sdk macosx --show-sdk-build-version)"
+    printf 'API_BASELINE_SWIFT_VERSION=%q\n' "$($QUALIFIED_SWIFT --version | sed -n '1p')"
+    printf 'API_BASELINE_SWIFT_EXECUTABLE_SHA256=%q\n' "$(/usr/bin/shasum -a 256 "$QUALIFIED_SWIFT" | awk '{print $1}')"
+} > "$AMBIENT_FIXTURE/docs/api-baselines/toolchain.env"
 cat > "$AMBIENT_BIN/swift" <<'SH'
 #!/bin/bash
 : > "$FAKE_SWIFT_MARKER"
@@ -67,7 +80,8 @@ exit 97
 SH
 chmod +x "$AMBIENT_BIN/swift"
 PATH="$AMBIENT_BIN:$PATH" FAKE_SWIFT_MARKER="$SANDBOX_ROOT/ambient-swift-used" \
-    "$TOOLCHAIN_HELPER" > "$SANDBOX_ROOT/qualified-toolchain.log" 2>&1 \
+    "$AMBIENT_FIXTURE/Scripts/verify-qualified-toolchain.sh" \
+    > "$SANDBOX_ROOT/qualified-toolchain.log" 2>&1 \
     || fail "qualified toolchain verification failed with an ambient swift earlier on PATH"
 [[ ! -e "$SANDBOX_ROOT/ambient-swift-used" ]] \
     || fail "qualified toolchain verification invoked ambient PATH swift"
@@ -188,38 +202,53 @@ mkdir -p "$AGGREGATE_FIXTURE/Scripts" "$AGGREGATE_FIXTURE/docs/api-baselines"
 cp "$AGGREGATE" "$AGGREGATE_FIXTURE/Scripts/check-api-baselines.sh"
 cp "$COVERAGE_CHECKER" "$AGGREGATE_FIXTURE/Scripts/check-api-baseline-coverage.sh"
 cp "$MODULE_PARSER" "$AGGREGATE_FIXTURE/Scripts/public-library-modules.py"
-cat > "$AGGREGATE_FIXTURE/Scripts/verify-qualified-toolchain.sh" <<'SH'
-#!/bin/bash
-afmkit_verify_qualified_toolchain() { :; }
-afmkit_run_qualified_swift() { cat "$FAKE_PACKAGE_JSON"; }
-SH
 cat > "$AGGREGATE_FIXTURE/Scripts/check-afmkit-core-api.sh" <<'SH'
 #!/bin/bash
 printf '%s\n' "$1" >> "$FAKE_CHECKER_CALLS"
 SH
-cat > "$AGGREGATE_FIXTURE/package.json" <<'JSON'
-{
-  "products": [
-    {"name":"AFMKitCore","type":{"library":["automatic"]},"targets":["AFMKitCore"]},
-    {"name":"AFMOpenAICompat","type":{"library":["automatic"]},"targets":["AFMOpenAICompat"]},
-    {"name":"AFMKitApple","type":{"library":["automatic"]},"targets":["AFMKitApple"]},
-    {"name":"AFMKitMLX","type":{"library":["automatic"]},"targets":["AFMKitMLX"]},
-    {"name":"AFMKitFoundationModelsMLX","type":{"library":["automatic"]},"targets":["AFMKitFoundationModelsMLX"]},
-    {"name":"AFMKitDwarfStar","type":{"library":["automatic"]},"targets":["AFMKitDwarfStar"]},
-    {"name":"AFMKitTool","type":{"executable":null},"targets":["AFMKitTool"]}
-  ]
-}
-JSON
+cat > "$AGGREGATE_FIXTURE/Package.swift" <<'SWIFT'
+// swift-tools-version: 6.2
+import PackageDescription
+
+let package = Package(
+    name: "APIGateFixture",
+    products: [
+        .library(name: "AFMKitCore", targets: ["AFMKitCore"]),
+        .library(name: "AFMOpenAICompat", targets: ["AFMOpenAICompat"]),
+        .library(name: "AFMKitApple", targets: ["AFMKitApple"]),
+        .library(name: "AFMKitMLX", targets: ["AFMKitMLX"]),
+        .library(name: "AFMKitFoundationModelsMLX", targets: ["AFMKitFoundationModelsMLX"]),
+        .library(name: "AFMKitDwarfStar", targets: ["AFMKitDwarfStar"]),
+        .executable(name: "AFMKitTool", targets: ["AFMKitTool"]),
+    ],
+    targets: [
+        .target(name: "AFMKitCore"),
+        .target(name: "AFMOpenAICompat"),
+        .target(name: "AFMKitApple"),
+        .target(name: "AFMKitMLX"),
+        .target(name: "AFMKitFoundationModelsMLX"),
+        .target(name: "AFMKitDwarfStar"),
+        .executableTarget(name: "AFMKitTool"),
+    ]
+)
+SWIFT
 for MODULE in AFMKitCore AFMOpenAICompat AFMKitApple AFMKitMLX AFMKitFoundationModelsMLX AFMKitDwarfStar; do
+    mkdir -p "$AGGREGATE_FIXTURE/Sources/$MODULE"
+    printf '// fixture\n' > "$AGGREGATE_FIXTURE/Sources/$MODULE/Fixture.swift"
     printf '{}\n' > "$AGGREGATE_FIXTURE/docs/api-baselines/$MODULE.symbols.json"
 done
+mkdir -p "$AGGREGATE_FIXTURE/Sources/AFMKitTool"
+printf 'print("fixture")\n' > "$AGGREGATE_FIXTURE/Sources/AFMKitTool/main.swift"
 chmod +x "$AGGREGATE_FIXTURE/Scripts"/*
-FAKE_PACKAGE_JSON="$AGGREGATE_FIXTURE/package.json" \
 FAKE_CHECKER_CALLS="$AGGREGATE_FIXTURE/checker-calls" \
     "$AGGREGATE_FIXTURE/Scripts/check-api-baselines.sh" \
     > "$SANDBOX_ROOT/aggregate.log" 2>&1 \
     || fail "aggregate API gate rejected the complete public library product set"
-EXPECTED_MODULES="$(/usr/bin/python3 "$MODULE_PARSER" < "$AGGREGATE_FIXTURE/package.json")"
+EXPECTED_MODULES="$(
+    /usr/bin/xcrun --toolchain XcodeDefault swift package dump-package \
+        --package-path "$AGGREGATE_FIXTURE" \
+        | /usr/bin/python3 "$MODULE_PARSER"
+)"
 ACTUAL_MODULES="$(sort -u "$AGGREGATE_FIXTURE/checker-calls")"
 [[ "$EXPECTED_MODULES" == "$ACTUAL_MODULES" ]] \
     || fail "aggregate API gate did not invoke every public library module"
@@ -229,24 +258,29 @@ grep -qx "AFMKitDwarfStar" "$AGGREGATE_FIXTURE/checker-calls" \
     || fail "aggregate API gate omitted AFMKitDwarfStar"
 PASSED=$((PASSED + 1))
 
-/usr/bin/python3 - "$AGGREGATE_FIXTURE/package.json" <<'PY'
-import json
+/usr/bin/python3 - "$AGGREGATE_FIXTURE/Package.swift" <<'PY'
 import sys
 
 path = sys.argv[1]
 with open(path, encoding="utf-8") as handle:
-    package = json.load(handle)
-package["products"].append({
-    "name": "AFMKitFuture",
-    "type": {"library": ["automatic"]},
-    "targets": ["AFMKitFuture"],
-})
+    package = handle.read()
+package = package.replace(
+    '        .executable(name: "AFMKitTool", targets: ["AFMKitTool"]),',
+    '        .library(name: "AFMKitFuture", targets: ["AFMKitFuture"]),\n'
+    '        .executable(name: "AFMKitTool", targets: ["AFMKitTool"]),',
+)
+package = package.replace(
+    '        .executableTarget(name: "AFMKitTool"),',
+    '        .target(name: "AFMKitFuture"),\n'
+    '        .executableTarget(name: "AFMKitTool"),',
+)
 with open(path, "w", encoding="utf-8") as handle:
-    json.dump(package, handle)
+    handle.write(package)
 PY
+mkdir -p "$AGGREGATE_FIXTURE/Sources/AFMKitFuture"
+printf '// fixture\n' > "$AGGREGATE_FIXTURE/Sources/AFMKitFuture/Fixture.swift"
 rm -f "$AGGREGATE_FIXTURE/checker-calls"
-if FAKE_PACKAGE_JSON="$AGGREGATE_FIXTURE/package.json" \
-    FAKE_CHECKER_CALLS="$AGGREGATE_FIXTURE/checker-calls" \
+if FAKE_CHECKER_CALLS="$AGGREGATE_FIXTURE/checker-calls" \
     "$AGGREGATE_FIXTURE/Scripts/check-api-baselines.sh" \
     > "$SANDBOX_ROOT/missing-public-baseline.log" 2>&1; then
     fail "aggregate API gate accepted a public module with no baseline"
