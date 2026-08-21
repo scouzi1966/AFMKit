@@ -1,6 +1,5 @@
 import XCTest
 import AFMKitCore
-import CDwarfStar
 @testable import AFMKitDwarfStar
 
 final class AFMDwarfStarProviderTests: XCTestCase {
@@ -46,7 +45,17 @@ final class AFMDwarfStarProviderTests: XCTestCase {
         let model = AFMDwarfStarModel(
             modelID: "missing",
             modelPath: "/path/that/does/not/exist.gguf",
-            runtime: AFMDwarfStarRuntimeCoordinator()
+            configuration: AFMDwarfStarRuntimeConfiguration(
+                contextWindow: 32_768,
+                prefillChunk: 0,
+                powerPercent: 100,
+                dsparkSupportPath: nil,
+                dsparkDraftTokens: 5,
+                dsparkConfidenceThreshold: 0.7,
+                dsparkStrict: false,
+                enablePrefixCaching: false,
+                maxConcurrent: 1
+            )
         )
 
         let availability = await model.availability()
@@ -61,13 +70,17 @@ final class AFMDwarfStarProviderTests: XCTestCase {
         let model = AFMDwarfStarModel(
             modelID: "configured",
             modelPath: "/missing.gguf",
-            dsparkSupportPath: "/support.gguf",
-            dsparkDraftTokens: 8,
-            dsparkConfidenceThreshold: 0.9,
-            dsparkStrict: true,
-            enablePrefixCaching: true,
-            maxConcurrent: 4,
-            runtime: AFMDwarfStarRuntimeCoordinator()
+            configuration: AFMDwarfStarRuntimeConfiguration(
+                contextWindow: 32_768,
+                prefillChunk: 0,
+                powerPercent: 100,
+                dsparkSupportPath: "/support.gguf",
+                dsparkDraftTokens: 8,
+                dsparkConfidenceThreshold: 0.9,
+                dsparkStrict: true,
+                enablePrefixCaching: true,
+                maxConcurrent: 4
+            )
         )
 
         XCTAssertEqual(model.descriptor.metadata["enablePrefixCaching"], .bool(true))
@@ -111,10 +124,10 @@ final class AFMDwarfStarProviderTests: XCTestCase {
     }
 
     func testReasoningModesMapToNativeDwarfStarModes() {
-        XCTAssertEqual(AFMDwarfStarReasoningMode.chat.thinkMode, DS4_THINK_NONE)
-        XCTAssertEqual(AFMDwarfStarReasoningMode.low.thinkMode, DS4_THINK_HIGH)
-        XCTAssertEqual(AFMDwarfStarReasoningMode.high.thinkMode, DS4_THINK_HIGH)
-        XCTAssertEqual(AFMDwarfStarReasoningMode.max.thinkMode, DS4_THINK_MAX)
+        XCTAssertEqual(AFMDwarfStarReasoningMode.chat.thinkMode.rawValue, 0)
+        XCTAssertEqual(AFMDwarfStarReasoningMode.low.thinkMode.rawValue, 1)
+        XCTAssertEqual(AFMDwarfStarReasoningMode.high.thinkMode.rawValue, 1)
+        XCTAssertEqual(AFMDwarfStarReasoningMode.max.thinkMode.rawValue, 2)
     }
 
     func testSlotPolicyUsesFirstAvailableSlotWithoutPrefixCaching() {
