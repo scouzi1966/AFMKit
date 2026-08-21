@@ -142,12 +142,13 @@ final class AFMKitFoundationModelsMLXTests: XCTestCase {
             defaultMaximumResponseTokens: 2_048,
             supportsReasoning: true
         )
+        let definition = try toolDefinition()
         let request = LanguageModelExecutorGenerationRequest(
             id: UUID(),
             transcript: Transcript(entries: [
                 .prompt(.init(segments: [.text(.init(content: "Question"))]))
             ]),
-            enabledTools: [],
+            enabledTools: [definition],
             generationOptions: GenerationOptions(
                 samplingMode: .random(top: 17, seed: 42),
                 temperature: 0.7,
@@ -170,6 +171,8 @@ final class AFMKitFoundationModelsMLXTests: XCTestCase {
         XCTAssertEqual(adapted.options.topK, 17)
         XCTAssertEqual(adapted.options.seed, 42)
         XCTAssertEqual(adapted.options.maximumResponseTokens, 321)
+        XCTAssertEqual(request.enabledToolDefinitions, [definition])
+        XCTAssertTrue(adapted.tools.isEmpty)
         XCTAssertEqual(adapted.metadata["includeSchemaInPrompt"], .bool(false))
         XCTAssertEqual(adapted.metadata["toolCallingMode"], .string("disallowed"))
         XCTAssertEqual(adapted.metadata["reasoningLevel"], .string("deep"))
@@ -321,6 +324,32 @@ final class AFMKitFoundationModelsMLXTests: XCTestCase {
         XCTAssertNil(adapter.finishPlan())
     }
 
+    func testEventAdapterRetractsToolCallAfterFlushingText() {
+        var adapter = AFMFoundationModelsEventChannelAdapter()
+        let call = AFMToolCall(
+            id: "call_weather",
+            name: "weather",
+            arguments: #"{"city":"Toronto"}"#
+        )
+
+        XCTAssertTrue(
+            adapter.plans(
+                for: .responseText(action: .append, text: "Checking", tokenCount: 1)
+            ).isEmpty
+        )
+        XCTAssertEqual(
+            adapter.plans(for: .toolCall(call: call, stage: .retracted)),
+            [
+                .responseText(.append, "Checking", tokenCount: 1),
+                .removeToolCall(
+                    id: "call_weather",
+                    name: "weather",
+                    arguments: #"{"city":"Toronto"}"#
+                ),
+            ]
+        )
+    }
+
     private static func text(_ message: AFMMessage) -> String {
         message.content.compactMap { part in
             guard case .text(let value) = part else { return nil }
@@ -346,6 +375,15 @@ final class AFMKitFoundationModelsMLXTests: XCTestCase {
             metadata: [:]
         )
         return try AFMFoundationModelsRequestAdapter.request(from: request, model: model)
+    }
+
+    private func toolDefinition() throws -> Transcript.ToolDefinition {
+        let root = DynamicGenerationSchema(name: "WeatherArguments", properties: [])
+        return Transcript.ToolDefinition(
+            name: "weather",
+            description: "Look up weather.",
+            parameters: try GenerationSchema(root: root, dependencies: [])
+        )
     }
 }
 #endif

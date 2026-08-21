@@ -128,6 +128,11 @@
     },
     {
       "kind": "memberOf",
+      "source": "s:25AFMKitFoundationModelsMLX013AFMFoundationC19EventChannelAdapterV0G4PlanO14removeToolCallyAESS_S2StcAEmF",
+      "target": "s:25AFMKitFoundationModelsMLX013AFMFoundationC19EventChannelAdapterV0G4PlanO"
+    },
+    {
+      "kind": "memberOf",
       "source": "s:25AFMKitFoundationModelsMLX013AFMFoundationC19EventChannelAdapterV0G4PlanO5usageyAE0A4Core8AFMUsageVcAEmF",
       "target": "s:25AFMKitFoundationModelsMLX013AFMFoundationC19EventChannelAdapterV0G4PlanO"
     },
@@ -3425,6 +3430,172 @@
         "AFMFoundationModelsEventChannelAdapter",
         "ChannelPlan",
         "customMetadata(key:value:)"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "availability": [
+        {
+          "domain": "macOS",
+          "introduced": {
+            "major": 27,
+            "minor": 0
+          }
+        }
+      ],
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "case"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "removeToolCall"
+        },
+        {
+          "kind": "text",
+          "spelling": "("
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "id"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:SS",
+          "spelling": "String"
+        },
+        {
+          "kind": "text",
+          "spelling": ", "
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "name"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:SS",
+          "spelling": "String"
+        },
+        {
+          "kind": "text",
+          "spelling": ", "
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "arguments"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:SS",
+          "spelling": "String"
+        },
+        {
+          "kind": "text",
+          "spelling": ")"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:25AFMKitFoundationModelsMLX013AFMFoundationC19EventChannelAdapterV0G4PlanO14removeToolCallyAESS_S2StcAEmF"
+      },
+      "kind": {
+        "displayName": "Case",
+        "identifier": "swift.enum.case"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "case"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "removeToolCall"
+          },
+          {
+            "kind": "text",
+            "spelling": "("
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "id"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:SS",
+            "spelling": "String"
+          },
+          {
+            "kind": "text",
+            "spelling": ", "
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "name"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:SS",
+            "spelling": "String"
+          },
+          {
+            "kind": "text",
+            "spelling": ", "
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "arguments"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:SS",
+            "spelling": "String"
+          },
+          {
+            "kind": "text",
+            "spelling": ")"
+          }
+        ],
+        "title": "AFMFoundationModelsEventChannelAdapter.ChannelPlan.removeToolCall(id:name:arguments:)"
+      },
+      "pathComponents": [
+        "AFMFoundationModelsEventChannelAdapter",
+        "ChannelPlan",
+        "removeToolCall(id:name:arguments:)"
       ]
     },
     {

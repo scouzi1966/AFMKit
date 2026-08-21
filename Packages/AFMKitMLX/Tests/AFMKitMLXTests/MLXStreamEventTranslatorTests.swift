@@ -82,6 +82,58 @@ final class MLXStreamEventTranslatorTests: XCTestCase {
         XCTAssertEqual(completionReason(from: events), .toolCalls)
     }
 
+    func testCompletedToolCallReplacementRetractsPriorArguments() {
+        var translator = MLXStreamEventTranslator(
+            thinkStartTag: nil,
+            thinkEndTag: nil,
+            maximumResponseTokens: 100
+        )
+
+        var events = translator.consume(
+            .init(
+                text: "",
+                toolCallDeltas: [
+                    .init(
+                        index: 0,
+                        id: "call_weather",
+                        type: "function",
+                        function: .init(
+                            name: "weather",
+                            arguments: #"{"city":"Toronto"}"#
+                        )
+                    )
+                ]
+            )
+        )
+        events += translator.consume(
+            .init(
+                text: "",
+                toolCalls: [
+                    .init(
+                        index: 0,
+                        id: "call_weather",
+                        type: "function",
+                        function: .init(
+                            name: "weather",
+                            arguments: #"{"city":"Montreal"}"#
+                        )
+                    )
+                ]
+            )
+        )
+
+        let replacements = events.compactMap { event -> (AFMToolCall, AFMToolCallStage)? in
+            guard case .toolCall(let call, let stage) = event else { return nil }
+            return (call, stage)
+        }
+        XCTAssertTrue(replacements.contains {
+            $0.0.arguments == #"{"city":"Toronto"}"# && $0.1 == .retracted
+        })
+        XCTAssertTrue(replacements.contains {
+            $0.0.arguments == #"{"city":"Montreal"}"# && $0.1 == .completed
+        })
+    }
+
     func testSchedulerDeltaAndCompletionProduceCompletedAFMToolCall() {
         let completed = ResponseToolCall(
             index: 0,

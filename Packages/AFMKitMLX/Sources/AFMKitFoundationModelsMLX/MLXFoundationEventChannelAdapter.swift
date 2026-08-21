@@ -13,6 +13,7 @@ public struct AFMFoundationModelsEventChannelAdapter {
         case reasoningText(AFMTextUpdateAction, String, tokenCount: Int)
         case usage(AFMUsage)
         case toolArguments(id: String, name: String, arguments: String)
+        case removeToolCall(id: String, name: String, arguments: String)
         case metadata([String: AFMJSONValue])
         case customMetadata(key: String, value: String)
         case finishReason(String)
@@ -45,8 +46,14 @@ public struct AFMFoundationModelsEventChannelAdapter {
                 return .toolArguments(id: call.id, name: call.name, arguments: "")
             case .argumentsDelta(let delta):
                 return .toolArguments(id: call.id, name: call.name, arguments: delta)
-            case .completed, .retracted:
+            case .completed:
                 return nil
+            case .retracted:
+                return .removeToolCall(
+                    id: call.id,
+                    name: call.name,
+                    arguments: call.arguments
+                )
             }
         case .metadata(let values):
             return .metadata(values)
@@ -163,6 +170,17 @@ public struct AFMFoundationModelsEventChannelAdapter {
                         id: id,
                         name: name,
                         action: .appendArguments(arguments, tokenCount: 0)
+                    )
+                )
+            )
+        case .removeToolCall(let id, let name, let arguments):
+            let content = (try? GeneratedContent(json: arguments)) ?? GeneratedContent(
+                kind: .structure(properties: [:], orderedKeys: [])
+            )
+            await channel.send(
+                .toolCalls(
+                    action: .removeToolCall(
+                        Transcript.ToolCall(id: id, toolName: name, arguments: content)
                     )
                 )
             )
