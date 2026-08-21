@@ -1,13 +1,17 @@
 # Trusted Private Qualification Harness
 
 `PrivatePackage.swift` is loaded only from the immutable trusted base selected by
-the `workflow_run` payload. Candidate package manifests, scripts, plugins, and
-dependency locks are deliberately excluded from the public CI artifact and are
-never evaluated while private dependency source is present.
+the authoritative `workflow_run` API record after its event, status, conclusion,
+repository, workflow path, default base, and trusted SHA have been validated.
+Candidate package manifests and dependency locks are included only as inert
+inputs. Their direct dependencies and complete lock graph must be byte-for-byte
+equal to the trusted default-branch files before private source is fetched.
+Candidate scripts and plugins are excluded from the artifact and never run.
 
 The harness compiles allowlisted candidate source and tests with fixed target
-types and exact dependency constraints. The workflow removes private checkouts,
-bare repositories, the isolated SwiftPM home, and temporary Git authentication
-before it launches the already-built XCTest bundle. This permits source/API
-qualification without giving executing candidate code access to dependency
-source or credentials.
+types and exact dependency constraints. Trusted compiler wrappers and the macOS
+sandbox deny candidate compiler processes access to private checkouts and caches.
+No candidate-built executable or test bundle runs on the privileged runner.
+Cleanup removes the entire isolated build root, including private checkouts,
+bare repositories, compiled products, SwiftPM state, homes, credentials, and the
+downloaded artifact, even when qualification fails.

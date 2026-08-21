@@ -22,6 +22,12 @@ Six public modules use three tagged SwiftPM package boundaries for normal
 consumers. This is package-level isolation: the root package has no global
 provider dependency graph.
 
+All manifests use Swift tools 6.1 and declare macOS 26. Xcode 26 / Swift 6.3
+exposes the source-compatible Core, OpenAI, DwarfStar, and MLX products. Xcode 27
+/ Swift 6.4 additionally exposes the Apple and FoundationModelsMLX products that
+import macOS 27 Foundation Models APIs. A two-toolchain CI matrix verifies both
+manifest surfaces and clean-builds the root Xcode 26 surface.
+
 | Published package | Public modules | Dependency strategy |
 | --- | --- | --- |
 | `AFMKit` | `AFMKitCore`, `AFMOpenAICompat`, `AFMKitApple` | No SwiftPM dependencies; Apple frameworks only where imported by the Apple target. |
@@ -114,8 +120,8 @@ Extracted runtime boundary:
 
 Deliberate app boundary:
 
-- AFMKit provides an app-agnostic current-process entitlement reader and also accepts an injected
-  entitlement check for tests and specialized hosts.
+- AFMKit validates the current host's strict non-ad-hoc code signature and Boolean PCC entitlement,
+  and also accepts an injected entitlement check for deterministic tests and specialized hosts.
 - Vesta continues to own provisioning profiles, entitlement files, provider selection UI, route metadata, and chat workflow DTOs.
 - Vesta's native request factory and AFM27 chat reducer consume AFMKit runtime events while those
   app concerns remain outside the SDK.
@@ -126,9 +132,10 @@ Current `AFMKitApple` checkpoint:
   and Apple PCC routes through the same registry/model contract.
 - A live on-device quickstart smoke test loaded Apple Intelligence, generated the requested exact
   response, emitted usage, and completed normally.
-- An unsigned PCC quickstart exits cleanly with the missing managed-entitlement reason instead of
-  crashing or masking it as a locale failure. Live PCC generation remains a signed-host integration
-  test because the entitlement belongs to the consuming app's code signature.
+- An unsigned or ad-hoc-signed PCC quickstart exits cleanly with the missing managed-entitlement
+  reason instead of crashing or masking it as a locale failure. Live PCC generation remains a
+  signed-host integration test because the entitlement belongs to the consuming app's code
+  signature. Deterministic tests cover valid, invalid, ad-hoc, missing, and non-Boolean host states.
 - The normalized `AFMKitApple` symbol graph includes the intentional provider, model, managed
   capability, and configuration-key additions with no removed public symbols.
 - Release suites cover Core, OpenAI compatibility, Apple, MLX,
@@ -286,8 +293,9 @@ Pre-tag exit status:
 ## Compatibility Rules
 
 - `AFMKitCore` must stay dependency-free.
-- macOS 27 features must be opt-in and runtime-gated.
-- macOS 26 builds must not import macOS 27-only symbols outside guarded provider packages.
+- macOS 27 features must be compiler-gated at manifest evaluation and runtime-gated.
+- Xcode 26 must expose and build the macOS 26 source-compatible package surface without parsing
+  macOS 27-only targets; Xcode 27 exposes the complete six-product surface.
 - Provider streams should emit structured events for text, reasoning, tool calls, structured output, generated media, usage, timing, progress, completion, and errors.
 - Runtime-specific capabilities must be explicit. Swapping engines should not silently remove tool calling, reasoning, structured JSON, or multimodal support without advertising that limitation.
 - Server and transport observability are not core-provider responsibilities. `AFMKitCore` must
@@ -318,7 +326,6 @@ not in `AFMKitCore`.
 
 ## Open Questions
 
-- Whether `AFMKitApple` should be one package with guarded files or two products: macOS 26 FoundationModels compatibility and macOS 27 advanced providers.
 - Whether AFMKit should own a small download abstraction or leave all Hugging Face/Xet transport in runtime adapters.
 - Whether patched MLX functionality should live in an AFM-compatible fork, upstream MLX packages, or a narrow adapter package with generated patch application.
 - Whether provider runtime telemetry should stay as per-provider implementation detail or become a

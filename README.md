@@ -18,6 +18,13 @@ Six public modules are published across three real Swift package boundaries:
 | `AFMKitDwarfStar` | `AFMKitDwarfStar` | Exact AFMKit release plus public, exact-pinned Hub/Xet dependencies and the AFM-owned ds4 adapter/resources. |
 | `AFMKitMLX` | `AFMKitMLX`, `AFMKitFoundationModelsMLX` | Exact AFMKit release plus the exact private AFM-compatible MLX graph. |
 
+All three manifests use Swift tools 6.1 and keep a macOS 26 deployment floor.
+With Xcode 26 (Swift 6.3), the root package exposes `AFMKitCore` and
+`AFMOpenAICompat`, and the MLX package exposes `AFMKitMLX`. Xcode 27 (Swift 6.4)
+also exposes `AFMKitApple` and `AFMKitFoundationModelsMLX`; those products import
+macOS 27 Foundation Models APIs and remain runtime-gated to macOS 27. CI checks
+both product matrices with `Scripts/check-sdk-product-exposure.sh`.
+
 The monorepo keeps provider source under `Packages/` for coordinated development.
 Release automation materializes those directories into separate provider
 repositories and rewrites their local AFMKit dependency to the exact same release
@@ -72,11 +79,13 @@ public symbols.
 
 Public CI also proves that a fresh Core consumer builds with isolated credentials
 and no MLX checkout. Private PR qualification consumes only an immutable artifact
-from the exact successful workflow run. A trusted manifest and lock prebuild
-private dependencies; candidate compiler processes are sandboxed from private
-source and repository caches; private source is deleted before prebuilt candidate
-tests execute. Candidate manifests, scripts, and plugins never run with sensitive
-checkouts present.
+from the exact successful workflow run. Candidate manifests and locks are inert
+inputs whose dependency graph must equal the trusted default-branch graph before
+the trusted qualification manifest can prebuild private dependencies. Candidate
+compiler processes are sandboxed from private source and repository caches, and
+candidate test sources are compiled but never executed on the privileged runner.
+Candidate scripts and plugins never run there. Private source, compiled products,
+caches, and credentials are destroyed before the job exits.
 
 Full release validation runs all package/API/security gates, Release tests for
 all three packages, and fresh downstream builds for all six products:
@@ -104,10 +113,11 @@ stable cross-provider contract.
 unmodified `antirez/ds4` submodule and owns the Swift/C adapter, resources,
 checkpoint projection, and provider lifecycle.
 
-`AFMKitApple` keeps the deployment floor at macOS 26 and runtime-gates macOS 27
-APIs. It owns reusable availability, quota, entitlement validation, reasoning,
-and session behavior. The host app owns signing, provisioning, entitlements,
-tools, user consent, UI, and application state.
+`AFMKitApple` is exposed by the manifest only with Xcode 27 or newer while the
+package keeps its macOS 26 deployment floor. It owns reusable availability,
+quota, signed-host entitlement validation, reasoning, and session behavior. The
+host app owns signing, provisioning, entitlements, tools, user consent, UI, and
+application state.
 
 The downstream provider example is documented in
 [`Examples/AFMKitQuickstart/README.md`](Examples/AFMKitQuickstart/README.md). The

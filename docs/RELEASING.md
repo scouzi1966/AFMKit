@@ -20,8 +20,12 @@ Product names and Swift imports do not change for existing consumers; their
 
 ## External prerequisites
 
-- `AFMKIT_XCODE_RUNNER` selects the exact Xcode, SDK, Swift version, and compiler
-  digest in `docs/api-baselines/toolchain.env`.
+- Public untrusted runner groups provide distinct ephemeral Xcode 26 and Xcode
+  27 hosts. `Scripts/check-sdk-product-exposure.sh` verifies the compiler version,
+  product/target exposure, and macOS 26 deployment floor on each host.
+- The private qualification runner is in a separate privileged group and uses
+  the exact Xcode, SDK, Swift version, and compiler digest in
+  `docs/api-baselines/toolchain.env`.
 - `AFMKIT_DEPENDENCY_TOKEN` has read-only access to `mlx-swift-afm` and
   `mlx-swift-lm`.
 - The `AFMKitDwarfStar` and `AFMKitMLX` GitHub repositories exist at the URLs in
@@ -39,21 +43,26 @@ state, or remote-tag mismatches.
 
 1. Public CI checks out the immutable PR head SHA, runs token-independent gates,
    and uploads an allowlisted source/test/resource artifact named for that run.
-   Candidate manifests, scripts, plugins, symlinks, and special files are not in
-   the artifact.
+   Candidate manifests and locks are included only for validation; scripts,
+   plugins, symlinks, and special files are not in the artifact.
 2. The default-branch `workflow_run` handler uses only the successful run's
-   immutable `head_sha`, run ID, repository, and pull-request base SHA. It never
-   re-fetches a mutable PR head.
-3. Trusted base code validates and extracts the exact artifact, supplies the
-   fixed qualification manifest and lock, and prebuilds private dependencies
-   from a trusted seed target.
+   authoritative API record after validating its event, status, conclusion,
+   workflow identity/path, repository, exact same-repository PR head, default
+   base, and trusted SHA ancestry. It never re-fetches a mutable PR head.
+3. Trusted base code validates and extracts the exact artifact. Candidate root
+   and provider manifests and locks must equal the trusted default-branch graph;
+   candidate direct dependencies must match their locks, and provider pin sets
+   must satisfy the trusted cross-package relationships. Only then does the
+   trusted qualification manifest prebuild private dependencies.
 4. Candidate Swift/C/C++ compilation runs without credentials through trusted
    compiler wrappers. The macOS sandbox denies those compiler processes all
    reads from private checkouts and SwiftPM repository caches; the build also
    proves the Swift and Clang wrappers were used.
-5. Trusted API checks run under the same read restrictions. Private source,
-   repository caches, and the isolated dependency HOME are then deleted before
-   the prebuilt candidate test bundle executes.
+5. Trusted API checks run under the same read restrictions. Candidate test
+   sources are compiled, but no candidate-built executable or test bundle runs
+   on the privileged runner. An unconditional cleanup destroys the isolated
+   build root containing private source, caches, products, homes, credentials,
+   and the downloaded artifact.
 
 Fork pull requests are ineligible for private qualification. A missing private
 dependency token reports the qualification as unavailable instead of passing a
@@ -77,13 +86,17 @@ partial private check.
 5. Qualification uploads the two verified Git bundles plus `publication.json`.
    No root or provider tag has been pushed at this point.
 6. The publish job verifies bundle tags, source SHA, release manifest, and
-   production AFMKit URL. It creates or recovers the two provider tags first.
-   Any existing tag must resolve to the qualified provider commit.
+   production AFMKit URL. Before any provider push, it creates or recovers the
+   immutable non-SemVer intent ref, such as `afmkit-publication-v1.2.3`, at the
+   qualified root commit. It then creates or recovers the two provider tags. Any
+   existing intent or provider tag must resolve to the qualified commit.
 7. The root AFMKit tag and GitHub release are created last. Stable releases use
    `prerelease=false` and `make_latest=true`; prereleases use `prerelease=true`
    and `make_latest=false`. Existing releases must already have the matching
    draft, prerelease, and latest state.
 
-Publication is idempotent. A partial provider-tag publication can be rerun only
-when every existing tag resolves to the exact qualified commit. The root tag is
-never a staging signal and is never created before final qualification succeeds.
+Publication is idempotent. The intent ref allows an exact partial publication to
+resume even after the default branch advances; a stale candidate without that
+intent is rejected. Conflicting intent/provider refs always fail closed. The
+root SemVer tag is never a staging signal and is never created before final
+qualification succeeds.
