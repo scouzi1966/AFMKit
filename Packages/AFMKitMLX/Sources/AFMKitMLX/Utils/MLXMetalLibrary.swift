@@ -134,7 +134,7 @@ public enum MLXMetalLibrary {
             .deletingLastPathComponent() // AFMKitMLX -> Sources
             .deletingLastPathComponent() // Sources -> repository root
         let candidate = repositoryRoot
-            .appendingPathComponent("Sources/AFMKitMLX/Resources/default.metallib")
+            .appendingPathComponent("Packages/AFMKitMLX/Sources/AFMKitMLX/Resources/default.metallib")
         return fileManager.fileExists(atPath: candidate.path) ? candidate : nil
     }
 
@@ -218,7 +218,12 @@ public enum MLXMetalLibrary {
                     cwd.appendingPathComponent(".build/out/Products/\(configuration.capitalized)/\(bundleName)/Contents/Resources/default.metallib"),
                 ]
             } + [cwd.appendingPathComponent("\(bundleName)/default.metallib")]
-        } + [cwd.appendingPathComponent("Sources/AFMKitMLX/Resources/default.metallib")]
+        } + [
+            cwd.appendingPathComponent("Sources/AFMKitMLX/Resources/default.metallib"),
+            cwd.appendingPathComponent(
+                "Packages/AFMKitMLX/Sources/AFMKitMLX/Resources/default.metallib"
+            )
+        ]
         for candidate in cwdCandidates where fileManager.fileExists(atPath: candidate.path) {
             return candidate
         }

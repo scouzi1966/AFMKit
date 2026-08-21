@@ -11,17 +11,15 @@ tag = sys.argv[1]
 numeric = r"(?:0|[1-9][0-9]*)"
 alphanumeric = r"(?:[0-9]*[A-Za-z-][0-9A-Za-z-]*)"
 prerelease_identifier = rf"(?:{numeric}|{alphanumeric})"
-build_identifier = r"[0-9A-Za-z-]+"
 pattern = re.compile(
     rf"^v{numeric}\.{numeric}\.{numeric}"
     rf"(?:-{prerelease_identifier}(?:\.{prerelease_identifier})*)?"
-    rf"(?:\+{build_identifier}(?:\.{build_identifier})*)?$"
 )
 
 if not pattern.fullmatch(tag):
     raise SystemExit(
-        "Release tag must be strict SemVer with a v prefix "
-        "(for example, v1.2.3-rc.1+build.5)."
+        "Release tag must be strict SwiftPM-compatible SemVer with a v prefix, "
+        "without build metadata (for example, v1.2.3-rc.1)."
     )
 PY
 }
@@ -42,9 +40,17 @@ import json
 import sys
 
 package = json.load(sys.stdin)
+allow_local_public = __import__("os").environ.get("AFMKIT_ALLOW_LOCAL_PUBLIC_PACKAGE") == "1"
+local_public_count = 0
 for dependency in package.get("dependencies", []):
     source_control = dependency.get("sourceControl")
     if not source_control:
+        file_system = dependency.get("fileSystem", [])
+        if allow_local_public and len(file_system) == 1:
+            local = file_system[0]
+            if local.get("nameForTargetDependencyResolutionOnly") == "AFMKit":
+                local_public_count += 1
+                continue
         raise SystemExit("Release qualification requires every root dependency to use remote source control.")
     for entry in source_control:
         locations = entry.get("location", {}).get("remote")
@@ -52,11 +58,13 @@ for dependency in package.get("dependencies", []):
             identity = entry.get("identity", "unknown")
             raise SystemExit(f"Release qualification rejected non-remote dependency {identity}.")
         requirement = entry.get("requirement", {})
-        if not requirement or any(key not in {"exact", "range"} for key in requirement):
+        if set(requirement) != {"exact"}:
             identity = entry.get("identity", "unknown")
             raise SystemExit(
-                f"Release qualification rejected unstable branch/revision dependency {identity}."
+                f"Release qualification requires exact dependency version for {identity}."
             )
+if allow_local_public and local_public_count != 1:
+    raise SystemExit("Provider source manifest must contain exactly one local AFMKit dependency.")
 for target in package.get("targets", []):
     for setting in target.get("settings", []):
         if "unsafeFlags" in setting.get("kind", {}):

@@ -8,6 +8,7 @@ on:
       - completed
 
 permissions:
+  actions: read
   contents: read
 
 jobs:
@@ -39,101 +40,166 @@ jobs:
     if: needs.availability.outputs.available == 'true'
     runs-on: ${{ vars.AFMKIT_XCODE_RUNNER || 'xcode-27' }}
     steps:
-      - name: Bind candidate to triggering run
+      - name: Bind qualification to triggering run payload
         id: metadata
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         with:
           script: |
             const run = context.payload.workflow_run;
+            const currentRepository = context.repo.owner + "/" + context.repo.repo;
             if (run.event === "push") {
-              const eligible = run.head_branch === context.payload.repository.default_branch;
+              const candidateRepo = run.head_repository && run.head_repository.full_name;
+              const eligible =
+                run.head_branch === context.payload.repository.default_branch &&
+                candidateRepo === currentRepository;
               core.setOutput("eligible", String(eligible));
               core.setOutput("trusted_sha", run.head_sha);
               core.setOutput("candidate_sha", run.head_sha);
-              core.setOutput("candidate_repo", context.repo.owner + "/" + context.repo.repo);
+              core.setOutput("candidate_repo", candidateRepo || "");
               return;
             }
 
             const pulls = run.pull_requests || [];
-            if (pulls.length !== 1) {
-              core.setFailed("Expected one pull request for run " + run.id + "; found " + pulls.length + ".");
+            if (pulls.length !== 1 || !run.head_repository) {
+              core.setFailed(
+                "Expected one pull request and a head repository for run " + run.id + "."
+              );
               return;
             }
-            const response = await github.rest.pulls.get({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              pull_number: pulls[0].number,
-            });
-            const pull = response.data;
-            const candidateRepo = pull.head.repo.full_name;
-            const eligible = candidateRepo === context.repo.owner + "/" + context.repo.repo;
+            const candidateRepo = run.head_repository.full_name;
+            const eligible = candidateRepo === currentRepository;
             if (!eligible) {
-              core.notice("Private graph qualification does not expose dependency source to fork pull requests.");
+              core.notice(
+                "Private graph qualification does not provide compiled private dependencies " +
+                "to fork pull requests."
+              );
             }
             core.setOutput("eligible", String(eligible));
-            core.setOutput("trusted_sha", pull.base.sha);
-            core.setOutput("candidate_sha", pull.head.sha);
+            core.setOutput("trusted_sha", pulls[0].base.sha);
+            core.setOutput("candidate_sha", run.head_sha);
             core.setOutput("candidate_repo", candidateRepo);
 
-      - name: Check out trusted base
+      - name: Check out immutable trusted harness
         if: steps.metadata.outputs.eligible == 'true'
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           ref: ${{ steps.metadata.outputs.trusted_sha }}
           path: trusted
           persist-credentials: false
-          submodules: recursive
 
-      - name: Check out exact candidate
+      - name: Download exact successful-run artifact
         if: steps.metadata.outputs.eligible == 'true'
-        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
         with:
-          repository: ${{ steps.metadata.outputs.candidate_repo }}
-          ref: ${{ steps.metadata.outputs.candidate_sha }}
-          path: candidate
-          persist-credentials: false
-          submodules: recursive
+          name: private-qualification-${{ github.event.workflow_run.id }}
+          path: ${{ runner.temp }}/candidate-artifact
+          github-token: ${{ github.token }}
+          run-id: ${{ github.event.workflow_run.id }}
 
-      - name: Require the trusted dependency lock
+      - name: Validate artifact provenance and prepare trusted harness
         if: steps.metadata.outputs.eligible == 'true'
+        env:
+          CANDIDATE_REPOSITORY: ${{ steps.metadata.outputs.candidate_repo }}
+          CANDIDATE_SHA: ${{ steps.metadata.outputs.candidate_sha }}
+          SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
         run: |
-          cmp trusted/Package.resolved candidate/Package.resolved
-          test ! -e candidate/.build
+          trusted/Scripts/prepare-private-qualification.py \
+            --artifact "$RUNNER_TEMP/candidate-artifact" \
+            --destination "$RUNNER_TEMP/private-qualification/Candidate" \
+            --expected-run-id "$SOURCE_RUN_ID" \
+            --expected-sha "$CANDIDATE_SHA" \
+            --expected-repository "$CANDIDATE_REPOSITORY"
+          cp trusted/Qualification/PrivatePackage.swift \
+            "$RUNNER_TEMP/private-qualification/Package.swift"
+          cp -R trusted/Qualification/TrustedSeed \
+            "$RUNNER_TEMP/private-qualification/TrustedSeed"
+          cp trusted/Packages/AFMKitMLX/Package.resolved \
+            "$RUNNER_TEMP/private-qualification/Package.resolved"
 
-      - name: Provision locked dependencies with trusted code
+      - name: Prebuild private dependencies from trusted source only
         if: steps.metadata.outputs.eligible == 'true'
         env:
           AFMKIT_DEPENDENCY_TOKEN: ${{ secrets.AFMKIT_DEPENDENCY_TOKEN }}
+          HARNESS_ROOT: ${{ runner.temp }}/private-qualification
+          PRIVATE_BUILD_ROOT: ${{ runner.temp }}/private-qualification-build
+          PRIVATE_SWIFTPM_HOME: ${{ runner.temp }}/private-swiftpm-home
         run: |
-          trusted/Scripts/with-private-dependency-auth.sh \
+          mkdir -p "$PRIVATE_SWIFTPM_HOME"
+          HOME="$PRIVATE_SWIFTPM_HOME" \
+            trusted/Scripts/with-private-dependency-auth.sh \
             /bin/bash -ceu '
               trusted/Scripts/verify-qualified-toolchain.sh
               /usr/bin/xcrun --toolchain XcodeDefault swift package resolve \
-                --package-path trusted \
-                --scratch-path trusted/.build
+                --package-path "$HARNESS_ROOT" \
+                --scratch-path "$PRIVATE_BUILD_ROOT"
+              /usr/bin/xcrun --toolchain XcodeDefault swift build \
+                --package-path "$HARNESS_ROOT" \
+                --scratch-path "$PRIVATE_BUILD_ROOT" \
+                --build-system native \
+                --disable-automatic-resolution \
+                --target AFMKitPrivateDependencySeed
             '
 
-      - name: Transfer credential-free resolved graph
+      - name: Compile candidate without private source access
         if: steps.metadata.outputs.eligible == 'true'
-        run: |
-          test ! -e candidate/.build
-          mv trusted/.build candidate/.build
-
-      - name: Validate candidate API baselines without credentials
-        if: steps.metadata.outputs.eligible == 'true'
-        working-directory: candidate
         env:
-          AFMKIT_BUILD_ROOT: ${{ github.workspace }}/candidate/.build
-        run: Scripts/check-api-baselines.sh
-
-      - name: Test candidate package without credentials
-        if: steps.metadata.outputs.eligible == 'true'
-        working-directory: candidate
+          HARNESS_ROOT: ${{ runner.temp }}/private-qualification
+          PRIVATE_BUILD_ROOT: ${{ runner.temp }}/private-qualification-build
+          HOME: ${{ runner.temp }}/candidate-build-home
+          AFMKIT_REQUIRE_SANDBOX_COMPILERS: swiftc,clang
         run: |
-          Scripts/verify-qualified-toolchain.sh
-          /usr/bin/xcrun --toolchain XcodeDefault swift test \
-            --package-path . \
-            --scratch-path .build \
-            --build-system native \
-            --disable-automatic-resolution \
-            --disable-swift-testing
+          mkdir -p "$HOME"
+          trusted/Scripts/with-private-source-sandbox.sh \
+            "$PRIVATE_BUILD_ROOT" \
+            /usr/bin/xcrun --toolchain XcodeDefault swift build \
+              --package-path "$HARNESS_ROOT" \
+              --scratch-path "$PRIVATE_BUILD_ROOT" \
+              --build-system native \
+              --disable-automatic-resolution \
+              --build-tests
+
+      - name: Validate candidate API baselines with trusted checker
+        if: steps.metadata.outputs.eligible == 'true'
+        env:
+          AFMKIT_API_BASELINE_ROOT: ${{ runner.temp }}/private-qualification/Candidate/docs/api-baselines
+          AFMKIT_API_PACKAGE_ROOT: ${{ runner.temp }}/private-qualification
+          AFMKIT_API_XGRAMMAR_ROOT: ${{ runner.temp }}/private-qualification/Candidate/Packages/AFMKitMLX/Sources/CXGrammar/include
+          AFMKIT_BUILD_ROOT: ${{ runner.temp }}/private-qualification-build
+          HOME: ${{ runner.temp }}/candidate-build-home
+        run: |
+          trusted/Scripts/with-private-source-sandbox.sh \
+            "$AFMKIT_BUILD_ROOT" \
+            trusted/Scripts/check-api-baselines.sh
+
+      - name: Remove all private source before candidate tests execute
+        if: steps.metadata.outputs.eligible == 'true'
+        env:
+          PRIVATE_BUILD_ROOT: ${{ runner.temp }}/private-qualification-build
+          PRIVATE_SWIFTPM_HOME: ${{ runner.temp }}/private-swiftpm-home
+        run: |
+          for private_checkout in mlx-swift-afm mlx-swift-lm; do
+            checkout="$PRIVATE_BUILD_ROOT/checkouts/$private_checkout"
+            [[ ! -e "$checkout" ]] || find "$checkout" -depth -delete
+          done
+          [[ ! -e "$PRIVATE_BUILD_ROOT/repositories" ]] \
+            || find "$PRIVATE_BUILD_ROOT/repositories" -depth -delete
+          [[ ! -e "$PRIVATE_SWIFTPM_HOME" ]] \
+            || find "$PRIVATE_SWIFTPM_HOME" -depth -delete
+          test ! -e "$PRIVATE_BUILD_ROOT/checkouts/mlx-swift-afm"
+          test ! -e "$PRIVATE_BUILD_ROOT/checkouts/mlx-swift-lm"
+          test ! -e "$PRIVATE_BUILD_ROOT/repositories"
+          mkdir -p "$RUNNER_TEMP/candidate-runtime-home"
+
+      - name: Run prebuilt candidate tests without source or credentials
+        if: steps.metadata.outputs.eligible == 'true'
+        env:
+          HOME: ${{ runner.temp }}/candidate-runtime-home
+          PRIVATE_BUILD_ROOT: ${{ runner.temp }}/private-qualification-build
+        run: |
+          TEST_BUNDLE="$(find "$PRIVATE_BUILD_ROOT" -type d \
+            -name 'AFMKitPrivateQualificationPackageTests.xctest' -print -quit)"
+          if [[ -z "$TEST_BUNDLE" ]]; then
+            echo "Trusted build did not produce the qualification XCTest bundle." >&2
+            exit 1
+          fi
+          /usr/bin/xcrun xctest "$TEST_BUNDLE"

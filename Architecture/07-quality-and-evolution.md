@@ -59,12 +59,11 @@ API baseline files under `docs/api-baselines` must be updated only when:
 The baselines are toolchain-qualified by `docs/api-baselines/toolchain.env`.
 `Scripts/check-api-baselines.sh` rejects any Xcode or macOS SDK build mismatch
 before extraction and rebuilds every requested target through SwiftPM. Pull
-requests run `AFMKitFoundationModelsMLX` first from a clean recursive checkout,
-then run the aggregate Core, OpenAICompat, MLX, and FoundationModelsMLX gate;
-release-tag validation invokes the same aggregate gate through
-`Scripts/validate-release.sh`. Apple and DwarfStar baselines remain available as
-explicit per-module checks while their release qualification is managed with
-their provider-specific matrices.
+requests and release qualification discover and validate all six public modules
+across the three package manifests. `AFMKitDwarfStar` currently has 42 normalized
+public symbols; the other checked-in counts are Apple 321, Core 364,
+FoundationModelsMLX 72, MLX 1,215, and OpenAICompat 705. No public module is
+excluded from `Scripts/check-api-baselines.sh`.
 
 The stable compatibility center is `AFMKitCore`. Provider-specific public APIs
 may evolve faster, but still require baseline review.
@@ -133,10 +132,10 @@ metadata can carry additional diagnostics without making them universal fields.
 - Provider discovery and pre-load availability guarantees are not uniform; apps
   must follow the provider contract documented in
   `08-provider-contracts-and-configuration.md`.
-- AFMKit's distributable package depends on tagged AFM-compatible MLX
+- The `AFMKitMLX` provider package depends on tagged AFM-compatible MLX
   materializations. The authoritative delta remains in maclocal-api's patch
   catalog; each tag must be reproducible from a recorded upstream base and patch
-  commit. Runtime materialization publication is not fully automated yet.
+  commit.
 - DwarfStar model discovery currently requires stronger catalog semantics than an
   empty provider descriptor list.
 - No first-party Core AI provider exists yet.

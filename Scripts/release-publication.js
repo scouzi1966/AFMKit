@@ -10,6 +10,23 @@ function validateQualifiedSha(qualifiedSha) {
     }
 }
 
+function releaseSemVer(tagName) {
+    const numeric = "(?:0|[1-9][0-9]*)";
+    const alphanumeric = "(?:[0-9]*[A-Za-z-][0-9A-Za-z-]*)";
+    const prereleaseIdentifier = `(?:${numeric}|${alphanumeric})`;
+    const pattern = new RegExp(
+        `^v${numeric}\\.${numeric}\\.${numeric}` +
+        `(?:-(${prereleaseIdentifier}(?:\\.${prereleaseIdentifier})*))?$`
+    );
+    const match = pattern.exec(tagName);
+    if (!match) {
+        throw new Error(
+            `Release tag ${tagName} is not SwiftPM-compatible SemVer without build metadata.`
+        );
+    }
+    return { prerelease: Boolean(match[1]) };
+}
+
 async function getTagCommit(github, owner, repo, tagName) {
     let object;
     try {
@@ -124,12 +141,64 @@ async function ensureReleaseTag({
     }
 }
 
+function validateReleaseRecord(release, tagName, prerelease) {
+    if (release.tag_name !== tagName) {
+        throw new Error(
+            `Existing release tag is ${release.tag_name}, expected ${tagName}.`
+        );
+    }
+    if (release.draft !== false) {
+        throw new Error(`Release ${tagName} must not be a draft.`);
+    }
+    if (release.prerelease !== prerelease) {
+        throw new Error(
+            `Release ${tagName} prerelease state is ${release.prerelease}, ` +
+            `expected ${prerelease}.`
+        );
+    }
+}
+
+async function validateLatestState({ github, owner, repo, release, prerelease }) {
+    let latest = null;
+    try {
+        latest = (await github.rest.repos.getLatestRelease({ owner, repo })).data;
+    } catch (error) {
+        if (!statusIs(error, 404)) {
+            throw error;
+        }
+    }
+
+    if (prerelease) {
+        if (latest && latest.id === release.id) {
+            throw new Error(`Prerelease ${release.tag_name} must not be the latest release.`);
+        }
+        return;
+    }
+    if (!latest || latest.id !== release.id) {
+        throw new Error(`Stable release ${release.tag_name} must be the latest release.`);
+    }
+}
+
+async function validateExistingRelease({ github, owner, repo, release, tagName, prerelease }) {
+    validateReleaseRecord(release, tagName, prerelease);
+    await validateLatestState({ github, owner, repo, release, prerelease });
+}
+
 async function ensureGitHubRelease({ github, owner, repo, tagName, qualifiedSha }) {
+    const { prerelease } = releaseSemVer(tagName);
     try {
         const release = await github.rest.repos.getReleaseByTag({
             owner,
             repo,
             tag: tagName,
+        });
+        await validateExistingRelease({
+            github,
+            owner,
+            repo,
+            release: release.data,
+            tagName,
+            prerelease,
         });
         return { created: false, release: release.data };
     } catch (error) {
@@ -147,7 +216,10 @@ async function ensureGitHubRelease({ github, owner, repo, tagName, qualifiedSha 
             name: `AFMKit ${tagName}`,
             generate_release_notes: true,
             draft: false,
+            prerelease,
+            make_latest: prerelease ? "false" : "true",
         });
+        validateReleaseRecord(release.data, tagName, prerelease);
         return { created: true, release: release.data };
     } catch (error) {
         if (!statusIs(error, 422)) {
@@ -157,6 +229,14 @@ async function ensureGitHubRelease({ github, owner, repo, tagName, qualifiedSha 
             owner,
             repo,
             tag: tagName,
+        });
+        await validateExistingRelease({
+            github,
+            owner,
+            repo,
+            release: release.data,
+            tagName,
+            prerelease,
         });
         return { created: false, recoveredRace: true, release: release.data };
     }
@@ -194,4 +274,6 @@ module.exports = {
     ensureReleaseTag,
     getTagCommit,
     publishRelease,
+    releaseSemVer,
+    validateReleaseRecord,
 };

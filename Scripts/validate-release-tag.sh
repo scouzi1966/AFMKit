@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 if [[ $# -ne 1 ]]; then
-    echo "Usage: ${0##*/} vMAJOR.MINOR.PATCH[-PRERELEASE][+BUILD]" >&2
+    echo "Usage: ${0##*/} vMAJOR.MINOR.PATCH[-PRERELEASE]" >&2
     exit 64
 fi
 

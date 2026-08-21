@@ -6,6 +6,7 @@ GUARD="$ROOT/Scripts/release-qualification-guard.sh"
 BUILD_ROOT="${AFMKIT_BUILD_ROOT:-$ROOT/.build}"
 TAG_VALIDATOR="$ROOT/Scripts/validate-release-tag.sh"
 DOWNSTREAM_GENERATOR="$ROOT/Scripts/generate-downstream-package.py"
+PROVIDER_MATERIALIZER="$ROOT/Scripts/materialize-provider-package.py"
 SANDBOX="$BUILD_ROOT/release-qualification-tests.$$"
 PASSED=0
 
@@ -33,8 +34,6 @@ VALID_TAGS=(
     v1.2.3-alpha.1
     v1.2.3-0.3.7
     v1.2.3-x.7.z.92
-    v1.2.3+build.5-e
-    v1.2.3-rc.1+build.001
 )
 for TAG in "${VALID_TAGS[@]}"; do
     "$TAG_VALIDATOR" "$TAG" \
@@ -55,6 +54,8 @@ INVALID_TAGS=(
     v1.2.3+
     v1.2.3+build.
     v1.2.3+build..5
+    v1.2.3+build.5
+    v1.2.3-rc.1+build.001
     v1.2.3-alpha_beta
 )
 for TAG in "${INVALID_TAGS[@]}"; do
@@ -62,7 +63,7 @@ for TAG in "${INVALID_TAGS[@]}"; do
         echo "Release qualification regression failed: invalid tag $TAG was accepted." >&2
         exit 1
     fi
-    grep -q "strict SemVer" "$SANDBOX/tag.log"
+    grep -q "SwiftPM-compatible SemVer" "$SANDBOX/tag.log"
 done
 PASSED=$((PASSED + 1))
 
@@ -82,7 +83,7 @@ cat > "$SANDBOX/package.json" <<'JSON'
 }
 JSON
 /usr/bin/python3 "$DOWNSTREAM_GENERATOR" \
-    "$GENERATOR_FIXTURE" "https://github.com/example/AFMKit.git" "1.2.3-rc.1+build.5" \
+    "$GENERATOR_FIXTURE" "https://github.com/example/AFMKit.git" "1.2.3-rc.1" "AFMKit" \
     < "$SANDBOX/package.json"
 /usr/bin/python3 - "$GENERATOR_FIXTURE" <<'PY'
 import pathlib
@@ -94,7 +95,7 @@ products = (root / "validator-products.txt").read_text(encoding="utf-8").splitli
 assert len(products) == 6
 assert products == sorted(products)
 assert "IgnoredTool" not in manifest
-assert 'exact: "1.2.3-rc.1+build.5"' in manifest
+assert 'exact: "1.2.3-rc.1"' in manifest
 sources = list((root / "Sources").glob("*/main.swift"))
 for product in products:
     public_product = product.removesuffix("Consumer")
@@ -120,7 +121,40 @@ if afmkit_release_validate_manifest < "$SANDBOX/revision-manifest.json" \
     echo "Release qualification regression failed: revision dependency was accepted." >&2
     exit 1
 fi
-grep -q "rejected unstable branch/revision dependency" "$SANDBOX/revision-manifest.log"
+grep -q "requires exact dependency version" "$SANDBOX/revision-manifest.log"
+PASSED=$((PASSED + 1))
+
+printf '%s\n' '{"dependencies":[{"sourceControl":[{"identity":"ranged","location":{"remote":[{"urlString":"https://github.com/example/ranged"}]},"requirement":{"range":[{"lowerBound":"1.0.0","upperBound":"2.0.0"}]}}]}]}' \
+    > "$SANDBOX/range-manifest.json"
+if afmkit_release_validate_manifest < "$SANDBOX/range-manifest.json" \
+    > "$SANDBOX/range-manifest.log" 2>&1; then
+    echo "Release qualification regression failed: ranged dependency was accepted." >&2
+    exit 1
+fi
+grep -q "requires exact dependency version" "$SANDBOX/range-manifest.log"
+PASSED=$((PASSED + 1))
+
+PROVIDER_FIXTURE="$SANDBOX/AFMKitDwarfStar"
+/usr/bin/python3 "$PROVIDER_MATERIALIZER" \
+    --source "$ROOT/Packages/AFMKitDwarfStar" \
+    --output "$PROVIDER_FIXTURE" \
+    --public-url "https://github.com/example/AFMKit.git" \
+    --version "1.2.3-rc.1" \
+    --source-sha "1111111111111111111111111111111111111111"
+/usr/bin/xcrun --toolchain XcodeDefault swift package dump-package \
+    --package-path "$PROVIDER_FIXTURE" | afmkit_release_validate_manifest
+grep -q 'exact: "1.2.3-rc.1"' "$PROVIDER_FIXTURE/Package.swift"
+if /usr/bin/python3 "$PROVIDER_MATERIALIZER" \
+    --source "$ROOT/Packages/AFMKitDwarfStar" \
+    --output "$SANDBOX/build-metadata-provider" \
+    --public-url "https://github.com/example/AFMKit.git" \
+    --version "1.2.3+build.1" \
+    --source-sha "1111111111111111111111111111111111111111" \
+    > "$SANDBOX/materializer.log" 2>&1; then
+    echo "Release qualification regression failed: provider build metadata was accepted." >&2
+    exit 1
+fi
+grep -q "reject SemVer build metadata" "$SANDBOX/materializer.log"
 PASSED=$((PASSED + 1))
 
 printf '%s\n' '{"dependencies":[],"targets":[{"name":"UnsafeTarget","settings":[{"kind":{"unsafeFlags":{"_0":["-O3"]}},"tool":"c"}]}]}' \

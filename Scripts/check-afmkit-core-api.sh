@@ -4,12 +4,37 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MODULE="${1:-AFMKitCore}"
 BUILD_DIR="${AFMKIT_BUILD_ROOT:-$ROOT/.build}"
-BASELINE="$ROOT/docs/api-baselines/$MODULE.symbols.json"
+BASELINE_ROOT="${AFMKIT_API_BASELINE_ROOT:-$ROOT/docs/api-baselines}"
+BASELINE="$BASELINE_ROOT/$MODULE.symbols.json"
 CURRENT_DIR="$BUILD_DIR/api-current"
 RAW_CURRENT_DIR="$BUILD_DIR/api-current-raw"
 MODULE_CACHE="$BUILD_DIR/api-module-cache"
 TOOLCHAIN_HELPER="$ROOT/Scripts/verify-qualified-toolchain.sh"
 NORMALIZER="$ROOT/Scripts/normalize-symbol-graph.py"
+
+if [[ -n "${AFMKIT_API_PACKAGE_ROOT:-}" ]]; then
+    PACKAGE_ROOT="$AFMKIT_API_PACKAGE_ROOT"
+    PACKAGE_BUILD_DIR="$BUILD_DIR"
+else
+case "$MODULE" in
+    AFMKitCore|AFMOpenAICompat|AFMKitApple)
+        PACKAGE_ROOT="$ROOT"
+        PACKAGE_BUILD_DIR="$BUILD_DIR/public"
+        ;;
+    AFMKitDwarfStar)
+        PACKAGE_ROOT="$ROOT/Packages/AFMKitDwarfStar"
+        PACKAGE_BUILD_DIR="$BUILD_DIR/dwarfstar"
+        ;;
+    AFMKitMLX|AFMKitFoundationModelsMLX)
+        PACKAGE_ROOT="$ROOT/Packages/AFMKitMLX"
+        PACKAGE_BUILD_DIR="$BUILD_DIR/mlx"
+        ;;
+    *)
+        echo "Unknown public AFMKit module: $MODULE" >&2
+        exit 64
+        ;;
+esac
+fi
 
 if [[ "${AFMKIT_API_SKIP_BUILD:-0}" != "0" ]]; then
     echo "AFMKIT_API_SKIP_BUILD is no longer supported." >&2
@@ -32,15 +57,17 @@ ARCH="$(uname -m)"
 export SWIFTPM_MODULECACHE_OVERRIDE="$BUILD_DIR/swiftpm-module-cache"
 export CLANG_MODULE_CACHE_PATH="$BUILD_DIR/clang-module-cache"
 
-cd "$ROOT"
+cd "$PACKAGE_ROOT"
 afmkit_run_qualified_swift build \
-    --scratch-path "$BUILD_DIR" \
+    --package-path "$PACKAGE_ROOT" \
+    --scratch-path "$PACKAGE_BUILD_DIR" \
     --build-system native \
     --disable-automatic-resolution \
     --target "$MODULE"
 PRODUCTS_DIR="$(
     afmkit_run_qualified_swift build \
-        --scratch-path "$BUILD_DIR" \
+        --package-path "$PACKAGE_ROOT" \
+        --scratch-path "$PACKAGE_BUILD_DIR" \
         --build-system native \
         --disable-automatic-resolution \
         --show-bin-path
@@ -56,13 +83,13 @@ fi
 
 # Dependency checkouts and generated module maps do not exist until the first
 # clean build has completed. Discover them only after SwiftPM materializes them.
-NUMERICS_SHIMS="$BUILD_DIR/checkouts/swift-numerics/Sources/_NumericsShims/include"
-ATOMICS_SHIMS="$BUILD_DIR/checkouts/swift-atomics/Sources/_AtomicsShims/include"
-SYSTEM_SHIMS="$BUILD_DIR/checkouts/swift-system/Sources/CSystem/include"
-NIO_WINDOWS="$BUILD_DIR/checkouts/swift-nio/Sources/CNIOWindows/include"
-MLX_SWIFT_ROOT="${AFMKIT_MLX_SWIFT_PATH:-$BUILD_DIR/checkouts/mlx-swift-afm}"
+NUMERICS_SHIMS="$PACKAGE_BUILD_DIR/checkouts/swift-numerics/Sources/_NumericsShims/include"
+ATOMICS_SHIMS="$PACKAGE_BUILD_DIR/checkouts/swift-atomics/Sources/_AtomicsShims/include"
+SYSTEM_SHIMS="$PACKAGE_BUILD_DIR/checkouts/swift-system/Sources/CSystem/include"
+NIO_WINDOWS="$PACKAGE_BUILD_DIR/checkouts/swift-nio/Sources/CNIOWindows/include"
+MLX_SWIFT_ROOT="${AFMKIT_MLX_SWIFT_PATH:-$PACKAGE_BUILD_DIR/checkouts/mlx-swift-afm}"
 CMLX="$MLX_SWIFT_ROOT/Source/Cmlx/include"
-AFM_XGRAMMAR="$ROOT/Sources/CXGrammar/include"
+AFM_XGRAMMAR="${AFMKIT_API_XGRAMMAR_ROOT:-$ROOT/Packages/AFMKitMLX/Sources/CXGrammar/include}"
 SHIMS_DIRS=(
     "$NUMERICS_SHIMS"
     "$ATOMICS_SHIMS"
@@ -93,7 +120,7 @@ for SHIMS_DIR in "${SHIMS_DIRS[@]}"; do
     )
 done
 
-GENERATED_MODULE_MAPS="$BUILD_DIR/out/Intermediates.noindex/GeneratedModuleMaps"
+GENERATED_MODULE_MAPS="$PACKAGE_BUILD_DIR/out/Intermediates.noindex/GeneratedModuleMaps"
 for C_MODULE in CAsyncHTTPClient CDwarfStar CNIOAtomics CNIOBoringSSLShims CNIODarwin CNIOExtrasZlib CNIOFreeBSD CNIOLLHTTP CNIOLinux CNIOOpenBSD CNIOPosix CNIOWASI CNIOWindows yyjson; do
     MODULE_MAP="$PRODUCTS_DIR/$C_MODULE.build/module.modulemap"
     if [[ ! -f "$MODULE_MAP" ]]; then

@@ -87,10 +87,21 @@ jobs:
         env:
           AFMKIT_BUILD_ROOT: ${{ runner.temp }}/afmkit-release-${{ github.event.workflow_run.head_sha }}
           AFMKIT_DEPENDENCY_TOKEN: ${{ secrets.AFMKIT_DEPENDENCY_TOKEN }}
+          AFMKIT_DOWNSTREAM_SHA: ${{ github.event.workflow_run.head_sha }}
+          AFMKIT_DOWNSTREAM_TAG: ${{ steps.request.outputs.tag }}
+          AFMKIT_PUBLIC_RELEASE_URL: https://github.com/${{ github.repository }}.git
+          AFMKIT_RELEASE_MIRROR_OUTPUT: ${{ runner.temp }}/provider-mirrors
         run: Scripts/with-private-dependency-auth.sh Scripts/validate-release.sh
+      - name: Upload exact qualified provider mirrors
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: provider-mirrors-${{ github.event.workflow_run.id }}
+          path: ${{ runner.temp }}/provider-mirrors
+          if-no-files-found: error
+          retention-days: 1
 
-  stage-tag:
-    name: Stage exact qualified tag
+  publish:
+    name: Publish qualified package set
     needs: qualify
     runs-on: ubuntu-latest
     permissions:
@@ -100,60 +111,25 @@ jobs:
         with:
           ref: ${{ needs.qualify.outputs.qualified_sha }}
           persist-credentials: false
-      - name: Create or recover exact tag
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+      - name: Download exact qualified provider mirrors
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          name: provider-mirrors-${{ github.event.workflow_run.id }}
+          path: ${{ runner.temp }}/provider-mirrors
+          github-token: ${{ github.token }}
+          run-id: ${{ github.run_id }}
+      - name: Publish provider package tags idempotently
         env:
-          QUALIFIED_SHA: ${{ needs.qualify.outputs.qualified_sha }}
-          TAG_NAME: ${{ needs.qualify.outputs.tag }}
-        with:
-          script: |
-            const publication = require(process.env.GITHUB_WORKSPACE + "/Scripts/release-publication.js");
-            const result = await publication.ensureReleaseTag({
-              github,
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              tagName: process.env.TAG_NAME,
-              qualifiedSha: process.env.QUALIFIED_SHA,
-              defaultBranch: context.payload.repository.default_branch,
-            });
-            core.info(JSON.stringify(result));
-
-  qualify-remote-tag:
-    name: Qualify clean remote tag graph
-    needs:
-      - qualify
-      - stage-tag
-    runs-on: ${{ vars.AFMKIT_XCODE_RUNNER || 'xcode-27' }}
-    steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
-        with:
-          ref: ${{ needs.qualify.outputs.qualified_sha }}
-          persist-credentials: false
-      - name: Build all products from clean GitHub tag
-        env:
-          AFMKIT_BUILD_ROOT: ${{ runner.temp }}/afmkit-remote-tag-${{ needs.qualify.outputs.qualified_sha }}
-          AFMKIT_DEPENDENCY_TOKEN: ${{ secrets.AFMKIT_DEPENDENCY_TOKEN }}
-          AFMKIT_SOURCE_TOKEN: ${{ github.token }}
-          AFMKIT_SOURCE_URL: https://github.com/${{ github.repository }}.git
-          AFMKIT_DOWNSTREAM_URL: https://github.com/${{ github.repository }}.git
-          AFMKIT_DOWNSTREAM_TAG: ${{ needs.qualify.outputs.tag }}
-          AFMKIT_DOWNSTREAM_SHA: ${{ needs.qualify.outputs.qualified_sha }}
-        run: Scripts/with-private-dependency-auth.sh Scripts/check-downstream-example.sh
-
-  publish:
-    name: Create or recover GitHub release
-    needs:
-      - qualify
-      - qualify-remote-tag
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
-        with:
-          ref: ${{ needs.qualify.outputs.qualified_sha }}
-          persist-credentials: false
-      - name: Publish idempotently
+          AFMKIT_PROVIDER_PUBLISH_TOKEN: ${{ secrets.AFMKIT_PROVIDER_PUBLISH_TOKEN }}
+          AFMKIT_PUBLIC_RELEASE_URL: https://github.com/${{ github.repository }}.git
+          AFMKIT_DWARFSTAR_PUBLISH_URL: ${{ vars.AFMKIT_DWARFSTAR_PUBLISH_URL || format('https://github.com/{0}/AFMKitDwarfStar.git', github.repository_owner) }}
+          AFMKIT_MLX_PUBLISH_URL: ${{ vars.AFMKIT_MLX_PUBLISH_URL || format('https://github.com/{0}/AFMKitMLX.git', github.repository_owner) }}
+        run: >-
+          Scripts/publish-provider-mirrors.sh
+          "$RUNNER_TEMP/provider-mirrors"
+          "${{ needs.qualify.outputs.tag }}"
+          "${{ needs.qualify.outputs.qualified_sha }}"
+      - name: Publish root tag and GitHub release last
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         env:
           QUALIFIED_SHA: ${{ needs.qualify.outputs.qualified_sha }}

@@ -11,9 +11,9 @@ def swift_string(value: str) -> str:
 
 
 def main() -> int:
-    if len(sys.argv) != 4:
+    if len(sys.argv) != 5:
         print(
-            f"Usage: {sys.argv[0]} output-directory dependency-url version",
+            f"Usage: {sys.argv[0]} output-directory dependency-url version package-identity",
             file=sys.stderr,
         )
         return 64
@@ -21,6 +21,7 @@ def main() -> int:
     output_directory = pathlib.Path(sys.argv[1])
     dependency_url = sys.argv[2]
     version = sys.argv[3]
+    package_identity = sys.argv[4]
     if urlparse(dependency_url).scheme not in {"file", "https"}:
         print("Downstream qualification requires a file or HTTPS Git remote.", file=sys.stderr)
         return 1
@@ -60,7 +61,7 @@ def main() -> int:
             f"            name: {swift_string(target_name)},\n"
             "            dependencies: [\n"
             "                .product(name: "
-            f"{swift_string(product_name)}, package: \"AFMKit\")\n"
+            f"{swift_string(product_name)}, package: {swift_string(package_identity)})\n"
             "            ]\n"
             "        )"
         )

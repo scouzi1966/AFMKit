@@ -1,36 +1,5 @@
 // swift-tools-version: 6.1
 import PackageDescription
-import Foundation
-
-let packageDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent().path
-let mlxSwiftDependency: Package.Dependency
-let mlxSwiftLMDependency: Package.Dependency
-let mlxSwiftPackageIdentity: String
-let mlxSwiftLMPackageIdentity: String
-
-if let localMLXSwiftPath = ProcessInfo.processInfo.environment["AFMKIT_MLX_SWIFT_PATH"],
-   !localMLXSwiftPath.isEmpty {
-    mlxSwiftDependency = .package(path: localMLXSwiftPath)
-    mlxSwiftPackageIdentity = URL(fileURLWithPath: localMLXSwiftPath).lastPathComponent.lowercased()
-} else {
-    mlxSwiftDependency = .package(
-        url: "https://github.com/scouzi1966/mlx-swift-afm",
-        exact: "0.31.6-afm.1"
-    )
-    mlxSwiftPackageIdentity = "mlx-swift-afm"
-}
-
-if let localMLXSwiftLMPath = ProcessInfo.processInfo.environment["AFMKIT_MLX_SWIFT_LM_PATH"],
-   !localMLXSwiftLMPath.isEmpty {
-    mlxSwiftLMDependency = .package(path: localMLXSwiftLMPath)
-    mlxSwiftLMPackageIdentity = URL(fileURLWithPath: localMLXSwiftLMPath).lastPathComponent.lowercased()
-} else {
-    mlxSwiftLMDependency = .package(
-        url: "https://github.com/scouzi1966/mlx-swift-lm.git",
-        exact: "0.31.6-afm.3"
-    )
-    mlxSwiftLMPackageIdentity = "mlx-swift-lm"
-}
 
 let package = Package(
     name: "AFMKit",
@@ -49,37 +18,9 @@ let package = Package(
         .library(
             name: "AFMKitApple",
             targets: ["AFMKitApple"]
-        ),
-        .library(
-            name: "AFMKitMLX",
-            targets: ["AFMKitMLX"]
-        ),
-        .library(
-            name: "AFMKitFoundationModelsMLX",
-            targets: ["AFMKitFoundationModelsMLX"]
-        ),
-        .library(
-            name: "AFMKitDwarfStar",
-            targets: ["AFMKitDwarfStar"]
         )
     ],
-    dependencies: [
-        mlxSwiftLMDependency,
-        .package(
-            url: "https://github.com/huggingface/swift-transformers",
-            from: "1.3.0"
-        ),
-        .package(
-            url: "https://github.com/huggingface/swift-huggingface.git",
-            from: "0.8.1",
-            traits: ["Xet"]
-        ),
-        .package(
-            url: "https://github.com/huggingface/swift-xet.git",
-            exact: "0.2.3"
-        ),
-        mlxSwiftDependency
-    ],
+    dependencies: [],
     targets: [
         .target(
             name: "AFMKitCore",
@@ -96,88 +37,6 @@ let package = Package(
                 .linkedFramework("Security")
             ]
         ),
-        .target(
-            name: "AFMXGrammar",
-            dependencies: [],
-            path: "Sources/CXGrammar",
-            sources: [
-                "error_handler.cpp",
-                "grammar_compiler.cpp",
-                "grammar_matcher.cpp",
-                "tokenizer_info.cpp",
-                "xgrammar/cpp"
-            ],
-            cxxSettings: [
-                .headerSearchPath("xgrammar/include"),
-                .headerSearchPath("xgrammar/cpp"),
-                .headerSearchPath("xgrammar/3rdparty/dlpack/include"),
-                .headerSearchPath("xgrammar/3rdparty/picojson"),
-                .define("XGRAMMAR_ENABLE_LOG_DEBUG", to: "0"),
-                .define("XGRAMMAR_ENABLE_CPPTRACE", to: "0")
-            ]
-        ),
-        .target(
-            name: "AFMKitMLX",
-            dependencies: [
-                "AFMKitCore",
-                "AFMOpenAICompat",
-                "AFMXGrammar",
-                .product(name: "MLX", package: mlxSwiftPackageIdentity),
-                .product(name: "MLXLLM", package: mlxSwiftLMPackageIdentity),
-                .product(name: "MLXVLM", package: mlxSwiftLMPackageIdentity),
-                .product(name: "MLXLMCommon", package: mlxSwiftLMPackageIdentity),
-                .product(name: "Tokenizers", package: "swift-transformers"),
-                .product(name: "Hub", package: "swift-transformers"),
-                .product(name: "HuggingFace", package: "swift-huggingface")
-            ],
-            resources: [
-                .copy("Resources/default.metallib")
-            ],
-            linkerSettings: [
-                .linkedFramework("Security"),
-                .linkedFramework("IOKit"),
-                .linkedLibrary("IOReport"),
-                .linkedLibrary("sqlite3")
-            ]
-        ),
-        .target(
-            name: "AFMKitFoundationModelsMLX",
-            dependencies: [
-                "AFMKitCore",
-                "AFMKitMLX"
-            ]
-        ),
-        .target(
-            name: "CDwarfStar",
-            path: "Sources/CDwarfStar",
-            sources: [
-                "AFMDwarfStarBridge.c",
-                "CDwarfStarKVStore.c",
-                "CDwarfStarEngine.c",
-                "CDwarfStarDistributed.c",
-                "CDwarfStarTensorParallel.c",
-                "CDwarfStarSSD.c",
-                "CDwarfStarMetal.m",
-                "CDwarfStarLayerPack.c"
-            ],
-            publicHeadersPath: "include",
-            linkerSettings: [
-                .linkedFramework("Foundation"),
-                .linkedFramework("Metal")
-            ]
-        ),
-        .target(
-            name: "AFMKitDwarfStar",
-            dependencies: [
-                "AFMKitCore",
-                "CDwarfStar",
-                .product(name: "HuggingFace", package: "swift-huggingface"),
-                .product(name: "Xet", package: "swift-xet")
-            ],
-            resources: [
-                .copy("../../vendor/ds4/metal")
-            ]
-        ),
         .testTarget(
             name: "AFMKitCoreTests",
             dependencies: ["AFMKitCore"]
@@ -189,31 +48,6 @@ let package = Package(
         .testTarget(
             name: "AFMKitAppleTests",
             dependencies: ["AFMKitApple", "AFMKitCore"]
-        ),
-        .testTarget(
-            name: "AFMKitMLXTests",
-            dependencies: [
-                "AFMKitMLX",
-                "AFMKitCore",
-                "AFMOpenAICompat",
-                .product(name: "MLXLMCommon", package: mlxSwiftLMPackageIdentity)
-            ]
-        ),
-        .testTarget(
-            name: "AFMKitFoundationModelsMLXTests",
-            dependencies: [
-                "AFMKitCore",
-                "AFMKitFoundationModelsMLX"
-            ]
-        ),
-        .testTarget(
-            name: "AFMKitDwarfStarTests",
-            dependencies: [
-                "AFMKitCore",
-                "AFMKitDwarfStar",
-                "CDwarfStar"
-            ]
         )
-    ],
-    cxxLanguageStandard: .gnucxx17
+    ]
 )

@@ -1,9 +1,10 @@
 # External Git Dependencies
 
-AFMKit deliberately keeps `AFMKitCore` dependency-free, but provider products
-integrate substantial third-party runtime stacks. This ledger distinguishes
-direct dependencies, the pinned DwarfStar submodule, and major transitive groups.
-`Package.swift` and `Package.resolved` are authoritative for exact resolution.
+The public `AFMKit` package has no SwiftPM dependencies. Provider products live
+in separate `AFMKitDwarfStar` and `AFMKitMLX` packages with exact release graphs.
+This ledger distinguishes direct dependencies, the pinned DwarfStar submodule,
+and major transitive groups. The provider manifests and their respective
+`Package.resolved` files are authoritative for exact resolution.
 
 ## Dependency and derivation graph
 
@@ -19,8 +20,8 @@ flowchart TB
     LMPatches["maclocal-api/Scripts/patches\nAFM LM source of truth"]
     MLXSwift["scouzi1966/mlx-swift-afm\n0.31.6-afm.1\ntagged materialization"]
     MLXLM["scouzi1966/mlx-swift-lm\n0.31.6-afm.3\ntagged materialization"]
-    Transformers["huggingface/swift-transformers\nfrom 1.3.0"]
-    HF["huggingface/swift-huggingface\nfrom 0.8.1 + Xet trait"]
+    Transformers["huggingface/swift-transformers\nexact 1.3.3"]
+    HF["huggingface/swift-huggingface\nexact 0.9.0 + Xet trait"]
     Xet["huggingface/swift-xet\n0.2.3"]
     XGrammar["vendored xgrammar\nreviewed source snapshot"]
     Dwarf["antirez/ds4\ngit submodule pin"]
@@ -50,7 +51,8 @@ flowchart TB
 show what a downstream SwiftPM build resolves. The upstream-and-patch arrows show
 where the AFM-compatible MLX artifacts come from; the two `scouzi1966` tags are
 distribution materializations, not independent sources of AFM behavior. A
-consumer that imports only `AFMKitCore` does not resolve an inference engine.
+consumer that declares only the `AFMKit` package does not resolve an inference
+engine or contact a private repository.
 
 ## MLX source-of-truth model
 
@@ -81,16 +83,18 @@ before AFMKit is made public.
 | --- | --- | --- | --- | --- |
 | [`scouzi1966/mlx-swift-afm`](https://github.com/scouzi1966/mlx-swift-afm) | Exact `0.31.6-afm.1` | `AFMKitMLX` | Tagged distribution materialization of upstream MLX plus the AFM runtime compatibility delta. | Not an independent source of truth; updates require provenance plus Metal/runtime regression tests. |
 | [`scouzi1966/mlx-swift-lm`](https://github.com/scouzi1966/mlx-swift-lm) | Exact `0.31.6-afm.3` | `AFMKitMLX` | Tagged distribution materialization generated from the maclocal-api MLX LM patch catalog. | Do not edit independently; public app code must not import it directly. |
-| [`huggingface/swift-transformers`](https://github.com/huggingface/swift-transformers) | `from: 1.3.0` | `AFMKitMLX` | Tokenizers and Hub facilities. | Semver range can advance transitively; lockfile and qualification are required. |
-| [`huggingface/swift-huggingface`](https://github.com/huggingface/swift-huggingface) | `from: 0.8.1`, Xet trait | MLX, DwarfStar | Hub repository metadata/download. | Network/cache behavior belongs to provider layer. |
+| [`huggingface/swift-transformers`](https://github.com/huggingface/swift-transformers) | Exact `1.3.3` | `AFMKitMLX` | Tokenizers and Hub facilities. | Provider manifest and fresh graph must agree with the qualified lock. |
+| [`huggingface/swift-huggingface`](https://github.com/huggingface/swift-huggingface) | Exact `0.9.0`, Xet trait | MLX, DwarfStar | Hub repository metadata/download. | Network/cache behavior belongs to provider layer. |
 | [`huggingface/swift-xet`](https://github.com/huggingface/swift-xet) | Exact `0.2.3` | DwarfStar; also Hub trait path | High-throughput Hub transport. | Retry/resume and filesystem-space behavior need integration tests. |
 | [`mlc-ai/xgrammar`](https://github.com/mlc-ai/xgrammar) | Vendored source snapshot from `c1570cdb4f8c867a4dbd07b7ff90581f4a2a432b` | `AFMXGrammar`, MLX | Grammar-constrained generation without an unstable SwiftPM revision dependency. | C++ ABI/build risk; snapshot updates require provenance, license review, and grammar correctness tests. |
 | [`antirez/ds4`](https://github.com/antirez/ds4) | Submodule `84cc882352757baf628a1776badf7cc54d584e28` | DwarfStar | Vanilla DwarfStar Metal source/resources. | Kept unmodified; AFM-specific behavior belongs in AFM-owned bridge/adapter. |
 
-Local development can replace the two tagged MLX materializations through
+Monorepo development uses a local path from each provider package to the root
+AFMKit package. Provider release materialization replaces it with the production
+HTTPS URL at the exact same release version. Local MLX development can replace
+the two tagged MLX materializations through
 `AFMKIT_MLX_SWIFT_PATH` and `AFMKIT_MLX_SWIFT_LM_PATH`. Release qualification
-must use the tagged dependencies unless the artifact explicitly records local
-overrides.
+rejects both MLX overrides.
 
 ## Apple platform dependencies
 
@@ -136,10 +140,12 @@ so `Package.resolved` changes require review.
 6. **Review licenses and notices.** Before public distribution, verify each
    dependency’s current license and attribution requirements from its pinned
    source; `vendor/ds4` is currently recorded as MIT.
-7. **Automate supply-chain checks.** CI should detect uncommitted submodules,
-   changed pins, unexpected local overrides, missing licenses, package graph
-   drift, and a tagged materialization that cannot be reproduced from its
-   recorded upstream base and maclocal-api patch commit.
+7. **Test what is published.** Every direct and qualified transitive dependency
+   is constrained exactly. Fresh no-lock consumers must reproduce each provider
+   lock before the materialized provider tags can be published.
+8. **Automate supply-chain checks.** CI detects uncommitted submodules, changed
+   pins, unexpected local overrides, missing licenses, package graph drift, and
+   a tagged materialization that cannot be reproduced from provenance.
 
 ## Removing a compatibility materialization
 
