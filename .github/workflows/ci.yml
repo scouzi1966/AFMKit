@@ -11,6 +11,29 @@ permissions:
   contents: read
 
 jobs:
+  sdk-product-exposure:
+    name: SDK exposure (${{ matrix.sdk }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - sdk: xcode26
+            runner: afmkit-public-xcode26-ephemeral
+          - sdk: xcode27
+            runner: afmkit-public-xcode27-ephemeral
+    runs-on:
+      group: afmkit-public-untrusted
+      labels: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Validate compiler-specific product exposure
+        env:
+          AFMKIT_BUILD_ROOT: ${{ runner.temp }}/afmkit-sdk-exposure
+        run: Scripts/check-sdk-product-exposure.sh "${{ matrix.sdk }}"
+
   public-gates:
     name: Token-independent gates
     runs-on:

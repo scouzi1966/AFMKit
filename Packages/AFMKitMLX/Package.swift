@@ -95,21 +95,107 @@ if let localMLXSwiftLMPath = ProcessInfo.processInfo.environment["AFMKIT_MLX_SWI
     mlxSwiftLMPackageIdentity = "mlx-swift-lm"
 }
 
+var products: [Product] = [
+    .library(name: "AFMKitMLX", targets: ["AFMKitMLX"])
+]
+var targets: [Target] = [
+    .target(
+        name: "AFMXGrammar",
+        dependencies: [],
+        path: "Sources/CXGrammar",
+        sources: [
+            "error_handler.cpp",
+            "grammar_compiler.cpp",
+            "grammar_matcher.cpp",
+            "tokenizer_info.cpp",
+            "xgrammar/cpp"
+        ],
+        cxxSettings: [
+            .headerSearchPath("xgrammar/include"),
+            .headerSearchPath("xgrammar/cpp"),
+            .headerSearchPath("xgrammar/3rdparty/dlpack/include"),
+            .headerSearchPath("xgrammar/3rdparty/picojson"),
+            .define("XGRAMMAR_ENABLE_LOG_DEBUG", to: "0"),
+            .define("XGRAMMAR_ENABLE_CPPTRACE", to: "0")
+        ]
+    ),
+    .target(
+        name: "AFMKitMLXReleaseGraph",
+        dependencies: releaseGraphProductPins
+    ),
+    .target(
+        name: "AFMKitMLX",
+        dependencies: [
+            .product(name: "AFMKitCore", package: "AFMKit"),
+            .product(name: "AFMOpenAICompat", package: "AFMKit"),
+            "AFMXGrammar",
+            "AFMKitMLXReleaseGraph",
+            .product(name: "MLX", package: mlxSwiftPackageIdentity),
+            .product(name: "MLXLLM", package: mlxSwiftLMPackageIdentity),
+            .product(name: "MLXVLM", package: mlxSwiftLMPackageIdentity),
+            .product(name: "MLXLMCommon", package: mlxSwiftLMPackageIdentity),
+            .product(name: "Tokenizers", package: "swift-transformers"),
+            .product(name: "Hub", package: "swift-transformers"),
+            .product(name: "HuggingFace", package: "swift-huggingface")
+        ],
+        resources: [.copy("Resources/default.metallib")],
+        linkerSettings: [
+            .linkedFramework("Security"),
+            .linkedFramework("IOKit"),
+            .linkedLibrary("IOReport"),
+            .linkedLibrary("sqlite3")
+        ]
+    )
+]
+
+#if compiler(>=6.4)
+products.append(
+    .library(
+        name: "AFMKitFoundationModelsMLX",
+        targets: ["AFMKitFoundationModelsMLX"]
+    )
+)
+targets.append(
+    .target(
+        name: "AFMKitFoundationModelsMLX",
+        dependencies: [
+            .product(name: "AFMKitCore", package: "AFMKit"),
+            "AFMKitMLX"
+        ]
+    )
+)
+#endif
+
+targets.append(
+    .testTarget(
+        name: "AFMKitMLXTests",
+        dependencies: [
+            "AFMKitMLX",
+            .product(name: "AFMKitCore", package: "AFMKit"),
+            .product(name: "AFMOpenAICompat", package: "AFMKit"),
+            .product(name: "MLXLMCommon", package: mlxSwiftLMPackageIdentity)
+        ]
+    )
+)
+
+#if compiler(>=6.4)
+targets.append(
+    .testTarget(
+        name: "AFMKitFoundationModelsMLXTests",
+        dependencies: [
+            .product(name: "AFMKitCore", package: "AFMKit"),
+            "AFMKitFoundationModelsMLX"
+        ]
+    )
+)
+#endif
+
 let package = Package(
     name: "AFMKitMLX",
     platforms: [
         .macOS("26.0")
     ],
-    products: [
-        .library(
-            name: "AFMKitMLX",
-            targets: ["AFMKitMLX"]
-        ),
-        .library(
-            name: "AFMKitFoundationModelsMLX",
-            targets: ["AFMKitFoundationModelsMLX"]
-        )
-    ],
+    products: products,
     dependencies: [
         publicPackageDependency,
         mlxSwiftLMDependency,
@@ -128,79 +214,6 @@ let package = Package(
         ),
         mlxSwiftDependency
     ] + releaseDependencyPins,
-    targets: [
-        .target(
-            name: "AFMXGrammar",
-            dependencies: [],
-            path: "Sources/CXGrammar",
-            sources: [
-                "error_handler.cpp",
-                "grammar_compiler.cpp",
-                "grammar_matcher.cpp",
-                "tokenizer_info.cpp",
-                "xgrammar/cpp"
-            ],
-            cxxSettings: [
-                .headerSearchPath("xgrammar/include"),
-                .headerSearchPath("xgrammar/cpp"),
-                .headerSearchPath("xgrammar/3rdparty/dlpack/include"),
-                .headerSearchPath("xgrammar/3rdparty/picojson"),
-                .define("XGRAMMAR_ENABLE_LOG_DEBUG", to: "0"),
-                .define("XGRAMMAR_ENABLE_CPPTRACE", to: "0")
-            ]
-        ),
-        .target(
-            name: "AFMKitMLXReleaseGraph",
-            dependencies: releaseGraphProductPins
-        ),
-        .target(
-            name: "AFMKitMLX",
-            dependencies: [
-                .product(name: "AFMKitCore", package: "AFMKit"),
-                .product(name: "AFMOpenAICompat", package: "AFMKit"),
-                "AFMXGrammar",
-                "AFMKitMLXReleaseGraph",
-                .product(name: "MLX", package: mlxSwiftPackageIdentity),
-                .product(name: "MLXLLM", package: mlxSwiftLMPackageIdentity),
-                .product(name: "MLXVLM", package: mlxSwiftLMPackageIdentity),
-                .product(name: "MLXLMCommon", package: mlxSwiftLMPackageIdentity),
-                .product(name: "Tokenizers", package: "swift-transformers"),
-                .product(name: "Hub", package: "swift-transformers"),
-                .product(name: "HuggingFace", package: "swift-huggingface")
-            ],
-            resources: [
-                .copy("Resources/default.metallib")
-            ],
-            linkerSettings: [
-                .linkedFramework("Security"),
-                .linkedFramework("IOKit"),
-                .linkedLibrary("IOReport"),
-                .linkedLibrary("sqlite3")
-            ]
-        ),
-        .target(
-            name: "AFMKitFoundationModelsMLX",
-            dependencies: [
-                .product(name: "AFMKitCore", package: "AFMKit"),
-                "AFMKitMLX"
-            ]
-        ),
-        .testTarget(
-            name: "AFMKitMLXTests",
-            dependencies: [
-                "AFMKitMLX",
-                .product(name: "AFMKitCore", package: "AFMKit"),
-                .product(name: "AFMOpenAICompat", package: "AFMKit"),
-                .product(name: "MLXLMCommon", package: mlxSwiftLMPackageIdentity)
-            ]
-        ),
-        .testTarget(
-            name: "AFMKitFoundationModelsMLXTests",
-            dependencies: [
-                .product(name: "AFMKitCore", package: "AFMKit"),
-                "AFMKitFoundationModelsMLX"
-            ]
-        )
-    ],
+    targets: targets,
     cxxLanguageStandard: .gnucxx17
 )

@@ -37,6 +37,10 @@ assert "secrets." not in public_ci
 assert "create-qualification-artifact.py" in public_ci
 assert "private-qualification-${{ github.run_id }}" in public_ci
 assert "github.event.pull_request.head.sha || github.sha" in public_ci
+assert "SDK exposure (${{ matrix.sdk }})" in public_ci
+assert "afmkit-public-xcode26-ephemeral" in public_ci
+assert "afmkit-public-xcode27-ephemeral" in public_ci
+assert "check-sdk-product-exposure.sh" in public_ci
 
 private_ci = contents["private-ci.yml"]
 assert "workflow_run:" in private_ci
