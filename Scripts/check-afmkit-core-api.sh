@@ -3,7 +3,12 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MODULE="${1:-AFMKitCore}"
-BUILD_DIR="$ROOT/.build"
+MODE="${2:-}"
+if [[ -n "$MODE" && "$MODE" != "--update" ]]; then
+    echo "Usage: $0 [module] [--update]" >&2
+    exit 2
+fi
+BUILD_DIR="${AFMKIT_BUILD_DIR:-$ROOT/.build}"
 PRODUCTS_DIR="$BUILD_DIR/out/Products/Debug"
 BASELINE="$ROOT/docs/api-baselines/$MODULE.symbols.json"
 CURRENT_DIR="$BUILD_DIR/api-current"
@@ -19,6 +24,15 @@ MLX_SWIFT_ROOT="${AFMKIT_MLX_SWIFT_PATH:-$BUILD_DIR/checkouts/mlx-swift-afm}"
 CMLX="$MLX_SWIFT_ROOT/Source/Cmlx/include"
 AFM_XGRAMMAR="$ROOT/Sources/CXGrammar/include"
 
+export SWIFTPM_MODULECACHE_OVERRIDE="$BUILD_DIR/swiftpm-module-cache"
+export CLANG_MODULE_CACHE_PATH="$BUILD_DIR/clang-module-cache"
+
+cd "$ROOT"
+swift build --scratch-path "$BUILD_DIR" --target "$MODULE"
+
+# SwiftPM generates several C-family module maps while building. Assemble the
+# extractor flags only after the target build so a clean checkout behaves the
+# same as an incremental checkout.
 EXTRACTOR_FLAGS=()
 for SHIMS_DIR in "$NUMERICS_SHIMS" "$ATOMICS_SHIMS" "$SYSTEM_SHIMS" "$NIO_WINDOWS" "$CMLX" "$AFM_XGRAMMAR"; do
     [[ -f "$SHIMS_DIR/module.modulemap" ]] || continue
@@ -34,12 +48,6 @@ for C_MODULE in CAsyncHTTPClient CDwarfStar CNIOAtomics CNIOBoringSSLShims CNIOD
     [[ -f "$MODULE_MAP" ]] || continue
     EXTRACTOR_FLAGS+=(-Xcc "-fmodule-map-file=$MODULE_MAP")
 done
-
-export SWIFTPM_MODULECACHE_OVERRIDE="$BUILD_DIR/swiftpm-module-cache"
-export CLANG_MODULE_CACHE_PATH="$BUILD_DIR/clang-module-cache"
-
-cd "$ROOT"
-swift build --target "$MODULE"
 
 rm -rf "$CURRENT_DIR" "$RAW_CURRENT_DIR"
 mkdir -p "$CURRENT_DIR" "$RAW_CURRENT_DIR" "$MODULE_CACHE"
@@ -65,16 +73,19 @@ raw_path, normalized_path = sys.argv[1:3]
 VOLATILE_KEYS = {"generator", "location", "uri", "range"}
 
 
-def normalize(value):
+def normalize(value, path=()):
     if isinstance(value, dict):
         return {
-            key: normalize(value[key])
+            key: normalize(value[key], path + (key,))
             for key in sorted(value)
             if key not in VOLATILE_KEYS
         }
     if isinstance(value, list):
-        normalized = [normalize(item) for item in value]
-        if all(isinstance(item, dict) for item in normalized):
+        normalized = [normalize(item, path + (str(index),)) for index, item in enumerate(value)]
+        # Only the two top-level symbol-graph sets are unordered. Arrays such
+        # as declarationFragments and function parameters are semantically
+        # ordered and must remain in extractor order.
+        if path in {("symbols",), ("relationships",)}:
             return sorted(
                 normalized,
                 key=lambda item: json.dumps(item, sort_keys=True, separators=(",", ":")),
@@ -90,6 +101,12 @@ with open(normalized_path, "w", encoding="utf-8") as handle:
     json.dump(normalize(raw), handle, indent=2, sort_keys=True)
     handle.write("\n")
 PY
+
+if [[ "$MODE" == "--update" ]]; then
+    cp "$CURRENT_DIR/$MODULE.symbols.json" "$BASELINE"
+    echo "Updated $MODULE public API baseline at $BASELINE."
+    exit 0
+fi
 
 if [[ ! -f "$BASELINE" ]]; then
     echo "$MODULE has no checked-in API baseline at $BASELINE" >&2

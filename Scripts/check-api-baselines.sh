@@ -8,6 +8,7 @@ for module in \
   AFMOpenAICompat \
   AFMKitApple \
   AFMKitMLX \
+  AFMKitFoundationModelsMLX \
   AFMKitDwarfStar; do
   "$ROOT/Scripts/check-afmkit-core-api.sh" "$module"
 done
