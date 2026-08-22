@@ -66,7 +66,15 @@ public actor AFMEngine {
         _ config: GenerationConfig = .init()
     ) async throws -> AFMResponse {
         let request = try AFMRequest(openAIMessages: messages, generationConfig: config)
-        return AFMResponse(modelResponse: try await model.respond(to: request))
+        var response = try await model.respond(to: request)
+        if let trimmed = StopSequenceNormalizer.trimmed(
+            response.text,
+            atFirstOf: request.options.stopSequences
+        ) {
+            response.text = trimmed
+            response.finishReason = .stop
+        }
+        return AFMResponse(modelResponse: response)
     }
 
     public nonisolated func streamEvents(
@@ -77,9 +85,31 @@ public actor AFMEngine {
             let task = Task {
                 do {
                     let request = try AFMRequest(openAIMessages: messages, generationConfig: config)
+                    var stopNormalizer = StopSequenceNormalizer(
+                        stopSequences: request.options.stopSequences
+                    )
                     for try await event in model.streamResponse(to: request) {
                         try Task.checkCancellation()
-                        continuation.yield(Self.streamEvent(from: event))
+                        switch event {
+                        case .responseText(let action, let text, let tokenCount):
+                            for normalized in stopNormalizer.consume(
+                                action: action,
+                                text: text,
+                                tokenCount: tokenCount
+                            ) {
+                                continuation.yield(normalized)
+                            }
+                        case .completed(let reason):
+                            if let pending = stopNormalizer.finish() {
+                                continuation.yield(pending)
+                            }
+                            continuation.yield(.completed(stopNormalizer.stopped ? .stop : reason))
+                        default:
+                            continuation.yield(Self.streamEvent(from: event))
+                        }
+                    }
+                    if let pending = stopNormalizer.finish() {
+                        continuation.yield(pending)
                     }
                     continuation.finish()
                 } catch {
@@ -97,15 +127,11 @@ public actor AFMEngine {
         return AsyncThrowingStream { continuation in
             let task = Task {
                 do {
-                    let request = try AFMRequest(
-                        openAIMessages: messages,
-                        generationConfig: config
-                    )
-                    let source = model.streamResponse(to: request)
+                    let source = self.streamEvents(to: messages, config)
                     var rendered = ""
                     for try await event in source {
                         try Task.checkCancellation()
-                        guard case .responseText(let action, let text, _) = event else { continue }
+                        guard case .text(let action, let text, _) = event else { continue }
                         switch action {
                         case .append:
                             rendered += text
@@ -174,6 +200,96 @@ public actor AFMEngine {
         case .metadata(let metadata): return .metadata(metadata)
         case .custom(let type, let payload): return .custom(type: type, payload: payload)
         case .completed(let reason): return .completed(reason)
+        }
+    }
+}
+
+private struct StopSequenceNormalizer {
+    private let stopSequences: [String]
+    private var rawText = ""
+    private var emittedText = ""
+    private(set) var stopped = false
+    private var finished = false
+
+    init(stopSequences: [String]) {
+        self.stopSequences = stopSequences.filter { !$0.isEmpty }
+    }
+
+    mutating func consume(
+        action: AFMTextUpdateAction,
+        text: String,
+        tokenCount: Int
+    ) -> [AFMStreamEvent] {
+        guard !finished, !stopped else { return [] }
+        switch action {
+        case .append:
+            rawText += text
+        case .replace:
+            rawText = text
+        }
+
+        let safe = safePrefix(of: rawText, withholdPartialStop: true)
+        stopped = safe.didStop
+        return eventUpdatingEmittedText(to: safe.text, tokenCount: tokenCount).map { [$0] } ?? []
+    }
+
+    mutating func finish() -> AFMStreamEvent? {
+        guard !finished else { return nil }
+        finished = true
+        guard !stopped else { return nil }
+        let safe = safePrefix(of: rawText, withholdPartialStop: false)
+        stopped = safe.didStop
+        return eventUpdatingEmittedText(to: safe.text, tokenCount: 0)
+    }
+
+    static func trimmed(_ text: String, atFirstOf stopSequences: [String]) -> String? {
+        let stops = stopSequences.filter { !$0.isEmpty }
+        guard let range = earliestStopRange(in: text, stopSequences: stops) else { return nil }
+        return String(text[..<range.lowerBound])
+    }
+
+    private func safePrefix(
+        of text: String,
+        withholdPartialStop: Bool
+    ) -> (text: String, didStop: Bool) {
+        if let range = Self.earliestStopRange(in: text, stopSequences: stopSequences) {
+            return (String(text[..<range.lowerBound]), true)
+        }
+        guard withholdPartialStop else { return (text, false) }
+
+        var withheldCharacters = 0
+        for stop in stopSequences {
+            guard stop.count > 1 else { continue }
+            for length in 1..<stop.count where length > withheldCharacters {
+                if text.hasSuffix(stop.prefix(length)) {
+                    withheldCharacters = length
+                }
+            }
+        }
+        guard withheldCharacters > 0 else { return (text, false) }
+        return (String(text.dropLast(withheldCharacters)), false)
+    }
+
+    private mutating func eventUpdatingEmittedText(
+        to text: String,
+        tokenCount: Int
+    ) -> AFMStreamEvent? {
+        guard text != emittedText else { return nil }
+        if text.hasPrefix(emittedText) {
+            let delta = String(text.dropFirst(emittedText.count))
+            emittedText = text
+            return delta.isEmpty ? nil : .text(action: .append, text: delta, tokenCount: tokenCount)
+        }
+        emittedText = text
+        return .text(action: .replace, text: text, tokenCount: tokenCount)
+    }
+
+    private static func earliestStopRange(
+        in text: String,
+        stopSequences: [String]
+    ) -> Range<String.Index>? {
+        stopSequences.compactMap { text.range(of: $0) }.min { lhs, rhs in
+            lhs.lowerBound < rhs.lowerBound
         }
     }
 }

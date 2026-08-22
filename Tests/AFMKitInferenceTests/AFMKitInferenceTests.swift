@@ -241,6 +241,72 @@ final class AFMKitInferenceTests: XCTestCase {
         XCTAssertEqual(kinds, ["text", "reasoning", "logprobs", "tool", "usage", "metadata", "custom", "completed"])
     }
 
+    func testNonStreamingResponseExcludesStopDelimiter() async throws {
+        let engine = try AFMEngine(model: TestModel(response: .init(
+            text: "one\ntwo\nSTOPignored",
+            reasoning: "STOP remains valid in reasoning",
+            finishReason: .length
+        )))
+        let result = try await engine.respond(
+            to: [.init(role: "user", content: "count")],
+            .init(stop: ["STOP"])
+        )
+
+        XCTAssertEqual(result.content, "one\ntwo\n")
+        XCTAssertEqual(result.reasoningContent, "STOP remains valid in reasoning")
+        XCTAssertEqual(result.finishReason, .stop)
+    }
+
+    func testStreamingStopDelimiterIsWithheldAcrossChunks() async throws {
+        let events: [AFMGenerationEvent] = [
+            .reasoningText(action: .append, text: "STOP in reasoning", tokenCount: 2),
+            .responseText(action: .append, text: "one\ntwo\nST", tokenCount: 3),
+            .responseText(action: .append, text: "OPignored", tokenCount: 4),
+            .usage(.init(inputTokens: 5, outputTokens: 4, reasoningTokens: 2)),
+            .completed(.length)
+        ]
+        let engine = try AFMEngine(model: TestModel(events: events))
+        var output = ""
+        var reasoning = ""
+        var finishReason: AFMFinishReason?
+        for try await event in engine.streamEvents(
+            to: [.init(role: "user", content: "count")],
+            .init(stop: ["STOP"])
+        ) {
+            switch event {
+            case .text(let action, let text, _):
+                if action == .replace { output = text } else { output += text }
+            case .reasoning(let action, let text, _):
+                if action == .replace { reasoning = text } else { reasoning += text }
+            case .completed(let reason):
+                finishReason = reason
+            default:
+                break
+            }
+        }
+
+        XCTAssertEqual(output, "one\ntwo\n")
+        XCTAssertEqual(reasoning, "STOP in reasoning")
+        XCTAssertEqual(finishReason, .stop)
+    }
+
+    func testStreamingFlushesUnmatchedPartialStopAtCompletion() async throws {
+        let engine = try AFMEngine(model: TestModel(events: [
+            .responseText(action: .append, text: "value ST", tokenCount: 2),
+            .completed(.length)
+        ]))
+        var output = ""
+        for try await event in engine.streamEvents(
+            to: [.init(role: "user", content: "value")],
+            .init(stop: ["STOP"])
+        ) {
+            if case .text(let action, let text, _) = event {
+                if action == .replace { output = text } else { output += text }
+            }
+        }
+        XCTAssertEqual(output, "value ST")
+    }
+
     func testAppendOnlyStreamReducesCumulativeReplacementSnapshots() async throws {
         let events: [AFMGenerationEvent] = [
             .responseText(action: .replace, text: "H", tokenCount: 1),
