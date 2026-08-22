@@ -17,9 +17,9 @@ public package version that cannot be retracted safely if the graph fails.
 
 ## Decision
 
-Publish six public modules through three repositories and package manifests:
+Publish seven public modules through three repositories and package manifests:
 
-- `AFMKit`: Core, OpenAI compatibility, and Apple; no SwiftPM dependencies.
+- `AFMKit`: Core, OpenAI compatibility, provider-neutral inference, and Apple; no SwiftPM dependencies.
 - `AFMKitDwarfStar`: DwarfStar provider; exact same-version AFMKit dependency.
 - `AFMKitMLX`: MLX and FoundationModelsMLX providers; exact same-version AFMKit
   dependency and exact private MLX graph.

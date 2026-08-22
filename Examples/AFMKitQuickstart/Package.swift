@@ -15,6 +15,8 @@ let package = Package(
             name: "AFMKitQuickstart",
             dependencies: [
                 .product(name: "AFMKitCore", package: "AFMKit"),
+                .product(name: "AFMOpenAICompat", package: "AFMKit"),
+                .product(name: "AFMKitInference", package: "AFMKit"),
                 .product(name: "AFMKitApple", package: "AFMKit"),
                 .product(name: "AFMKitMLX", package: "AFMKitMLX")
             ]

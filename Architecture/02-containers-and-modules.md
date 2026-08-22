@@ -8,6 +8,7 @@ flowchart TD
     subgraph Public["AFMKit package and repository tag"]
         Core["AFMKitCore"]
         OAI["AFMOpenAICompat"]
+        Inference["AFMKitInference"]
         Apple["AFMKitApple"]
     end
     subgraph Dwarf["AFMKitDwarfStar package and repository tag"]
@@ -22,12 +23,15 @@ flowchart TD
 
     App --> Core
     App -. optional .-> OAI
+    App -. high-level facade .-> Inference
     App -. provider .-> Apple
     App -. provider .-> MLX
     App -. provider .-> DS
     App -. macOS 27 bridge .-> FMMLX
     Apple --> Core
     Apple --> OAI
+    Inference --> Core
+    Inference --> OAI
     MLX --> Core
     MLX --> OAI
     MLX --> CGram
@@ -38,7 +42,7 @@ flowchart TD
 ```
 
 **Figure 1 — Package and target dependencies.** The root `AFMKit` package has no
-SwiftPM dependencies, so resolving any of its three products cannot contact or
+SwiftPM dependencies, so resolving any of its four products cannot contact or
 authenticate to the MLX graph. Runtime providers are separate packages that pin
 the exact same-version AFMKit release. Product and module names remain unchanged.
 
@@ -46,7 +50,7 @@ the exact same-version AFMKit release. Product and module names remain unchanged
 
 | Published package | Source manifest | Products | Authentication |
 | --- | --- | --- | --- |
-| `AFMKit` | `Package.swift` | `AFMKitCore`, `AFMOpenAICompat`, `AFMKitApple` | None; the manifest has no package dependencies. |
+| `AFMKit` | `Package.swift` | `AFMKitCore`, `AFMOpenAICompat`, `AFMKitInference`, `AFMKitApple` | None; the manifest has no package dependencies. |
 | `AFMKitDwarfStar` | `Packages/AFMKitDwarfStar/Package.swift` | `AFMKitDwarfStar` | None for AFMKit; public Hub/Xet dependencies are exact-pinned. |
 | `AFMKitMLX` | `Packages/AFMKitMLX/Package.swift` | `AFMKitMLX`, `AFMKitFoundationModelsMLX` | Required for the private AFM-compatible MLX dependencies. |
 
@@ -61,6 +65,7 @@ production AFMKit tag, and tests those exact manifests from fresh no-lock graphs
 | --- | --- | --- | --- |
 | `AFMKitCore` | `AFMKit` | Provider-neutral domain and lifecycle. | `AFMModel`, `AFMProviderFactory`, `AFMProviderRegistry`, request/event/descriptor types. |
 | `AFMOpenAICompat` | `AFMKit` | OpenAI-compatible wire DTOs independent of HTTP. | Chat, stream, tool, response-format, file, batch, embedding, error, timing DTOs. |
+| `AFMKitInference` | `AFMKit` | Provider-neutral high-level inference facade. | `AFMEngine`, `AFMLanguageModel`, generation configuration, OpenAI request conversion. |
 | `AFMKitApple` | `AFMKit` | Apple on-device and PCC provider. | `AFMFoundationProviderFactory`, `AFMFoundationModel`, capability probes. |
 | `AFMKitMLX` | `AFMKitMLX` | Native local MLX provider and advanced serving surface. | `AFMMLXProviderFactory`, `AFMMLXModel`, `AFMMLXRuntimeConfiguration`. |
 | `AFMKitFoundationModelsMLX` | `AFMKitMLX` | macOS 27 custom `LanguageModel` bridge backed by MLX. | `MLXLanguageModel`, `MLXLanguageModelExecutor`, projection plan. |
@@ -123,13 +128,15 @@ the facade, but expose the same neutral lifecycle and event model above it.
    provider types to the core.
 3. `AFMOpenAICompat` contains serializable DTOs only. HTTP handlers, status codes,
    SSE framing, Prometheus, and route policy remain outside AFMKit.
-4. `AFMKitFoundationModelsMLX` depends on the MLX provider; the MLX provider does
+4. `AFMKitInference` may depend only on Core and OpenAI-compatible DTOs. Provider
+   factories construct its `AnyAFMModel`; the facade never imports a provider package.
+5. `AFMKitFoundationModelsMLX` depends on the MLX provider; the MLX provider does
    not depend on Apple Foundation Models.
-5. C/C++/Metal symbols are wrapped by Swift provider targets before reaching a
+6. C/C++/Metal symbols are wrapped by Swift provider targets before reaching a
    consumer.
-6. New providers implement `AFMProviderFactory`/`AFMModel` and emit structured
+7. New providers implement `AFMProviderFactory`/`AFMModel` and emit structured
    `AFMGenerationEvent` values. They do not require registry changes.
-7. A dependency-free public product must remain in the root `AFMKit` package.
+8. A dependency-free public product must remain in the root `AFMKit` package.
    Target-only isolation is insufficient because SwiftPM resolves dependencies
    at package scope.
 
@@ -139,5 +146,5 @@ the facade, but expose the same neutral lifecycle and event model above it.
 - Foundation Models integration: compiled under `canImport(FoundationModels)` and
   runtime annotated `@available(macOS 27.0, *)`.
 - Consumers must use availability checks before constructing macOS 27 types.
-- macOS 26 apps may use `AFMKitCore`, `AFMOpenAICompat`, MLX, and DwarfStar without
+- macOS 26 apps may use `AFMKitCore`, `AFMOpenAICompat`, `AFMKitInference`, MLX, and DwarfStar without
   exposing macOS 27-only UI.

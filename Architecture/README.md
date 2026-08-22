@@ -69,11 +69,14 @@ Supporting implementation and transition history remains in
 flowchart LR
     Host["Host app or service"] --> Core["AFMKitCore\nprovider-neutral contract"]
     Host --> OAI["AFMOpenAICompat\ntransport DTOs"]
+    Host --> Inference["AFMKitInference\nhigh-level facade"]
     Host --> Apple["AFMKitApple\nApple on-device + PCC"]
     Host --> MLX["AFMKitMLX\nlocal MLX runtime"]
     Host --> DS["AFMKitDwarfStar\nlocal DwarfStar runtime"]
     Host --> FMMLX["AFMKitFoundationModelsMLX\nmacOS 27 LanguageModel bridge"]
     Apple --> Core
+    Inference --> Core
+    Inference --> OAI
     MLX --> Core
     DS --> Core
     FMMLX --> Core
@@ -86,6 +89,7 @@ flowchart LR
     subgraph PublicPackage["AFMKit package - public, dependency-free"]
         Core
         OAI
+        Inference
         Apple
     end
     subgraph DwarfPackage["AFMKitDwarfStar package"]

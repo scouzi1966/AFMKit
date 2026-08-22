@@ -205,8 +205,8 @@ qualify_package \
     "file://$QUALIFICATION_ROOT/AFMKitMLX.git" AFMKitMLX \
     "$MLX_REVISION" "$ROOT/Packages/AFMKitMLX/Package.resolved"
 
-if [[ "$TOTAL_PRODUCT_COUNT" != "6" ]]; then
-    echo "Downstream qualification built $TOTAL_PRODUCT_COUNT products; expected 6." >&2
+if [[ "$TOTAL_PRODUCT_COUNT" != "7" ]]; then
+    echo "Downstream qualification built $TOTAL_PRODUCT_COUNT products; expected 7." >&2
     exit 1
 fi
 
@@ -241,4 +241,4 @@ with open(path, "w", encoding="utf-8") as handle:
 PY
 fi
 
-echo "AFMKit downstream staging mirrors built all six public products from fresh graphs."
+echo "AFMKit downstream staging mirrors built all seven public products from fresh graphs."

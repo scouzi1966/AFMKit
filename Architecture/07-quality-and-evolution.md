@@ -59,10 +59,10 @@ API baseline files under `docs/api-baselines` must be updated only when:
 The baselines are toolchain-qualified by `docs/api-baselines/toolchain.env`.
 `Scripts/check-api-baselines.sh` rejects any Xcode or macOS SDK build mismatch
 before extraction and rebuilds every requested target through SwiftPM. Pull
-requests and release qualification discover and validate all six public modules
+requests and release qualification discover and validate all seven public modules
 across the three package manifests. `AFMKitDwarfStar` currently has 42 normalized
-public symbols; the other checked-in counts are Apple 321, Core 364,
-FoundationModelsMLX 72, MLX 1,215, and OpenAICompat 705. No public module is
+public symbols; the other checked-in counts are Apple 322, Core 365, Inference 63,
+FoundationModelsMLX 73, MLX 1,216, and OpenAICompat 705. No public module is
 excluded from `Scripts/check-api-baselines.sh`.
 
 The stable compatibility center is `AFMKitCore`. Provider-specific public APIs

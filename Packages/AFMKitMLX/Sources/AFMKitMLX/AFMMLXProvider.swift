@@ -838,7 +838,7 @@ extension AFMRequest {
                     name: $0.name,
                     description: $0.description,
                     parameters: AnyCodable($0.inputSchema.foundationValue),
-                    strict: true
+                    strict: $0.strict ?? true
                 )
             )
         }

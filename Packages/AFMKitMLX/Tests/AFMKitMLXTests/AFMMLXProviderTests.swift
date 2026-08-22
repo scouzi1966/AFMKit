@@ -5,6 +5,22 @@ import MLXLMCommon
 import XCTest
 
 final class AFMMLXProviderTests: XCTestCase {
+    func testOpenAIToolsPreserveExplicitStrictnessAndDefaultNilToStrict() throws {
+        let schema: AFMJSONValue = .object(["type": .string("object")])
+        let request = AFMRequest(
+            messages: [],
+            tools: [
+                AFMToolDefinition(name: "strict", inputSchema: schema, strict: true),
+                AFMToolDefinition(name: "permissive", inputSchema: schema, strict: false),
+                AFMToolDefinition(name: "legacy", inputSchema: schema)
+            ]
+        )
+
+        let tools = try XCTUnwrap(request.openAITools())
+
+        XCTAssertEqual(tools.map(\.function.strict), [true, false, true])
+    }
+
     func testTypedReasoningOptionMapsToChatTemplateKwarg() throws {
         let disabled = try XCTUnwrap(
             AFMRequest(messages: [], options: .init(reasoningEnabled: false))
