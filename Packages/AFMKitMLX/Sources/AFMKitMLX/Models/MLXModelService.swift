@@ -209,6 +209,8 @@ private final class StreamingScratch: @unchecked Sendable {
 }
 
 public final class MLXModelService: @unchecked Sendable {
+    /// Shared fallback for MLX callers that omit a per-request output limit.
+    public static let defaultMaximumResponseTokens = 8_192
     private struct ConstrainedDecodingSetup {
         let processor: GrammarLogitProcessor
         let mode: String
@@ -1719,6 +1721,9 @@ public final class MLXModelService: @unchecked Sendable {
                 if let sidecar = resolvedMTPSidecar {
                     do {
                         let quantization = mtpQuantization(for: sidecar)
+                        // Select the ModelContext overload explicitly. The dependency also
+                        // exposes a deprecated (model, tokenizer) overload, and Swift can
+                        // otherwise choose it while type-checking this Sendable binding.
                         loadedMTPBinding = try await loaded.perform {
                             (context: ModelContext) async throws -> MTPGeneratorBinding in
                             if let qwen = context.model as? Qwen3_5MoEModel {
@@ -2211,7 +2216,9 @@ public final class MLXModelService: @unchecked Sendable {
         )
         defer { cleanupTempFiles(mediaTempFiles) }
         let wantLogprobs = logprobs == true
-        let effectiveMaxTokens = capMaxTokensForCapture(maxTokens ?? 2000)
+        let effectiveMaxTokens = capMaxTokensForCapture(
+            maxTokens ?? Self.defaultMaximumResponseTokens
+        )
 
         // Mutable generation state lives in a scratch box so the @Sendable
         // `container.perform` closure (Swift 6) can capture-and-mutate it.
@@ -3167,7 +3174,9 @@ public final class MLXModelService: @unchecked Sendable {
         }
         let promptTokens = estimateTokens(promptText)
         let wantLogprobs = logprobs == true
-        let effectiveMaxTokens = capMaxTokensForCapture(maxTokens ?? 2000)
+        let effectiveMaxTokens = capMaxTokensForCapture(
+            maxTokens ?? Self.defaultMaximumResponseTokens
+        )
         // /metrics: streaming-path queue timestamp. The actual
         // requestStarted/observe calls happen ONLY in the serial-path
         // task below (the batch path's stats are owned by BatchScheduler).
