@@ -113,9 +113,9 @@ fi
 grep -q "rejected local dependency local" "$SANDBOX/manifest.log"
 PASSED=$((PASSED + 1))
 
-printf '%s\n' '{"dependencies":[{"fileSystem":[{"identity":"mlx-swift","path":"/checkout/vendor/MLX/mlx-swift"}]},{"fileSystem":[{"identity":"mlx-swift-lm","path":"/checkout/vendor/MLX/mlx-swift-lm"}]}]}' \
-    > "$SANDBOX/vendored-manifest.json"
-afmkit_release_validate_manifest < "$SANDBOX/vendored-manifest.json"
+printf '%s\n' '{"dependencies":[],"targets":[{"name":"Cmlx"},{"name":"MLX"},{"name":"MLXLMCommon"},{"name":"MLXLLM"},{"name":"MLXVLM"}]}' \
+    > "$SANDBOX/flattened-manifest.json"
+afmkit_release_validate_manifest < "$SANDBOX/flattened-manifest.json"
 PASSED=$((PASSED + 1))
 
 printf '%s\n' '{"dependencies":[{"sourceControl":[{"identity":"unstable","location":{"remote":[{"urlString":"https://github.com/example/unstable"}]},"requirement":{"revision":["0123456789012345678901234567890123456789"]}}]}]}' \
@@ -138,7 +138,7 @@ fi
 grep -q "requires exact dependency version" "$SANDBOX/range-manifest.log"
 PASSED=$((PASSED + 1))
 
-printf '%s\n' '{"dependencies":[{"fileSystem":[{"identity":"mlx-swift","path":"/checkout/vendor/MLX/mlx-swift"}]},{"fileSystem":[{"identity":"mlx-swift-lm","path":"/checkout/vendor/MLX/mlx-swift-lm"}]}],"targets":[{"name":"UnsafeTarget","settings":[{"kind":{"unsafeFlags":{"_0":["-O3"]}},"tool":"c"}]}]}' \
+printf '%s\n' '{"dependencies":[],"targets":[{"name":"Cmlx"},{"name":"MLX"},{"name":"MLXLMCommon"},{"name":"MLXLLM"},{"name":"MLXVLM"},{"name":"UnsafeTarget","settings":[{"kind":{"unsafeFlags":{"_0":["-O3"]}},"tool":"c"}]}]}' \
     > "$SANDBOX/unsafe-manifest.json"
 if afmkit_release_validate_manifest < "$SANDBOX/unsafe-manifest.json" \
     > "$SANDBOX/unsafe-manifest.log" 2>&1; then

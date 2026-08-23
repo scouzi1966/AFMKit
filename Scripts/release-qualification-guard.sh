@@ -30,24 +30,11 @@ import json
 import sys
 
 package = json.load(sys.stdin)
-expected_vendored = {
-    "mlx-swift": "/vendor/MLX/mlx-swift",
-    "mlx-swift-lm": "/vendor/MLX/mlx-swift-lm",
-}
-seen_vendored = set()
 for dependency in package.get("dependencies", []):
     file_system = dependency.get("fileSystem")
     if file_system:
-        if len(file_system) != 1:
-            raise SystemExit("Release qualification rejected ambiguous vendored dependency.")
-        entry = file_system[0]
-        identity = entry.get("identity", "")
-        expected_suffix = expected_vendored.get(identity)
-        path = entry.get("path", "")
-        if expected_suffix is None or not path.endswith(expected_suffix):
-            raise SystemExit(f"Release qualification rejected local dependency {identity or 'unknown'}.")
-        seen_vendored.add(identity)
-        continue
+        identity = file_system[0].get("identity", "unknown") if file_system else "unknown"
+        raise SystemExit(f"Release qualification rejected local dependency {identity}.")
     source_control = dependency.get("sourceControl")
     if not source_control:
         raise SystemExit("Release qualification requires remote or approved vendored dependencies.")
@@ -62,8 +49,11 @@ for dependency in package.get("dependencies", []):
             raise SystemExit(
                 f"Release qualification requires exact dependency version for {identity}."
             )
-if seen_vendored != set(expected_vendored):
-    raise SystemExit("Release qualification requires both vendored MLX packages.")
+targets = {target.get("name") for target in package.get("targets", [])}
+required_vendored_targets = {"Cmlx", "MLX", "MLXLMCommon", "MLXLLM", "MLXVLM"}
+missing = required_vendored_targets - targets
+if missing:
+    raise SystemExit(f"Release qualification is missing flattened MLX targets: {sorted(missing)}")
 for target in package.get("targets", []):
     for setting in target.get("settings", []):
         if "unsafeFlags" in setting.get("kind", {}):
