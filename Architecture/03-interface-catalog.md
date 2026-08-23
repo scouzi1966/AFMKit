@@ -41,6 +41,7 @@ portability.
 | Streaming | `AFMGenerationEvent`, `AFMTextUpdateAction`, `AFMToolCallStage` | Typed response text, reasoning, log probabilities, tool-call lifecycle, usage, metadata, custom segments, completion. |
 | Errors | `AFMError` | Stable failure categories with provider detail retained as text/metadata. |
 | Optional inspection | `AnyAFMModel.supportsTokenization`, `supportsPrewarming`, `supportsAdmissionReporting`, `supportsTelemetryReporting` | Capability checks before invoking optional model protocols. |
+| High-level inference | `AFMEngine`, `AFMLanguageModel`, `GenerationConfig`, `AFMResponse`, `AFMStreamEvent` in `AFMKitInference` | Load, respond, stream, and bounded batch execution over any `AFMModel`, including OpenAI message conversion without importing a provider. |
 
 Typical app flow:
 

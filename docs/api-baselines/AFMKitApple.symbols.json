@@ -244,6 +244,11 @@
     },
     {
       "kind": "memberOf",
+      "source": "s:11AFMKitApple22FoundationModelServiceC17resetConversation4withySay15AFMOpenAICompat7MessageVG_tYaKF",
+      "target": "s:11AFMKitApple22FoundationModelServiceC"
+    },
+    {
+      "kind": "memberOf",
       "source": "s:11AFMKitApple22FoundationModelServiceC22generateGuidedResponse3for10jsonSchema11temperature10randomness9maxTokens4stopSSSay15AFMOpenAICompat7MessageVG_AK0h4JsonK0VSdSgSSSgSiSgSaySSGSgtYaKF",
       "target": "s:11AFMKitApple22FoundationModelServiceC"
     },
@@ -6126,6 +6131,179 @@
       "pathComponents": [
         "FoundationModelService",
         "generateResponse(for:temperature:randomness:maxTokens:stop:)"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "availability": [
+        {
+          "domain": "macOS",
+          "introduced": {
+            "major": 26,
+            "minor": 0
+          }
+        }
+      ],
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "func"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "resetConversation"
+        },
+        {
+          "kind": "text",
+          "spelling": "("
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "with"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "internalParam",
+          "spelling": "history"
+        },
+        {
+          "kind": "text",
+          "spelling": ": ["
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:15AFMOpenAICompat7MessageV",
+          "spelling": "Message"
+        },
+        {
+          "kind": "text",
+          "spelling": "] = []) "
+        },
+        {
+          "kind": "keyword",
+          "spelling": "async"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "keyword",
+          "spelling": "throws"
+        }
+      ],
+      "docComment": {
+        "lines": [
+          {
+            "text": "Replaces the stateful native session and optionally restores a saved conversation."
+          },
+          {
+            "text": "Callers must subsequently submit only messages that are not already in `history`."
+          }
+        ],
+        "module": "AFMKitApple"
+      },
+      "functionSignature": {
+        "parameters": [
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "history"
+              },
+              {
+                "kind": "text",
+                "spelling": ": ["
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:15AFMOpenAICompat7MessageV",
+                "spelling": "Message"
+              },
+              {
+                "kind": "text",
+                "spelling": "]"
+              }
+            ],
+            "internalName": "history",
+            "name": "with"
+          }
+        ],
+        "returns": [
+          {
+            "kind": "text",
+            "spelling": "()"
+          }
+        ]
+      },
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:11AFMKitApple22FoundationModelServiceC17resetConversation4withySay15AFMOpenAICompat7MessageVG_tYaKF"
+      },
+      "kind": {
+        "displayName": "Instance Method",
+        "identifier": "swift.method"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "func"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "resetConversation"
+          },
+          {
+            "kind": "text",
+            "spelling": "("
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "with"
+          },
+          {
+            "kind": "text",
+            "spelling": ": ["
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:15AFMOpenAICompat7MessageV",
+            "spelling": "Message"
+          },
+          {
+            "kind": "text",
+            "spelling": "]) "
+          },
+          {
+            "kind": "keyword",
+            "spelling": "async"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "keyword",
+            "spelling": "throws"
+          }
+        ],
+        "title": "resetConversation(with:)"
+      },
+      "pathComponents": [
+        "FoundationModelService",
+        "resetConversation(with:)"
       ]
     },
     {

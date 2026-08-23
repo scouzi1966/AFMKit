@@ -43,8 +43,11 @@ jobs:
           submodules: recursive
       - name: Check public module baseline coverage
         run: Scripts/check-api-baseline-coverage.sh
-      - name: Check every public API baseline
-        run: Scripts/check-api-baselines.sh
+      - name: Check token-independent API baselines
+        run: |
+          for module in AFMKitApple AFMKitCore AFMKitInference AFMOpenAICompat; do
+            Scripts/check-afmkit-core-api.sh "$module"
+          done
       - name: Run untrusted candidate core tests
         env:
           AFMKIT_BUILD_ROOT: ${{ runner.temp }}/afmkit-public-tests

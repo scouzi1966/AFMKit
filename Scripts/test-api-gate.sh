@@ -280,12 +280,14 @@ let package = Package(
     products: [
         .library(name: "AFMKitCore", targets: ["AFMKitCore"]),
         .library(name: "AFMOpenAICompat", targets: ["AFMOpenAICompat"]),
+        .library(name: "AFMKitInference", targets: ["AFMKitInference"]),
         .library(name: "AFMKitApple", targets: ["AFMKitApple"]),
         .executable(name: "AFMKitTool", targets: ["AFMKitTool"]),
     ],
     targets: [
         .target(name: "AFMKitCore"),
         .target(name: "AFMOpenAICompat"),
+        .target(name: "AFMKitInference"),
         .target(name: "AFMKitApple"),
         .executableTarget(name: "AFMKitTool"),
     ]
@@ -321,7 +323,7 @@ let package = Package(
     ]
 )
 SWIFT
-for MODULE in AFMKitCore AFMOpenAICompat AFMKitApple; do
+for MODULE in AFMKitCore AFMOpenAICompat AFMKitInference AFMKitApple; do
     mkdir -p "$AGGREGATE_FIXTURE/Sources/$MODULE"
     printf '// fixture\n' > "$AGGREGATE_FIXTURE/Sources/$MODULE/Fixture.swift"
     printf '{}\n' > "$AGGREGATE_FIXTURE/docs/api-baselines/$MODULE.symbols.json"

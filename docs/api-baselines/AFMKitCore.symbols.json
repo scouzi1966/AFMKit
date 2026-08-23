@@ -1040,12 +1040,17 @@
     },
     {
       "kind": "memberOf",
-      "source": "s:10AFMKitCore17AFMToolDefinitionV4name11description11inputSchemaACSS_SSSgAA12AFMJSONValueOtcfc",
+      "source": "s:10AFMKitCore17AFMToolDefinitionV4name11description11inputSchema6strictACSS_SSSgAA12AFMJSONValueOSbSgtcfc",
       "target": "s:10AFMKitCore17AFMToolDefinitionV"
     },
     {
       "kind": "memberOf",
       "source": "s:10AFMKitCore17AFMToolDefinitionV4nameSSvp",
+      "target": "s:10AFMKitCore17AFMToolDefinitionV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:10AFMKitCore17AFMToolDefinitionV6strictSbSgvp",
       "target": "s:10AFMKitCore17AFMToolDefinitionV"
     },
     {
@@ -12170,7 +12175,24 @@
         },
         {
           "kind": "text",
-          "spelling": ")"
+          "spelling": ", "
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "strict"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Sb",
+          "spelling": "Bool"
+        },
+        {
+          "kind": "text",
+          "spelling": "? = nil)"
         }
       ],
       "functionSignature": {
@@ -12232,12 +12254,34 @@
               }
             ],
             "name": "inputSchema"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "strict"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:Sb",
+                "spelling": "Bool"
+              },
+              {
+                "kind": "text",
+                "spelling": "?"
+              }
+            ],
+            "name": "strict"
           }
         ]
       },
       "identifier": {
         "interfaceLanguage": "swift",
-        "precise": "s:10AFMKitCore17AFMToolDefinitionV4name11description11inputSchemaACSS_SSSgAA12AFMJSONValueOtcfc"
+        "precise": "s:10AFMKitCore17AFMToolDefinitionV4name11description11inputSchema6strictACSS_SSSgAA12AFMJSONValueOSbSgtcfc"
       },
       "kind": {
         "displayName": "Initializer",
@@ -12302,14 +12346,31 @@
           },
           {
             "kind": "text",
-            "spelling": ")"
+            "spelling": ", "
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "strict"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Sb",
+            "spelling": "Bool"
+          },
+          {
+            "kind": "text",
+            "spelling": "?)"
           }
         ],
-        "title": "init(name:description:inputSchema:)"
+        "title": "init(name:description:inputSchema:strict:)"
       },
       "pathComponents": [
         "AFMToolDefinition",
-        "init(name:description:inputSchema:)"
+        "init(name:description:inputSchema:strict:)"
       ]
     },
     {
@@ -12374,6 +12435,78 @@
       "pathComponents": [
         "AFMToolDefinition",
         "name"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "var"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "strict"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Sb",
+          "spelling": "Bool"
+        },
+        {
+          "kind": "text",
+          "spelling": "?"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:10AFMKitCore17AFMToolDefinitionV6strictSbSgvp"
+      },
+      "kind": {
+        "displayName": "Instance Property",
+        "identifier": "swift.property"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "var"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "strict"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Sb",
+            "spelling": "Bool"
+          },
+          {
+            "kind": "text",
+            "spelling": "?"
+          }
+        ],
+        "title": "strict"
+      },
+      "pathComponents": [
+        "AFMToolDefinition",
+        "strict"
       ]
     },
     {

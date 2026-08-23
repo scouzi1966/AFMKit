@@ -40,9 +40,11 @@ The PCC executable must be signed with a provisioning profile that contains the 
 `com.apple.developer.private-cloud-compute` entitlement. AFMKit reads that entitlement from the
 signed host process; it cannot add or emulate it.
 
-The example deliberately uses `AFMProviderRegistry`. An app can therefore keep its chat workflow
-provider-neutral and select another AFMKit provider by changing registration and configuration
-rather than rewriting its generation loop.
+The example deliberately uses `AFMProviderRegistry` for construction and `AFMKitInference.AFMEngine`
+for load/respond/stream lifecycle. An app can therefore keep its chat workflow provider-neutral and
+select another AFMKit provider by changing registration and configuration rather than rewriting its
+generation loop. Hosts that need the lower-level typed event contract may continue to call
+`AnyAFMModel` directly.
 
 The example declares separate local dependencies on the root AFMKit package and
 the `Packages/AFMKitMLX` provider package. After cloning source, initialize

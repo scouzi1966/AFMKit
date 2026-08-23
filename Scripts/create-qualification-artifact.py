@@ -11,9 +11,11 @@ import tarfile
 ARCHIVE_ROOTS = (
     "Sources/AFMKitCore",
     "Sources/AFMOpenAICompat",
+    "Sources/AFMKitInference",
     "Sources/AFMKitApple",
     "Tests/AFMKitCoreTests",
     "Tests/AFMOpenAICompatTests",
+    "Tests/AFMKitInferenceTests",
     "Tests/AFMKitAppleTests",
     "Packages/AFMKitDwarfStar/Sources",
     "Packages/AFMKitDwarfStar/Tests",

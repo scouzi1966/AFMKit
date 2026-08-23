@@ -67,7 +67,7 @@ package = json.load(sys.stdin)
 if package.get("dependencies"):
     raise SystemExit("The public AFMKit package must not resolve external dependencies.")
 products = {product.get("name") for product in package.get("products", [])}
-expected = {"AFMKitCore", "AFMOpenAICompat", "AFMKitApple"}
+expected = {"AFMKitCore", "AFMOpenAICompat", "AFMKitInference", "AFMKitApple"}
 if products != expected:
     raise SystemExit(f"Unexpected public package products: {sorted(products)}")
 '

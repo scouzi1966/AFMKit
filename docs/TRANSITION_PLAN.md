@@ -18,7 +18,7 @@ The long-term shape should align with macOS 27 LanguageModel-style provider conc
 
 AFMKit starts as a private repository while the API is still moving. It can become public after the core contract and first provider packages are stable enough that external adopters are not forced to track maclocal-api internals.
 
-Six public modules use three tagged SwiftPM package boundaries for normal
+Seven public modules use three tagged SwiftPM package boundaries for normal
 consumers. This is package-level isolation: the root package has no global
 provider dependency graph.
 
@@ -30,7 +30,7 @@ manifest surfaces and clean-builds the root Xcode 26 surface.
 
 | Published package | Public modules | Dependency strategy |
 | --- | --- | --- |
-| `AFMKit` | `AFMKitCore`, `AFMOpenAICompat`, `AFMKitApple` | No SwiftPM dependencies; Apple frameworks only where imported by the Apple target. |
+| `AFMKit` | `AFMKitCore`, `AFMOpenAICompat`, `AFMKitInference`, `AFMKitApple` | No SwiftPM dependencies; Apple frameworks only where imported by the Apple target. |
 | `AFMKitDwarfStar` | `AFMKitDwarfStar` | Exact AFMKit release, exact public Hub/Xet graph, vanilla DwarfStar plus AFM-owned adapter code. |
 | `AFMKitMLX` | `AFMKitMLX`, `AFMKitFoundationModelsMLX` | Exact AFMKit release and exact AFM-compatible MLX/private dependency graph. |
 | `maclocal-api` | Host executable modules | Aggregates selected AFMKit packages and owns CLI, HTTP server, WebUI, and packaging. |
@@ -139,7 +139,7 @@ Current `AFMKitApple` checkpoint:
 - The normalized `AFMKitApple` symbol graph includes the intentional provider, model, managed
   capability, and configuration-key additions with no removed public symbols.
 - Release suites cover Core, OpenAI compatibility, Apple, MLX,
-  FoundationModelsMLX, and DwarfStar in their owning packages. All six public API
+  Inference, FoundationModelsMLX, and DwarfStar in their owning packages. All seven public API
   baselines and fresh split-package downstream builds are release gates.
 
 ## Phase 4: Runtime Adapters
@@ -147,6 +147,11 @@ Current `AFMKitApple` checkpoint:
 Status: extracted and Release-verified. `AFMKitMLX` passes through both the tagged remote dependency graph and the persistent local compatibility stack. `AFMKitDwarfStar` compiles against a pinned, unmodified DwarfStar submodule.
 
 Scope:
+
+- `AFMKitInference`: provide the dependency-free high-level load/respond/stream/batch facade over
+  `AnyAFMModel`. It depends only on Core and OpenAI-compatible DTOs; provider selection and runtime
+  configuration stay in provider packages or a host compatibility shim. Streaming preserves
+  append/replace actions, full usage, tool lifecycle, cancellation, and provider errors.
 
 - `AFMKitMLX`: expose model loading, download progress, reasoning, tool calling, streaming, cancellation, prefix-cache/concurrency capability metadata, and multimodal descriptors without requiring consumers to depend on the full AFM server.
 - `AFMKitDwarfStar`: expose the same AFMKit provider contract on top of vanilla DwarfStar. Interface-level adapter patches are acceptable; underlying engine patches should remain upstream or documented as limitations.
@@ -272,7 +277,7 @@ Scope:
 - Add a downstream example app that exercises AFMKit without local maclocal-api source checkout assumptions.
 - Keep a standalone downstream build gate that materializes the same root,
   DwarfStar, and MLX manifests intended for publication, resolves each without a
-  lock, compares provider pins to the qualified locks, and builds all six public
+  lock, compares provider pins to the qualified locks, and builds all seven public
   products.
 
 Exit criteria:
@@ -295,7 +300,7 @@ Pre-tag exit status:
 - `AFMKitCore` must stay dependency-free.
 - macOS 27 features must be compiler-gated at manifest evaluation and runtime-gated.
 - Xcode 26 must expose and build the macOS 26 source-compatible package surface without parsing
-  macOS 27-only targets; Xcode 27 exposes the complete six-product surface.
+  macOS 27-only targets; Xcode 27 exposes the complete seven-product surface.
 - Provider streams should emit structured events for text, reasoning, tool calls, structured output, generated media, usage, timing, progress, completion, and errors.
 - Runtime-specific capabilities must be explicit. Swapping engines should not silently remove tool calling, reasoning, structured JSON, or multimodal support without advertising that limitation.
 - Server and transport observability are not core-provider responsibilities. `AFMKitCore` must

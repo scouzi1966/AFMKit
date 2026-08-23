@@ -1,6 +1,8 @@
 import AFMKitApple
 import AFMKitCore
+import AFMKitInference
 import AFMKitMLX
+import AFMOpenAICompat
 import Darwin
 import Foundation
 
@@ -82,23 +84,20 @@ struct AFMKitQuickstart {
         prompt: String,
         reasoningEnabled: Bool? = nil
     ) async throws {
-        let descriptor = try await model.load { progress in
+        let engine = try AFMEngine(model: model)
+        let descriptor = try await engine.load { progress in
             let percentage = Int((progress * 100).rounded())
             FileHandle.standardError.write(Data("\rLoading \(percentage)%".utf8))
         }
         FileHandle.standardError.write(Data("\rLoaded \(descriptor.displayName)\n".utf8))
 
-        let request = AFMRequest(
-            messages: [AFMMessage(role: .user, text: prompt)],
-            options: AFMGenerationOptions(
-                maximumResponseTokens: 512,
-                reasoningEnabled: reasoningEnabled
-            )
-        )
-        for try await event in model.streamResponse(to: request) {
+        for try await event in engine.streamEvents(
+            to: [Message(role: "user", content: prompt)],
+            GenerationConfig(maxTokens: 512, reasoningEnabled: reasoningEnabled)
+        ) {
             render(event)
         }
-        await model.unload()
+        await engine.unload()
     }
 
     private static func printUsage() {
@@ -108,13 +107,13 @@ struct AFMKitQuickstart {
         print("  afmkit-quickstart apple-pcc <prompt>")
     }
 
-    private static func render(_ event: AFMGenerationEvent) {
+    private static func render(_ event: AFMStreamEvent) {
         switch event {
-        case .responseText(let action, let text, _):
+        case .text(let action, let text, _):
             if action == .replace { print("\n[response replaced]\n", terminator: "") }
             print(text, terminator: "")
             fflush(stdout)
-        case .reasoningText(let action, let text, _):
+        case .reasoning(let action, let text, _):
             if action == .replace {
                 FileHandle.standardError.write(Data("\n[reasoning replaced]\n".utf8))
             }
@@ -123,9 +122,9 @@ struct AFMKitQuickstart {
             FileHandle.standardError.write(
                 Data("\n[tool \(call.name): \(String(describing: stage))]\n".utf8)
             )
-        case .usage(let usage):
+        case .usage(let input, let output, _, let reasoning):
             FileHandle.standardError.write(
-                Data("\n[usage input=\(usage.inputTokens) output=\(usage.outputTokens)]\n".utf8)
+                Data("\n[usage input=\(input) output=\(output) reasoning=\(reasoning)]\n".utf8)
             )
         case .completed(let reason):
             print("\n[completed: \(reason.rawValue)]")

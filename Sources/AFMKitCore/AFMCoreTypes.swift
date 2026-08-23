@@ -232,11 +232,18 @@ public struct AFMToolDefinition: Hashable, Sendable {
     public var name: String
     public var description: String?
     public var inputSchema: AFMJSONValue
+    public var strict: Bool?
 
-    public init(name: String, description: String? = nil, inputSchema: AFMJSONValue) {
+    public init(
+        name: String,
+        description: String? = nil,
+        inputSchema: AFMJSONValue,
+        strict: Bool? = nil
+    ) {
         self.name = name
         self.description = description
         self.inputSchema = inputSchema
+        self.strict = strict
     }
 }
 

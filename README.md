@@ -10,17 +10,17 @@ decisions are in [`Architecture/`](Architecture/README.md).
 
 ## Package architecture
 
-Six public modules are published across three real Swift package boundaries:
+Seven public modules are published across three real Swift package boundaries:
 
 | Package | Public products | Dependency/authentication boundary |
 | --- | --- | --- |
-| `AFMKit` | `AFMKitCore`, `AFMOpenAICompat`, `AFMKitApple` | Zero SwiftPM dependencies. Core-only consumers never resolve or authenticate to MLX. |
+| `AFMKit` | `AFMKitCore`, `AFMOpenAICompat`, `AFMKitInference`, `AFMKitApple` | Zero SwiftPM dependencies. Core-only consumers never resolve or authenticate to MLX. |
 | `AFMKitDwarfStar` | `AFMKitDwarfStar` | Exact AFMKit release plus public, exact-pinned Hub/Xet dependencies and the AFM-owned ds4 adapter/resources. |
 | `AFMKitMLX` | `AFMKitMLX`, `AFMKitFoundationModelsMLX` | Exact AFMKit release plus the exact private AFM-compatible MLX graph. |
 
 All three manifests use Swift tools 6.1 and keep a macOS 26 deployment floor.
-With Xcode 26 (Swift 6.3), the root package exposes `AFMKitCore` and
-`AFMOpenAICompat`, and the MLX package exposes `AFMKitMLX`. Xcode 27 (Swift 6.4)
+With Xcode 26 (Swift 6.3), the root package exposes `AFMKitCore`,
+`AFMOpenAICompat`, and `AFMKitInference`, and the MLX package exposes `AFMKitMLX`. Xcode 27 (Swift 6.4)
 also exposes `AFMKitApple` and `AFMKitFoundationModelsMLX`; those products import
 macOS 27 Foundation Models APIs and remain runtime-gated to macOS 27. CI checks
 both product matrices with `Scripts/check-sdk-product-exposure.sh`.
@@ -73,7 +73,7 @@ reproduce each committed provider lock before publication.
 
 The checked-in API baselines use Xcode 27 Beta 3 build `27A5218g`, macOS SDK 27.0
 build `26A5378i`, and the compiler identity in
-`docs/api-baselines/toolchain.env`. Baseline coverage discovers all six modules
+`docs/api-baselines/toolchain.env`. Baseline coverage discovers all seven modules
 across the three manifests. The current DwarfStar baseline contains 42 normalized
 public symbols.
 
@@ -88,7 +88,7 @@ Candidate scripts and plugins never run there. Private source, compiled products
 caches, and credentials are destroyed before the job exits.
 
 Full release validation runs all package/API/security gates, Release tests for
-all three packages, and fresh downstream builds for all six products:
+all three packages, and fresh downstream builds for all seven products:
 
 ```bash
 Scripts/validate-release.sh

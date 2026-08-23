@@ -1062,6 +1062,11 @@
     },
     {
       "kind": "memberOf",
+      "source": "s:9AFMKitMLX15MLXModelServiceC28defaultMaximumResponseTokensSivpZ",
+      "target": "s:9AFMKitMLX15MLXModelServiceC"
+    },
+    {
+      "kind": "memberOf",
       "source": "s:9AFMKitMLX15MLXModelServiceC30remapResponseToolCallArguments_5tools15AFMOpenAICompat0fgH0VAH_SayAF07RequestG0VGSgtFZ",
       "target": "s:9AFMKitMLX15MLXModelServiceC"
     },
@@ -26574,6 +26579,94 @@
       "pathComponents": [
         "MLXModelService",
         "shutdownAndReleaseResources(verbose:timeoutSeconds:)"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "static"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "keyword",
+          "spelling": "let"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "defaultMaximumResponseTokens"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Si",
+          "spelling": "Int"
+        }
+      ],
+      "docComment": {
+        "lines": [
+          {
+            "text": "Shared fallback for MLX callers that omit a per-request output limit."
+          }
+        ],
+        "module": "AFMKitMLX"
+      },
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX15MLXModelServiceC28defaultMaximumResponseTokensSivpZ"
+      },
+      "kind": {
+        "displayName": "Type Property",
+        "identifier": "swift.type.property"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "static"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "keyword",
+            "spelling": "let"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "defaultMaximumResponseTokens"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Si",
+            "spelling": "Int"
+          }
+        ],
+        "title": "defaultMaximumResponseTokens"
+      },
+      "pathComponents": [
+        "MLXModelService",
+        "defaultMaximumResponseTokens"
       ]
     },
     {
