@@ -379,6 +379,31 @@ final class AFMKitInferenceTests: XCTestCase {
         XCTAssertEqual(kinds, ["text", "completed"])
     }
 
+    func testSplitStopPrefixSuppressesAssociatedLogprobs() async throws {
+        let events: [AFMGenerationEvent] = [
+            .responseText(action: .append, text: "answer ST", tokenCount: 2),
+            .tokenLogprobs([.init(token: "ST", tokenID: 1, logprob: -0.1)]),
+            .responseText(action: .append, text: "OP hidden", tokenCount: 2),
+            .tokenLogprobs([.init(token: "OP", tokenID: 2, logprob: -0.1)]),
+            .completed(.length),
+        ]
+        let engine = try AFMEngine(model: TestModel(events: events))
+        var output = ""
+        var logprobEventCount = 0
+        for try await event in engine.streamEvents(
+            to: [.init(role: "user", content: "hi")],
+            .init(stop: ["STOP"])
+        ) {
+            switch event {
+            case .text(_, let text, _): output += text
+            case .tokenLogprobs: logprobEventCount += 1
+            default: break
+            }
+        }
+        XCTAssertEqual(output, "answer ")
+        XCTAssertEqual(logprobEventCount, 0)
+    }
+
     func testAppendOnlyStreamReducesCumulativeReplacementSnapshots() async throws {
         let events: [AFMGenerationEvent] = [
             .responseText(action: .replace, text: "H", tokenCount: 1),

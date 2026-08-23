@@ -102,7 +102,14 @@ public actor AFMEngine {
                                 continuation.yield(normalized)
                             }
                             if stopNormalizer.stopped { stopReached = true }
-                        case .reasoningText, .tokenLogprobs, .toolCall, .custom:
+                        case .tokenLogprobs:
+                            // A provider commonly emits logprobs after the text
+                            // event for the same token. If that text is being
+                            // withheld as a possible stop prefix, forwarding the
+                            // array would expose or misalign the hidden token.
+                            guard !stopReached, !stopNormalizer.hasWithheldText else { continue }
+                            continuation.yield(Self.streamEvent(from: event))
+                        case .reasoningText, .toolCall, .custom:
                             guard !stopReached else { continue }
                             continuation.yield(Self.streamEvent(from: event))
                         case .usage:
@@ -221,6 +228,10 @@ private struct StopSequenceNormalizer {
     private var emittedText = ""
     private(set) var stopped = false
     private var finished = false
+
+    var hasWithheldText: Bool {
+        rawText != emittedText
+    }
 
     init(stopSequences: [String]) {
         self.stopSequences = stopSequences.filter { !$0.isEmpty }
