@@ -61,30 +61,14 @@ if let publicPackagePath = ProcessInfo.processInfo.environment["AFMKIT_PUBLIC_PA
     publicPackageDependency = .package(name: "AFMKit", path: "../..")
 }
 
-let package = Package(
-    name: "AFMKitDwarfStar",
-    platforms: [
-        .macOS("26.0")
-    ],
-    products: [
-        .library(
-            name: "AFMKitDwarfStar",
-            targets: ["AFMKitDwarfStar"]
-        )
-    ],
-    dependencies: [
-        publicPackageDependency,
-        .package(
-            url: "https://github.com/huggingface/swift-huggingface.git",
-            exact: "0.9.0",
-            traits: ["Xet"]
-        ),
-        .package(
-            url: "https://github.com/huggingface/swift-xet.git",
-            exact: "0.2.3"
-        )
-    ] + releaseDependencyPins,
-    targets: [
+var products: [Product] = [
+    .library(
+        name: "AFMKitDwarfStar",
+        targets: ["AFMKitDwarfStar"]
+    )
+]
+
+var targets: [Target] = [
         .target(
             name: "CDwarfStar",
             path: "Sources/CDwarfStar",
@@ -130,6 +114,56 @@ let package = Package(
                 "CDwarfStar"
             ]
         )
+]
+
+#if compiler(>=6.4)
+products.append(
+    .library(
+        name: "AFMKitFoundationModelsDwarfStar",
+        targets: ["AFMKitFoundationModelsDwarfStar"]
+    )
+)
+targets.append(
+    .target(
+        name: "AFMKitFoundationModelsDwarfStar",
+        dependencies: [
+            .product(name: "AFMKitApple", package: "AFMKit"),
+            .product(name: "AFMKitCore", package: "AFMKit"),
+            "AFMKitDwarfStar"
+        ]
+    )
+)
+targets.append(
+    .testTarget(
+        name: "AFMKitFoundationModelsDwarfStarTests",
+        dependencies: [
+            .product(name: "AFMKitApple", package: "AFMKit"),
+            .product(name: "AFMKitCore", package: "AFMKit"),
+            "AFMKitDwarfStar",
+            "AFMKitFoundationModelsDwarfStar"
+        ]
+    )
+)
+#endif
+
+let package = Package(
+    name: "AFMKitDwarfStar",
+    platforms: [
+        .macOS("26.0")
     ],
+    products: products,
+    dependencies: [
+        publicPackageDependency,
+        .package(
+            url: "https://github.com/huggingface/swift-huggingface.git",
+            exact: "0.9.0",
+            traits: ["Xet"]
+        ),
+        .package(
+            url: "https://github.com/huggingface/swift-xet.git",
+            exact: "0.2.3"
+        )
+    ] + releaseDependencyPins,
+    targets: targets,
     cxxLanguageStandard: .gnucxx17
 )

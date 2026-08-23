@@ -107,6 +107,7 @@ public struct AFMDwarfStarProviderFactory: AFMProviderFactory {
 public final class AFMDwarfStarModel: AFMModel, @unchecked Sendable {
     public let descriptor: AFMModelDescriptor
 
+    private let runtimeLease: AFMDwarfStarRuntimeLease
     private let modelPath: String
     private let contextWindow: Int
     private let prefillChunk: Int
@@ -165,6 +166,9 @@ public final class AFMDwarfStarModel: AFMModel, @unchecked Sendable {
         self.enablePrefixCaching = enablePrefixCaching
         self.maxConcurrent = max(1, maxConcurrent)
         self.runtime = runtime
+        self.runtimeLease = AFMDwarfStarRuntimeLease { leaseID in
+            await runtime.unload(leaseID: leaseID)
+        }
         self.descriptor = AFMModelDescriptor(
             providerID: AFMDwarfStarProviderFactory.providerID,
             modelID: modelID,
@@ -199,6 +203,7 @@ public final class AFMDwarfStarModel: AFMModel, @unchecked Sendable {
     ) async throws -> AFMModelDescriptor {
         progress?(0)
         try await runtime.load(
+            leaseID: runtimeLease.id,
             modelPath: modelPath,
             contextWindow: contextWindow,
             prefillChunk: prefillChunk,
@@ -246,7 +251,7 @@ public final class AFMDwarfStarModel: AFMModel, @unchecked Sendable {
     }
 
     public func unload() async {
-        await runtime.unload(modelPath: modelPath)
+        await runtimeLease.release()
     }
 }
 

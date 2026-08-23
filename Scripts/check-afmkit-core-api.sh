@@ -21,7 +21,7 @@ case "$MODULE" in
         PACKAGE_ROOT="$ROOT"
         PACKAGE_BUILD_DIR="$BUILD_DIR/public"
         ;;
-    AFMKitDwarfStar)
+    AFMKitDwarfStar|AFMKitFoundationModelsDwarfStar)
         PACKAGE_ROOT="$ROOT/Packages/AFMKitDwarfStar"
         PACKAGE_BUILD_DIR="$BUILD_DIR/dwarfstar"
         ;;

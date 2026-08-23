@@ -2,6 +2,7 @@
 import AFMKitCore
 import CoreImage
 import FoundationModels
+@testable import AFMKitApple
 @testable import AFMKitFoundationModelsMLX
 import XCTest
 

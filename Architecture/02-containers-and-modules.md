@@ -53,7 +53,7 @@ the exact same-version AFMKit release. Product and module names remain unchanged
 | Published package | Source manifest | Products | Authentication |
 | --- | --- | --- | --- |
 | `AFMKit` | `Package.swift` | Core, OpenAI compatibility, inference, Apple provider, four optional Apple services, and the `AFMKitServices` umbrella | None; the manifest has no package dependencies. |
-| `AFMKitDwarfStar` | `Packages/AFMKitDwarfStar/Package.swift` | `AFMKitDwarfStar` | None for AFMKit; public Hub/Xet dependencies are exact-pinned. |
+| `AFMKitDwarfStar` | `Packages/AFMKitDwarfStar/Package.swift` | `AFMKitDwarfStar`, `AFMKitFoundationModelsDwarfStar` | Core runtime remains available with Xcode 26; the Foundation Models bridge is compiler-gated to Xcode 27. |
 | `AFMKitMLX` | `Packages/AFMKitMLX/Package.swift` | `AFMKitMLX`, `AFMKitFoundationModelsMLX` | Required for the private AFM-compatible MLX dependencies. |
 
 The monorepo layout is a development and qualification convenience. Release
@@ -77,6 +77,7 @@ production AFMKit tag, and tests those exact manifests from fresh no-lock graphs
 | `AFMKitMLX` | `AFMKitMLX` | Native local MLX provider and advanced serving surface. | `AFMMLXProviderFactory`, `AFMMLXModel`, `AFMMLXRuntimeConfiguration`. |
 | `AFMKitFoundationModelsMLX` | `AFMKitMLX` | macOS 27 custom `LanguageModel` bridge backed by MLX. | `MLXLanguageModel`, `MLXLanguageModelExecutor`, projection plan. |
 | `AFMKitDwarfStar` | `AFMKitDwarfStar` | DwarfStar/DS4 local provider. | `AFMDwarfStarProviderFactory`, `AFMDwarfStarModel`, runtime configuration. |
+| `AFMKitFoundationModelsDwarfStar` | `AFMKitDwarfStar` | macOS 27 custom `LanguageModel` bridge backed by DwarfStar. | `DwarfStarLanguageModel`, `DwarfStarLanguageModelExecutor`. |
 | `AFMXGrammar` | `AFMKitMLX` | Swift/C++ bridge to xgrammar. | Internal support target used by MLX guided generation. |
 | `CDwarfStar` | `AFMKitDwarfStar` | C/Objective-C/Metal bridge and engine integration. | Internal support target; not an app integration surface. |
 

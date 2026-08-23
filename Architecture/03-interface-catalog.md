@@ -96,8 +96,9 @@ accepts reduced portability.
 | --- | --- | --- |
 | `AFMKitApple` | `AFMFoundationProviderFactory`, `AFMFoundationModel` | Native capability probes, managed capability checks, dynamic-profile/session helpers, lower-level `FoundationModelService`. |
 | `AFMKitMLX` | `AFMMLXProviderFactory`, `AFMMLXModel`, `AFMMLXRuntimeConfiguration` | OpenAI chat-serving protocols, scheduler/cache/checkpoint policies, profiling and model-service facilities. Several are `public`; apps should depend on them only when the feature is explicitly engine-specific. |
-| `AFMKitFoundationModelsMLX` | `MLXLanguageModel`, `MLXLanguageModelExecutor` | Apple transcript/event adapters and model projection plan. |
+| `AFMKitFoundationModelsMLX` | `MLXLanguageModel`, `MLXLanguageModelExecutor` | MLX model projection over the provider-neutral adapters in `AFMKitApple`. |
 | `AFMKitDwarfStar` | `AFMDwarfStarProviderFactory`, `AFMDwarfStarModel`, `AFMDwarfStarRuntimeConfiguration` | Checkpoint catalog/resolution and engine projection utilities currently exposed for specialized hosts. |
+| `AFMKitFoundationModelsDwarfStar` | `DwarfStarLanguageModel`, `DwarfStarLanguageModelExecutor` | Xcode 27 DwarfStar projection over Apple's custom model protocols. |
 
 Public provider-specific types are source APIs, but the long-term compatibility
 boundary is narrower than “every public declaration.” The API-baseline gates in

@@ -72,7 +72,11 @@ targets.append(
     .target(
         name: "AFMKitApple",
         dependencies: ["AFMKitCore", "AFMOpenAICompat"],
-        linkerSettings: [.linkedFramework("Security")]
+        linkerSettings: [
+            .linkedFramework("Security"),
+            .linkedFramework("ImageIO"),
+            .linkedFramework("UniformTypeIdentifiers")
+        ]
     )
 )
 targets.append(

@@ -10,18 +10,19 @@ decisions are in [`Architecture/`](Architecture/README.md).
 
 ## Package architecture
 
-Twelve public modules are published across three real Swift package boundaries:
+Thirteen public modules are published across three real Swift package boundaries:
 
 | Package | Public products | Dependency/authentication boundary |
 | --- | --- | --- |
 | `AFMKit` | `AFMKitCore`, `AFMOpenAICompat`, `AFMKitInference`, `AFMKitApple`, `AFMKitEmbeddings`, `AFMKitSpeech`, `AFMKitSpeechSynthesis`, `AFMKitVision`, `AFMKitServices` | Zero SwiftPM dependencies. Apple services are independently selectable; `AFMKitServices` is the compatibility umbrella. |
-| `AFMKitDwarfStar` | `AFMKitDwarfStar` | Exact AFMKit release plus public, exact-pinned Hub/Xet dependencies and the AFM-owned ds4 adapter/resources. |
+| `AFMKitDwarfStar` | `AFMKitDwarfStar`, `AFMKitFoundationModelsDwarfStar` | Exact AFMKit release plus public, exact-pinned Hub/Xet dependencies, the AFM-owned ds4 adapter/resources, and an Xcode 27-only `LanguageModel` bridge. |
 | `AFMKitMLX` | `AFMKitMLX`, `AFMKitFoundationModelsMLX` | Exact AFMKit release plus the exact private AFM-compatible MLX graph. |
 
 All three manifests use Swift tools 6.1 and keep a macOS 26 deployment floor.
 With Xcode 26 (Swift 6.3), the root package exposes `AFMKitCore`,
 `AFMOpenAICompat`, `AFMKitInference`, and the five service products, and the MLX package exposes `AFMKitMLX`. Xcode 27 (Swift 6.4)
-also exposes `AFMKitApple` and `AFMKitFoundationModelsMLX`; those products import
+also exposes `AFMKitApple`, `AFMKitFoundationModelsMLX`, and
+`AFMKitFoundationModelsDwarfStar`; those products import
 macOS 27 Foundation Models APIs and remain runtime-gated to macOS 27. CI checks
 both product matrices with `Scripts/check-sdk-product-exposure.sh`.
 
@@ -124,6 +125,12 @@ stable cross-provider contract.
 `AFMDwarfStarModel`, and `AFMDwarfStarRuntimeConfiguration`. AFMKit pins an
 unmodified `antirez/ds4` submodule and owns the Swift/C adapter, resources,
 checkpoint projection, and provider lifecycle.
+
+On Xcode 27, `AFMKitFoundationModelsDwarfStar` exposes that provider through
+Apple's `LanguageModel` and `LanguageModelExecutor` protocols. Provider-neutral
+transcript and event translation lives in `AFMKitApple`, so DwarfStar does not
+depend on MLX. Runtime leases retain a shared compatible DwarfStar engine until
+the final executor releases it.
 
 `AFMKitApple` is exposed by the manifest only with Xcode 27 or newer while the
 package keeps its macOS 26 deployment floor. It owns reusable availability,
