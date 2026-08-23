@@ -307,6 +307,78 @@ final class AFMKitInferenceTests: XCTestCase {
         XCTAssertEqual(output, "value ST")
     }
 
+    func testProviderStopMetadataSuppressesLaterPayloadButPreservesTelemetry() async throws {
+        let events: [AFMGenerationEvent] = [
+            .responseText(action: .append, text: "visible", tokenCount: 1),
+            .metadata(["stoppedBySequence": .bool(true)]),
+            .responseText(action: .append, text: " trailing", tokenCount: 1),
+            .reasoningText(action: .append, text: "private trailing", tokenCount: 1),
+            .tokenLogprobs([.init(token: " trailing", tokenID: 2, logprob: -0.1)]),
+            .toolCall(
+                call: .init(id: "late", name: "late_tool", arguments: "{}"),
+                stage: .completed
+            ),
+            .custom(type: "late", payload: Data("late".utf8)),
+            .usage(.init(inputTokens: 4, outputTokens: 2)),
+            .metadata(["generateTime": .number(0.25)]),
+            .completed(.toolCalls),
+        ]
+        let engine = try AFMEngine(model: TestModel(events: events))
+        var kinds: [String] = []
+        var output = ""
+        var finishReason: AFMFinishReason?
+
+        for try await event in engine.streamEvents(
+            to: [.init(role: "user", content: "hi")],
+            .init(stop: ["STOP"])
+        ) {
+            switch event {
+            case .text(_, let text, _): output += text; kinds.append("text")
+            case .usage: kinds.append("usage")
+            case .metadata: kinds.append("metadata")
+            case .completed(let reason): finishReason = reason; kinds.append("completed")
+            case .reasoning: kinds.append("reasoning")
+            case .tokenLogprobs: kinds.append("logprobs")
+            case .toolCall: kinds.append("tool")
+            case .custom: kinds.append("custom")
+            }
+        }
+
+        XCTAssertEqual(output, "visible")
+        XCTAssertEqual(kinds, ["text", "metadata", "usage", "metadata", "completed"])
+        XCTAssertEqual(finishReason, .stop)
+    }
+
+    func testLiteralStopSuppressesSameTurnSemanticEvents() async throws {
+        let events: [AFMGenerationEvent] = [
+            .responseText(action: .append, text: "visible STOP hidden", tokenCount: 3),
+            .tokenLogprobs([.init(token: "STOP", tokenID: 2, logprob: -0.1)]),
+            .toolCall(call: .init(id: "late", name: "late_tool", arguments: "{}"), stage: .completed),
+            .reasoningText(action: .append, text: "late reasoning", tokenCount: 1),
+            .completed(.toolCalls),
+        ]
+        let engine = try AFMEngine(model: TestModel(events: events))
+        var kinds: [String] = []
+        var output = ""
+        for try await event in engine.streamEvents(
+            to: [.init(role: "user", content: "hi")],
+            .init(stop: ["STOP"])
+        ) {
+            switch event {
+            case .text(_, let text, _): output += text; kinds.append("text")
+            case .completed: kinds.append("completed")
+            case .reasoning: kinds.append("reasoning")
+            case .tokenLogprobs: kinds.append("logprobs")
+            case .toolCall: kinds.append("tool")
+            case .usage: kinds.append("usage")
+            case .metadata: kinds.append("metadata")
+            case .custom: kinds.append("custom")
+            }
+        }
+        XCTAssertEqual(output, "visible ")
+        XCTAssertEqual(kinds, ["text", "completed"])
+    }
+
     func testAppendOnlyStreamReducesCumulativeReplacementSnapshots() async throws {
         let events: [AFMGenerationEvent] = [
             .responseText(action: .replace, text: "H", tokenCount: 1),

@@ -88,10 +88,12 @@ public actor AFMEngine {
                     var stopNormalizer = StopSequenceNormalizer(
                         stopSequences: request.options.stopSequences
                     )
+                    var stopReached = false
                     for try await event in model.streamResponse(to: request) {
                         try Task.checkCancellation()
                         switch event {
                         case .responseText(let action, let text, let tokenCount):
+                            guard !stopReached else { continue }
                             for normalized in stopNormalizer.consume(
                                 action: action,
                                 text: text,
@@ -99,16 +101,25 @@ public actor AFMEngine {
                             ) {
                                 continuation.yield(normalized)
                             }
+                            if stopNormalizer.stopped { stopReached = true }
+                        case .reasoningText, .tokenLogprobs, .toolCall, .custom:
+                            guard !stopReached else { continue }
+                            continuation.yield(Self.streamEvent(from: event))
+                        case .usage:
+                            continuation.yield(Self.streamEvent(from: event))
+                        case .metadata(let metadata):
+                            if case .bool(true)? = metadata["stoppedBySequence"] {
+                                stopReached = true
+                            }
+                            continuation.yield(Self.streamEvent(from: event))
                         case .completed(let reason):
-                            if let pending = stopNormalizer.finish() {
+                            if !stopReached, let pending = stopNormalizer.finish() {
                                 continuation.yield(pending)
                             }
-                            continuation.yield(.completed(stopNormalizer.stopped ? .stop : reason))
-                        default:
-                            continuation.yield(Self.streamEvent(from: event))
+                            continuation.yield(.completed(stopReached || stopNormalizer.stopped ? .stop : reason))
                         }
                     }
-                    if let pending = stopNormalizer.finish() {
+                    if !stopReached, let pending = stopNormalizer.finish() {
                         continuation.yield(pending)
                     }
                     continuation.finish()
