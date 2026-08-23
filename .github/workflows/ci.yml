@@ -18,12 +18,10 @@ jobs:
       matrix:
         include:
           - sdk: xcode26
-            runner: afmkit-public-xcode26-ephemeral
+            runner: ${{ vars.AFMKIT_XCODE26_RUNNER || 'macos-26' }}
           - sdk: xcode27
-            runner: afmkit-public-xcode27-ephemeral
-    runs-on:
-      group: afmkit-public-untrusted
-      labels: ${{ matrix.runner }}
+            runner: ${{ vars.AFMKIT_XCODE27_RUNNER || 'xcode-27' }}
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
@@ -36,9 +34,7 @@ jobs:
 
   public-gates:
     name: Token-independent gates
-    runs-on:
-      group: afmkit-public-untrusted
-      labels: afmkit-public-xcode27-ephemeral
+    runs-on: ${{ vars.AFMKIT_XCODE27_RUNNER || 'xcode-27' }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:

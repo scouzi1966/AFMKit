@@ -38,8 +38,8 @@ assert "create-qualification-artifact.py" in public_ci
 assert "private-qualification-${{ github.run_id }}" in public_ci
 assert "github.event.pull_request.head.sha || github.sha" in public_ci
 assert "SDK exposure (${{ matrix.sdk }})" in public_ci
-assert "afmkit-public-xcode26-ephemeral" in public_ci
-assert "afmkit-public-xcode27-ephemeral" in public_ci
+assert "vars.AFMKIT_XCODE26_RUNNER || 'macos-26'" in public_ci
+assert "vars.AFMKIT_XCODE27_RUNNER || 'xcode-27'" in public_ci
 assert "check-sdk-product-exposure.sh" in public_ci
 
 private_ci = contents["private-ci.yml"]
@@ -57,8 +57,7 @@ assert "pull.base.repo.full_name !== currentRepository" in private_ci
 assert "pull.head.sha !== run.head_sha" in private_ci
 assert "github.rest.git.getCommit" in private_ci
 assert "github.rest.repos.compareCommitsWithBasehead" in private_ci
-assert "afmkit-privileged-private-ci" in private_ci
-assert "afmkit-privileged-private-xcode27-ephemeral" in private_ci
+assert "vars.AFMKIT_XCODE27_RUNNER || 'xcode-27'" in private_ci
 assert "pull-requests: read" in private_ci
 assert "Download exact successful-run artifact" in private_ci
 assert "prepare-private-qualification.py" in private_ci
@@ -96,6 +95,7 @@ assert "stage-tag:" not in release
 assert "qualify-remote-tag:" not in release
 assert "AFMKIT_RELEASE_MIRROR_OUTPUT" in release
 assert "publish-provider-mirrors.sh" in release
+assert "vars.AFMKIT_XCODE27_RUNNER || 'xcode-27'" in release
 assert "Record immutable publication intent" in release
 assert "ensurePublicationIntent" in release
 assert release.index("Record immutable publication intent") < release.index(

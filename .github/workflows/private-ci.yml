@@ -43,9 +43,7 @@ jobs:
       actions: read
       contents: read
       pull-requests: read
-    runs-on:
-      group: afmkit-privileged-private-ci
-      labels: afmkit-privileged-private-xcode27-ephemeral
+    runs-on: ${{ vars.AFMKIT_XCODE27_RUNNER || 'xcode-27' }}
     steps:
       - name: Bind qualification to triggering run payload
         id: metadata
