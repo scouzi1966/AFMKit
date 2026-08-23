@@ -128,6 +128,95 @@ public struct TranscriptionResult: Sendable, Codable {
     }
 }
 
+/// Bridges Speech's callback API into structured concurrency. Kept internal so
+/// cancellation and timeout behavior can be tested without privacy prompts or
+/// depending on framework callbacks being delivered after cancellation.
+private final class SpeechRecognitionAwaitState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var cancelled = false
+    private var resumed = false
+    private var cancel: (@Sendable () -> Void)?
+    private var continuation: CheckedContinuation<TranscriptionResult, Error>?
+
+    func install(_ continuation: CheckedContinuation<TranscriptionResult, Error>) -> Bool {
+        lock.withLock {
+            self.continuation = continuation
+            guard cancelled else { return false }
+            resumed = true
+            self.continuation = nil
+            return true
+        }
+    }
+
+    func installCancel(_ cancel: @escaping @Sendable () -> Void) -> Bool {
+        lock.withLock {
+            self.cancel = cancel
+            return cancelled
+        }
+    }
+
+    func finish() -> CheckedContinuation<TranscriptionResult, Error>? {
+        lock.withLock {
+            guard !resumed else { return nil }
+            resumed = true
+            defer { continuation = nil }
+            return continuation
+        }
+    }
+
+    func cancelOperation() -> ((@Sendable () -> Void)?, CheckedContinuation<TranscriptionResult, Error>?) {
+        lock.withLock {
+            cancelled = true
+            guard !resumed, let continuation else { return (cancel, nil) }
+            resumed = true
+            self.continuation = nil
+            return (cancel, continuation)
+        }
+    }
+}
+
+@available(macOS 13.0, *)
+func awaitSpeechRecognition(
+    timeoutNanoseconds: UInt64,
+    start: @escaping @Sendable (
+        @escaping @Sendable (Result<TranscriptionResult, Error>) -> Void
+    ) -> (@Sendable () -> Void)
+) async throws -> TranscriptionResult {
+    let state = SpeechRecognitionAwaitState()
+
+    return try await withThrowingTaskGroup(of: TranscriptionResult.self) { group in
+        group.addTask {
+            try await withTaskCancellationHandler {
+                try await withCheckedThrowingContinuation { continuation in
+                    let cancelledBeforeStart = state.install(continuation)
+                    if cancelledBeforeStart {
+                        continuation.resume(throwing: CancellationError())
+                        return
+                    }
+
+                    let cancel = start { result in
+                        let savedContinuation = state.finish()
+                        savedContinuation?.resume(with: result)
+                    }
+                    let cancelAfterStart = state.installCancel(cancel)
+                    if cancelAfterStart { cancel() }
+                }
+            } onCancel: {
+                let cancellation = state.cancelOperation()
+                cancellation.0?()
+                cancellation.1?.resume(throwing: CancellationError())
+            }
+        }
+        group.addTask {
+            try await Task.sleep(nanoseconds: timeoutNanoseconds)
+            throw SpeechError.recognitionFailed("Recognition timed out")
+        }
+        let result = try await group.next()!
+        group.cancelAll()
+        return result
+    }
+}
+
 @available(macOS 13.0, *)
 public final class SpeechService: Sendable {
     public init() {}
@@ -159,6 +248,22 @@ public final class SpeechService: Sendable {
             throw SpeechError.unsupportedFormat
         }
 
+        do {
+            let attributes = try FileManager.default.attributesOfItem(atPath: filePath)
+            if let fileSize = attributes[.size] as? Int,
+               fileSize > SpeechRequestOptions.defaultMaxFileBytes {
+                throw SpeechError.recognitionFailed(
+                    "Audio file size \(fileSize) bytes exceeds the \(SpeechRequestOptions.defaultMaxFileBytes)-byte limit"
+                )
+            }
+        } catch let speechError as SpeechError {
+            throw speechError
+        } catch {
+            throw SpeechError.recognitionFailed(
+                "Could not inspect the audio file: \(error.localizedDescription)"
+            )
+        }
+
         // Check authorization
         let status = SFSpeechRecognizer.authorizationStatus()
         if status == .denied || status == .restricted {
@@ -186,101 +291,64 @@ public final class SpeechService: Sendable {
         request.requiresOnDeviceRecognition = true
         request.shouldReportPartialResults = false
 
-        // Run recognition with a timeout to prevent hung requests.
-        // OSAllocatedUnfairLock guards the one-shot continuation resume.
-        let resumed = OSAllocatedUnfairLock(initialState: false)
-        // Holds the SFSpeechRecognitionTask so onCancel can reach it. Wrapped
-        // because SFSpeechRecognitionTask isn't Sendable but must live in the
-        // lock's (Sendable) state and be reachable from the @Sendable onCancel.
-        let taskRef = OSAllocatedUnfairLock<UncheckedSendable<SFSpeechRecognitionTask?>>(initialState: UncheckedSendable(nil))
         // SFSpeechRecognizer / SFSpeechURLRecognitionRequest aren't Sendable, so box
         // them to carry into the (sending) task-group child without a capture error.
         let recognizerBox = UncheckedSendable(recognizer)
         let requestBox = UncheckedSendable(request)
 
-        let transcriptionResult: TranscriptionResult = try await withThrowingTaskGroup(of: TranscriptionResult.self) { group in
-            group.addTask {
-                try await withTaskCancellationHandler {
-                    try await withCheckedThrowingContinuation { continuation in
-                        let queue = OperationQueue()
-                        queue.qualityOfService = .userInitiated
+        return try await awaitSpeechRecognition(
+            timeoutNanoseconds: SpeechRequestOptions.recognitionTimeoutNs
+        ) { completion in
+            let queue = OperationQueue()
+            queue.qualityOfService = .userInitiated
 
-                        let recognizer = recognizerBox.value
-                        recognizer.queue = queue
-                        let task = recognizer.recognitionTask(with: requestBox.value) { result, error in
-                            if let error {
-                                let shouldResume = resumed.withLock { done in
-                                    if done { return false }
-                                    done = true
-                                    return true
-                                }
-                                guard shouldResume else { return }
-                                continuation.resume(throwing: SpeechError.recognitionFailed(error.localizedDescription))
-                                return
-                            }
-                            guard let result, result.isFinal else { return }
-                            let shouldResume = resumed.withLock { done in
-                                if done { return false }
-                                done = true
-                                return true
-                            }
-                            guard shouldResume else { return }
-                            let transcription = result.bestTranscription
-                            let formatted = transcription.formattedString
-                            if formatted.isEmpty {
-                                continuation.resume(throwing: SpeechError.noSpeechFound)
-                                return
-                            }
-
-                            // Extract word-level timing from segments
-                            let words = transcription.segments.map { seg in
-                                TranscriptionWord(
-                                    word: seg.substring,
-                                    start: seg.timestamp,
-                                    end: seg.timestamp + seg.duration
-                                )
-                            }
-
-                            // Build a single segment from the full transcription
-                            let totalDuration = transcription.segments.last.map { $0.timestamp + $0.duration } ?? 0
-                            let avgConfidence = transcription.segments.isEmpty ? Float(0)
-                                : transcription.segments.map(\.confidence).reduce(0, +) / Float(transcription.segments.count)
-                            let segments = [TranscriptionSegment(
-                                id: 0,
-                                start: 0,
-                                end: totalDuration,
-                                text: formatted,
-                                confidence: avgConfidence
-                            )]
-
-                            // Extract language from locale
-                            let lang = options.locale.split(separator: "-").first.map(String.init) ?? options.locale
-
-                            continuation.resume(returning: TranscriptionResult(
-                                text: formatted,
-                                language: lang,
-                                duration: totalDuration,
-                                words: words,
-                                segments: segments
-                            ))
-                        }
-                        let taskBox = UncheckedSendable<SFSpeechRecognitionTask?>(task)
-                        taskRef.withLock { $0 = taskBox }
-                        if Task.isCancelled { taskRef.withLock { $0.value?.cancel() } }
-                    }
-                } onCancel: {
-                    taskRef.withLock { $0.value?.cancel() }
+            let recognizer = recognizerBox.value
+            recognizer.queue = queue
+            let task = recognizer.recognitionTask(with: requestBox.value) { result, error in
+                if let error {
+                    completion(.failure(SpeechError.recognitionFailed(error.localizedDescription)))
+                    return
                 }
-            }
-            group.addTask {
-                try await Task.sleep(nanoseconds: SpeechRequestOptions.recognitionTimeoutNs)
-                throw SpeechError.recognitionFailed("Recognition timed out")
-            }
-            let result = try await group.next()!
-            group.cancelAll()
-            return result
-        }
+                guard let result, result.isFinal else { return }
+                let transcription = result.bestTranscription
+                let formatted = transcription.formattedString
+                if formatted.isEmpty {
+                    completion(.failure(SpeechError.noSpeechFound))
+                    return
+                }
 
-        return transcriptionResult
+                let words = transcription.segments.map { seg in
+                    TranscriptionWord(
+                        word: seg.substring,
+                        start: seg.timestamp,
+                        end: seg.timestamp + seg.duration
+                    )
+                }
+
+                let totalDuration = transcription.segments.last.map { $0.timestamp + $0.duration } ?? 0
+                let avgConfidence = transcription.segments.isEmpty ? Float(0)
+                    : transcription.segments.map(\.confidence).reduce(0, +) / Float(transcription.segments.count)
+                let segments = [TranscriptionSegment(
+                    id: 0,
+                    start: 0,
+                    end: totalDuration,
+                    text: formatted,
+                    confidence: avgConfidence
+                )]
+                let lang = options.locale.split(separator: "-").first.map(String.init) ?? options.locale
+
+                completion(.success(TranscriptionResult(
+                    text: formatted,
+                    language: lang,
+                    duration: totalDuration,
+                    words: words,
+                    segments: segments
+                )))
+            }
+            let taskBox = UncheckedSendable(task)
+            return {
+                taskBox.value.cancel()
+            }
+        }
     }
 }

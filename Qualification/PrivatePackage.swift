@@ -38,7 +38,13 @@ let package = Package(
     products: [
         .library(name: "AFMKitCore", targets: ["AFMKitCore"]),
         .library(name: "AFMOpenAICompat", targets: ["AFMOpenAICompat"]),
+        .library(name: "AFMKitInference", targets: ["AFMKitInference"]),
         .library(name: "AFMKitApple", targets: ["AFMKitApple"]),
+        .library(name: "AFMKitEmbeddings", targets: ["AFMKitEmbeddings"]),
+        .library(name: "AFMKitSpeech", targets: ["AFMKitSpeech"]),
+        .library(name: "AFMKitSpeechSynthesis", targets: ["AFMKitSpeechSynthesis"]),
+        .library(name: "AFMKitVision", targets: ["AFMKitVision"]),
+        .library(name: "AFMKitServices", targets: ["AFMKitServices"]),
         .library(name: "AFMKitDwarfStar", targets: ["AFMKitDwarfStar"]),
         .library(name: "AFMKitMLX", targets: ["AFMKitMLX"]),
         .library(
@@ -93,10 +99,53 @@ let package = Package(
             path: "Candidate/Sources/AFMOpenAICompat"
         ),
         .target(
+            name: "AFMKitInference",
+            dependencies: ["AFMKitCore", "AFMOpenAICompat"],
+            path: "Candidate/Sources/AFMKitInference"
+        ),
+        .target(
             name: "AFMKitApple",
             dependencies: ["AFMKitCore", "AFMOpenAICompat"],
             path: "Candidate/Sources/AFMKitApple",
             linkerSettings: [.linkedFramework("Security")]
+        ),
+        .target(
+            name: "AFMKitEmbeddings",
+            path: "Candidate/Sources/AFMKitEmbeddings",
+            linkerSettings: [.linkedFramework("NaturalLanguage")]
+        ),
+        .target(
+            name: "AFMKitSpeech",
+            dependencies: ["AFMKitCore"],
+            path: "Candidate/Sources/AFMKitSpeech",
+            linkerSettings: [.linkedFramework("Speech")]
+        ),
+        .target(
+            name: "AFMKitSpeechSynthesis",
+            dependencies: ["AFMKitCore"],
+            path: "Candidate/Sources/AFMKitSpeechSynthesis",
+            linkerSettings: [.linkedFramework("AVFoundation")]
+        ),
+        .target(
+            name: "AFMKitVision",
+            path: "Candidate/Sources/AFMKitVision",
+            linkerSettings: [
+                .linkedFramework("Vision"),
+                .linkedFramework("CoreGraphics"),
+                .linkedFramework("ImageIO"),
+                .linkedFramework("PDFKit"),
+                .linkedFramework("Quartz")
+            ]
+        ),
+        .target(
+            name: "AFMKitServices",
+            dependencies: [
+                "AFMKitEmbeddings",
+                "AFMKitSpeech",
+                "AFMKitSpeechSynthesis",
+                "AFMKitVision"
+            ],
+            path: "Candidate/Sources/AFMKitServices"
         ),
         .target(
             name: "AFMXGrammar",
@@ -187,9 +236,39 @@ let package = Package(
             path: "Candidate/Tests/AFMOpenAICompatTests"
         ),
         .testTarget(
+            name: "AFMKitInferenceTests",
+            dependencies: ["AFMKitInference", "AFMKitCore", "AFMOpenAICompat"],
+            path: "Candidate/Tests/AFMKitInferenceTests"
+        ),
+        .testTarget(
             name: "AFMKitAppleTests",
             dependencies: ["AFMKitApple", "AFMKitCore"],
             path: "Candidate/Tests/AFMKitAppleTests"
+        ),
+        .testTarget(
+            name: "AFMKitEmbeddingsTests",
+            dependencies: ["AFMKitEmbeddings"],
+            path: "Candidate/Tests/AFMKitEmbeddingsTests"
+        ),
+        .testTarget(
+            name: "AFMKitSpeechTests",
+            dependencies: ["AFMKitSpeech"],
+            path: "Candidate/Tests/AFMKitSpeechTests"
+        ),
+        .testTarget(
+            name: "AFMKitSpeechSynthesisTests",
+            dependencies: ["AFMKitSpeechSynthesis"],
+            path: "Candidate/Tests/AFMKitSpeechSynthesisTests"
+        ),
+        .testTarget(
+            name: "AFMKitVisionTests",
+            dependencies: ["AFMKitVision"],
+            path: "Candidate/Tests/AFMKitVisionTests"
+        ),
+        .testTarget(
+            name: "AFMKitServicesTests",
+            dependencies: ["AFMKitServices"],
+            path: "Candidate/Tests/AFMKitServicesTests"
         ),
         .testTarget(
             name: "AFMKitMLXTests",

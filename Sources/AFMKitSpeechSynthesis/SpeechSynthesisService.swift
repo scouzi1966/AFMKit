@@ -110,6 +110,94 @@ public struct VoiceInfo: Sendable, Codable {
     }
 }
 
+/// Bridges the `afconvert` process into structured concurrency. The injected
+/// start closure keeps timeout/cancellation deterministic and testable without
+/// launching a subprocess.
+private final class AACEncodingAwaitState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var cancelled = false
+    private var resumed = false
+    private var cancel: (@Sendable () -> Void)?
+    private var continuation: CheckedContinuation<Void, Error>?
+
+    func install(_ continuation: CheckedContinuation<Void, Error>) -> Bool {
+        lock.withLock {
+            self.continuation = continuation
+            guard cancelled else { return false }
+            resumed = true
+            self.continuation = nil
+            return true
+        }
+    }
+
+    func installCancel(_ cancel: @escaping @Sendable () -> Void) -> Bool {
+        lock.withLock {
+            self.cancel = cancel
+            return cancelled
+        }
+    }
+
+    func finish() -> CheckedContinuation<Void, Error>? {
+        lock.withLock {
+            guard !resumed else { return nil }
+            resumed = true
+            defer { continuation = nil }
+            return continuation
+        }
+    }
+
+    func cancelOperation() -> ((@Sendable () -> Void)?, CheckedContinuation<Void, Error>?) {
+        lock.withLock {
+            cancelled = true
+            guard !resumed, let continuation else { return (cancel, nil) }
+            resumed = true
+            self.continuation = nil
+            return (cancel, continuation)
+        }
+    }
+}
+
+@available(macOS 13.0, *)
+func awaitAACEncoding(
+    timeoutNanoseconds: UInt64,
+    start: @escaping @Sendable (
+        @escaping @Sendable (Result<Void, Error>) -> Void
+    ) -> (@Sendable () -> Void)
+) async throws {
+    let state = AACEncodingAwaitState()
+
+    try await withThrowingTaskGroup(of: Void.self) { group in
+        group.addTask {
+            try await withTaskCancellationHandler {
+                try await withCheckedThrowingContinuation { continuation in
+                    let cancelledBeforeStart = state.install(continuation)
+                    if cancelledBeforeStart {
+                        continuation.resume(throwing: CancellationError())
+                        return
+                    }
+
+                    let cancel = start { result in
+                        let savedContinuation = state.finish()
+                        savedContinuation?.resume(with: result)
+                    }
+                    let cancelAfterStart = state.installCancel(cancel)
+                    if cancelAfterStart { cancel() }
+                }
+            } onCancel: {
+                let cancellation = state.cancelOperation()
+                cancellation.0?()
+                cancellation.1?.resume(throwing: CancellationError())
+            }
+        }
+        group.addTask {
+            try await Task.sleep(nanoseconds: timeoutNanoseconds)
+            throw SpeechSynthesisError.synthesisTimedOut
+        }
+        _ = try await group.next()!
+        group.cancelAll()
+    }
+}
+
 @available(macOS 13.0, *)
 public final class SpeechSynthesisService: NSObject, @unchecked Sendable {
 
@@ -312,55 +400,32 @@ public final class SpeechSynthesisService: NSObject, @unchecked Sendable {
                     stderrData.withLock { $0.append(chunk) }
                 }
             }
-            let resumed = OSAllocatedUnfairLock(initialState: false)
-            try await withThrowingTaskGroup(of: Void.self) { group in
-                group.addTask {
-                    try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-                        encode.terminationHandler = { process in
-                            errPipe.fileHandleForReading.readabilityHandler = nil
-                            let alreadyResumed = resumed.withLock { val -> Bool in
-                                if val { return true }
-                                val = true
-                                return false
-                            }
-                            guard !alreadyResumed else { return }
-                            if process.terminationStatus != 0 {
-                                let errMsg = stderrData.withLock { String(data: $0, encoding: .utf8) ?? "unknown" }
-                                continuation.resume(throwing: SpeechSynthesisError.synthesisFailed(
-                                    "AAC encode failed (\(process.terminationStatus)): \(errMsg)"
-                                ))
-                            } else {
-                                continuation.resume()
-                            }
-                        }
-                        do {
-                            try encode.run()
-                        } catch {
-                            let alreadyResumed = resumed.withLock { val -> Bool in
-                                if val { return true }
-                                val = true
-                                return false
-                            }
-                            guard !alreadyResumed else { return }
-                            continuation.resume(throwing: SpeechSynthesisError.synthesisFailed(
-                                "Failed to launch afconvert: \(error.localizedDescription)"
-                            ))
-                        }
+            let encodeBox = UncheckedSendable(encode)
+            let errorHandleBox = UncheckedSendable(errPipe.fileHandleForReading)
+            try await awaitAACEncoding(timeoutNanoseconds: TTSRequestOptions.encodeTimeoutNs) { completion in
+                encodeBox.value.terminationHandler = { process in
+                    errorHandleBox.value.readabilityHandler = nil
+                    if process.terminationStatus != 0 {
+                        let errMsg = stderrData.withLock { String(data: $0, encoding: .utf8) ?? "unknown" }
+                        completion(.failure(SpeechSynthesisError.synthesisFailed(
+                            "AAC encode failed (\(process.terminationStatus)): \(errMsg)"
+                        )))
+                    } else {
+                        completion(.success(()))
                     }
                 }
-                group.addTask {
-                    try await Task.sleep(nanoseconds: TTSRequestOptions.encodeTimeoutNs)
-                    let alreadyResumed = resumed.withLock { val -> Bool in
-                        if val { return true }
-                        val = true
-                        return false
-                    }
-                    encode.terminate()
-                    guard !alreadyResumed else { return }
-                    throw SpeechSynthesisError.synthesisTimedOut
+                do {
+                    try encodeBox.value.run()
+                } catch {
+                    errorHandleBox.value.readabilityHandler = nil
+                    completion(.failure(SpeechSynthesisError.synthesisFailed(
+                        "Failed to launch afconvert: \(error.localizedDescription)"
+                    )))
                 }
-                let _ = try await group.next()!
-                group.cancelAll()
+                return {
+                    errorHandleBox.value.readabilityHandler = nil
+                    if encodeBox.value.isRunning { encodeBox.value.terminate() }
+                }
             }
         }
     }
