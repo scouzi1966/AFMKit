@@ -29,7 +29,7 @@ flowchart LR
     Host --> Transport["Optional app transports\nHTTP, CLI, WebUI, MCP"]
 ```
 
-**Figure 1 — C4 system context.** AFMKit is an in-process three-package SDK. The host app is
+**Figure 1 — C4 system context.** AFMKit is an in-process, single-package SDK. The host app is
 the security and product boundary: it owns user interaction, network endpoints,
 credentials, signed capabilities, persistence, and app-specific actions.
 

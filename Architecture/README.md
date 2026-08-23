@@ -3,9 +3,7 @@
 This directory is the canonical architecture description for AFMKit. It uses a
 lightweight combination of the C4 model, arc42 concerns, architecture decision
 records (ADRs), and explicit interface/dependency catalogs. The source code and
-the three manifests at `Package.swift`, `Packages/AFMKitDwarfStar/Package.swift`,
-and `Packages/AFMKitMLX/Package.swift` remain authoritative when a document and
-implementation differ.
+root `Package.swift` remain authoritative when a document and implementation differ.
 
 ## Scope and status
 
@@ -86,16 +84,12 @@ flowchart LR
     MLX --> GitMLX["AFM-compatible MLX packages"]
     DS --> GitDS["vanilla antirez/ds4 submodule"]
 
-    subgraph PublicPackage["AFMKit package - public, dependency-free"]
+    subgraph PublicPackage["AFMKit package - one manifest and tag"]
         Core
         OAI
         Inference
         Apple
-    end
-    subgraph DwarfPackage["AFMKitDwarfStar package"]
         DS
-    end
-    subgraph MLXPackage["AFMKitMLX package - private graph"]
         MLX
         FMMLX
     end
@@ -107,8 +101,8 @@ toward dependencies; the neutral core does not know about provider implementatio
 
 ## Reading rules
 
-- Diagrams are explanatory. Product definitions in the three package manifests
-  and public declarations in their corresponding `Sources/` directories are
+- Diagrams are explanatory. Product definitions in the root package manifest
+  and public declarations in their corresponding source directories are
   normative.
 - “Internal” means package/target implementation detail. Some provider-specific
   types are currently declared `public` for advanced integrations; the interface

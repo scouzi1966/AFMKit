@@ -1,5 +1,5 @@
 {
-  "originHash" : "a905f95831b90e5818e2b0a37c1fe75e2723c59e4cdd2575cece2bcf43f4ca4a",
+  "originHash" : "7850f2772e21a867926bb8a0b1742ecb40d9c75f1ff13ab888c43e2adf25ef61",
   "pins" : [
     {
       "identity" : "async-http-client",
@@ -17,24 +17,6 @@
       "state" : {
         "revision" : "86b5096ac59ab46e66bd1f6377c604bc1dab0bc2",
         "version" : "1.5.1"
-      }
-    },
-    {
-      "identity" : "mlx-swift-afm",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/scouzi1966/mlx-swift-afm",
-      "state" : {
-        "revision" : "6000b7b26b70be2713c74e9ec2adeb89be07b9e5",
-        "version" : "0.31.6-afm.1"
-      }
-    },
-    {
-      "identity" : "mlx-swift-lm",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/scouzi1966/mlx-swift-lm.git",
-      "state" : {
-        "revision" : "e0d7fa71bc5e422a416f191c297264f698391561",
-        "version" : "0.31.6-afm.3"
       }
     },
     {
@@ -240,8 +222,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/swift-server/swift-service-lifecycle",
       "state" : {
-        "revision" : "7f9326b0326ff86e3646295ea6e891f68c471c5e",
-        "version" : "2.12.0"
+        "revision" : "9829955b385e5bb88128b73f1b8389e9b9c3191a",
+        "version" : "2.11.0"
       }
     },
     {
@@ -269,14 +251,6 @@
       "state" : {
         "revision" : "341bfd4172f6a57119bfd49bafa11cf5d21fab75",
         "version" : "0.2.3"
-      }
-    },
-    {
-      "identity" : "xgrammar",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/mlc-ai/xgrammar",
-      "state" : {
-        "revision" : "c1570cdb4f8c867a4dbd07b7ff90581f4a2a432b"
       }
     },
     {

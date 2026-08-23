@@ -60,7 +60,7 @@ The baselines are toolchain-qualified by `docs/api-baselines/toolchain.env`.
 `Scripts/check-api-baselines.sh` rejects any Xcode or macOS SDK build mismatch
 before extraction and rebuilds every requested target through SwiftPM. Pull
 requests and release qualification discover and validate all twelve public modules
-across the three package manifests. `AFMKitDwarfStar` currently has 42 normalized
+across the single root package manifest. `AFMKitDwarfStar` currently has 42 normalized
 public symbols; the other checked-in counts are Apple 322, Core 365, Inference 63,
 FoundationModelsMLX 73, MLX 1,216, and OpenAICompat 705. No public module is
 excluded from `Scripts/check-api-baselines.sh`.
@@ -132,7 +132,7 @@ metadata can carry additional diagnostics without making them universal fields.
 - Provider discovery and pre-load availability guarantees are not uniform; apps
   must follow the provider contract documented in
   `08-provider-contracts-and-configuration.md`.
-- The `AFMKitMLX` provider package depends on tagged AFM-compatible MLX
+- The `AFMKitMLX` product depends on tagged AFM-compatible MLX
   materializations. The authoritative delta remains in maclocal-api's patch
   catalog; each tag must be reproducible from a recorded upstream base and patch
   commit.

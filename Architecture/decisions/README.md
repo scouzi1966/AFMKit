@@ -11,7 +11,8 @@ new decision supersedes an old one.
 | [0003](0003-host-owned-authority.md) | Accepted | The host owns entitlements, tools, credentials, intents, and side effects. |
 | [0004](0004-engine-adapters-and-pins.md) | Accepted | Isolate engines behind adapters and qualify explicit dependency pins. |
 | [0005](0005-transport-outside-afmkit.md) | Accepted | Keep HTTP/server transports outside AFMKit. |
-| [0006](0006-package-boundary-provider-publication.md) | Accepted | Publish dependency-free and runtime products through separate package boundaries. |
+| [0006](0006-package-boundary-provider-publication.md) | Superseded by 0007 | Publish dependency-free and runtime products through separate package boundaries. |
+| [0007](0007-single-repository-package.md) | Accepted | Publish all AFMKit products from one repository, manifest, lock, and tag. |
 
 New ADRs use the next four-digit number and contain context, decision,
 consequences, alternatives, and verification implications.

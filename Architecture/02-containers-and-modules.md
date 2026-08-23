@@ -5,18 +5,14 @@
 ```mermaid
 flowchart TD
     App["Consumer app/service"]
-    subgraph Public["AFMKit package and repository tag"]
+    subgraph Public["AFMKit package and single repository tag"]
         Core["AFMKitCore"]
         OAI["AFMOpenAICompat"]
         Inference["AFMKitInference"]
         Services["Optional Apple services\nEmbeddings / Speech / TTS / Vision"]
         Apple["AFMKitApple"]
-    end
-    subgraph Dwarf["AFMKitDwarfStar package and repository tag"]
         DS["AFMKitDwarfStar"]
         CDS["CDwarfStar"]
-    end
-    subgraph PrivateMLX["AFMKitMLX package and repository tag"]
         MLX["AFMKitMLX"]
         FMMLX["AFMKitFoundationModelsMLX"]
         CGram["AFMXGrammar"]
@@ -43,23 +39,19 @@ flowchart TD
     DS --> CDS
 ```
 
-**Figure 1 — Package and target dependencies.** The root `AFMKit` package has no
-SwiftPM dependencies, so resolving any of its products cannot contact or
-authenticate to the MLX graph. Runtime providers are separate packages that pin
-the exact same-version AFMKit release. Product and module names remain unchanged.
+**Figure 1 — Package and target dependencies.** Every product is published from
+the root `AFMKit` package. Target boundaries prevent unused provider frameworks
+from linking into a consumer; SwiftPM still resolves the one root dependency graph.
 
 ## Package catalog
 
 | Published package | Source manifest | Products | Authentication |
 | --- | --- | --- | --- |
-| `AFMKit` | `Package.swift` | Core, OpenAI compatibility, inference, Apple provider, four optional Apple services, and the `AFMKitServices` umbrella | None; the manifest has no package dependencies. |
-| `AFMKitDwarfStar` | `Packages/AFMKitDwarfStar/Package.swift` | `AFMKitDwarfStar`, `AFMKitFoundationModelsDwarfStar` | Core runtime remains available with Xcode 26; the Foundation Models bridge is compiler-gated to Xcode 27. |
-| `AFMKitMLX` | `Packages/AFMKitMLX/Package.swift` | `AFMKitMLX`, `AFMKitFoundationModelsMLX` | Required for the private AFM-compatible MLX dependencies. |
+| `AFMKit` | `Package.swift` | All fourteen Core, Apple, service, MLX, DwarfStar, and Foundation Models bridge products | External dependencies are exact-pinned in one root lock and must be public before release. |
 
-The monorepo layout is a development and qualification convenience. Release
-automation materializes the two provider directories as self-contained Git
-repositories, rewrites their local AFMKit development dependency to the exact
-production AFMKit tag, and tests those exact manifests from fresh no-lock graphs.
+Provider directories organize implementation source only. Release qualification
+builds every product from one staged root tag and compares the fresh graph with
+the committed root lock.
 
 ## Product and target catalog
 
@@ -74,12 +66,12 @@ production AFMKit tag, and tests those exact manifests from fresh no-lock graphs
 | `AFMKitSpeechSynthesis` | `AFMKit` | Apple text-to-speech. | `SpeechSynthesisService`, voices, audio options. |
 | `AFMKitVision` | `AFMKit` | Apple Vision/PDF document analysis. | OCR, tables, barcodes, classification and saliency. |
 | `AFMKitServices` | `AFMKit` | Compatibility umbrella for all four service modules. | Re-exports the independently selectable products. |
-| `AFMKitMLX` | `AFMKitMLX` | Native local MLX provider and advanced serving surface. | `AFMMLXProviderFactory`, `AFMMLXModel`, `AFMMLXRuntimeConfiguration`. |
-| `AFMKitFoundationModelsMLX` | `AFMKitMLX` | macOS 27 custom `LanguageModel` bridge backed by MLX. | `MLXLanguageModel`, `MLXLanguageModelExecutor`, projection plan. |
-| `AFMKitDwarfStar` | `AFMKitDwarfStar` | DwarfStar/DS4 local provider. | `AFMDwarfStarProviderFactory`, `AFMDwarfStarModel`, runtime configuration. |
-| `AFMKitFoundationModelsDwarfStar` | `AFMKitDwarfStar` | macOS 27 custom `LanguageModel` bridge backed by DwarfStar. | `DwarfStarLanguageModel`, `DwarfStarLanguageModelExecutor`. |
-| `AFMXGrammar` | `AFMKitMLX` | Swift/C++ bridge to xgrammar. | Internal support target used by MLX guided generation. |
-| `CDwarfStar` | `AFMKitDwarfStar` | C/Objective-C/Metal bridge and engine integration. | Internal support target; not an app integration surface. |
+| `AFMKitMLX` | `AFMKit` | Native local MLX provider and advanced serving surface. | `AFMMLXProviderFactory`, `AFMMLXModel`, `AFMMLXRuntimeConfiguration`. |
+| `AFMKitFoundationModelsMLX` | `AFMKit` | macOS 27 custom `LanguageModel` bridge backed by MLX. | `MLXLanguageModel`, `MLXLanguageModelExecutor`, projection plan. |
+| `AFMKitDwarfStar` | `AFMKit` | DwarfStar/DS4 local provider. | `AFMDwarfStarProviderFactory`, `AFMDwarfStarModel`, runtime configuration. |
+| `AFMKitFoundationModelsDwarfStar` | `AFMKit` | macOS 27 custom `LanguageModel` bridge backed by DwarfStar. | `DwarfStarLanguageModel`, `DwarfStarLanguageModelExecutor`. |
+| `AFMXGrammar` | `AFMKit` | Swift/C++ bridge to xgrammar. | Internal support target used by MLX guided generation. |
+| `CDwarfStar` | `AFMKit` | C/Objective-C/Metal bridge and engine integration. | Internal support target; not an app integration surface. |
 
 ## Internal component view
 

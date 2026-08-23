@@ -5,15 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MODULE_PARSER="$ROOT/Scripts/public-library-modules.py"
 
 MODULES=()
-PACKAGE_ROOTS=(
-    "$ROOT"
-)
-for OPTIONAL_PACKAGE_ROOT in \
-    "$ROOT/Packages/AFMKitDwarfStar" \
-    "$ROOT/Packages/AFMKitMLX"; do
-    [[ ! -f "$OPTIONAL_PACKAGE_ROOT/Package.swift" ]] \
-        || PACKAGE_ROOTS+=("$OPTIONAL_PACKAGE_ROOT")
-done
+PACKAGE_ROOTS=("$ROOT")
 for PACKAGE_ROOT in "${PACKAGE_ROOTS[@]}"; do
     while IFS= read -r MODULE; do
         MODULES+=("$MODULE")

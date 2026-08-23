@@ -6,7 +6,6 @@ GUARD="$ROOT/Scripts/release-qualification-guard.sh"
 BUILD_ROOT="${AFMKIT_BUILD_ROOT:-$ROOT/.build}"
 TAG_VALIDATOR="$ROOT/Scripts/validate-release-tag.sh"
 DOWNSTREAM_GENERATOR="$ROOT/Scripts/generate-downstream-package.py"
-PROVIDER_MATERIALIZER="$ROOT/Scripts/materialize-provider-package.py"
 SANDBOX="$BUILD_ROOT/release-qualification-tests.$$"
 PASSED=0
 
@@ -18,14 +17,6 @@ mkdir -p "$SANDBOX"
 
 # shellcheck source=/dev/null
 source "$GUARD"
-
-if AFMKIT_MLX_SWIFT_PATH=/tmp/local-mlx \
-    afmkit_release_reject_local_overrides > "$SANDBOX/override.log" 2>&1; then
-    echo "Release qualification regression failed: local override was accepted." >&2
-    exit 1
-fi
-grep -q "rejects local dependency override" "$SANDBOX/override.log"
-PASSED=$((PASSED + 1))
 
 VALID_TAGS=(
     v0.0.0
@@ -119,7 +110,12 @@ if afmkit_release_validate_manifest < "$SANDBOX/local-manifest.json" \
     echo "Release qualification regression failed: local manifest dependency was accepted." >&2
     exit 1
 fi
-grep -q "requires every root dependency to use remote source control" "$SANDBOX/manifest.log"
+grep -q "rejected local dependency local" "$SANDBOX/manifest.log"
+PASSED=$((PASSED + 1))
+
+printf '%s\n' '{"dependencies":[{"fileSystem":[{"identity":"mlx-swift","path":"/checkout/vendor/MLX/mlx-swift"}]},{"fileSystem":[{"identity":"mlx-swift-lm","path":"/checkout/vendor/MLX/mlx-swift-lm"}]}]}' \
+    > "$SANDBOX/vendored-manifest.json"
+afmkit_release_validate_manifest < "$SANDBOX/vendored-manifest.json"
 PASSED=$((PASSED + 1))
 
 printf '%s\n' '{"dependencies":[{"sourceControl":[{"identity":"unstable","location":{"remote":[{"urlString":"https://github.com/example/unstable"}]},"requirement":{"revision":["0123456789012345678901234567890123456789"]}}]}]}' \
@@ -142,30 +138,7 @@ fi
 grep -q "requires exact dependency version" "$SANDBOX/range-manifest.log"
 PASSED=$((PASSED + 1))
 
-PROVIDER_FIXTURE="$SANDBOX/AFMKitDwarfStar"
-/usr/bin/python3 "$PROVIDER_MATERIALIZER" \
-    --source "$ROOT/Packages/AFMKitDwarfStar" \
-    --output "$PROVIDER_FIXTURE" \
-    --public-url "https://github.com/example/AFMKit.git" \
-    --version "1.2.3-rc.1" \
-    --source-sha "1111111111111111111111111111111111111111"
-/usr/bin/xcrun --toolchain XcodeDefault swift package dump-package \
-    --package-path "$PROVIDER_FIXTURE" | afmkit_release_validate_manifest
-grep -q 'exact: "1.2.3-rc.1"' "$PROVIDER_FIXTURE/Package.swift"
-if /usr/bin/python3 "$PROVIDER_MATERIALIZER" \
-    --source "$ROOT/Packages/AFMKitDwarfStar" \
-    --output "$SANDBOX/build-metadata-provider" \
-    --public-url "https://github.com/example/AFMKit.git" \
-    --version "1.2.3+build.1" \
-    --source-sha "1111111111111111111111111111111111111111" \
-    > "$SANDBOX/materializer.log" 2>&1; then
-    echo "Release qualification regression failed: provider build metadata was accepted." >&2
-    exit 1
-fi
-grep -q "reject SemVer build metadata" "$SANDBOX/materializer.log"
-PASSED=$((PASSED + 1))
-
-printf '%s\n' '{"dependencies":[],"targets":[{"name":"UnsafeTarget","settings":[{"kind":{"unsafeFlags":{"_0":["-O3"]}},"tool":"c"}]}]}' \
+printf '%s\n' '{"dependencies":[{"fileSystem":[{"identity":"mlx-swift","path":"/checkout/vendor/MLX/mlx-swift"}]},{"fileSystem":[{"identity":"mlx-swift-lm","path":"/checkout/vendor/MLX/mlx-swift-lm"}]}],"targets":[{"name":"UnsafeTarget","settings":[{"kind":{"unsafeFlags":{"_0":["-O3"]}},"tool":"c"}]}]}' \
     > "$SANDBOX/unsafe-manifest.json"
 if afmkit_release_validate_manifest < "$SANDBOX/unsafe-manifest.json" \
     > "$SANDBOX/unsafe-manifest.log" 2>&1; then

@@ -46,18 +46,18 @@ select another AFMKit provider by changing registration and configuration rather
 generation loop. Hosts that need the lower-level typed event contract may continue to call
 `AnyAFMModel` directly.
 
-The example declares separate local dependencies on the root AFMKit package and
-the `Packages/AFMKitMLX` provider package. After cloning source, initialize
-declared submodules before building:
+The example declares one local dependency on the root AFMKit package. Provider
+sources remain organized under `Packages/`, but they are targets of the root
+manifest rather than independently published packages. After cloning source,
+initialize declared submodules before building:
 
 ```bash
 git submodule update --init --recursive
 ```
 
-A downstream app selects the same exact version from both independently
-published repositories:
+A downstream app selects one exact AFMKit version and chooses the products it
+needs from that package:
 
 ```swift
-.package(url: "https://github.com/scouzi1966/AFMKit.git", exact: "0.1.0"),
-.package(url: "https://github.com/scouzi1966/AFMKitMLX.git", exact: "0.1.0")
+.package(url: "https://github.com/scouzi1966/AFMKit.git", exact: "0.1.0")
 ```

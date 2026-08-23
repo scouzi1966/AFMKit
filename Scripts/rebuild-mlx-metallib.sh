@@ -31,19 +31,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-MLXROOT=""
-if [[ -n "${AFMKIT_MLX_SWIFT_PATH:-}" ]]; then
-  MLXROOT="$AFMKIT_MLX_SWIFT_PATH/Source/Cmlx/mlx"
-else
-  for candidate in \
-    "$ROOT_DIR/.build/checkouts/mlx-swift-afm/Source/Cmlx/mlx" \
-    "$ROOT_DIR/.build/checkouts/mlx-swift/Source/Cmlx/mlx"; do
-    if [[ -d "$candidate" ]]; then
-      MLXROOT="$candidate"
-      break
-    fi
-  done
-fi
+MLXROOT="$ROOT_DIR/vendor/MLX/mlx-swift/Source/Cmlx/mlx"
 KDIR="$MLXROOT/mlx/backend/metal/kernels"
 TARGET_METALLIB="$ROOT_DIR/Packages/AFMKitMLX/Sources/AFMKitMLX/Resources/default.metallib"
 OSX_MIN="26.0"            # matches `apple-macosx26.0.0` baked into the shipped metallib

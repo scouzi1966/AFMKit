@@ -34,14 +34,12 @@ ARCHIVE_ROOTS = (
     "Packages/AFMKitDwarfStar/vendor",
     "Packages/AFMKitMLX/Sources",
     "Packages/AFMKitMLX/Tests",
+    "vendor/MLX",
     "docs/api-baselines",
 )
 ARCHIVE_FILES = (
     "Package.swift",
-    "Packages/AFMKitDwarfStar/Package.swift",
-    "Packages/AFMKitDwarfStar/Package.resolved",
-    "Packages/AFMKitMLX/Package.swift",
-    "Packages/AFMKitMLX/Package.resolved",
+    "Package.resolved",
 )
 
 

@@ -67,7 +67,7 @@ Required: Xcode $API_BASELINE_XCODE_VERSION ($API_BASELINE_XCODE_BUILD), macOS S
           $API_BASELINE_SWIFT_VERSION, executable SHA-256 $API_BASELINE_SWIFT_EXECUTABLE_SHA256
 Current:  Xcode ${actual_xcode_version:-unknown} (${actual_xcode_build:-unknown}), macOS SDK ${actual_sdk_version:-unknown} (${actual_sdk_build:-unknown})
           ${actual_swift_version:-unknown}, executable SHA-256 ${actual_swift_sha:-unknown}
-Select Xcode 27 Beta 3, for example:
+Select the qualified Xcode 27 toolchain, for example:
   export DEVELOPER_DIR=/Applications/Xcode-27.0.0-Beta.3.app/Contents/Developer
 Then rerun the gate. To qualify a different toolchain, intentionally regenerate and review every API baseline and update:
   $provenance

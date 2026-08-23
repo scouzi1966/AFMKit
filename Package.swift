@@ -1,6 +1,69 @@
 // swift-tools-version: 6.1
 import PackageDescription
 
+let mlxSwiftDependency = Package.Dependency.package(path: "vendor/MLX/mlx-swift")
+let mlxSwiftLMDependency = Package.Dependency.package(path: "vendor/MLX/mlx-swift-lm")
+let mlxSwiftPackageIdentity = "mlx-swift"
+let mlxSwiftLMPackageIdentity = "mlx-swift-lm"
+
+let releaseDependencyPins: [Package.Dependency] = [
+    .package(url: "https://github.com/swift-server/async-http-client", exact: "1.36.0"),
+    .package(url: "https://github.com/mattt/EventSource.git", exact: "1.5.1"),
+    .package(url: "https://github.com/apple/swift-algorithms.git", exact: "1.2.1"),
+    .package(url: "https://github.com/apple/swift-argument-parser", exact: "1.8.2"),
+    .package(url: "https://github.com/apple/swift-asn1.git", exact: "1.7.1"),
+    .package(url: "https://github.com/apple/swift-async-algorithms.git", exact: "1.1.5"),
+    .package(url: "https://github.com/apple/swift-atomics.git", exact: "1.3.1"),
+    .package(url: "https://github.com/apple/swift-certificates.git", exact: "1.19.4"),
+    .package(url: "https://github.com/apple/swift-collections.git", exact: "1.6.0"),
+    .package(url: "https://github.com/apple/swift-configuration.git", exact: "1.2.0"),
+    .package(url: "https://github.com/apple/swift-crypto.git", exact: "4.5.1"),
+    .package(url: "https://github.com/apple/swift-distributed-tracing.git", exact: "1.4.1"),
+    .package(url: "https://github.com/apple/swift-http-structured-headers.git", exact: "1.7.0"),
+    .package(url: "https://github.com/apple/swift-http-types.git", exact: "1.6.0"),
+    .package(url: "https://github.com/huggingface/swift-jinja.git", exact: "2.4.2"),
+    .package(url: "https://github.com/apple/swift-log.git", exact: "1.15.0"),
+    .package(url: "https://github.com/apple/swift-nio.git", exact: "2.101.3"),
+    .package(url: "https://github.com/apple/swift-nio-extras.git", exact: "1.34.3"),
+    .package(url: "https://github.com/apple/swift-nio-http2.git", exact: "1.45.0"),
+    .package(url: "https://github.com/apple/swift-nio-ssl.git", exact: "2.37.2"),
+    .package(url: "https://github.com/apple/swift-nio-transport-services.git", exact: "1.28.0"),
+    .package(url: "https://github.com/apple/swift-numerics", exact: "1.1.1"),
+    .package(url: "https://github.com/apple/swift-service-context.git", exact: "1.3.0"),
+    .package(url: "https://github.com/swift-server/swift-service-lifecycle", exact: "2.11.0"),
+    .package(url: "https://github.com/apple/swift-system.git", exact: "1.8.1"),
+    .package(url: "https://github.com/ibireme/yyjson.git", exact: "0.12.0")
+]
+
+let releaseGraphProductPins: [Target.Dependency] = [
+    .product(name: "AsyncHTTPClient", package: "async-http-client"),
+    .product(name: "EventSource", package: "eventsource"),
+    .product(name: "Algorithms", package: "swift-algorithms"),
+    .product(name: "ArgumentParser", package: "swift-argument-parser"),
+    .product(name: "SwiftASN1", package: "swift-asn1"),
+    .product(name: "AsyncAlgorithms", package: "swift-async-algorithms"),
+    .product(name: "Atomics", package: "swift-atomics"),
+    .product(name: "X509", package: "swift-certificates"),
+    .product(name: "Collections", package: "swift-collections"),
+    .product(name: "Configuration", package: "swift-configuration"),
+    .product(name: "Crypto", package: "swift-crypto"),
+    .product(name: "Instrumentation", package: "swift-distributed-tracing"),
+    .product(name: "StructuredFieldValues", package: "swift-http-structured-headers"),
+    .product(name: "HTTPTypes", package: "swift-http-types"),
+    .product(name: "Jinja", package: "swift-jinja"),
+    .product(name: "Logging", package: "swift-log"),
+    .product(name: "NIOCore", package: "swift-nio"),
+    .product(name: "NIOExtras", package: "swift-nio-extras"),
+    .product(name: "NIOHTTP2", package: "swift-nio-http2"),
+    .product(name: "NIOSSL", package: "swift-nio-ssl"),
+    .product(name: "NIOTransportServices", package: "swift-nio-transport-services"),
+    .product(name: "Numerics", package: "swift-numerics"),
+    .product(name: "ServiceContextModule", package: "swift-service-context"),
+    .product(name: "ServiceLifecycle", package: "swift-service-lifecycle"),
+    .product(name: "SystemPackage", package: "swift-system"),
+    .product(name: "yyjson", package: "yyjson")
+]
+
 var products: [Product] = [
     .library(name: "AFMKitCore", targets: ["AFMKitCore"]),
     .library(name: "AFMOpenAICompat", targets: ["AFMOpenAICompat"]),
@@ -10,30 +73,18 @@ var products: [Product] = [
     .library(name: "AFMKitSpeechSynthesis", targets: ["AFMKitSpeechSynthesis"]),
     .library(name: "AFMKitVision", targets: ["AFMKitVision"]),
     .library(name: "AFMKitServices", targets: ["AFMKitServices"]),
-    .library(name: "AFMEvalKit", targets: ["AFMEvalKit"])
+    .library(name: "AFMEvalKit", targets: ["AFMEvalKit"]),
+    .library(name: "AFMKitMLX", targets: ["AFMKitMLX"]),
+    .library(name: "AFMKitDwarfStar", targets: ["AFMKitDwarfStar"])
 ]
+
 var targets: [Target] = [
     .target(name: "AFMKitCore", dependencies: []),
     .target(name: "AFMOpenAICompat", dependencies: []),
-    .target(
-        name: "AFMKitInference",
-        dependencies: ["AFMKitCore", "AFMOpenAICompat"]
-    ),
-    .target(
-        name: "AFMKitEmbeddings",
-        dependencies: [],
-        linkerSettings: [.linkedFramework("NaturalLanguage")]
-    ),
-    .target(
-        name: "AFMKitSpeech",
-        dependencies: ["AFMKitCore"],
-        linkerSettings: [.linkedFramework("Speech")]
-    ),
-    .target(
-        name: "AFMKitSpeechSynthesis",
-        dependencies: ["AFMKitCore"],
-        linkerSettings: [.linkedFramework("AVFoundation")]
-    ),
+    .target(name: "AFMKitInference", dependencies: ["AFMKitCore", "AFMOpenAICompat"]),
+    .target(name: "AFMKitEmbeddings", dependencies: [], linkerSettings: [.linkedFramework("NaturalLanguage")]),
+    .target(name: "AFMKitSpeech", dependencies: ["AFMKitCore"], linkerSettings: [.linkedFramework("Speech")]),
+    .target(name: "AFMKitSpeechSynthesis", dependencies: ["AFMKitCore"], linkerSettings: [.linkedFramework("AVFoundation")]),
     .target(
         name: "AFMKitVision",
         dependencies: [],
@@ -45,57 +96,107 @@ var targets: [Target] = [
             .linkedFramework("Quartz")
         ]
     ),
+    .target(name: "AFMKitServices", dependencies: ["AFMKitEmbeddings", "AFMKitSpeech", "AFMKitSpeechSynthesis", "AFMKitVision"]),
+    .target(name: "AFMEvalKit", dependencies: ["AFMOpenAICompat"]),
     .target(
-        name: "AFMKitServices",
-        dependencies: [
-            "AFMKitEmbeddings",
-            "AFMKitSpeech",
-            "AFMKitSpeechSynthesis",
-            "AFMKitVision"
+        name: "AFMXGrammar",
+        dependencies: [],
+        path: "Packages/AFMKitMLX/Sources/CXGrammar",
+        sources: ["error_handler.cpp", "grammar_compiler.cpp", "grammar_matcher.cpp", "tokenizer_info.cpp", "xgrammar/cpp"],
+        cxxSettings: [
+            .headerSearchPath("xgrammar/include"),
+            .headerSearchPath("xgrammar/cpp"),
+            .headerSearchPath("xgrammar/3rdparty/dlpack/include"),
+            .headerSearchPath("xgrammar/3rdparty/picojson"),
+            .define("XGRAMMAR_ENABLE_LOG_DEBUG", to: "0"),
+            .define("XGRAMMAR_ENABLE_CPPTRACE", to: "0")
         ]
     ),
-    .target(name: "AFMEvalKit", dependencies: ["AFMOpenAICompat"]),
+    .target(name: "AFMKitMLXReleaseGraph", dependencies: releaseGraphProductPins, path: "Packages/AFMKitMLX/Sources/AFMKitMLXReleaseGraph"),
+    .target(
+        name: "AFMKitMLX",
+        dependencies: [
+            "AFMKitCore", "AFMOpenAICompat", "AFMXGrammar", "AFMKitMLXReleaseGraph",
+            .product(name: "MLX", package: mlxSwiftPackageIdentity),
+            .product(name: "MLXLLM", package: mlxSwiftLMPackageIdentity),
+            .product(name: "MLXVLM", package: mlxSwiftLMPackageIdentity),
+            .product(name: "MLXLMCommon", package: mlxSwiftLMPackageIdentity),
+            .product(name: "Tokenizers", package: "swift-transformers"),
+            .product(name: "Hub", package: "swift-transformers"),
+            .product(name: "HuggingFace", package: "swift-huggingface")
+        ],
+        path: "Packages/AFMKitMLX/Sources/AFMKitMLX",
+        resources: [.copy("Resources/default.metallib")],
+        linkerSettings: [.linkedFramework("Security"), .linkedFramework("IOKit"), .linkedLibrary("IOReport"), .linkedLibrary("sqlite3")]
+    ),
+    .target(
+        name: "CDwarfStar",
+        path: "Packages/AFMKitDwarfStar/Sources/CDwarfStar",
+        sources: [
+            "AFMDwarfStarBridge.c", "CDwarfStarKVStore.c", "CDwarfStarEngine.c", "CDwarfStarDistributed.c",
+            "CDwarfStarTensorParallel.c", "CDwarfStarSSD.c", "CDwarfStarMetal.m", "CDwarfStarLayerPack.c",
+            "CDwarfStarGPUUnavailable.cpp"
+        ],
+        publicHeadersPath: "include",
+        linkerSettings: [.linkedFramework("Foundation"), .linkedFramework("Metal")]
+    ),
+    .target(name: "AFMKitDwarfStarReleaseGraph", dependencies: releaseGraphProductPins, path: "Packages/AFMKitDwarfStar/Sources/AFMKitDwarfStarReleaseGraph"),
+    .target(
+        name: "AFMKitDwarfStar",
+        dependencies: [
+            "AFMKitCore", "CDwarfStar", "AFMKitDwarfStarReleaseGraph",
+            .product(name: "HuggingFace", package: "swift-huggingface"),
+            .product(name: "Xet", package: "swift-xet")
+        ],
+        path: "Packages/AFMKitDwarfStar/Sources/AFMKitDwarfStar",
+        resources: [.copy("../../vendor/ds4/metal")]
+    ),
     .testTarget(name: "AFMKitCoreTests", dependencies: ["AFMKitCore"]),
     .testTarget(name: "AFMOpenAICompatTests", dependencies: ["AFMOpenAICompat"]),
-    .testTarget(
-        name: "AFMKitInferenceTests",
-        dependencies: ["AFMKitInference", "AFMKitCore", "AFMOpenAICompat"]
-    ),
+    .testTarget(name: "AFMKitInferenceTests", dependencies: ["AFMKitInference", "AFMKitCore", "AFMOpenAICompat"]),
     .testTarget(name: "AFMKitEmbeddingsTests", dependencies: ["AFMKitEmbeddings"]),
     .testTarget(name: "AFMKitSpeechTests", dependencies: ["AFMKitSpeech"]),
     .testTarget(name: "AFMKitSpeechSynthesisTests", dependencies: ["AFMKitSpeechSynthesis"]),
     .testTarget(name: "AFMKitVisionTests", dependencies: ["AFMKitVision"]),
     .testTarget(name: "AFMKitServicesTests", dependencies: ["AFMKitServices"]),
-    .testTarget(name: "AFMEvalKitTests", dependencies: ["AFMEvalKit"])
+    .testTarget(name: "AFMEvalKitTests", dependencies: ["AFMEvalKit"]),
+    .testTarget(
+        name: "AFMKitMLXTests",
+        dependencies: ["AFMKitMLX", "AFMKitCore", "AFMOpenAICompat", .product(name: "MLXLMCommon", package: mlxSwiftLMPackageIdentity)],
+        path: "Packages/AFMKitMLX/Tests/AFMKitMLXTests"
+    ),
+    .testTarget(name: "AFMKitDwarfStarTests", dependencies: ["AFMKitCore", "AFMKitDwarfStar", "CDwarfStar"], path: "Packages/AFMKitDwarfStar/Tests/AFMKitDwarfStarTests")
 ]
 
 #if compiler(>=6.4)
 products.append(.library(name: "AFMKitApple", targets: ["AFMKitApple"]))
+products.append(.library(name: "AFMKitFoundationModelsMLX", targets: ["AFMKitFoundationModelsMLX"]))
+products.append(.library(name: "AFMKitFoundationModelsDwarfStar", targets: ["AFMKitFoundationModelsDwarfStar"]))
 targets.append(
     .target(
         name: "AFMKitApple",
         dependencies: ["AFMKitCore", "AFMOpenAICompat"],
-        linkerSettings: [
-            .linkedFramework("Security"),
-            .linkedFramework("ImageIO"),
-            .linkedFramework("UniformTypeIdentifiers")
-        ]
+        linkerSettings: [.linkedFramework("Security"), .linkedFramework("ImageIO"), .linkedFramework("UniformTypeIdentifiers")]
     )
 )
-targets.append(
-    .testTarget(
-        name: "AFMKitAppleTests",
-        dependencies: ["AFMKitApple", "AFMKitCore"]
-    )
-)
+targets.append(.target(name: "AFMKitFoundationModelsMLX", dependencies: ["AFMKitCore", "AFMKitApple", "AFMKitMLX"], path: "Packages/AFMKitMLX/Sources/AFMKitFoundationModelsMLX"))
+targets.append(.target(name: "AFMKitFoundationModelsDwarfStar", dependencies: ["AFMKitApple", "AFMKitCore", "AFMKitDwarfStar"], path: "Packages/AFMKitDwarfStar/Sources/AFMKitFoundationModelsDwarfStar"))
+targets.append(.testTarget(name: "AFMKitAppleTests", dependencies: ["AFMKitApple", "AFMKitCore"]))
+targets.append(.testTarget(name: "AFMKitFoundationModelsMLXTests", dependencies: ["AFMKitApple", "AFMKitCore", "AFMKitFoundationModelsMLX"], path: "Packages/AFMKitMLX/Tests/AFMKitFoundationModelsMLXTests"))
+targets.append(.testTarget(name: "AFMKitFoundationModelsDwarfStarTests", dependencies: ["AFMKitApple", "AFMKitCore", "AFMKitDwarfStar", "AFMKitFoundationModelsDwarfStar"], path: "Packages/AFMKitDwarfStar/Tests/AFMKitFoundationModelsDwarfStarTests"))
 #endif
 
 let package = Package(
     name: "AFMKit",
-    platforms: [
-        .macOS("26.0")
-    ],
+    platforms: [.macOS("26.0")],
     products: products,
-    dependencies: [],
-    targets: targets
+    dependencies: [
+        mlxSwiftLMDependency,
+        .package(url: "https://github.com/huggingface/swift-transformers", exact: "1.3.3"),
+        .package(url: "https://github.com/huggingface/swift-huggingface.git", exact: "0.9.0", traits: ["Xet"]),
+        .package(url: "https://github.com/huggingface/swift-xet.git", exact: "0.2.3"),
+        mlxSwiftDependency
+    ] + releaseDependencyPins,
+    targets: targets,
+    cxxLanguageStandard: .gnucxx17
 )

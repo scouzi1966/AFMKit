@@ -7,8 +7,7 @@ let package = Package(
         .macOS("26.0")
     ],
     dependencies: [
-        .package(name: "AFMKit", path: "../.."),
-        .package(name: "AFMKitMLX", path: "../../Packages/AFMKitMLX")
+        .package(name: "AFMKit", path: "../..")
     ],
     targets: [
         .executableTarget(
@@ -18,7 +17,7 @@ let package = Package(
                 .product(name: "AFMOpenAICompat", package: "AFMKit"),
                 .product(name: "AFMKitInference", package: "AFMKit"),
                 .product(name: "AFMKitApple", package: "AFMKit"),
-                .product(name: "AFMKitMLX", package: "AFMKitMLX")
+                .product(name: "AFMKitMLX", package: "AFMKit")
             ]
         )
     ]

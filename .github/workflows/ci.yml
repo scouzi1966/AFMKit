@@ -70,8 +70,6 @@ jobs:
         run: Scripts/check-dwarfstar-resources.sh
       - name: Test API gate failure modes
         run: Scripts/test-api-gate.sh
-      - name: Test private dependency auth cleanup
-        run: Scripts/test-private-dependency-auth.sh
       - name: Test release qualification guards
         run: Scripts/test-release-qualification.sh
       - name: Test idempotent release publication

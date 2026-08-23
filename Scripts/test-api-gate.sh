@@ -58,7 +58,7 @@ if AFMKIT_BUILD_ROOT="$MISMATCH_FIXTURE/.build" \
 fi
 grep -q "API baseline toolchain mismatch" "$SANDBOX_ROOT/toolchain-mismatch.log" \
     || fail "toolchain mismatch did not explain the failure"
-grep -q "Select Xcode 27 Beta 3" "$SANDBOX_ROOT/toolchain-mismatch.log" \
+grep -q "Select the qualified Xcode 27 toolchain" "$SANDBOX_ROOT/toolchain-mismatch.log" \
     || fail "toolchain mismatch did not provide an actionable selection"
 PASSED=$((PASSED + 1))
 
@@ -97,7 +97,7 @@ PASSED=$((PASSED + 1))
 CLEAN_FIXTURE="$SANDBOX_ROOT/clean-first-run"
 FAKE_BIN="$SANDBOX_ROOT/fake-bin"
 copy_gate_fixture "$CLEAN_FIXTURE"
-mkdir -p "$FAKE_BIN" "$CLEAN_FIXTURE/Packages/AFMKitMLX"
+mkdir -p "$FAKE_BIN"
 printf '{}\n' > "$CLEAN_FIXTURE/docs/api-baselines/AFMKitFoundationModelsMLX.symbols.json"
 
 cat > "$CLEAN_FIXTURE/Scripts/verify-qualified-toolchain.sh" <<'SH'
@@ -139,11 +139,11 @@ fi
 [[ -n "$MODULE" ]] || exit 64
 mkdir -p "$PRODUCTS/$MODULE.swiftmodule"
 SHIMS=(
-    ".build/mlx/checkouts/swift-numerics/Sources/_NumericsShims/include"
-    ".build/mlx/checkouts/swift-atomics/Sources/_AtomicsShims/include"
-    ".build/mlx/checkouts/swift-system/Sources/CSystem/include"
-    ".build/mlx/checkouts/swift-nio/Sources/CNIOWindows/include"
-    ".build/mlx/checkouts/mlx-swift-afm/Source/Cmlx/include"
+    ".build/public/checkouts/swift-numerics/Sources/_NumericsShims/include"
+    ".build/public/checkouts/swift-atomics/Sources/_AtomicsShims/include"
+    ".build/public/checkouts/swift-system/Sources/CSystem/include"
+    ".build/public/checkouts/swift-nio/Sources/CNIOWindows/include"
+    "vendor/MLX/mlx-swift/Source/Cmlx/include"
     "Packages/AFMKitMLX/Sources/CXGrammar/include"
 )
 for SHIMS_DIR in "${SHIMS[@]}"; do
@@ -165,7 +165,7 @@ cat > "$FAKE_BIN/swift-symbolgraph-extract" <<'SH'
 #!/bin/bash
 set -euo pipefail
 
-NUMERICS="$FAKE_ROOT/.build/mlx/checkouts/swift-numerics/Sources/_NumericsShims/include"
+NUMERICS="$FAKE_ROOT/.build/public/checkouts/swift-numerics/Sources/_NumericsShims/include"
 SAW_INCLUDE=0
 SAW_MODULE_MAP=0
 OUTPUT_DIR=""
@@ -261,9 +261,7 @@ PASSED=$((PASSED + 1))
 AGGREGATE_FIXTURE="$SANDBOX_ROOT/aggregate"
 mkdir -p \
     "$AGGREGATE_FIXTURE/Scripts" \
-    "$AGGREGATE_FIXTURE/docs/api-baselines" \
-    "$AGGREGATE_FIXTURE/Packages/AFMKitDwarfStar" \
-    "$AGGREGATE_FIXTURE/Packages/AFMKitMLX"
+    "$AGGREGATE_FIXTURE/docs/api-baselines"
 cp "$AGGREGATE" "$AGGREGATE_FIXTURE/Scripts/check-api-baselines.sh"
 cp "$COVERAGE_CHECKER" "$AGGREGATE_FIXTURE/Scripts/check-api-baseline-coverage.sh"
 cp "$MODULE_PARSER" "$AGGREGATE_FIXTURE/Scripts/public-library-modules.py"
@@ -282,6 +280,10 @@ let package = Package(
         .library(name: "AFMOpenAICompat", targets: ["AFMOpenAICompat"]),
         .library(name: "AFMKitInference", targets: ["AFMKitInference"]),
         .library(name: "AFMKitApple", targets: ["AFMKitApple"]),
+        .library(name: "AFMKitDwarfStar", targets: ["AFMKitDwarfStar"]),
+        .library(name: "AFMKitFoundationModelsDwarfStar", targets: ["AFMKitFoundationModelsDwarfStar"]),
+        .library(name: "AFMKitMLX", targets: ["AFMKitMLX"]),
+        .library(name: "AFMKitFoundationModelsMLX", targets: ["AFMKitFoundationModelsMLX"]),
         .executable(name: "AFMKitTool", targets: ["AFMKitTool"]),
     ],
     targets: [
@@ -289,57 +291,20 @@ let package = Package(
         .target(name: "AFMOpenAICompat"),
         .target(name: "AFMKitInference"),
         .target(name: "AFMKitApple"),
+        .target(name: "AFMKitDwarfStar"),
+        .target(name: "AFMKitFoundationModelsDwarfStar"),
+        .target(name: "AFMKitMLX"),
+        .target(name: "AFMKitFoundationModelsMLX"),
         .executableTarget(name: "AFMKitTool"),
     ]
 )
 SWIFT
-cat > "$AGGREGATE_FIXTURE/Packages/AFMKitDwarfStar/Package.swift" <<'SWIFT'
-// swift-tools-version: 6.2
-import PackageDescription
-
-let package = Package(
-    name: "AFMKitDwarfStar",
-    products: [
-        .library(name: "AFMKitDwarfStar", targets: ["AFMKitDwarfStar"]),
-        .library(name: "AFMKitFoundationModelsDwarfStar", targets: ["AFMKitFoundationModelsDwarfStar"]),
-    ],
-    targets: [
-        .target(name: "AFMKitDwarfStar"),
-        .target(name: "AFMKitFoundationModelsDwarfStar"),
-    ]
-)
-SWIFT
-cat > "$AGGREGATE_FIXTURE/Packages/AFMKitMLX/Package.swift" <<'SWIFT'
-// swift-tools-version: 6.2
-import PackageDescription
-
-let package = Package(
-    name: "AFMKitMLX",
-    products: [
-        .library(name: "AFMKitMLX", targets: ["AFMKitMLX"]),
-        .library(name: "AFMKitFoundationModelsMLX", targets: ["AFMKitFoundationModelsMLX"]),
-    ],
-    targets: [
-        .target(name: "AFMKitMLX"),
-        .target(name: "AFMKitFoundationModelsMLX"),
-    ]
-)
-SWIFT
-for MODULE in AFMKitCore AFMOpenAICompat AFMKitInference AFMKitApple; do
+for MODULE in \
+    AFMKitCore AFMOpenAICompat AFMKitInference AFMKitApple \
+    AFMKitDwarfStar AFMKitFoundationModelsDwarfStar \
+    AFMKitMLX AFMKitFoundationModelsMLX; do
     mkdir -p "$AGGREGATE_FIXTURE/Sources/$MODULE"
     printf '// fixture\n' > "$AGGREGATE_FIXTURE/Sources/$MODULE/Fixture.swift"
-    printf '{}\n' > "$AGGREGATE_FIXTURE/docs/api-baselines/$MODULE.symbols.json"
-done
-for MODULE in AFMKitDwarfStar AFMKitFoundationModelsDwarfStar; do
-    mkdir -p "$AGGREGATE_FIXTURE/Packages/AFMKitDwarfStar/Sources/$MODULE"
-    printf '// fixture\n' \
-        > "$AGGREGATE_FIXTURE/Packages/AFMKitDwarfStar/Sources/$MODULE/Fixture.swift"
-    printf '{}\n' > "$AGGREGATE_FIXTURE/docs/api-baselines/$MODULE.symbols.json"
-done
-for MODULE in AFMKitMLX AFMKitFoundationModelsMLX; do
-    mkdir -p "$AGGREGATE_FIXTURE/Packages/AFMKitMLX/Sources/$MODULE"
-    printf '// fixture\n' \
-        > "$AGGREGATE_FIXTURE/Packages/AFMKitMLX/Sources/$MODULE/Fixture.swift"
     printf '{}\n' > "$AGGREGATE_FIXTURE/docs/api-baselines/$MODULE.symbols.json"
 done
 mkdir -p "$AGGREGATE_FIXTURE/Sources/AFMKitTool"
@@ -361,7 +326,7 @@ grep -qx "AFMKitFoundationModelsDwarfStar" "$AGGREGATE_FIXTURE/checker-calls" \
     || fail "aggregate API gate omitted AFMKitFoundationModelsDwarfStar"
 PASSED=$((PASSED + 1))
 
-/usr/bin/python3 - "$AGGREGATE_FIXTURE/Packages/AFMKitMLX/Package.swift" <<'PY'
+/usr/bin/python3 - "$AGGREGATE_FIXTURE/Package.swift" <<'PY'
 import sys
 
 path = sys.argv[1]
@@ -380,9 +345,9 @@ package = package.replace(
 with open(path, "w", encoding="utf-8") as handle:
     handle.write(package)
 PY
-mkdir -p "$AGGREGATE_FIXTURE/Packages/AFMKitMLX/Sources/AFMKitFuture"
+mkdir -p "$AGGREGATE_FIXTURE/Sources/AFMKitFuture"
 printf '// fixture\n' \
-    > "$AGGREGATE_FIXTURE/Packages/AFMKitMLX/Sources/AFMKitFuture/Fixture.swift"
+    > "$AGGREGATE_FIXTURE/Sources/AFMKitFuture/Fixture.swift"
 rm -f "$AGGREGATE_FIXTURE/checker-calls"
 if FAKE_CHECKER_CALLS="$AGGREGATE_FIXTURE/checker-calls" \
     "$AGGREGATE_FIXTURE/Scripts/check-api-baselines.sh" \

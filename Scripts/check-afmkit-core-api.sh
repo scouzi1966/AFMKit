@@ -17,17 +17,9 @@ if [[ -n "${AFMKIT_API_PACKAGE_ROOT:-}" ]]; then
     PACKAGE_BUILD_DIR="$BUILD_DIR"
 else
 case "$MODULE" in
-    AFMKitCore|AFMOpenAICompat|AFMKitInference|AFMKitApple|AFMKitEmbeddings|AFMKitSpeech|AFMKitSpeechSynthesis|AFMKitVision|AFMKitServices|AFMEvalKit)
+    AFMKitCore|AFMOpenAICompat|AFMKitInference|AFMKitApple|AFMKitEmbeddings|AFMKitSpeech|AFMKitSpeechSynthesis|AFMKitVision|AFMKitServices|AFMEvalKit|AFMKitDwarfStar|AFMKitFoundationModelsDwarfStar|AFMKitMLX|AFMKitFoundationModelsMLX)
         PACKAGE_ROOT="$ROOT"
         PACKAGE_BUILD_DIR="$BUILD_DIR/public"
-        ;;
-    AFMKitDwarfStar|AFMKitFoundationModelsDwarfStar)
-        PACKAGE_ROOT="$ROOT/Packages/AFMKitDwarfStar"
-        PACKAGE_BUILD_DIR="$BUILD_DIR/dwarfstar"
-        ;;
-    AFMKitMLX|AFMKitFoundationModelsMLX)
-        PACKAGE_ROOT="$ROOT/Packages/AFMKitMLX"
-        PACKAGE_BUILD_DIR="$BUILD_DIR/mlx"
         ;;
     *)
         echo "Unknown public AFMKit module: $MODULE" >&2
@@ -87,7 +79,7 @@ NUMERICS_SHIMS="$PACKAGE_BUILD_DIR/checkouts/swift-numerics/Sources/_NumericsShi
 ATOMICS_SHIMS="$PACKAGE_BUILD_DIR/checkouts/swift-atomics/Sources/_AtomicsShims/include"
 SYSTEM_SHIMS="$PACKAGE_BUILD_DIR/checkouts/swift-system/Sources/CSystem/include"
 NIO_WINDOWS="$PACKAGE_BUILD_DIR/checkouts/swift-nio/Sources/CNIOWindows/include"
-MLX_SWIFT_ROOT="${AFMKIT_MLX_SWIFT_PATH:-$PACKAGE_BUILD_DIR/checkouts/mlx-swift-afm}"
+MLX_SWIFT_ROOT="$ROOT/vendor/MLX/mlx-swift"
 CMLX="$MLX_SWIFT_ROOT/Source/Cmlx/include"
 AFM_XGRAMMAR="${AFMKIT_API_XGRAMMAR_ROOT:-$ROOT/Packages/AFMKitMLX/Sources/CXGrammar/include}"
 SHIMS_DIRS=(

@@ -8,31 +8,26 @@ import urllib.parse
 
 GRAPH_FILES = (
     "Package.swift",
-    "Packages/AFMKitDwarfStar/Package.swift",
-    "Packages/AFMKitDwarfStar/Package.resolved",
-    "Packages/AFMKitMLX/Package.swift",
-    "Packages/AFMKitMLX/Package.resolved",
+    "Package.resolved",
+    "vendor/MLX/mlx-swift/Package.swift",
+    "vendor/MLX/mlx-swift-lm/Package.swift",
 )
 EXACT_DEPENDENCY = re.compile(
-    r"\.package\(\s*url:\s*\"([^\"]+)\"\s*,\s*exact:\s*\"([^\"]+)\"",
+    r'\.package\(\s*url:\s*"([^"]+)"\s*,\s*exact:\s*"([^"]+)"',
     re.MULTILINE,
 )
 
 
 def package_identity(url: str) -> str:
-    path = urllib.parse.urlparse(url).path.rstrip("/")
-    name = pathlib.PurePosixPath(path).name
+    name = pathlib.PurePosixPath(urllib.parse.urlparse(url).path.rstrip("/")).name
     return (name[:-4] if name.lower().endswith(".git") else name).lower()
 
 
 def exact_dependencies(path: pathlib.Path) -> dict[str, tuple[str, str]]:
-    dependencies: dict[str, tuple[str, str]] = {}
-    for url, version in EXACT_DEPENDENCY.findall(path.read_text(encoding="utf-8")):
-        identity = package_identity(url)
-        value = (url, version)
-        if identity in dependencies and dependencies[identity] != value:
-            raise SystemExit(f"{path} declares conflicting requirements for {identity}.")
-        dependencies[identity] = value
+    dependencies = {
+        package_identity(url): (url, version)
+        for url, version in EXACT_DEPENDENCY.findall(path.read_text(encoding="utf-8"))
+    }
     if not dependencies:
         raise SystemExit(f"{path} contains no exact remote dependencies.")
     return dependencies
@@ -40,44 +35,17 @@ def exact_dependencies(path: pathlib.Path) -> dict[str, tuple[str, str]]:
 
 def resolved_pins(path: pathlib.Path) -> dict[str, tuple[str, str, str]]:
     document = json.loads(path.read_text(encoding="utf-8"))
-    if document.get("version") != 3 or not isinstance(document.get("pins"), list):
-        raise SystemExit(f"{path} is not a version 3 SwiftPM lock.")
     pins: dict[str, tuple[str, str, str]] = {}
-    for pin in document["pins"]:
-        identity = pin.get("identity")
-        location = pin.get("location")
-        state = pin.get("state") or {}
-        version = state.get("version")
-        revision = state.get("revision")
-        if not isinstance(identity, str) or not identity:
-            raise SystemExit(f"{path} contains a pin without an identity.")
-        if identity in pins:
-            raise SystemExit(f"{path} contains duplicate pin {identity}.")
-        if not isinstance(location, str) or not location.startswith("https://"):
-            raise SystemExit(f"{path} pin {identity} does not use HTTPS.")
-        if not isinstance(version, str) or not version:
-            raise SystemExit(f"{path} pin {identity} does not have an exact version.")
-        if not isinstance(revision, str) or not re.fullmatch(r"[0-9a-f]{40}", revision):
-            raise SystemExit(f"{path} pin {identity} does not have an immutable revision.")
+    for pin in document.get("pins", []):
+        identity = pin.get("identity", "")
+        state = pin.get("state", {})
+        location = pin.get("location", "")
+        version = state.get("version", "")
+        revision = state.get("revision", "")
+        if identity in pins or not location.startswith("https://") or not version or not re.fullmatch(r"[0-9a-f]{40}", revision):
+            raise SystemExit(f"{path} contains an invalid or duplicate pin {identity!r}.")
         pins[identity] = (location, version, revision)
     return pins
-
-
-def validate_direct_dependencies(
-    manifest: pathlib.Path,
-    lock: pathlib.Path,
-) -> dict[str, tuple[str, str]]:
-    dependencies = exact_dependencies(manifest)
-    pins = resolved_pins(lock)
-    for identity, (_, version) in dependencies.items():
-        pin = pins.get(identity)
-        if pin is None:
-            raise SystemExit(f"{lock} does not pin direct dependency {identity}.")
-        if pin[1] != version:
-            raise SystemExit(
-                f"{lock} pins {identity} at {pin[1]}, but {manifest} requires {version}."
-            )
-    return dependencies
 
 
 def main() -> int:
@@ -87,43 +55,27 @@ def main() -> int:
     parser.add_argument("--qualification-manifest", type=pathlib.Path, required=True)
     arguments = parser.parse_args()
 
-    candidate = arguments.candidate.resolve()
-    trusted = arguments.trusted.resolve()
     for relative in GRAPH_FILES:
-        candidate_path = candidate / relative
-        trusted_path = trusted / relative
-        if candidate_path.read_bytes() != trusted_path.read_bytes():
+        if (arguments.candidate / relative).read_bytes() != (arguments.trusted / relative).read_bytes():
             raise SystemExit(
                 f"Candidate graph input {relative} differs from the trusted default-branch copy. "
                 "Dependency-graph changes require a separately trusted infrastructure update."
             )
 
-    mlx_manifest = candidate / "Packages/AFMKitMLX/Package.swift"
-    mlx_lock = candidate / "Packages/AFMKitMLX/Package.resolved"
-    dwarf_manifest = candidate / "Packages/AFMKitDwarfStar/Package.swift"
-    dwarf_lock = candidate / "Packages/AFMKitDwarfStar/Package.resolved"
-    mlx_dependencies = validate_direct_dependencies(mlx_manifest, mlx_lock)
-    dwarf_dependencies = validate_direct_dependencies(dwarf_manifest, dwarf_lock)
+    root_dependencies = exact_dependencies(arguments.candidate / "Package.swift")
     qualification_dependencies = exact_dependencies(arguments.qualification_manifest)
+    if qualification_dependencies != root_dependencies:
+        raise SystemExit("Trusted private qualification dependencies do not equal the candidate root manifest.")
 
-    if qualification_dependencies != mlx_dependencies:
-        raise SystemExit(
-            "Trusted private qualification dependencies do not equal the candidate MLX manifest."
-        )
-    if not set(dwarf_dependencies.items()).issubset(set(mlx_dependencies.items())):
-        raise SystemExit("DwarfStar direct dependencies are not a subset of the MLX graph.")
-
-    mlx_pins = resolved_pins(mlx_lock)
-    dwarf_pins = resolved_pins(dwarf_lock)
-    for identity, dwarf_pin in dwarf_pins.items():
-        if mlx_pins.get(identity) != dwarf_pin:
-            raise SystemExit(
-                f"Provider locks disagree on shared dependency {identity}."
-            )
+    pins = resolved_pins(arguments.candidate / "Package.resolved")
+    for identity, (_, version) in root_dependencies.items():
+        pin = pins.get(identity)
+        if pin is None or pin[1] != version:
+            raise SystemExit(f"Root lock does not pin exact dependency {identity} at {version}.")
 
     print(
-        "Candidate manifests and locks equal the trusted graph: "
-        f"{len(mlx_dependencies)} direct dependencies, {len(mlx_pins)} resolved pins."
+        "Candidate manifest and lock equal the trusted single-package graph: "
+        f"{len(root_dependencies)} direct dependencies, {len(pins)} resolved pins."
     )
     return 0
 

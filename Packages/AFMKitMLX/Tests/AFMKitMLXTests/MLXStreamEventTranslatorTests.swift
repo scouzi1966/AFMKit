@@ -218,15 +218,15 @@ final class MLXStreamEventTranslatorTests: XCTestCase {
     }
 
     private func completedToolCall(from events: [AFMGenerationEvent]) -> AFMToolCall? {
-        events.compactMap {
-            guard case .toolCall(let call, .completed) = $0 else { return nil }
+        events.compactMap { event -> AFMToolCall? in
+            guard case .toolCall(let call, .completed) = event else { return nil }
             return call
         }.last
     }
 
     private func completionReason(from events: [AFMGenerationEvent]) -> AFMFinishReason? {
-        events.compactMap {
-            guard case .completed(let reason) = $0 else { return nil }
+        events.compactMap { event -> AFMFinishReason? in
+            guard case .completed(let reason) = event else { return nil }
             return reason
         }.last
     }
