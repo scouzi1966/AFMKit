@@ -1,0 +1,25 @@
+{
+  "metadata": {
+    "formatVersion": {
+      "major": 0,
+      "minor": 6,
+      "patch": 0
+    }
+  },
+  "module": {
+    "name": "AFMKitServices",
+    "platform": {
+      "architecture": "arm64",
+      "operatingSystem": {
+        "minimumVersion": {
+          "major": 26,
+          "minor": 0
+        },
+        "name": "macosx"
+      },
+      "vendor": "apple"
+    }
+  },
+  "relationships": [],
+  "symbols": []
+}

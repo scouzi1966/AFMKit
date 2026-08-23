@@ -241,4 +241,4 @@ with open(path, "w", encoding="utf-8") as handle:
 PY
 fi
 
-echo "AFMKit downstream staging mirrors built all seven public products from fresh graphs."
+echo "AFMKit downstream staging mirrors built all twelve public products from fresh graphs."

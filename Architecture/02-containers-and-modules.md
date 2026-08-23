@@ -9,6 +9,7 @@ flowchart TD
         Core["AFMKitCore"]
         OAI["AFMOpenAICompat"]
         Inference["AFMKitInference"]
+        Services["Optional Apple services\nEmbeddings / Speech / TTS / Vision"]
         Apple["AFMKitApple"]
     end
     subgraph Dwarf["AFMKitDwarfStar package and repository tag"]
@@ -24,6 +25,7 @@ flowchart TD
     App --> Core
     App -. optional .-> OAI
     App -. high-level facade .-> Inference
+    App -. optional service .-> Services
     App -. provider .-> Apple
     App -. provider .-> MLX
     App -. provider .-> DS
@@ -42,7 +44,7 @@ flowchart TD
 ```
 
 **Figure 1 — Package and target dependencies.** The root `AFMKit` package has no
-SwiftPM dependencies, so resolving any of its four products cannot contact or
+SwiftPM dependencies, so resolving any of its products cannot contact or
 authenticate to the MLX graph. Runtime providers are separate packages that pin
 the exact same-version AFMKit release. Product and module names remain unchanged.
 
@@ -50,7 +52,7 @@ the exact same-version AFMKit release. Product and module names remain unchanged
 
 | Published package | Source manifest | Products | Authentication |
 | --- | --- | --- | --- |
-| `AFMKit` | `Package.swift` | `AFMKitCore`, `AFMOpenAICompat`, `AFMKitInference`, `AFMKitApple` | None; the manifest has no package dependencies. |
+| `AFMKit` | `Package.swift` | Core, OpenAI compatibility, inference, Apple provider, four optional Apple services, and the `AFMKitServices` umbrella | None; the manifest has no package dependencies. |
 | `AFMKitDwarfStar` | `Packages/AFMKitDwarfStar/Package.swift` | `AFMKitDwarfStar` | None for AFMKit; public Hub/Xet dependencies are exact-pinned. |
 | `AFMKitMLX` | `Packages/AFMKitMLX/Package.swift` | `AFMKitMLX`, `AFMKitFoundationModelsMLX` | Required for the private AFM-compatible MLX dependencies. |
 
@@ -67,6 +69,11 @@ production AFMKit tag, and tests those exact manifests from fresh no-lock graphs
 | `AFMOpenAICompat` | `AFMKit` | OpenAI-compatible wire DTOs independent of HTTP. | Chat, stream, tool, response-format, file, batch, embedding, error, timing DTOs. |
 | `AFMKitInference` | `AFMKit` | Provider-neutral high-level inference facade. | `AFMEngine`, `AFMLanguageModel`, generation configuration, OpenAI request conversion. |
 | `AFMKitApple` | `AFMKit` | Apple on-device and PCC provider. | `AFMFoundationProviderFactory`, `AFMFoundationModel`, capability probes. |
+| `AFMKitEmbeddings` | `AFMKit` | Apple NaturalLanguage contextual embeddings. | Registry, resolver, backend protocol, normalization and encoding helpers. |
+| `AFMKitSpeech` | `AFMKit` | On-device Apple speech recognition. | `SpeechService`, request options, transcription results. |
+| `AFMKitSpeechSynthesis` | `AFMKit` | Apple text-to-speech. | `SpeechSynthesisService`, voices, audio options. |
+| `AFMKitVision` | `AFMKit` | Apple Vision/PDF document analysis. | OCR, tables, barcodes, classification and saliency. |
+| `AFMKitServices` | `AFMKit` | Compatibility umbrella for all four service modules. | Re-exports the independently selectable products. |
 | `AFMKitMLX` | `AFMKitMLX` | Native local MLX provider and advanced serving surface. | `AFMMLXProviderFactory`, `AFMMLXModel`, `AFMMLXRuntimeConfiguration`. |
 | `AFMKitFoundationModelsMLX` | `AFMKitMLX` | macOS 27 custom `LanguageModel` bridge backed by MLX. | `MLXLanguageModel`, `MLXLanguageModelExecutor`, projection plan. |
 | `AFMKitDwarfStar` | `AFMKitDwarfStar` | DwarfStar/DS4 local provider. | `AFMDwarfStarProviderFactory`, `AFMDwarfStarModel`, runtime configuration. |

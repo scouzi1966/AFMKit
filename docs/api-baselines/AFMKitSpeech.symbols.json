@@ -1,0 +1,4445 @@
+{
+  "metadata": {
+    "formatVersion": {
+      "major": 0,
+      "minor": 6,
+      "patch": 0
+    }
+  },
+  "module": {
+    "name": "AFMKitSpeech",
+    "platform": {
+      "architecture": "arm64",
+      "operatingSystem": {
+        "minimumVersion": {
+          "major": 26,
+          "minor": 0
+        },
+        "name": "macosx"
+      },
+      "vendor": "apple"
+    }
+  },
+  "relationships": [
+    {
+      "kind": "conformsTo",
+      "source": "s:12AFMKitSpeech0B14RequestOptionsV",
+      "target": "s:s16SendableMetatypeP",
+      "targetFallback": "Swift.SendableMetatype"
+    },
+    {
+      "kind": "conformsTo",
+      "source": "s:12AFMKitSpeech0B14RequestOptionsV",
+      "target": "s:s8SendableP",
+      "targetFallback": "Swift.Sendable"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:12AFMKitSpeech0B14RequestOptionsV19defaultMaxFileBytesSivpZ",
+      "target": "s:12AFMKitSpeech0B14RequestOptionsV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:12AFMKitSpeech0B14RequestOptionsV19supportedExtensionsShySSGvpZ",
+      "target": "s:12AFMKitSpeech0B14RequestOptionsV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:12AFMKitSpeech0B14RequestOptionsV6localeACSS_tcfc",
+      "target": "s:12AFMKitSpeech0B14RequestOptionsV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:12AFMKitSpeech0B14RequestOptionsV6localeSSvp",
+      "target": "s:12AFMKitSpeech0B14RequestOptionsV"
+    },
+    {
+      "kind": "conformsTo",
+      "source": "s:12AFMKitSpeech0B5ErrorO",
+      "target": "s:10Foundation14LocalizedErrorP",
+      "targetFallback": "Foundation.LocalizedError"
+    },
+    {
+      "kind": "conformsTo",
+      "source": "s:12AFMKitSpeech0B5ErrorO",
+      "target": "s:s16SendableMetatypeP",
+      "targetFallback": "Swift.SendableMetatype"
+    },
+    {
+      "kind": "conformsTo",
+      "source": "s:12AFMKitSpeech0B5ErrorO",
+      "target": "s:s5ErrorP",
+      "targetFallback": "Swift.Error"
+    },
+    {
+      "kind": "conformsTo",
+      "source": "s:12AFMKitSpeech0B5ErrorO",
+      "target": "s:s8SendableP",
+      "targetFallback": "Swift.Sendable"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:12AFMKitSpeech0B5ErrorO02noB5FoundyA2CmF",
+      "target": "s:12AFMKitSpeech0B5ErrorO"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:12AFMKitSpeech0B5ErrorO12fileNotFoundyA2CmF",
+      "target": "s:12AFMKitSpeech0B5ErrorO"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:12AFMKitSpeech0B5ErrorO16errorDescriptionSSSgvp",
+      "sourceOrigin": {
+        "displayName": "LocalizedError.errorDescription",
+        "identifier": "s:10Foundation14LocalizedErrorP16errorDescriptionSSSgvp"
+      },
+      "target": "s:12AFMKitSpeech0B5ErrorO"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:12AFMKitSpeech0B5ErrorO17recognitionFailedyACSScACmF",
+      "target": "s:12AFMKitSpeech0B5ErrorO"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:12AFMKitSpeech0B5ErrorO17unsupportedFormatyA2CmF",
+      "target": "s:12AFMKitSpeech0B5ErrorO"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:12AFMKitSpeech0B5ErrorO19authorizationDeniedyA2CmF",
+      "target": "s:12AFMKitSpeech0B5ErrorO"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:12AFMKitSpeech0B5ErrorO19platformUnavailableyA2CmF",
+      "target": "s:12AFMKitSpeech0B5ErrorO"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:12AFMKitSpeech0B5ErrorO20onDeviceNotAvailableyA2CmF",
+      "target": "s:12AFMKitSpeech0B5ErrorO"
+    },
+    {
+      "kind": "conformsTo",
+      "source": "s:12AFMKitSpeech0B7ServiceC",
+      "target": "s:s16SendableMetatypeP",
+      "targetFallback": "Swift.SendableMetatype"
+    },
+    {
+      "kind": "conformsTo",
+      "source": "s:12AFMKitSpeech0B7ServiceC",
+      "target": "s:s8SendableP",
+      "targetFallback": "Swift.Sendable"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:12AFMKitSpeech0B7ServiceC10transcribe4from7optionsS2S_AA0B14RequestOptionsVtYaKF",
+      "target": "s:12AFMKitSpeech0B7ServiceC"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:12AFMKitSpeech0B7ServiceC10transcribe4fromS2S_tYaKF",
+      "target": "s:12AFMKitSpeech0B7ServiceC"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:12AFMKitSpeech0B7ServiceC21transcribeWithDetails4from7optionsAA19TranscriptionResultVSS_AA0B14RequestOptionsVtYaKF",
+      "target": "s:12AFMKitSpeech0B7ServiceC"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:12AFMKitSpeech0B7ServiceC21transcribeWithDetails4fromAA19TranscriptionResultVSS_tYaKF",
+      "target": "s:12AFMKitSpeech0B7ServiceC"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:12AFMKitSpeech0B7ServiceCACycfc",
+      "target": "s:12AFMKitSpeech0B7ServiceC"
+    },
+    {
+      "kind": "conformsTo",
+      "source": "s:12AFMKitSpeech17TranscriptionWordV",
+      "target": "s:SE",
+      "targetFallback": "Swift.Encodable"
+    },
+    {
+      "kind": "conformsTo",
+      "source": "s:12AFMKitSpeech17TranscriptionWordV",
+      "target": "s:Se",
+      "targetFallback": "Swift.Decodable"
+    },
+    {
+      "kind": "conformsTo",
+      "source": "s:12AFMKitSpeech17TranscriptionWordV",
+      "target": "s:s16SendableMetatypeP",
+      "targetFallback": "Swift.SendableMetatype"
+    },
+    {
+      "kind": "conformsTo",
+      "source": "s:12AFMKitSpeech17TranscriptionWordV",
+      "target": "s:s8SendableP",
+      "targetFallback": "Swift.Sendable"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:12AFMKitSpeech17TranscriptionWordV3endSdvp",
+      "target": "s:12AFMKitSpeech17TranscriptionWordV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:12AFMKitSpeech17TranscriptionWordV4fromACs7Decoder_p_tKcfc",
+      "sourceOrigin": {
+        "displayName": "Decodable.init(from:)",
+        "identifier": "s:Se4fromxs7Decoder_p_tKcfc"
+      },
+      "target": "s:12AFMKitSpeech17TranscriptionWordV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:12AFMKitSpeech17TranscriptionWordV4word5start3endACSS_S2dtcfc",
+      "target": "s:12AFMKitSpeech17TranscriptionWordV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:12AFMKitSpeech17TranscriptionWordV4wordSSvp",
+      "target": "s:12AFMKitSpeech17TranscriptionWordV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:12AFMKitSpeech17TranscriptionWordV5startSdvp",
+      "target": "s:12AFMKitSpeech17TranscriptionWordV"
+    },
+    {
+      "kind": "conformsTo",
+      "source": "s:12AFMKitSpeech19TranscriptionResultV",
+      "target": "s:SE",
+      "targetFallback": "Swift.Encodable"
+    },
+    {
+      "kind": "conformsTo",
+      "source": "s:12AFMKitSpeech19TranscriptionResultV",
+      "target": "s:Se",
+      "targetFallback": "Swift.Decodable"
+    },
+    {
+      "kind": "conformsTo",
+      "source": "s:12AFMKitSpeech19TranscriptionResultV",
+      "target": "s:s16SendableMetatypeP",
+      "targetFallback": "Swift.SendableMetatype"
+    },
+    {
+      "kind": "conformsTo",
+      "source": "s:12AFMKitSpeech19TranscriptionResultV",
+      "target": "s:s8SendableP",
+      "targetFallback": "Swift.Sendable"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:12AFMKitSpeech19TranscriptionResultV11formatAsSRTSSyF",
+      "target": "s:12AFMKitSpeech19TranscriptionResultV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:12AFMKitSpeech19TranscriptionResultV11formatAsVTTSSyF",
+      "target": "s:12AFMKitSpeech19TranscriptionResultV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:12AFMKitSpeech19TranscriptionResultV4fromACs7Decoder_p_tKcfc",
+      "sourceOrigin": {
+        "displayName": "Decodable.init(from:)",
+        "identifier": "s:Se4fromxs7Decoder_p_tKcfc"
+      },
+      "target": "s:12AFMKitSpeech19TranscriptionResultV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:12AFMKitSpeech19TranscriptionResultV4text8language8duration5words8segmentsACSS_SSSdSayAA0C4WordVGSayAA0C7SegmentVGtcfc",
+      "target": "s:12AFMKitSpeech19TranscriptionResultV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:12AFMKitSpeech19TranscriptionResultV4textSSvp",
+      "target": "s:12AFMKitSpeech19TranscriptionResultV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:12AFMKitSpeech19TranscriptionResultV5wordsSayAA0C4WordVGvp",
+      "target": "s:12AFMKitSpeech19TranscriptionResultV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:12AFMKitSpeech19TranscriptionResultV8durationSdvp",
+      "target": "s:12AFMKitSpeech19TranscriptionResultV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:12AFMKitSpeech19TranscriptionResultV8languageSSvp",
+      "target": "s:12AFMKitSpeech19TranscriptionResultV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:12AFMKitSpeech19TranscriptionResultV8segmentsSayAA0C7SegmentVGvp",
+      "target": "s:12AFMKitSpeech19TranscriptionResultV"
+    },
+    {
+      "kind": "conformsTo",
+      "source": "s:12AFMKitSpeech20TranscriptionSegmentV",
+      "target": "s:SE",
+      "targetFallback": "Swift.Encodable"
+    },
+    {
+      "kind": "conformsTo",
+      "source": "s:12AFMKitSpeech20TranscriptionSegmentV",
+      "target": "s:Se",
+      "targetFallback": "Swift.Decodable"
+    },
+    {
+      "kind": "conformsTo",
+      "source": "s:12AFMKitSpeech20TranscriptionSegmentV",
+      "target": "s:s16SendableMetatypeP",
+      "targetFallback": "Swift.SendableMetatype"
+    },
+    {
+      "kind": "conformsTo",
+      "source": "s:12AFMKitSpeech20TranscriptionSegmentV",
+      "target": "s:s8SendableP",
+      "targetFallback": "Swift.Sendable"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:12AFMKitSpeech20TranscriptionSegmentV10confidenceSfvp",
+      "target": "s:12AFMKitSpeech20TranscriptionSegmentV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:12AFMKitSpeech20TranscriptionSegmentV2id5start3end4text10confidenceACSi_S2dSSSftcfc",
+      "target": "s:12AFMKitSpeech20TranscriptionSegmentV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:12AFMKitSpeech20TranscriptionSegmentV2idSivp",
+      "target": "s:12AFMKitSpeech20TranscriptionSegmentV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:12AFMKitSpeech20TranscriptionSegmentV3endSdvp",
+      "target": "s:12AFMKitSpeech20TranscriptionSegmentV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:12AFMKitSpeech20TranscriptionSegmentV4fromACs7Decoder_p_tKcfc",
+      "sourceOrigin": {
+        "displayName": "Decodable.init(from:)",
+        "identifier": "s:Se4fromxs7Decoder_p_tKcfc"
+      },
+      "target": "s:12AFMKitSpeech20TranscriptionSegmentV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:12AFMKitSpeech20TranscriptionSegmentV4textSSvp",
+      "target": "s:12AFMKitSpeech20TranscriptionSegmentV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:12AFMKitSpeech20TranscriptionSegmentV5startSdvp",
+      "target": "s:12AFMKitSpeech20TranscriptionSegmentV"
+    }
+  ],
+  "symbols": [
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "struct"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "SpeechRequestOptions"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:12AFMKitSpeech0B14RequestOptionsV"
+      },
+      "kind": {
+        "displayName": "Structure",
+        "identifier": "swift.struct"
+      },
+      "names": {
+        "navigator": [
+          {
+            "kind": "identifier",
+            "spelling": "SpeechRequestOptions"
+          }
+        ],
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "struct"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "SpeechRequestOptions"
+          }
+        ],
+        "title": "SpeechRequestOptions"
+      },
+      "pathComponents": [
+        "SpeechRequestOptions"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "static"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "keyword",
+          "spelling": "let"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "defaultMaxFileBytes"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Si",
+          "spelling": "Int"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:12AFMKitSpeech0B14RequestOptionsV19defaultMaxFileBytesSivpZ"
+      },
+      "kind": {
+        "displayName": "Type Property",
+        "identifier": "swift.type.property"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "static"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "keyword",
+            "spelling": "let"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "defaultMaxFileBytes"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Si",
+            "spelling": "Int"
+          }
+        ],
+        "title": "defaultMaxFileBytes"
+      },
+      "pathComponents": [
+        "SpeechRequestOptions",
+        "defaultMaxFileBytes"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "static"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "keyword",
+          "spelling": "let"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "supportedExtensions"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Sh",
+          "spelling": "Set"
+        },
+        {
+          "kind": "text",
+          "spelling": "<"
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:SS",
+          "spelling": "String"
+        },
+        {
+          "kind": "text",
+          "spelling": ">"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:12AFMKitSpeech0B14RequestOptionsV19supportedExtensionsShySSGvpZ"
+      },
+      "kind": {
+        "displayName": "Type Property",
+        "identifier": "swift.type.property"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "static"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "keyword",
+            "spelling": "let"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "supportedExtensions"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Sh",
+            "spelling": "Set"
+          },
+          {
+            "kind": "text",
+            "spelling": "<"
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:SS",
+            "spelling": "String"
+          },
+          {
+            "kind": "text",
+            "spelling": ">"
+          }
+        ],
+        "title": "supportedExtensions"
+      },
+      "pathComponents": [
+        "SpeechRequestOptions",
+        "supportedExtensions"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "init"
+        },
+        {
+          "kind": "text",
+          "spelling": "("
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "locale"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:SS",
+          "spelling": "String"
+        },
+        {
+          "kind": "text",
+          "spelling": " = \"en-US\")"
+        }
+      ],
+      "functionSignature": {
+        "parameters": [
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "locale"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:SS",
+                "spelling": "String"
+              }
+            ],
+            "name": "locale"
+          }
+        ]
+      },
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:12AFMKitSpeech0B14RequestOptionsV6localeACSS_tcfc"
+      },
+      "kind": {
+        "displayName": "Initializer",
+        "identifier": "swift.init"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "init"
+          },
+          {
+            "kind": "text",
+            "spelling": "("
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "locale"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:SS",
+            "spelling": "String"
+          },
+          {
+            "kind": "text",
+            "spelling": ")"
+          }
+        ],
+        "title": "init(locale:)"
+      },
+      "pathComponents": [
+        "SpeechRequestOptions",
+        "init(locale:)"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "let"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "locale"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:SS",
+          "spelling": "String"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:12AFMKitSpeech0B14RequestOptionsV6localeSSvp"
+      },
+      "kind": {
+        "displayName": "Instance Property",
+        "identifier": "swift.property"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "let"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "locale"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:SS",
+            "spelling": "String"
+          }
+        ],
+        "title": "locale"
+      },
+      "pathComponents": [
+        "SpeechRequestOptions",
+        "locale"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "enum"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "SpeechError"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:12AFMKitSpeech0B5ErrorO"
+      },
+      "kind": {
+        "displayName": "Enumeration",
+        "identifier": "swift.enum"
+      },
+      "names": {
+        "navigator": [
+          {
+            "kind": "identifier",
+            "spelling": "SpeechError"
+          }
+        ],
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "enum"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "SpeechError"
+          }
+        ],
+        "title": "SpeechError"
+      },
+      "pathComponents": [
+        "SpeechError"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "case"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "noSpeechFound"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:12AFMKitSpeech0B5ErrorO02noB5FoundyA2CmF"
+      },
+      "kind": {
+        "displayName": "Case",
+        "identifier": "swift.enum.case"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "case"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "noSpeechFound"
+          }
+        ],
+        "title": "SpeechError.noSpeechFound"
+      },
+      "pathComponents": [
+        "SpeechError",
+        "noSpeechFound"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "case"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "fileNotFound"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:12AFMKitSpeech0B5ErrorO12fileNotFoundyA2CmF"
+      },
+      "kind": {
+        "displayName": "Case",
+        "identifier": "swift.enum.case"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "case"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "fileNotFound"
+          }
+        ],
+        "title": "SpeechError.fileNotFound"
+      },
+      "pathComponents": [
+        "SpeechError",
+        "fileNotFound"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "var"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "errorDescription"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:SS",
+          "spelling": "String"
+        },
+        {
+          "kind": "text",
+          "spelling": "? { "
+        },
+        {
+          "kind": "keyword",
+          "spelling": "get"
+        },
+        {
+          "kind": "text",
+          "spelling": " }"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:12AFMKitSpeech0B5ErrorO16errorDescriptionSSSgvp"
+      },
+      "kind": {
+        "displayName": "Instance Property",
+        "identifier": "swift.property"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "var"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "errorDescription"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:SS",
+            "spelling": "String"
+          },
+          {
+            "kind": "text",
+            "spelling": "?"
+          }
+        ],
+        "title": "errorDescription"
+      },
+      "pathComponents": [
+        "SpeechError",
+        "errorDescription"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "case"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "recognitionFailed"
+        },
+        {
+          "kind": "text",
+          "spelling": "("
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:SS",
+          "spelling": "String"
+        },
+        {
+          "kind": "text",
+          "spelling": ")"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:12AFMKitSpeech0B5ErrorO17recognitionFailedyACSScACmF"
+      },
+      "kind": {
+        "displayName": "Case",
+        "identifier": "swift.enum.case"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "case"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "recognitionFailed"
+          },
+          {
+            "kind": "text",
+            "spelling": "("
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:SS",
+            "spelling": "String"
+          },
+          {
+            "kind": "text",
+            "spelling": ")"
+          }
+        ],
+        "title": "SpeechError.recognitionFailed(_:)"
+      },
+      "pathComponents": [
+        "SpeechError",
+        "recognitionFailed(_:)"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "case"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "unsupportedFormat"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:12AFMKitSpeech0B5ErrorO17unsupportedFormatyA2CmF"
+      },
+      "kind": {
+        "displayName": "Case",
+        "identifier": "swift.enum.case"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "case"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "unsupportedFormat"
+          }
+        ],
+        "title": "SpeechError.unsupportedFormat"
+      },
+      "pathComponents": [
+        "SpeechError",
+        "unsupportedFormat"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "case"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "authorizationDenied"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:12AFMKitSpeech0B5ErrorO19authorizationDeniedyA2CmF"
+      },
+      "kind": {
+        "displayName": "Case",
+        "identifier": "swift.enum.case"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "case"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "authorizationDenied"
+          }
+        ],
+        "title": "SpeechError.authorizationDenied"
+      },
+      "pathComponents": [
+        "SpeechError",
+        "authorizationDenied"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "case"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "platformUnavailable"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:12AFMKitSpeech0B5ErrorO19platformUnavailableyA2CmF"
+      },
+      "kind": {
+        "displayName": "Case",
+        "identifier": "swift.enum.case"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "case"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "platformUnavailable"
+          }
+        ],
+        "title": "SpeechError.platformUnavailable"
+      },
+      "pathComponents": [
+        "SpeechError",
+        "platformUnavailable"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "case"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "onDeviceNotAvailable"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:12AFMKitSpeech0B5ErrorO20onDeviceNotAvailableyA2CmF"
+      },
+      "kind": {
+        "displayName": "Case",
+        "identifier": "swift.enum.case"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "case"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "onDeviceNotAvailable"
+          }
+        ],
+        "title": "SpeechError.onDeviceNotAvailable"
+      },
+      "pathComponents": [
+        "SpeechError",
+        "onDeviceNotAvailable"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "availability": [
+        {
+          "domain": "macOS",
+          "introduced": {
+            "major": 13,
+            "minor": 0
+          }
+        }
+      ],
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "final"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "keyword",
+          "spelling": "class"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "SpeechService"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:12AFMKitSpeech0B7ServiceC"
+      },
+      "kind": {
+        "displayName": "Class",
+        "identifier": "swift.class"
+      },
+      "names": {
+        "navigator": [
+          {
+            "kind": "identifier",
+            "spelling": "SpeechService"
+          }
+        ],
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "class"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "SpeechService"
+          }
+        ],
+        "title": "SpeechService"
+      },
+      "pathComponents": [
+        "SpeechService"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "availability": [
+        {
+          "domain": "macOS",
+          "introduced": {
+            "major": 13,
+            "minor": 0
+          }
+        }
+      ],
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "func"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "transcribe"
+        },
+        {
+          "kind": "text",
+          "spelling": "("
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "from"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "internalParam",
+          "spelling": "filePath"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:SS",
+          "spelling": "String"
+        },
+        {
+          "kind": "text",
+          "spelling": ", "
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "options"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:12AFMKitSpeech0B14RequestOptionsV",
+          "spelling": "SpeechRequestOptions"
+        },
+        {
+          "kind": "text",
+          "spelling": ") "
+        },
+        {
+          "kind": "keyword",
+          "spelling": "async"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "keyword",
+          "spelling": "throws"
+        },
+        {
+          "kind": "text",
+          "spelling": " -> "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:SS",
+          "spelling": "String"
+        }
+      ],
+      "functionSignature": {
+        "parameters": [
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "filePath"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:SS",
+                "spelling": "String"
+              }
+            ],
+            "internalName": "filePath",
+            "name": "from"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "options"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:12AFMKitSpeech0B14RequestOptionsV",
+                "spelling": "SpeechRequestOptions"
+              }
+            ],
+            "name": "options"
+          }
+        ],
+        "returns": [
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:SS",
+            "spelling": "String"
+          }
+        ]
+      },
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:12AFMKitSpeech0B7ServiceC10transcribe4from7optionsS2S_AA0B14RequestOptionsVtYaKF"
+      },
+      "kind": {
+        "displayName": "Instance Method",
+        "identifier": "swift.method"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "func"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "transcribe"
+          },
+          {
+            "kind": "text",
+            "spelling": "("
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "from"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:SS",
+            "spelling": "String"
+          },
+          {
+            "kind": "text",
+            "spelling": ", "
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "options"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:12AFMKitSpeech0B14RequestOptionsV",
+            "spelling": "SpeechRequestOptions"
+          },
+          {
+            "kind": "text",
+            "spelling": ") "
+          },
+          {
+            "kind": "keyword",
+            "spelling": "async"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "keyword",
+            "spelling": "throws"
+          },
+          {
+            "kind": "text",
+            "spelling": " -> "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:SS",
+            "spelling": "String"
+          }
+        ],
+        "title": "transcribe(from:options:)"
+      },
+      "pathComponents": [
+        "SpeechService",
+        "transcribe(from:options:)"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "availability": [
+        {
+          "domain": "macOS",
+          "introduced": {
+            "major": 13,
+            "minor": 0
+          }
+        }
+      ],
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "func"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "transcribe"
+        },
+        {
+          "kind": "text",
+          "spelling": "("
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "from"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "internalParam",
+          "spelling": "filePath"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:SS",
+          "spelling": "String"
+        },
+        {
+          "kind": "text",
+          "spelling": ") "
+        },
+        {
+          "kind": "keyword",
+          "spelling": "async"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "keyword",
+          "spelling": "throws"
+        },
+        {
+          "kind": "text",
+          "spelling": " -> "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:SS",
+          "spelling": "String"
+        }
+      ],
+      "functionSignature": {
+        "parameters": [
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "filePath"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:SS",
+                "spelling": "String"
+              }
+            ],
+            "internalName": "filePath",
+            "name": "from"
+          }
+        ],
+        "returns": [
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:SS",
+            "spelling": "String"
+          }
+        ]
+      },
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:12AFMKitSpeech0B7ServiceC10transcribe4fromS2S_tYaKF"
+      },
+      "kind": {
+        "displayName": "Instance Method",
+        "identifier": "swift.method"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "func"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "transcribe"
+          },
+          {
+            "kind": "text",
+            "spelling": "("
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "from"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:SS",
+            "spelling": "String"
+          },
+          {
+            "kind": "text",
+            "spelling": ") "
+          },
+          {
+            "kind": "keyword",
+            "spelling": "async"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "keyword",
+            "spelling": "throws"
+          },
+          {
+            "kind": "text",
+            "spelling": " -> "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:SS",
+            "spelling": "String"
+          }
+        ],
+        "title": "transcribe(from:)"
+      },
+      "pathComponents": [
+        "SpeechService",
+        "transcribe(from:)"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "availability": [
+        {
+          "domain": "macOS",
+          "introduced": {
+            "major": 13,
+            "minor": 0
+          }
+        }
+      ],
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "func"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "transcribeWithDetails"
+        },
+        {
+          "kind": "text",
+          "spelling": "("
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "from"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "internalParam",
+          "spelling": "filePath"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:SS",
+          "spelling": "String"
+        },
+        {
+          "kind": "text",
+          "spelling": ", "
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "options"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:12AFMKitSpeech0B14RequestOptionsV",
+          "spelling": "SpeechRequestOptions"
+        },
+        {
+          "kind": "text",
+          "spelling": ") "
+        },
+        {
+          "kind": "keyword",
+          "spelling": "async"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "keyword",
+          "spelling": "throws"
+        },
+        {
+          "kind": "text",
+          "spelling": " -> "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:12AFMKitSpeech19TranscriptionResultV",
+          "spelling": "TranscriptionResult"
+        }
+      ],
+      "functionSignature": {
+        "parameters": [
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "filePath"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:SS",
+                "spelling": "String"
+              }
+            ],
+            "internalName": "filePath",
+            "name": "from"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "options"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:12AFMKitSpeech0B14RequestOptionsV",
+                "spelling": "SpeechRequestOptions"
+              }
+            ],
+            "name": "options"
+          }
+        ],
+        "returns": [
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:12AFMKitSpeech19TranscriptionResultV",
+            "spelling": "TranscriptionResult"
+          }
+        ]
+      },
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:12AFMKitSpeech0B7ServiceC21transcribeWithDetails4from7optionsAA19TranscriptionResultVSS_AA0B14RequestOptionsVtYaKF"
+      },
+      "kind": {
+        "displayName": "Instance Method",
+        "identifier": "swift.method"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "func"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "transcribeWithDetails"
+          },
+          {
+            "kind": "text",
+            "spelling": "("
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "from"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:SS",
+            "spelling": "String"
+          },
+          {
+            "kind": "text",
+            "spelling": ", "
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "options"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:12AFMKitSpeech0B14RequestOptionsV",
+            "spelling": "SpeechRequestOptions"
+          },
+          {
+            "kind": "text",
+            "spelling": ") "
+          },
+          {
+            "kind": "keyword",
+            "spelling": "async"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "keyword",
+            "spelling": "throws"
+          },
+          {
+            "kind": "text",
+            "spelling": " -> "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:12AFMKitSpeech19TranscriptionResultV",
+            "spelling": "TranscriptionResult"
+          }
+        ],
+        "title": "transcribeWithDetails(from:options:)"
+      },
+      "pathComponents": [
+        "SpeechService",
+        "transcribeWithDetails(from:options:)"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "availability": [
+        {
+          "domain": "macOS",
+          "introduced": {
+            "major": 13,
+            "minor": 0
+          }
+        }
+      ],
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "func"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "transcribeWithDetails"
+        },
+        {
+          "kind": "text",
+          "spelling": "("
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "from"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "internalParam",
+          "spelling": "filePath"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:SS",
+          "spelling": "String"
+        },
+        {
+          "kind": "text",
+          "spelling": ") "
+        },
+        {
+          "kind": "keyword",
+          "spelling": "async"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "keyword",
+          "spelling": "throws"
+        },
+        {
+          "kind": "text",
+          "spelling": " -> "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:12AFMKitSpeech19TranscriptionResultV",
+          "spelling": "TranscriptionResult"
+        }
+      ],
+      "functionSignature": {
+        "parameters": [
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "filePath"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:SS",
+                "spelling": "String"
+              }
+            ],
+            "internalName": "filePath",
+            "name": "from"
+          }
+        ],
+        "returns": [
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:12AFMKitSpeech19TranscriptionResultV",
+            "spelling": "TranscriptionResult"
+          }
+        ]
+      },
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:12AFMKitSpeech0B7ServiceC21transcribeWithDetails4fromAA19TranscriptionResultVSS_tYaKF"
+      },
+      "kind": {
+        "displayName": "Instance Method",
+        "identifier": "swift.method"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "func"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "transcribeWithDetails"
+          },
+          {
+            "kind": "text",
+            "spelling": "("
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "from"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:SS",
+            "spelling": "String"
+          },
+          {
+            "kind": "text",
+            "spelling": ") "
+          },
+          {
+            "kind": "keyword",
+            "spelling": "async"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "keyword",
+            "spelling": "throws"
+          },
+          {
+            "kind": "text",
+            "spelling": " -> "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:12AFMKitSpeech19TranscriptionResultV",
+            "spelling": "TranscriptionResult"
+          }
+        ],
+        "title": "transcribeWithDetails(from:)"
+      },
+      "pathComponents": [
+        "SpeechService",
+        "transcribeWithDetails(from:)"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "availability": [
+        {
+          "domain": "macOS",
+          "introduced": {
+            "major": 13,
+            "minor": 0
+          }
+        }
+      ],
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "init"
+        },
+        {
+          "kind": "text",
+          "spelling": "()"
+        }
+      ],
+      "functionSignature": {},
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:12AFMKitSpeech0B7ServiceCACycfc"
+      },
+      "kind": {
+        "displayName": "Initializer",
+        "identifier": "swift.init"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "init"
+          },
+          {
+            "kind": "text",
+            "spelling": "()"
+          }
+        ],
+        "title": "init()"
+      },
+      "pathComponents": [
+        "SpeechService",
+        "init()"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "struct"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "TranscriptionWord"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:12AFMKitSpeech17TranscriptionWordV"
+      },
+      "kind": {
+        "displayName": "Structure",
+        "identifier": "swift.struct"
+      },
+      "names": {
+        "navigator": [
+          {
+            "kind": "identifier",
+            "spelling": "TranscriptionWord"
+          }
+        ],
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "struct"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "TranscriptionWord"
+          }
+        ],
+        "title": "TranscriptionWord"
+      },
+      "pathComponents": [
+        "TranscriptionWord"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "let"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "end"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Sd",
+          "spelling": "Double"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:12AFMKitSpeech17TranscriptionWordV3endSdvp"
+      },
+      "kind": {
+        "displayName": "Instance Property",
+        "identifier": "swift.property"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "let"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "end"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Sd",
+            "spelling": "Double"
+          }
+        ],
+        "title": "end"
+      },
+      "pathComponents": [
+        "TranscriptionWord",
+        "end"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "init"
+        },
+        {
+          "kind": "text",
+          "spelling": "("
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "from"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "internalParam",
+          "spelling": "decoder"
+        },
+        {
+          "kind": "text",
+          "spelling": ": any "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:s7DecoderP",
+          "spelling": "Decoder"
+        },
+        {
+          "kind": "text",
+          "spelling": ") "
+        },
+        {
+          "kind": "keyword",
+          "spelling": "throws"
+        }
+      ],
+      "functionSignature": {
+        "parameters": [
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "decoder"
+              },
+              {
+                "kind": "text",
+                "spelling": ": any "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:s7DecoderP",
+                "spelling": "Decoder"
+              }
+            ],
+            "internalName": "decoder",
+            "name": "from"
+          }
+        ]
+      },
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:12AFMKitSpeech17TranscriptionWordV4fromACs7Decoder_p_tKcfc"
+      },
+      "kind": {
+        "displayName": "Initializer",
+        "identifier": "swift.init"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "init"
+          },
+          {
+            "kind": "text",
+            "spelling": "("
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "from"
+          },
+          {
+            "kind": "text",
+            "spelling": ": any "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:s7DecoderP",
+            "spelling": "Decoder"
+          },
+          {
+            "kind": "text",
+            "spelling": ") "
+          },
+          {
+            "kind": "keyword",
+            "spelling": "throws"
+          }
+        ],
+        "title": "init(from:)"
+      },
+      "pathComponents": [
+        "TranscriptionWord",
+        "init(from:)"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "init"
+        },
+        {
+          "kind": "text",
+          "spelling": "("
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "word"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:SS",
+          "spelling": "String"
+        },
+        {
+          "kind": "text",
+          "spelling": ", "
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "start"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Sd",
+          "spelling": "Double"
+        },
+        {
+          "kind": "text",
+          "spelling": ", "
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "end"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Sd",
+          "spelling": "Double"
+        },
+        {
+          "kind": "text",
+          "spelling": ")"
+        }
+      ],
+      "functionSignature": {
+        "parameters": [
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "word"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:SS",
+                "spelling": "String"
+              }
+            ],
+            "name": "word"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "start"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:Sd",
+                "spelling": "Double"
+              }
+            ],
+            "name": "start"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "end"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:Sd",
+                "spelling": "Double"
+              }
+            ],
+            "name": "end"
+          }
+        ]
+      },
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:12AFMKitSpeech17TranscriptionWordV4word5start3endACSS_S2dtcfc"
+      },
+      "kind": {
+        "displayName": "Initializer",
+        "identifier": "swift.init"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "init"
+          },
+          {
+            "kind": "text",
+            "spelling": "("
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "word"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:SS",
+            "spelling": "String"
+          },
+          {
+            "kind": "text",
+            "spelling": ", "
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "start"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Sd",
+            "spelling": "Double"
+          },
+          {
+            "kind": "text",
+            "spelling": ", "
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "end"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Sd",
+            "spelling": "Double"
+          },
+          {
+            "kind": "text",
+            "spelling": ")"
+          }
+        ],
+        "title": "init(word:start:end:)"
+      },
+      "pathComponents": [
+        "TranscriptionWord",
+        "init(word:start:end:)"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "let"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "word"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:SS",
+          "spelling": "String"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:12AFMKitSpeech17TranscriptionWordV4wordSSvp"
+      },
+      "kind": {
+        "displayName": "Instance Property",
+        "identifier": "swift.property"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "let"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "word"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:SS",
+            "spelling": "String"
+          }
+        ],
+        "title": "word"
+      },
+      "pathComponents": [
+        "TranscriptionWord",
+        "word"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "let"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "start"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Sd",
+          "spelling": "Double"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:12AFMKitSpeech17TranscriptionWordV5startSdvp"
+      },
+      "kind": {
+        "displayName": "Instance Property",
+        "identifier": "swift.property"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "let"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "start"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Sd",
+            "spelling": "Double"
+          }
+        ],
+        "title": "start"
+      },
+      "pathComponents": [
+        "TranscriptionWord",
+        "start"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "struct"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "TranscriptionResult"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:12AFMKitSpeech19TranscriptionResultV"
+      },
+      "kind": {
+        "displayName": "Structure",
+        "identifier": "swift.struct"
+      },
+      "names": {
+        "navigator": [
+          {
+            "kind": "identifier",
+            "spelling": "TranscriptionResult"
+          }
+        ],
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "struct"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "TranscriptionResult"
+          }
+        ],
+        "title": "TranscriptionResult"
+      },
+      "pathComponents": [
+        "TranscriptionResult"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "func"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "formatAsSRT"
+        },
+        {
+          "kind": "text",
+          "spelling": "() -> "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:SS",
+          "spelling": "String"
+        }
+      ],
+      "functionSignature": {
+        "returns": [
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:SS",
+            "spelling": "String"
+          }
+        ]
+      },
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:12AFMKitSpeech19TranscriptionResultV11formatAsSRTSSyF"
+      },
+      "kind": {
+        "displayName": "Instance Method",
+        "identifier": "swift.method"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "func"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "formatAsSRT"
+          },
+          {
+            "kind": "text",
+            "spelling": "() -> "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:SS",
+            "spelling": "String"
+          }
+        ],
+        "title": "formatAsSRT()"
+      },
+      "pathComponents": [
+        "TranscriptionResult",
+        "formatAsSRT()"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "func"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "formatAsVTT"
+        },
+        {
+          "kind": "text",
+          "spelling": "() -> "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:SS",
+          "spelling": "String"
+        }
+      ],
+      "functionSignature": {
+        "returns": [
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:SS",
+            "spelling": "String"
+          }
+        ]
+      },
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:12AFMKitSpeech19TranscriptionResultV11formatAsVTTSSyF"
+      },
+      "kind": {
+        "displayName": "Instance Method",
+        "identifier": "swift.method"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "func"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "formatAsVTT"
+          },
+          {
+            "kind": "text",
+            "spelling": "() -> "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:SS",
+            "spelling": "String"
+          }
+        ],
+        "title": "formatAsVTT()"
+      },
+      "pathComponents": [
+        "TranscriptionResult",
+        "formatAsVTT()"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "init"
+        },
+        {
+          "kind": "text",
+          "spelling": "("
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "from"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "internalParam",
+          "spelling": "decoder"
+        },
+        {
+          "kind": "text",
+          "spelling": ": any "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:s7DecoderP",
+          "spelling": "Decoder"
+        },
+        {
+          "kind": "text",
+          "spelling": ") "
+        },
+        {
+          "kind": "keyword",
+          "spelling": "throws"
+        }
+      ],
+      "functionSignature": {
+        "parameters": [
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "decoder"
+              },
+              {
+                "kind": "text",
+                "spelling": ": any "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:s7DecoderP",
+                "spelling": "Decoder"
+              }
+            ],
+            "internalName": "decoder",
+            "name": "from"
+          }
+        ]
+      },
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:12AFMKitSpeech19TranscriptionResultV4fromACs7Decoder_p_tKcfc"
+      },
+      "kind": {
+        "displayName": "Initializer",
+        "identifier": "swift.init"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "init"
+          },
+          {
+            "kind": "text",
+            "spelling": "("
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "from"
+          },
+          {
+            "kind": "text",
+            "spelling": ": any "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:s7DecoderP",
+            "spelling": "Decoder"
+          },
+          {
+            "kind": "text",
+            "spelling": ") "
+          },
+          {
+            "kind": "keyword",
+            "spelling": "throws"
+          }
+        ],
+        "title": "init(from:)"
+      },
+      "pathComponents": [
+        "TranscriptionResult",
+        "init(from:)"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "init"
+        },
+        {
+          "kind": "text",
+          "spelling": "("
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "text"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:SS",
+          "spelling": "String"
+        },
+        {
+          "kind": "text",
+          "spelling": ", "
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "language"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:SS",
+          "spelling": "String"
+        },
+        {
+          "kind": "text",
+          "spelling": ", "
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "duration"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Sd",
+          "spelling": "Double"
+        },
+        {
+          "kind": "text",
+          "spelling": ", "
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "words"
+        },
+        {
+          "kind": "text",
+          "spelling": ": ["
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:12AFMKitSpeech17TranscriptionWordV",
+          "spelling": "TranscriptionWord"
+        },
+        {
+          "kind": "text",
+          "spelling": "], "
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "segments"
+        },
+        {
+          "kind": "text",
+          "spelling": ": ["
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:12AFMKitSpeech20TranscriptionSegmentV",
+          "spelling": "TranscriptionSegment"
+        },
+        {
+          "kind": "text",
+          "spelling": "])"
+        }
+      ],
+      "functionSignature": {
+        "parameters": [
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "text"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:SS",
+                "spelling": "String"
+              }
+            ],
+            "name": "text"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "language"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:SS",
+                "spelling": "String"
+              }
+            ],
+            "name": "language"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "duration"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:Sd",
+                "spelling": "Double"
+              }
+            ],
+            "name": "duration"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "words"
+              },
+              {
+                "kind": "text",
+                "spelling": ": ["
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:12AFMKitSpeech17TranscriptionWordV",
+                "spelling": "TranscriptionWord"
+              },
+              {
+                "kind": "text",
+                "spelling": "]"
+              }
+            ],
+            "name": "words"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "segments"
+              },
+              {
+                "kind": "text",
+                "spelling": ": ["
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:12AFMKitSpeech20TranscriptionSegmentV",
+                "spelling": "TranscriptionSegment"
+              },
+              {
+                "kind": "text",
+                "spelling": "]"
+              }
+            ],
+            "name": "segments"
+          }
+        ]
+      },
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:12AFMKitSpeech19TranscriptionResultV4text8language8duration5words8segmentsACSS_SSSdSayAA0C4WordVGSayAA0C7SegmentVGtcfc"
+      },
+      "kind": {
+        "displayName": "Initializer",
+        "identifier": "swift.init"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "init"
+          },
+          {
+            "kind": "text",
+            "spelling": "("
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "text"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:SS",
+            "spelling": "String"
+          },
+          {
+            "kind": "text",
+            "spelling": ", "
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "language"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:SS",
+            "spelling": "String"
+          },
+          {
+            "kind": "text",
+            "spelling": ", "
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "duration"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Sd",
+            "spelling": "Double"
+          },
+          {
+            "kind": "text",
+            "spelling": ", "
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "words"
+          },
+          {
+            "kind": "text",
+            "spelling": ": ["
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:12AFMKitSpeech17TranscriptionWordV",
+            "spelling": "TranscriptionWord"
+          },
+          {
+            "kind": "text",
+            "spelling": "], "
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "segments"
+          },
+          {
+            "kind": "text",
+            "spelling": ": ["
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:12AFMKitSpeech20TranscriptionSegmentV",
+            "spelling": "TranscriptionSegment"
+          },
+          {
+            "kind": "text",
+            "spelling": "])"
+          }
+        ],
+        "title": "init(text:language:duration:words:segments:)"
+      },
+      "pathComponents": [
+        "TranscriptionResult",
+        "init(text:language:duration:words:segments:)"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "let"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "text"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:SS",
+          "spelling": "String"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:12AFMKitSpeech19TranscriptionResultV4textSSvp"
+      },
+      "kind": {
+        "displayName": "Instance Property",
+        "identifier": "swift.property"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "let"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "text"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:SS",
+            "spelling": "String"
+          }
+        ],
+        "title": "text"
+      },
+      "pathComponents": [
+        "TranscriptionResult",
+        "text"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "let"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "words"
+        },
+        {
+          "kind": "text",
+          "spelling": ": ["
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:12AFMKitSpeech17TranscriptionWordV",
+          "spelling": "TranscriptionWord"
+        },
+        {
+          "kind": "text",
+          "spelling": "]"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:12AFMKitSpeech19TranscriptionResultV5wordsSayAA0C4WordVGvp"
+      },
+      "kind": {
+        "displayName": "Instance Property",
+        "identifier": "swift.property"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "let"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "words"
+          },
+          {
+            "kind": "text",
+            "spelling": ": ["
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:12AFMKitSpeech17TranscriptionWordV",
+            "spelling": "TranscriptionWord"
+          },
+          {
+            "kind": "text",
+            "spelling": "]"
+          }
+        ],
+        "title": "words"
+      },
+      "pathComponents": [
+        "TranscriptionResult",
+        "words"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "let"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "duration"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Sd",
+          "spelling": "Double"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:12AFMKitSpeech19TranscriptionResultV8durationSdvp"
+      },
+      "kind": {
+        "displayName": "Instance Property",
+        "identifier": "swift.property"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "let"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "duration"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Sd",
+            "spelling": "Double"
+          }
+        ],
+        "title": "duration"
+      },
+      "pathComponents": [
+        "TranscriptionResult",
+        "duration"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "let"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "language"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:SS",
+          "spelling": "String"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:12AFMKitSpeech19TranscriptionResultV8languageSSvp"
+      },
+      "kind": {
+        "displayName": "Instance Property",
+        "identifier": "swift.property"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "let"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "language"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:SS",
+            "spelling": "String"
+          }
+        ],
+        "title": "language"
+      },
+      "pathComponents": [
+        "TranscriptionResult",
+        "language"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "let"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "segments"
+        },
+        {
+          "kind": "text",
+          "spelling": ": ["
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:12AFMKitSpeech20TranscriptionSegmentV",
+          "spelling": "TranscriptionSegment"
+        },
+        {
+          "kind": "text",
+          "spelling": "]"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:12AFMKitSpeech19TranscriptionResultV8segmentsSayAA0C7SegmentVGvp"
+      },
+      "kind": {
+        "displayName": "Instance Property",
+        "identifier": "swift.property"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "let"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "segments"
+          },
+          {
+            "kind": "text",
+            "spelling": ": ["
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:12AFMKitSpeech20TranscriptionSegmentV",
+            "spelling": "TranscriptionSegment"
+          },
+          {
+            "kind": "text",
+            "spelling": "]"
+          }
+        ],
+        "title": "segments"
+      },
+      "pathComponents": [
+        "TranscriptionResult",
+        "segments"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "struct"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "TranscriptionSegment"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:12AFMKitSpeech20TranscriptionSegmentV"
+      },
+      "kind": {
+        "displayName": "Structure",
+        "identifier": "swift.struct"
+      },
+      "names": {
+        "navigator": [
+          {
+            "kind": "identifier",
+            "spelling": "TranscriptionSegment"
+          }
+        ],
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "struct"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "TranscriptionSegment"
+          }
+        ],
+        "title": "TranscriptionSegment"
+      },
+      "pathComponents": [
+        "TranscriptionSegment"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "let"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "confidence"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Sf",
+          "spelling": "Float"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:12AFMKitSpeech20TranscriptionSegmentV10confidenceSfvp"
+      },
+      "kind": {
+        "displayName": "Instance Property",
+        "identifier": "swift.property"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "let"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "confidence"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Sf",
+            "spelling": "Float"
+          }
+        ],
+        "title": "confidence"
+      },
+      "pathComponents": [
+        "TranscriptionSegment",
+        "confidence"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "init"
+        },
+        {
+          "kind": "text",
+          "spelling": "("
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "id"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Si",
+          "spelling": "Int"
+        },
+        {
+          "kind": "text",
+          "spelling": ", "
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "start"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Sd",
+          "spelling": "Double"
+        },
+        {
+          "kind": "text",
+          "spelling": ", "
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "end"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Sd",
+          "spelling": "Double"
+        },
+        {
+          "kind": "text",
+          "spelling": ", "
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "text"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:SS",
+          "spelling": "String"
+        },
+        {
+          "kind": "text",
+          "spelling": ", "
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "confidence"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Sf",
+          "spelling": "Float"
+        },
+        {
+          "kind": "text",
+          "spelling": ")"
+        }
+      ],
+      "functionSignature": {
+        "parameters": [
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "id"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:Si",
+                "spelling": "Int"
+              }
+            ],
+            "name": "id"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "start"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:Sd",
+                "spelling": "Double"
+              }
+            ],
+            "name": "start"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "end"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:Sd",
+                "spelling": "Double"
+              }
+            ],
+            "name": "end"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "text"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:SS",
+                "spelling": "String"
+              }
+            ],
+            "name": "text"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "confidence"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:Sf",
+                "spelling": "Float"
+              }
+            ],
+            "name": "confidence"
+          }
+        ]
+      },
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:12AFMKitSpeech20TranscriptionSegmentV2id5start3end4text10confidenceACSi_S2dSSSftcfc"
+      },
+      "kind": {
+        "displayName": "Initializer",
+        "identifier": "swift.init"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "init"
+          },
+          {
+            "kind": "text",
+            "spelling": "("
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "id"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Si",
+            "spelling": "Int"
+          },
+          {
+            "kind": "text",
+            "spelling": ", "
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "start"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Sd",
+            "spelling": "Double"
+          },
+          {
+            "kind": "text",
+            "spelling": ", "
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "end"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Sd",
+            "spelling": "Double"
+          },
+          {
+            "kind": "text",
+            "spelling": ", "
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "text"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:SS",
+            "spelling": "String"
+          },
+          {
+            "kind": "text",
+            "spelling": ", "
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "confidence"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Sf",
+            "spelling": "Float"
+          },
+          {
+            "kind": "text",
+            "spelling": ")"
+          }
+        ],
+        "title": "init(id:start:end:text:confidence:)"
+      },
+      "pathComponents": [
+        "TranscriptionSegment",
+        "init(id:start:end:text:confidence:)"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "let"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "id"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Si",
+          "spelling": "Int"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:12AFMKitSpeech20TranscriptionSegmentV2idSivp"
+      },
+      "kind": {
+        "displayName": "Instance Property",
+        "identifier": "swift.property"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "let"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "id"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Si",
+            "spelling": "Int"
+          }
+        ],
+        "title": "id"
+      },
+      "pathComponents": [
+        "TranscriptionSegment",
+        "id"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "let"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "end"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Sd",
+          "spelling": "Double"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:12AFMKitSpeech20TranscriptionSegmentV3endSdvp"
+      },
+      "kind": {
+        "displayName": "Instance Property",
+        "identifier": "swift.property"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "let"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "end"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Sd",
+            "spelling": "Double"
+          }
+        ],
+        "title": "end"
+      },
+      "pathComponents": [
+        "TranscriptionSegment",
+        "end"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "init"
+        },
+        {
+          "kind": "text",
+          "spelling": "("
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "from"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "internalParam",
+          "spelling": "decoder"
+        },
+        {
+          "kind": "text",
+          "spelling": ": any "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:s7DecoderP",
+          "spelling": "Decoder"
+        },
+        {
+          "kind": "text",
+          "spelling": ") "
+        },
+        {
+          "kind": "keyword",
+          "spelling": "throws"
+        }
+      ],
+      "functionSignature": {
+        "parameters": [
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "decoder"
+              },
+              {
+                "kind": "text",
+                "spelling": ": any "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:s7DecoderP",
+                "spelling": "Decoder"
+              }
+            ],
+            "internalName": "decoder",
+            "name": "from"
+          }
+        ]
+      },
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:12AFMKitSpeech20TranscriptionSegmentV4fromACs7Decoder_p_tKcfc"
+      },
+      "kind": {
+        "displayName": "Initializer",
+        "identifier": "swift.init"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "init"
+          },
+          {
+            "kind": "text",
+            "spelling": "("
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "from"
+          },
+          {
+            "kind": "text",
+            "spelling": ": any "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:s7DecoderP",
+            "spelling": "Decoder"
+          },
+          {
+            "kind": "text",
+            "spelling": ") "
+          },
+          {
+            "kind": "keyword",
+            "spelling": "throws"
+          }
+        ],
+        "title": "init(from:)"
+      },
+      "pathComponents": [
+        "TranscriptionSegment",
+        "init(from:)"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "let"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "text"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:SS",
+          "spelling": "String"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:12AFMKitSpeech20TranscriptionSegmentV4textSSvp"
+      },
+      "kind": {
+        "displayName": "Instance Property",
+        "identifier": "swift.property"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "let"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "text"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:SS",
+            "spelling": "String"
+          }
+        ],
+        "title": "text"
+      },
+      "pathComponents": [
+        "TranscriptionSegment",
+        "text"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "let"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "start"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Sd",
+          "spelling": "Double"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:12AFMKitSpeech20TranscriptionSegmentV5startSdvp"
+      },
+      "kind": {
+        "displayName": "Instance Property",
+        "identifier": "swift.property"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "let"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "start"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Sd",
+            "spelling": "Double"
+          }
+        ],
+        "title": "start"
+      },
+      "pathComponents": [
+        "TranscriptionSegment",
+        "start"
+      ]
+    }
+  ]
+}

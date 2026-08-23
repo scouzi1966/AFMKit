@@ -50,12 +50,12 @@ documents = {
 }
 expected = {
     "xcode26": {
-        "root": {"AFMKitCore", "AFMOpenAICompat", "AFMKitInference"},
+        "root": {"AFMKitCore", "AFMOpenAICompat", "AFMKitInference", "AFMKitEmbeddings", "AFMKitSpeech", "AFMKitSpeechSynthesis", "AFMKitVision", "AFMKitServices"},
         "dwarfstar": {"AFMKitDwarfStar"},
         "mlx": {"AFMKitMLX"},
     },
     "xcode27": {
-        "root": {"AFMKitCore", "AFMOpenAICompat", "AFMKitInference", "AFMKitApple"},
+        "root": {"AFMKitCore", "AFMOpenAICompat", "AFMKitInference", "AFMKitEmbeddings", "AFMKitSpeech", "AFMKitSpeechSynthesis", "AFMKitVision", "AFMKitServices", "AFMKitApple"},
         "dwarfstar": {"AFMKitDwarfStar"},
         "mlx": {"AFMKitMLX", "AFMKitFoundationModelsMLX"},
     },

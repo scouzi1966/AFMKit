@@ -58,6 +58,10 @@ jobs:
           --build-system native
       - name: Check unauthenticated Core package boundary
         run: Scripts/check-unauthenticated-core-consumer.sh
+      - name: Check optional Apple service isolation
+        env:
+          AFMKIT_BUILD_ROOT: ${{ runner.temp }}/afmkit-service-products
+        run: Scripts/check-service-product-isolation.sh
       - name: Check DwarfStar release resources
         run: Scripts/check-dwarfstar-resources.sh
       - name: Test API gate failure modes

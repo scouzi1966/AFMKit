@@ -1,6 +1,8 @@
 # External Git Dependencies
 
-The public `AFMKit` package has no SwiftPM dependencies. Provider products live
+The public `AFMKit` package has no SwiftPM dependencies. Its optional services
+link only Apple system frameworks: NaturalLanguage, Speech, AVFoundation,
+Vision, CoreGraphics, ImageIO, PDFKit, and Quartz. Provider products live
 in separate `AFMKitDwarfStar` and `AFMKitMLX` packages with exact release graphs.
 This ledger distinguishes direct dependencies, the pinned DwarfStar submodule,
 and major transitive groups. The provider manifests and their respective
