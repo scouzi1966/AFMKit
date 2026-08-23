@@ -45,6 +45,7 @@ let package = Package(
         .library(name: "AFMKitSpeechSynthesis", targets: ["AFMKitSpeechSynthesis"]),
         .library(name: "AFMKitVision", targets: ["AFMKitVision"]),
         .library(name: "AFMKitServices", targets: ["AFMKitServices"]),
+        .library(name: "AFMEvalKit", targets: ["AFMEvalKit"]),
         .library(name: "AFMKitDwarfStar", targets: ["AFMKitDwarfStar"]),
         .library(
             name: "AFMKitFoundationModelsDwarfStar",
@@ -106,6 +107,11 @@ let package = Package(
             name: "AFMKitInference",
             dependencies: ["AFMKitCore", "AFMOpenAICompat"],
             path: "Candidate/Sources/AFMKitInference"
+        ),
+        .target(
+            name: "AFMEvalKit",
+            dependencies: ["AFMOpenAICompat"],
+            path: "Candidate/Sources/AFMEvalKit"
         ),
         .target(
             name: "AFMKitApple",
@@ -282,6 +288,11 @@ let package = Package(
             name: "AFMKitServicesTests",
             dependencies: ["AFMKitServices"],
             path: "Candidate/Tests/AFMKitServicesTests"
+        ),
+        .testTarget(
+            name: "AFMEvalKitTests",
+            dependencies: ["AFMEvalKit"],
+            path: "Candidate/Tests/AFMEvalKitTests"
         ),
         .testTarget(
             name: "AFMKitMLXTests",

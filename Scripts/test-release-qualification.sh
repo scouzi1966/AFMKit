@@ -80,6 +80,7 @@ cat > "$SANDBOX/package.json" <<'JSON'
     {"name": "AFMKitSpeechSynthesis", "targets": ["AFMKitSpeechSynthesis"], "type": {"library": ["automatic"]}},
     {"name": "AFMKitVision", "targets": ["AFMKitVision"], "type": {"library": ["automatic"]}},
     {"name": "AFMKitServices", "targets": ["AFMKitServices"], "type": {"library": ["automatic"]}},
+    {"name": "AFMEvalKit", "targets": ["AFMEvalKit"], "type": {"library": ["automatic"]}},
     {"name": "AFMKitApple", "targets": ["AFMKitApple"], "type": {"library": ["automatic"]}},
     {"name": "AFMKitMLX", "targets": ["AFMKitMLX"], "type": {"library": ["automatic"]}},
     {"name": "AFMKitFoundationModelsMLX", "targets": ["AFMKitFoundationModelsMLX"], "type": {"library": ["automatic"]}},
@@ -99,7 +100,7 @@ import sys
 root = pathlib.Path(sys.argv[1])
 manifest = (root / "Package.swift").read_text(encoding="utf-8")
 products = (root / "validator-products.txt").read_text(encoding="utf-8").splitlines()
-assert len(products) == 13
+assert len(products) == 14
 assert products == sorted(products)
 assert "IgnoredTool" not in manifest
 assert 'exact: "1.2.3-rc.1"' in manifest

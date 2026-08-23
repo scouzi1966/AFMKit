@@ -9,7 +9,8 @@ var products: [Product] = [
     .library(name: "AFMKitSpeech", targets: ["AFMKitSpeech"]),
     .library(name: "AFMKitSpeechSynthesis", targets: ["AFMKitSpeechSynthesis"]),
     .library(name: "AFMKitVision", targets: ["AFMKitVision"]),
-    .library(name: "AFMKitServices", targets: ["AFMKitServices"])
+    .library(name: "AFMKitServices", targets: ["AFMKitServices"]),
+    .library(name: "AFMEvalKit", targets: ["AFMEvalKit"])
 ]
 var targets: [Target] = [
     .target(name: "AFMKitCore", dependencies: []),
@@ -53,6 +54,7 @@ var targets: [Target] = [
             "AFMKitVision"
         ]
     ),
+    .target(name: "AFMEvalKit", dependencies: ["AFMOpenAICompat"]),
     .testTarget(name: "AFMKitCoreTests", dependencies: ["AFMKitCore"]),
     .testTarget(name: "AFMOpenAICompatTests", dependencies: ["AFMOpenAICompat"]),
     .testTarget(
@@ -63,7 +65,8 @@ var targets: [Target] = [
     .testTarget(name: "AFMKitSpeechTests", dependencies: ["AFMKitSpeech"]),
     .testTarget(name: "AFMKitSpeechSynthesisTests", dependencies: ["AFMKitSpeechSynthesis"]),
     .testTarget(name: "AFMKitVisionTests", dependencies: ["AFMKitVision"]),
-    .testTarget(name: "AFMKitServicesTests", dependencies: ["AFMKitServices"])
+    .testTarget(name: "AFMKitServicesTests", dependencies: ["AFMKitServices"]),
+    .testTarget(name: "AFMEvalKitTests", dependencies: ["AFMEvalKit"])
 ]
 
 #if compiler(>=6.4)

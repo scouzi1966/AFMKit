@@ -8,7 +8,7 @@ package, API baseline, and fresh downstream graph has passed.
 
 | Repository | Products | Release dependency on AFMKit |
 | --- | --- | --- |
-| `AFMKit` | `AFMKitCore`, `AFMOpenAICompat`, `AFMKitInference`, `AFMKitApple`, `AFMKitEmbeddings`, `AFMKitSpeech`, `AFMKitSpeechSynthesis`, `AFMKitVision`, `AFMKitServices` | None; root manifest has zero package dependencies. |
+| `AFMKit` | `AFMKitCore`, `AFMOpenAICompat`, `AFMKitInference`, `AFMEvalKit`, `AFMKitApple`, `AFMKitEmbeddings`, `AFMKitSpeech`, `AFMKitSpeechSynthesis`, `AFMKitVision`, `AFMKitServices` | None; root manifest has zero package dependencies. |
 | `AFMKitDwarfStar` | `AFMKitDwarfStar` | Exact same-version `AFMKit` tag. |
 | `AFMKitMLX` | `AFMKitMLX`, `AFMKitFoundationModelsMLX` | Exact same-version `AFMKit` tag plus the exact private MLX graph. |
 
@@ -77,12 +77,12 @@ partial private check.
    The privileged workflow starts through `workflow_run` and verifies that
    immutable provenance.
 3. `Scripts/validate-release.sh` validates all three manifests, both provider
-   locks, all twelve API baselines, Release tests, workflow/security regressions,
+   locks, all fourteen API baselines, Release tests, workflow/security regressions,
    the unauthenticated Core consumer, and DwarfStar resources.
 4. The downstream gate materializes provider release repositories in private
    temporary storage. It creates local staging tags only, resolves fresh no-lock
    consumers, compares their complete dependency pins with the committed
-   provider locks, and builds all twelve products from the exact release manifests.
+   provider locks, and builds all fourteen products from the exact release manifests.
 5. Qualification uploads the two verified Git bundles plus `publication.json`.
    No root or provider tag has been pushed at this point.
 6. The publish job verifies bundle tags, source SHA, release manifest, and
