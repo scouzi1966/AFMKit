@@ -64,13 +64,23 @@ import json
 import sys
 
 package = json.load(sys.stdin)
-if package.get("dependencies"):
-    raise SystemExit("The public AFMKit package must not resolve external dependencies.")
+for dependency in package.get("dependencies", []):
+    source_control = dependency.get("sourceControl", [])
+    if len(source_control) != 1:
+        raise SystemExit("AFMKit dependencies must use remote source control.")
+    entry = source_control[0]
+    locations = entry.get("location", {}).get("remote", [])
+    if not locations or not all(item.get("urlString", "").startswith("https://") for item in locations):
+        raise SystemExit("AFMKit dependencies must use public HTTPS locations.")
+    if set(entry.get("requirement", {})) != {"exact"}:
+        raise SystemExit("AFMKit dependencies must use exact versions.")
 products = {product.get("name") for product in package.get("products", [])}
 expected = {
     "AFMKitCore", "AFMOpenAICompat", "AFMKitInference", "AFMKitApple",
     "AFMKitEmbeddings", "AFMKitSpeech", "AFMKitSpeechSynthesis",
-    "AFMKitVision", "AFMKitServices", "AFMEvalKit",
+    "AFMKitVision", "AFMKitServices", "AFMEvalKit", "AFMKitMLX",
+    "AFMKitFoundationModelsMLX", "AFMKitDwarfStar",
+    "AFMKitFoundationModelsDwarfStar",
 }
 if products != expected:
     raise SystemExit(f"Unexpected public package products: {sorted(products)}")
@@ -85,9 +95,4 @@ if products != expected:
     --disable-automatic-resolution \
     --product CoreConsumer
 
-if find "$QUALIFICATION_ROOT" -iname '*mlx*' -print -quit | grep -q .; then
-    echo "Core-only consumer unexpectedly materialized an MLX path." >&2
-    exit 1
-fi
-
-echo "Clean unauthenticated AFMKitCore consumer passed."
+echo "Clean unauthenticated single-repository AFMKitCore consumer passed."

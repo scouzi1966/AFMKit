@@ -47,38 +47,19 @@ afmkit_release_reject_local_overrides
 afmkit_verify_qualified_toolchain "$ROOT"
 afmkit_run_qualified_swift package dump-package --package-path "$ROOT" \
     | afmkit_release_validate_manifest
-for provider_root in \
-    "$ROOT/Packages/AFMKitDwarfStar" \
-    "$ROOT/Packages/AFMKitMLX"; do
-    afmkit_run_qualified_swift package dump-package --package-path "$provider_root" \
-        | AFMKIT_ALLOW_LOCAL_PUBLIC_PACKAGE=1 afmkit_release_validate_manifest
-done
-afmkit_release_validate_resolved_files \
-    "$ROOT/Packages/AFMKitDwarfStar/Package.resolved" \
-    "$ROOT/Packages/AFMKitMLX/Package.resolved"
+afmkit_release_validate_resolved_files "$ROOT/Package.resolved"
 
 "$ROOT/Scripts/test-api-gate.sh"
 "$ROOT/Scripts/test-private-dependency-auth.sh"
 "$ROOT/Scripts/test-release-qualification.sh"
 node "$ROOT/Scripts/test-release-publication.js"
-"$ROOT/Scripts/test-provider-publication.sh"
 "$ROOT/Scripts/test-workflow-security.sh"
 "$ROOT/Scripts/check-dwarfstar-resources.sh"
 "$ROOT/Scripts/check-unauthenticated-core-consumer.sh"
 
-for package_build_root in \
-    "$BUILD_ROOT/public" \
-    "$BUILD_ROOT/dwarfstar" \
-    "$BUILD_ROOT/mlx"; do
-    clean_build_configuration "$package_build_root" debug
-done
+clean_build_configuration "$BUILD_ROOT/public" debug
 "$ROOT/Scripts/check-api-baselines.sh"
-for package_build_root in \
-    "$BUILD_ROOT/public" \
-    "$BUILD_ROOT/dwarfstar" \
-    "$BUILD_ROOT/mlx"; do
-    clean_build_configuration "$package_build_root" debug
-done
+clean_build_configuration "$BUILD_ROOT/public" debug
 rm -rf \
     "$BUILD_ROOT/api-current" \
     "$BUILD_ROOT/api-current-raw" \
@@ -87,9 +68,7 @@ rm -rf \
     "$BUILD_ROOT/clang-module-cache"
 
 run_release_tests "$ROOT" "$BUILD_ROOT/public"
-run_release_tests "$ROOT/Packages/AFMKitDwarfStar" "$BUILD_ROOT/dwarfstar"
-run_release_tests "$ROOT/Packages/AFMKitMLX" "$BUILD_ROOT/mlx"
 
 "$ROOT/Scripts/check-downstream-example.sh"
 
-echo "AFMKit split-package release validation passed."
+echo "AFMKit single-package release validation passed."

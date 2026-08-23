@@ -40,17 +40,9 @@ import json
 import sys
 
 package = json.load(sys.stdin)
-allow_local_public = __import__("os").environ.get("AFMKIT_ALLOW_LOCAL_PUBLIC_PACKAGE") == "1"
-local_public_count = 0
 for dependency in package.get("dependencies", []):
     source_control = dependency.get("sourceControl")
     if not source_control:
-        file_system = dependency.get("fileSystem", [])
-        if allow_local_public and len(file_system) == 1:
-            local = file_system[0]
-            if local.get("nameForTargetDependencyResolutionOnly") == "AFMKit":
-                local_public_count += 1
-                continue
         raise SystemExit("Release qualification requires every root dependency to use remote source control.")
     for entry in source_control:
         locations = entry.get("location", {}).get("remote")
@@ -63,8 +55,6 @@ for dependency in package.get("dependencies", []):
             raise SystemExit(
                 f"Release qualification requires exact dependency version for {identity}."
             )
-if allow_local_public and local_public_count != 1:
-    raise SystemExit("Provider source manifest must contain exactly one local AFMKit dependency.")
 for target in package.get("targets", []):
     for setting in target.get("settings", []):
         if "unsafeFlags" in setting.get("kind", {}):

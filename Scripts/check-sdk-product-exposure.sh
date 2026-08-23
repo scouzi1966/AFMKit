@@ -21,10 +21,6 @@ SWIFT="$(/usr/bin/xcrun --toolchain XcodeDefault --find swift)"
 "$SWIFT" --version > "$SANDBOX/swift-version.txt"
 "$SWIFT" package dump-package --package-path "$ROOT" \
     > "$SANDBOX/root.json"
-"$SWIFT" package dump-package --package-path "$ROOT/Packages/AFMKitDwarfStar" \
-    > "$SANDBOX/dwarfstar.json"
-"$SWIFT" package dump-package --package-path "$ROOT/Packages/AFMKitMLX" \
-    > "$SANDBOX/mlx.json"
 
 /usr/bin/python3 - "$MODE" "$SANDBOX" <<'PY'
 import json
@@ -44,40 +40,23 @@ if mode == "xcode26" and compiler >= (6, 4):
 if mode == "xcode27" and compiler < (6, 4):
     raise SystemExit(f"Xcode 27 gate requires Swift 6.4 or newer, found {compiler}.")
 
-documents = {
-    name: json.loads((root / f"{name}.json").read_text(encoding="utf-8"))
-    for name in ("root", "dwarfstar", "mlx")
-}
+document = json.loads((root / "root.json").read_text(encoding="utf-8"))
 expected = {
-    "xcode26": {
-        "root": {"AFMKitCore", "AFMOpenAICompat", "AFMKitInference", "AFMKitEmbeddings", "AFMKitSpeech", "AFMKitSpeechSynthesis", "AFMKitVision", "AFMKitServices", "AFMEvalKit"},
-        "dwarfstar": {"AFMKitDwarfStar"},
-        "mlx": {"AFMKitMLX"},
-    },
-    "xcode27": {
-        "root": {"AFMKitCore", "AFMOpenAICompat", "AFMKitInference", "AFMKitEmbeddings", "AFMKitSpeech", "AFMKitSpeechSynthesis", "AFMKitVision", "AFMKitServices", "AFMEvalKit", "AFMKitApple"},
-        "dwarfstar": {"AFMKitDwarfStar", "AFMKitFoundationModelsDwarfStar"},
-        "mlx": {"AFMKitMLX", "AFMKitFoundationModelsMLX"},
-    },
+    "xcode26": {"AFMKitCore", "AFMOpenAICompat", "AFMKitInference", "AFMKitEmbeddings", "AFMKitSpeech", "AFMKitSpeechSynthesis", "AFMKitVision", "AFMKitServices", "AFMEvalKit", "AFMKitDwarfStar", "AFMKitMLX"},
+    "xcode27": {"AFMKitCore", "AFMOpenAICompat", "AFMKitInference", "AFMKitEmbeddings", "AFMKitSpeech", "AFMKitSpeechSynthesis", "AFMKitVision", "AFMKitServices", "AFMEvalKit", "AFMKitApple", "AFMKitDwarfStar", "AFMKitFoundationModelsDwarfStar", "AFMKitMLX", "AFMKitFoundationModelsMLX"},
 }[mode]
 
-for name, document in documents.items():
-    products = {product["name"] for product in document.get("products", [])}
-    if products != expected[name]:
-        raise SystemExit(
-            f"{mode} {name} products are {sorted(products)}, expected {sorted(expected[name])}."
-        )
-    platforms = document.get("platforms", [])
-    if not any(
-        platform.get("platformName") == "macos" and platform.get("version") == "26.0"
-        for platform in platforms
-    ):
-        raise SystemExit(f"{name} does not preserve the macOS 26 deployment floor.")
+products = {product["name"] for product in document.get("products", [])}
+if products != expected:
+    raise SystemExit(f"{mode} products are {sorted(products)}, expected {sorted(expected)}.")
+platforms = document.get("platforms", [])
+if not any(
+    platform.get("platformName") == "macos" and platform.get("version") == "26.0"
+    for platform in platforms
+):
+    raise SystemExit("The root package does not preserve the macOS 26 deployment floor.")
 
-targets = {
-    name: {target["name"] for target in document.get("targets", [])}
-    for name, document in documents.items()
-}
+targets = {target["name"] for target in document.get("targets", [])}
 macos27_targets = {"AFMKitApple", "AFMKitAppleTests"}
 fmmlx_targets = {"AFMKitFoundationModelsMLX", "AFMKitFoundationModelsMLXTests"}
 fmdwarf_targets = {
@@ -85,19 +64,13 @@ fmdwarf_targets = {
     "AFMKitFoundationModelsDwarfStarTests",
 }
 if mode == "xcode26":
-    if (
-        targets["root"] & macos27_targets
-        or targets["mlx"] & fmmlx_targets
-        or targets["dwarfstar"] & fmdwarf_targets
-    ):
+    if targets & (macos27_targets | fmmlx_targets | fmdwarf_targets):
         raise SystemExit("Xcode 26 manifest exposes Xcode 27-only targets.")
 else:
-    if not macos27_targets.issubset(targets["root"]):
+    if not macos27_targets.issubset(targets):
         raise SystemExit("Xcode 27 root manifest omits AFMKitApple targets.")
-    if not fmmlx_targets.issubset(targets["mlx"]):
-        raise SystemExit("Xcode 27 MLX manifest omits Foundation Models bridge targets.")
-    if not fmdwarf_targets.issubset(targets["dwarfstar"]):
-        raise SystemExit("Xcode 27 DwarfStar manifest omits Foundation Models bridge targets.")
+    if not fmmlx_targets.issubset(targets) or not fmdwarf_targets.issubset(targets):
+        raise SystemExit("Xcode 27 root manifest omits provider Foundation Models bridge targets.")
 
 print(f"{mode} product exposure matches the macOS 26/27 compatibility contract.")
 PY

@@ -16,11 +16,11 @@ The long-term shape should align with macOS 27 LanguageModel-style provider conc
 
 ## Repository Strategy
 
-AFMKit starts as a private repository while the API is still moving. It can become public after the core contract and first provider packages are stable enough that external adopters are not forced to track maclocal-api internals.
+AFMKit starts as a private repository while the API is still moving. It can become public after the core contract and provider products are stable enough that external adopters are not forced to track maclocal-api internals.
 
-Fourteen public modules use three tagged SwiftPM package boundaries for normal
-consumers. This is package-level isolation: the root package has no global
-provider dependency graph.
+Fourteen public modules use one tagged SwiftPM package boundary for normal
+consumers. Individual products preserve module and link isolation, while
+SwiftPM resolves the root manifest's complete exact dependency graph.
 
 All manifests use Swift tools 6.1 and declare macOS 26. Xcode 26 / Swift 6.3
 exposes the source-compatible Core, OpenAI, DwarfStar, and MLX products. Xcode 27
@@ -30,16 +30,14 @@ manifest surfaces and clean-builds the root Xcode 26 surface.
 
 | Published package | Public modules | Dependency strategy |
 | --- | --- | --- |
-| `AFMKit` | Core, OpenAI compatibility, inference, provider-free evaluation contracts, Apple provider, four independently selectable Apple services, and the `AFMKitServices` umbrella | No SwiftPM dependencies; `AFMEvalKit` depends only on OpenAI compatibility, and Apple frameworks are isolated to selected service/provider targets. |
-| `AFMKitDwarfStar` | `AFMKitDwarfStar` | Exact AFMKit release, exact public Hub/Xet graph, vanilla DwarfStar plus AFM-owned adapter code. |
-| `AFMKitMLX` | `AFMKitMLX`, `AFMKitFoundationModelsMLX` | Exact AFMKit release and exact AFM-compatible MLX/private dependency graph. |
-| `maclocal-api` | Host executable modules | Aggregates selected AFMKit packages and owns CLI, HTTP server, WebUI, and packaging. |
-| `Vesta` | Host app modules | Selects AFMKit packages directly where possible and maclocal-api only for process/server isolation. |
+| `AFMKit` | Core, OpenAI compatibility, inference, evaluation contracts, Apple services/provider, MLX, DwarfStar, and both Foundation Models bridges | One exact dependency graph and one tag; individual products retain target-level boundaries. |
+| `maclocal-api` | Host executable modules | Selects AFMKit products and owns CLI, HTTP server, WebUI, and packaging. |
+| `Vesta` | Host app modules | Selects AFMKit products directly where possible and maclocal-api only for process/server isolation. |
 
-The development monorepo keeps the provider packages under `Packages/`. Release
-automation materializes and tags separate provider repositories. Existing
-product/module imports remain source-compatible; migration changes only SwiftPM
-package declarations and each `.product(..., package:)` owner.
+The repository keeps provider source groups under `Packages/`, but only the root
+manifest is published. Existing product/module imports remain source-compatible;
+migration changes only SwiftPM package declarations and each
+`.product(..., package:)` owner.
 
 ## Phase 1: Extract `AFMKitCore`
 
@@ -140,7 +138,7 @@ Current `AFMKitApple` checkpoint:
   capability, and configuration-key additions with no removed public symbols.
 - Release suites cover Core, OpenAI compatibility, Apple, the four independently selectable
   Apple services plus their umbrella, MLX, Inference, FoundationModelsMLX, DwarfStar, and EvalKit. All fourteen public API
-  baselines and fresh split-package downstream builds are release gates.
+  baselines and a fresh single-package downstream build are release gates.
 
 ## Phase 4: Runtime Adapters
 
@@ -231,9 +229,7 @@ During the atomic maclocal-api consumer migration, AFMKit supports two build-onl
   remains correct for either the legacy checkout or the tagged compatibility package.
 
 These switches are not runtime configuration and do not change the normal
-published `AFMKitMLX` graph. The monorepo provider manifest separately uses
-`AFMKIT_PUBLIC_PATH` only to locate the root AFMKit package during development;
-release materialization always emits an exact HTTPS AFMKit dependency.
+published AFMKit graph.
 
 ## Phase 5: Consumer Migration
 
@@ -275,16 +271,15 @@ Scope:
 - Make Vesta consume `AFMKitCore`, `AFMOpenAICompat`, and Apple/PCC packages directly.
 - Keep high-throughput server, WebUI, Homebrew, PyPI, release harness, and model qualification in maclocal-api.
 - Add a downstream example app that exercises AFMKit without local maclocal-api source checkout assumptions.
-- Keep a standalone downstream build gate that materializes the same root,
-  DwarfStar, and MLX manifests intended for publication, resolves each without a
-  lock, compares provider pins to the qualified locks, and builds all fourteen public
-  products.
+- Keep a standalone downstream build gate that tags the root manifest in an
+  isolated repository, resolves it without a consumer lock, compares all pins to
+  the qualified root lock, and builds all fourteen public products.
 
 Exit criteria:
 
-- maclocal-api release builds from tagged AFMKit packages.
+- maclocal-api release builds from a tagged AFMKit package.
 - Vesta release builds against the same tags.
-- A new Swift app can use `AFMKitCore` and at least one provider package from a clean checkout.
+- A new Swift app can use `AFMKitCore` and at least one provider product from a clean checkout.
 
 Pre-tag exit status:
 

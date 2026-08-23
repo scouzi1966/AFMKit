@@ -17,17 +17,9 @@ if [[ -n "${AFMKIT_API_PACKAGE_ROOT:-}" ]]; then
     PACKAGE_BUILD_DIR="$BUILD_DIR"
 else
 case "$MODULE" in
-    AFMKitCore|AFMOpenAICompat|AFMKitInference|AFMKitApple|AFMKitEmbeddings|AFMKitSpeech|AFMKitSpeechSynthesis|AFMKitVision|AFMKitServices|AFMEvalKit)
+    AFMKitCore|AFMOpenAICompat|AFMKitInference|AFMKitApple|AFMKitEmbeddings|AFMKitSpeech|AFMKitSpeechSynthesis|AFMKitVision|AFMKitServices|AFMEvalKit|AFMKitDwarfStar|AFMKitFoundationModelsDwarfStar|AFMKitMLX|AFMKitFoundationModelsMLX)
         PACKAGE_ROOT="$ROOT"
         PACKAGE_BUILD_DIR="$BUILD_DIR/public"
-        ;;
-    AFMKitDwarfStar|AFMKitFoundationModelsDwarfStar)
-        PACKAGE_ROOT="$ROOT/Packages/AFMKitDwarfStar"
-        PACKAGE_BUILD_DIR="$BUILD_DIR/dwarfstar"
-        ;;
-    AFMKitMLX|AFMKitFoundationModelsMLX)
-        PACKAGE_ROOT="$ROOT/Packages/AFMKitMLX"
-        PACKAGE_BUILD_DIR="$BUILD_DIR/mlx"
         ;;
     *)
         echo "Unknown public AFMKit module: $MODULE" >&2

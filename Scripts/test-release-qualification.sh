@@ -6,7 +6,6 @@ GUARD="$ROOT/Scripts/release-qualification-guard.sh"
 BUILD_ROOT="${AFMKIT_BUILD_ROOT:-$ROOT/.build}"
 TAG_VALIDATOR="$ROOT/Scripts/validate-release-tag.sh"
 DOWNSTREAM_GENERATOR="$ROOT/Scripts/generate-downstream-package.py"
-PROVIDER_MATERIALIZER="$ROOT/Scripts/materialize-provider-package.py"
 SANDBOX="$BUILD_ROOT/release-qualification-tests.$$"
 PASSED=0
 
@@ -140,29 +139,6 @@ if afmkit_release_validate_manifest < "$SANDBOX/range-manifest.json" \
     exit 1
 fi
 grep -q "requires exact dependency version" "$SANDBOX/range-manifest.log"
-PASSED=$((PASSED + 1))
-
-PROVIDER_FIXTURE="$SANDBOX/AFMKitDwarfStar"
-/usr/bin/python3 "$PROVIDER_MATERIALIZER" \
-    --source "$ROOT/Packages/AFMKitDwarfStar" \
-    --output "$PROVIDER_FIXTURE" \
-    --public-url "https://github.com/example/AFMKit.git" \
-    --version "1.2.3-rc.1" \
-    --source-sha "1111111111111111111111111111111111111111"
-/usr/bin/xcrun --toolchain XcodeDefault swift package dump-package \
-    --package-path "$PROVIDER_FIXTURE" | afmkit_release_validate_manifest
-grep -q 'exact: "1.2.3-rc.1"' "$PROVIDER_FIXTURE/Package.swift"
-if /usr/bin/python3 "$PROVIDER_MATERIALIZER" \
-    --source "$ROOT/Packages/AFMKitDwarfStar" \
-    --output "$SANDBOX/build-metadata-provider" \
-    --public-url "https://github.com/example/AFMKit.git" \
-    --version "1.2.3+build.1" \
-    --source-sha "1111111111111111111111111111111111111111" \
-    > "$SANDBOX/materializer.log" 2>&1; then
-    echo "Release qualification regression failed: provider build metadata was accepted." >&2
-    exit 1
-fi
-grep -q "reject SemVer build metadata" "$SANDBOX/materializer.log"
 PASSED=$((PASSED + 1))
 
 printf '%s\n' '{"dependencies":[],"targets":[{"name":"UnsafeTarget","settings":[{"kind":{"unsafeFlags":{"_0":["-O3"]}},"tool":"c"}]}]}' \

@@ -186,7 +186,7 @@ jobs:
             "$RUNNER_TEMP/private-qualification/Package.swift"
           cp -R trusted/Qualification/TrustedSeed \
             "$RUNNER_TEMP/private-qualification/TrustedSeed"
-          cp "$RUNNER_TEMP/private-qualification/Candidate/Packages/AFMKitMLX/Package.resolved" \
+          cp "$RUNNER_TEMP/private-qualification/Candidate/Package.resolved" \
             "$RUNNER_TEMP/private-qualification/Package.resolved"
 
       - name: Prebuild private dependencies from trusted source only

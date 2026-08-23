@@ -38,10 +38,7 @@ ARCHIVE_ROOTS = (
 )
 ARCHIVE_FILES = (
     "Package.swift",
-    "Packages/AFMKitDwarfStar/Package.swift",
-    "Packages/AFMKitDwarfStar/Package.resolved",
-    "Packages/AFMKitMLX/Package.swift",
-    "Packages/AFMKitMLX/Package.resolved",
+    "Package.resolved",
 )
 
 

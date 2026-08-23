@@ -1,6 +1,6 @@
 # ADR 0006: Separate Public and Provider Package Boundaries
 
-- Status: Accepted
+- Status: Superseded by ADR 0007
 - Date: 2026-08-21
 
 ## Context

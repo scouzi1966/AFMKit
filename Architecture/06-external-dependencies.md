@@ -1,12 +1,11 @@
 # External Git Dependencies
 
-The public `AFMKit` package has no SwiftPM dependencies. Its optional services
-link only Apple system frameworks: NaturalLanguage, Speech, AVFoundation,
-Vision, CoreGraphics, ImageIO, PDFKit, and Quartz. Provider products live
-in separate `AFMKitDwarfStar` and `AFMKitMLX` packages with exact release graphs.
-This ledger distinguishes direct dependencies, the pinned DwarfStar submodule,
-and major transitive groups. The provider manifests and their respective
-`Package.resolved` files are authoritative for exact resolution.
+The public `AFMKit` package has one exact SwiftPM dependency graph. Its optional
+products preserve target and link isolation, but SwiftPM resolves the complete
+root graph even when a consumer selects only Core. Apple services link only the
+system frameworks they use. This ledger distinguishes direct dependencies, the
+pinned DwarfStar submodule, and major transitive groups. The root manifest and
+root `Package.resolved` are authoritative for exact resolution.
 
 ## Dependency and derivation graph
 
@@ -91,10 +90,10 @@ before AFMKit is made public.
 | [`mlc-ai/xgrammar`](https://github.com/mlc-ai/xgrammar) | Vendored source snapshot from `c1570cdb4f8c867a4dbd07b7ff90581f4a2a432b` | `AFMXGrammar`, MLX | Grammar-constrained generation without an unstable SwiftPM revision dependency. | C++ ABI/build risk; snapshot updates require provenance, license review, and grammar correctness tests. |
 | [`antirez/ds4`](https://github.com/antirez/ds4) | Submodule `84cc882352757baf628a1776badf7cc54d584e28` | DwarfStar | Vanilla DwarfStar Metal source/resources. | Kept unmodified; AFM-specific behavior belongs in AFM-owned bridge/adapter. |
 
-Monorepo development uses a local path from each provider package to the root
-AFMKit package. Provider release materialization replaces it with the production
-HTTPS URL at the exact same release version. Local MLX development can replace
-the two tagged MLX materializations through
+Repository development and publication use one root manifest. Provider sources
+remain grouped under `Packages/`, but downstream consumers select every product
+from the same AFMKit URL and exact tag. Local MLX development can replace the
+two tagged MLX dependencies through
 `AFMKIT_MLX_SWIFT_PATH` and `AFMKIT_MLX_SWIFT_LM_PATH`. Release qualification
 rejects both MLX overrides.
 

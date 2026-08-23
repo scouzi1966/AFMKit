@@ -36,10 +36,7 @@ ALLOWED_PREFIXES = (
 )
 ALLOWED_FILES = {
     "Package.swift",
-    "Packages/AFMKitDwarfStar/Package.swift",
-    "Packages/AFMKitDwarfStar/Package.resolved",
-    "Packages/AFMKitMLX/Package.swift",
-    "Packages/AFMKitMLX/Package.resolved",
+    "Package.resolved",
 }
 MAX_FILE_SIZE = 16 * 1024 * 1024
 MAX_TOTAL_SIZE = 96 * 1024 * 1024

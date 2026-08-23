@@ -93,16 +93,13 @@ assert "github.event.workflow_run.head_branch == github.event.repository.default
 assert "publishRelease" in release
 assert "stage-tag:" not in release
 assert "qualify-remote-tag:" not in release
-assert "AFMKIT_RELEASE_MIRROR_OUTPUT" in release
-assert "publish-provider-mirrors.sh" in release
+assert "AFMKIT_RELEASE_MIRROR_OUTPUT" not in release
+assert "publish-provider-mirrors.sh" not in release
 assert "vars.AFMKIT_XCODE27_RUNNER || 'xcode-27'" in release
 assert "Record immutable publication intent" in release
 assert "ensurePublicationIntent" in release
 assert release.index("Record immutable publication intent") < release.index(
-    "Publish provider package tags idempotently"
-)
-assert release.index("Publish provider package tags idempotently") < release.index(
-    "Publish root tag and GitHub release last"
+    "Publish root tag and GitHub release"
 )
 assert "actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd" in release
 PY
@@ -124,11 +121,8 @@ EXTRACTED="$SANDBOX/extracted"
     --expected-repository owner/AFMKit
 
 EXPECTED_GRAPH_INPUTS="$(cat <<'EOF'
+Package.resolved
 Package.swift
-Packages/AFMKitDwarfStar/Package.resolved
-Packages/AFMKitDwarfStar/Package.swift
-Packages/AFMKitMLX/Package.resolved
-Packages/AFMKitMLX/Package.swift
 EOF
 )"
 ACTUAL_GRAPH_INPUTS="$(find "$EXTRACTED" -type f \
@@ -162,11 +156,12 @@ grep -q "provenance mismatch" "$SANDBOX/provenance.log"
     --trusted "$ROOT" \
     --qualification-manifest "$ROOT/Qualification/PrivatePackage.swift" \
     > "$SANDBOX/graph.log"
-grep -q "Candidate manifests and locks equal the trusted graph" "$SANDBOX/graph.log"
+grep -q "Candidate manifest and lock equal the trusted single-package graph" \
+    "$SANDBOX/graph.log"
 
 cp -R "$EXTRACTED" "$SANDBOX/tampered-graph"
 printf '\n// candidate dependency control\n' \
-    >> "$SANDBOX/tampered-graph/Packages/AFMKitMLX/Package.swift"
+    >> "$SANDBOX/tampered-graph/Package.swift"
 if "$ROOT/Scripts/validate-private-qualification-graph.py" \
     --candidate "$SANDBOX/tampered-graph" \
     --trusted "$ROOT" \
@@ -179,7 +174,7 @@ grep -q "differs from the trusted default-branch copy" \
     "$SANDBOX/manifest-equality.log"
 
 cp -R "$EXTRACTED" "$SANDBOX/tampered-lock"
-/usr/bin/python3 - "$SANDBOX/tampered-lock/Packages/AFMKitMLX/Package.resolved" <<'PY'
+/usr/bin/python3 - "$SANDBOX/tampered-lock/Package.resolved" <<'PY'
 import json
 import sys
 
@@ -202,7 +197,7 @@ grep -q "differs from the trusted default-branch copy" "$SANDBOX/lock-equality.l
 
 cp "$ROOT/Qualification/PrivatePackage.swift" "$SANDBOX/Package.swift"
 cp -R "$ROOT/Qualification/TrustedSeed" "$SANDBOX/TrustedSeed"
-cp "$EXTRACTED/Packages/AFMKitMLX/Package.resolved" "$SANDBOX/Package.resolved"
+cp "$EXTRACTED/Package.resolved" "$SANDBOX/Package.resolved"
 mv "$EXTRACTED" "$SANDBOX/Candidate"
 /usr/bin/xcrun --toolchain XcodeDefault swift package dump-package \
     --package-path "$SANDBOX" > "$SANDBOX/private-package.json"

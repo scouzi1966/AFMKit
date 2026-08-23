@@ -10,15 +10,15 @@ decisions are in [`Architecture/`](Architecture/README.md).
 
 ## Package architecture
 
-Fourteen public modules are published across three real Swift package boundaries:
+Fourteen public modules are published from one Swift package and one tag:
 
-| Package | Public products | Dependency/authentication boundary |
+| Area | Public products | Dependency boundary |
 | --- | --- | --- |
-| `AFMKit` | `AFMKitCore`, `AFMOpenAICompat`, `AFMKitInference`, `AFMEvalKit`, `AFMKitApple`, `AFMKitEmbeddings`, `AFMKitSpeech`, `AFMKitSpeechSynthesis`, `AFMKitVision`, `AFMKitServices` | Zero SwiftPM dependencies. `AFMEvalKit` depends only on `AFMOpenAICompat`; Apple services are independently selectable and `AFMKitServices` is their compatibility umbrella. |
-| `AFMKitDwarfStar` | `AFMKitDwarfStar`, `AFMKitFoundationModelsDwarfStar` | Exact AFMKit release plus public, exact-pinned Hub/Xet dependencies, the AFM-owned ds4 adapter/resources, and an Xcode 27-only `LanguageModel` bridge. |
-| `AFMKitMLX` | `AFMKitMLX`, `AFMKitFoundationModelsMLX` | Exact AFMKit release plus the exact private AFM-compatible MLX graph. |
+| Core and Apple | `AFMKitCore`, `AFMOpenAICompat`, `AFMKitInference`, `AFMEvalKit`, `AFMKitApple`, `AFMKitEmbeddings`, `AFMKitSpeech`, `AFMKitSpeechSynthesis`, `AFMKitVision`, `AFMKitServices` | Provider-neutral contracts and independently selectable Apple services. |
+| DwarfStar | `AFMKitDwarfStar`, `AFMKitFoundationModelsDwarfStar` | Exact-pinned Hub/Xet dependencies, the AFM-owned ds4 adapter/resources, and an Xcode 27-only `LanguageModel` bridge. |
+| MLX | `AFMKitMLX`, `AFMKitFoundationModelsMLX` | The exact AFM-compatible MLX graph and its Xcode 27 bridge. |
 
-All three manifests use Swift tools 6.1 and keep a macOS 26 deployment floor.
+The root manifest uses Swift tools 6.1 and keeps a macOS 26 deployment floor.
 With Xcode 26 (Swift 6.3), the root package exposes `AFMKitCore`,
 `AFMOpenAICompat`, `AFMKitInference`, `AFMEvalKit`, and the five service products, and the MLX package exposes `AFMKitMLX`. Xcode 27 (Swift 6.4)
 also exposes `AFMKitApple`, `AFMKitFoundationModelsMLX`, and
@@ -26,11 +26,9 @@ also exposes `AFMKitApple`, `AFMKitFoundationModelsMLX`, and
 macOS 27 Foundation Models APIs and remain runtime-gated to macOS 27. CI checks
 both product matrices with `Scripts/check-sdk-product-exposure.sh`.
 
-The monorepo keeps provider source under `Packages/` for coordinated development.
-Release automation materializes those directories into separate provider
-repositories and rewrites their local AFMKit dependency to the exact same release
-version. Existing Swift `import` and product names remain compatible; consumers
-only migrate their package dependency declarations.
+Provider source remains organized under `Packages/`, but those directories are
+targets of the root manifest rather than independently versioned packages.
+Existing Swift imports and product names remain compatible.
 
 A Core-only consumer needs only the public root package:
 
@@ -38,11 +36,11 @@ A Core-only consumer needs only the public root package:
 .package(url: "https://github.com/scouzi1966/AFMKit.git", exact: "0.1.0")
 ```
 
-Consumers selecting a runtime add its independently published package:
+Consumers select runtime products from that same package dependency:
 
 ```swift
-.package(url: "https://github.com/scouzi1966/AFMKitDwarfStar.git", exact: "0.1.0"),
-.package(url: "https://github.com/scouzi1966/AFMKitMLX.git", exact: "0.1.0")
+.product(name: "AFMKitDwarfStar", package: "AFMKit")
+.product(name: "AFMKitMLX", package: "AFMKit")
 ```
 
 ## Apple service host requirements
@@ -74,35 +72,32 @@ configuration, tool names, response formats, stop strings, and expectations.
 git clone --recurse-submodules git@github.com:scouzi1966/AFMKit.git
 cd AFMKit
 swift test
-swift test --package-path Packages/AFMKitDwarfStar
-swift test --package-path Packages/AFMKitMLX
 Scripts/test-api-gate.sh
 Scripts/check-api-baselines.sh
 ```
 
-The provider manifests use the root checkout by default. Local MLX compatibility
-checkouts can replace the tagged private dependencies during development:
+Local MLX compatibility checkouts can replace the tagged dependencies during development:
 
 ```bash
 AFMKIT_MLX_SWIFT_PATH=/path/to/mlx-swift-afm \
 AFMKIT_MLX_SWIFT_LM_PATH=/path/to/mlx-swift-lm-afm \
-swift test --package-path Packages/AFMKitMLX -c release
+swift test -c release
 ```
 
 Release qualification rejects these overrides. Direct and qualified transitive
-provider dependencies are constrained exactly, and a fresh no-lock consumer must
-reproduce each committed provider lock before publication.
+dependencies are constrained exactly, and a fresh no-lock consumer must
+reproduce the committed root lock before publication.
 
 ## Qualification
 
 The checked-in API baselines use Xcode 27 Beta 3 build `27A5218g`, macOS SDK 27.0
 build `26A5378i`, and the compiler identity in
 `docs/api-baselines/toolchain.env`. Baseline coverage discovers all fourteen modules
-across the three manifests. The current DwarfStar baseline contains 42 normalized
+from the root manifest. The current DwarfStar baseline contains 42 normalized
 public symbols.
 
-Public CI also proves that a fresh Core consumer builds with isolated credentials
-and no MLX checkout. Private PR qualification consumes only an immutable artifact
+Public CI also proves that a fresh Core consumer builds without credentials.
+Private PR qualification consumes only an immutable artifact
 from the exact successful workflow run. Candidate manifests and locks are inert
 inputs whose dependency graph must equal the trusted default-branch graph before
 the trusted qualification manifest can prebuild private dependencies. Candidate
@@ -111,15 +106,14 @@ candidate test sources are compiled but never executed on the privileged runner.
 Candidate scripts and plugins never run there. Private source, compiled products,
 caches, and credentials are destroyed before the job exits.
 
-Full release validation runs all package/API/security gates, Release tests for
-all three packages, and fresh downstream builds for all fourteen products:
+Full release validation runs all package/API/security gates, the root Release
+tests, and fresh downstream builds for all fourteen products:
 
 ```bash
 Scripts/validate-release.sh
 ```
 
-Release qualification uses private staging mirrors. It publishes the two
-qualified provider tags and creates the root AFMKit tag only after all tests pass.
+Release qualification creates one AFMKit tag only after all tests pass.
 SwiftPM release tags reject SemVer build metadata. Prerelease GitHub releases are
 created with `prerelease=true` and `make_latest=false`. See
 [`docs/RELEASING.md`](docs/RELEASING.md).
