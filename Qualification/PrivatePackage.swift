@@ -113,7 +113,6 @@ let package = Package(
             path: "Candidate/Sources/AFMKitApple",
             linkerSettings: [
                 .linkedFramework("Security"),
-                .linkedFramework("CoreImage"),
                 .linkedFramework("ImageIO"),
                 .linkedFramework("UniformTypeIdentifiers")
             ]
@@ -296,7 +295,7 @@ let package = Package(
         ),
         .testTarget(
             name: "AFMKitFoundationModelsMLXTests",
-            dependencies: ["AFMKitCore", "AFMKitFoundationModelsMLX"],
+            dependencies: ["AFMKitApple", "AFMKitCore", "AFMKitFoundationModelsMLX"],
             path: "Candidate/Packages/AFMKitMLX/Tests/AFMKitFoundationModelsMLXTests"
         ),
         .testTarget(

@@ -126,6 +126,7 @@ def main() -> int:
         "Tests/AFMKitServicesTests/AFMKitServicesTests.swift",
         "Packages/AFMKitDwarfStar/Sources/AFMKitDwarfStar/AFMDwarfStarProvider.swift",
         "Packages/AFMKitDwarfStar/Sources/AFMKitFoundationModelsDwarfStar/DwarfStarFoundationLanguageModel.swift",
+        "Packages/AFMKitDwarfStar/Tests/AFMKitFoundationModelsDwarfStarTests/DwarfStarFoundationLanguageModelTests.swift",
         "Packages/AFMKitMLX/Sources/AFMKitMLX/AFMMLXProvider.swift",
         "docs/api-baselines/AFMKitCore.symbols.json",
         "docs/api-baselines/AFMKitInference.symbols.json",

@@ -3,6 +3,28 @@ import AFMKitCore
 @testable import AFMKitDwarfStar
 
 final class AFMDwarfStarProviderTests: XCTestCase {
+    func testLeaseOwnerReleasesWhenModelLifetimeEnds() async throws {
+        let leaseID = UUID()
+        let releases = LeaseReleaseProbe()
+        weak var weakLease: AFMDwarfStarRuntimeLease?
+
+        do {
+            let lease = AFMDwarfStarRuntimeLease(id: leaseID) { releasedID in
+                await releases.record(releasedID)
+            }
+            weakLease = lease
+            XCTAssertNotNil(weakLease)
+        }
+
+        for _ in 0..<100 {
+            if !(await releases.ids()).isEmpty { break }
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        XCTAssertNil(weakLease)
+        let releasedIDs = await releases.ids()
+        XCTAssertEqual(releasedIDs, [leaseID])
+    }
+
     func testTwoExecutorsRetainSharedRuntimeUntilFinalLeaseEnds() {
         let firstExecutor = UUID()
         let secondExecutor = UUID()
@@ -30,8 +52,12 @@ final class AFMDwarfStarProviderTests: XCTestCase {
 
         XCTAssertFalse(leases.release(leaseID: firstExecutor))
         XCTAssertEqual(leases.leaseIDs, [secondExecutor])
+        XCTAssertFalse(leases.release(leaseID: firstExecutor))
+        XCTAssertEqual(leases.runtimeIdentity, identity)
+        XCTAssertEqual(leases.leaseIDs, [secondExecutor])
         XCTAssertTrue(leases.release(leaseID: secondExecutor))
         XCTAssertTrue(leases.leaseIDs.isEmpty)
+        XCTAssertNil(leases.runtimeIdentity)
     }
 
     func testLoadedExecutorCannotBeRetargetedOrDisplaced() {
@@ -423,4 +449,16 @@ final class AFMDwarfStarProviderTests: XCTestCase {
         )
     }
 
+}
+
+private actor LeaseReleaseProbe {
+    private var releasedIDs: [UUID] = []
+
+    func record(_ id: UUID) {
+        releasedIDs.append(id)
+    }
+
+    func ids() -> [UUID] {
+        releasedIDs
+    }
 }

@@ -135,11 +135,6 @@ public final class DwarfStarLanguageModelExecutor:
         )
     }
 
-    deinit {
-        let runtime = runtime
-        Task { await runtime.unload() }
-    }
-
     public func prewarm(model: Model, transcript: Transcript) {
         let runtime = runtime
         Task { try? await runtime.prewarm() }
@@ -197,8 +192,5 @@ private actor Runtime {
         _ = try await model.load()
     }
 
-    func unload() async {
-        await model.unload()
-    }
 }
 #endif

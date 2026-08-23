@@ -185,6 +185,32 @@ package struct AFMDwarfStarRuntimeLeaseRegistry: Sendable {
     }
 }
 
+/// Owns one coordinator lease for exactly as long as its model instance lives.
+/// Explicit unloads remain supported and are idempotent in the coordinator;
+/// the deinitializer is the safety net for consumers that simply drop a model.
+package final class AFMDwarfStarRuntimeLease: @unchecked Sendable {
+    package let id: UUID
+    private let releaseOperation: @Sendable (UUID) async -> Void
+
+    package init(
+        id: UUID = UUID(),
+        release: @escaping @Sendable (UUID) async -> Void
+    ) {
+        self.id = id
+        releaseOperation = release
+    }
+
+    package func release() async {
+        await releaseOperation(id)
+    }
+
+    deinit {
+        let id = id
+        let releaseOperation = releaseOperation
+        Task { await releaseOperation(id) }
+    }
+}
+
 package actor AFMDwarfStarRuntimeCoordinator {
     package static let shared = AFMDwarfStarRuntimeCoordinator()
 

@@ -184,6 +184,7 @@ targets.append(
     .testTarget(
         name: "AFMKitFoundationModelsMLXTests",
         dependencies: [
+            .product(name: "AFMKitApple", package: "AFMKit"),
             .product(name: "AFMKitCore", package: "AFMKit"),
             "AFMKitFoundationModelsMLX"
         ]

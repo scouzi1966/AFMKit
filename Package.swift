@@ -74,7 +74,6 @@ targets.append(
         dependencies: ["AFMKitCore", "AFMOpenAICompat"],
         linkerSettings: [
             .linkedFramework("Security"),
-            .linkedFramework("CoreImage"),
             .linkedFramework("ImageIO"),
             .linkedFramework("UniformTypeIdentifiers")
         ]
