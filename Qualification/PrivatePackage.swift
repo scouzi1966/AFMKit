@@ -46,6 +46,10 @@ let package = Package(
         .library(name: "AFMKitVision", targets: ["AFMKitVision"]),
         .library(name: "AFMKitServices", targets: ["AFMKitServices"]),
         .library(name: "AFMKitDwarfStar", targets: ["AFMKitDwarfStar"]),
+        .library(
+            name: "AFMKitFoundationModelsDwarfStar",
+            targets: ["AFMKitFoundationModelsDwarfStar"]
+        ),
         .library(name: "AFMKitMLX", targets: ["AFMKitMLX"]),
         .library(
             name: "AFMKitFoundationModelsMLX",
@@ -107,7 +111,12 @@ let package = Package(
             name: "AFMKitApple",
             dependencies: ["AFMKitCore", "AFMOpenAICompat"],
             path: "Candidate/Sources/AFMKitApple",
-            linkerSettings: [.linkedFramework("Security")]
+            linkerSettings: [
+                .linkedFramework("Security"),
+                .linkedFramework("CoreImage"),
+                .linkedFramework("ImageIO"),
+                .linkedFramework("UniformTypeIdentifiers")
+            ]
         ),
         .target(
             name: "AFMKitEmbeddings",
@@ -191,7 +200,7 @@ let package = Package(
         ),
         .target(
             name: "AFMKitFoundationModelsMLX",
-            dependencies: ["AFMKitCore", "AFMKitMLX"],
+            dependencies: ["AFMKitApple", "AFMKitCore", "AFMKitMLX"],
             path: "Candidate/Packages/AFMKitMLX/Sources/AFMKitFoundationModelsMLX"
         ),
         .target(
@@ -224,6 +233,11 @@ let package = Package(
             ],
             path: "Candidate/Packages/AFMKitDwarfStar/Sources/AFMKitDwarfStar",
             resources: [.copy("../../vendor/ds4/metal")]
+        ),
+        .target(
+            name: "AFMKitFoundationModelsDwarfStar",
+            dependencies: ["AFMKitApple", "AFMKitCore", "AFMKitDwarfStar"],
+            path: "Candidate/Packages/AFMKitDwarfStar/Sources/AFMKitFoundationModelsDwarfStar"
         ),
         .testTarget(
             name: "AFMKitCoreTests",
@@ -289,6 +303,16 @@ let package = Package(
             name: "AFMKitDwarfStarTests",
             dependencies: ["AFMKitCore", "AFMKitDwarfStar", "CDwarfStar"],
             path: "Candidate/Packages/AFMKitDwarfStar/Tests/AFMKitDwarfStarTests"
+        ),
+        .testTarget(
+            name: "AFMKitFoundationModelsDwarfStarTests",
+            dependencies: [
+                "AFMKitApple",
+                "AFMKitCore",
+                "AFMKitDwarfStar",
+                "AFMKitFoundationModelsDwarfStar"
+            ],
+            path: "Candidate/Packages/AFMKitDwarfStar/Tests/AFMKitFoundationModelsDwarfStarTests"
         )
     ],
     cxxLanguageStandard: .gnucxx17

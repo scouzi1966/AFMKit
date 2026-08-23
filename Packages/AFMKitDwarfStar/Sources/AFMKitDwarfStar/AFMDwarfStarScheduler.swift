@@ -133,6 +133,58 @@ enum AFMDwarfStarPrefixCachePolicy {
     }
 }
 
+package struct AFMDwarfStarRuntimeLeaseRegistry: Sendable {
+    package enum Acquisition: Equatable, Sendable {
+        case alreadyOwned
+        case shareResident
+        case loadRuntime
+        case blockedByDifferentRuntime
+    }
+
+    private(set) package var runtimeIdentity: String?
+    private(set) package var leaseIDs: Set<UUID> = []
+
+    package init() {}
+
+    package func acquisition(
+        for leaseID: UUID,
+        runtimeIdentity requestedIdentity: String,
+        residentRuntimeMatches: Bool
+    ) -> Acquisition {
+        if leaseIDs.contains(leaseID) {
+            return runtimeIdentity == requestedIdentity && residentRuntimeMatches
+                ? .alreadyOwned
+                : .blockedByDifferentRuntime
+        }
+        if !leaseIDs.isEmpty {
+            return runtimeIdentity == requestedIdentity && residentRuntimeMatches
+                ? .shareResident
+                : .blockedByDifferentRuntime
+        }
+        return residentRuntimeMatches ? .shareResident : .loadRuntime
+    }
+
+    package mutating func commit(leaseID: UUID, runtimeIdentity: String) {
+        self.runtimeIdentity = runtimeIdentity
+        leaseIDs.insert(leaseID)
+    }
+
+    /// Returns true only when the caller released the final runtime lease.
+    package mutating func release(leaseID: UUID) -> Bool {
+        guard leaseIDs.remove(leaseID) != nil else { return false }
+        if leaseIDs.isEmpty {
+            runtimeIdentity = nil
+            return true
+        }
+        return false
+    }
+
+    package mutating func reset() {
+        runtimeIdentity = nil
+        leaseIDs.removeAll(keepingCapacity: false)
+    }
+}
+
 package actor AFMDwarfStarRuntimeCoordinator {
     package static let shared = AFMDwarfStarRuntimeCoordinator()
 
@@ -209,6 +261,7 @@ package actor AFMDwarfStarRuntimeCoordinator {
     private var prefixCachingEnabled = false
     private var dsparkEnabled = false
     private var lastPrefillSlot = -1
+    private var runtimeLeases = AFMDwarfStarRuntimeLeaseRegistry()
 
     package init() {}
 
@@ -224,6 +277,7 @@ package actor AFMDwarfStarRuntimeCoordinator {
     }
 
     package func load(
+        leaseID: UUID,
         modelPath: String,
         contextWindow: Int,
         prefillChunk: Int,
@@ -237,19 +291,46 @@ package actor AFMDwarfStarRuntimeCoordinator {
     ) throws {
         let residentSessions = max(1, maxConcurrent)
         let mappingIdentity = [
+            modelPath,
+            String(contextWindow),
+            String(prefillChunk),
+            String(powerPercent),
             dsparkSupportPath ?? "",
             String(dsparkDraftTokens),
             String(dsparkConfidenceThreshold),
             String(dsparkStrict),
+            String(enablePrefixCaching),
+            String(residentSessions),
         ].joined(separator: "|")
-        if engine != nil,
-           slots.count == residentSessions,
-           loadedModelPath == modelPath,
-           loadedMappingIdentity == mappingIdentity,
-           loadedContextWindow == contextWindow,
-           loadedMaxConcurrent == residentSessions,
-           prefixCachingEnabled == enablePrefixCaching {
+        let matchesResidentRuntime = engine != nil
+            && slots.count == residentSessions
+            && loadedModelPath == modelPath
+            && loadedMappingIdentity == mappingIdentity
+            && loadedContextWindow == contextWindow
+            && loadedMaxConcurrent == residentSessions
+            && prefixCachingEnabled == enablePrefixCaching
+
+        switch runtimeLeases.acquisition(
+            for: leaseID,
+            runtimeIdentity: mappingIdentity,
+            residentRuntimeMatches: matchesResidentRuntime
+        ) {
+        case .alreadyOwned:
             return
+        case .shareResident:
+            runtimeLeases.commit(leaseID: leaseID, runtimeIdentity: mappingIdentity)
+            return
+        case .blockedByDifferentRuntime:
+            if runtimeLeases.leaseIDs.contains(leaseID) {
+                throw AFMError.unavailable(
+                    "A DwarfStar model instance cannot change its runtime configuration while loaded."
+                )
+            }
+            throw AFMError.unavailable(
+                "Another DwarfStar model is resident. Unload it before selecting a different checkpoint."
+            )
+        case .loadRuntime:
+            break
         }
 
         unloadCurrent()
@@ -345,10 +426,11 @@ package actor AFMDwarfStarRuntimeCoordinator {
         dsparkEnabled = AFMDwarfStarSpeculativePolicy.isAvailable(
             requested: dsparkSupportPath != nil,
             draftTokenCount: Int(ds4_engine_mtp_draft_tokens(openedEngine)))
+        runtimeLeases.commit(leaseID: leaseID, runtimeIdentity: mappingIdentity)
     }
 
-    package func unload(modelPath: String) {
-        guard loadedModelPath == modelPath else { return }
+    package func unload(leaseID: UUID) {
+        guard runtimeLeases.release(leaseID: leaseID) else { return }
         unloadCurrent()
     }
 
@@ -846,6 +928,7 @@ package actor AFMDwarfStarRuntimeCoordinator {
         prefixCachingEnabled = false
         dsparkEnabled = false
         lastPrefillSlot = -1
+        runtimeLeases.reset()
     }
 
     /// Disk serialization can synchronize GPU state. Keep it off the hot path

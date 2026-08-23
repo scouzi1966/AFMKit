@@ -48,10 +48,10 @@ public enum AFMFoundationModelsRequestAdapter {
             switch mode {
             case .greedy:
                 temperature = 0
-            case .randomTopK(let value, let randomSeed):
+            case .top(let value, let randomSeed):
                 topK = value
                 seed = randomSeed.flatMap { Int(exactly: $0) }
-            case .randomProbabilityThreshold(let value, let randomSeed):
+            case .nucleus(let value, let randomSeed):
                 topP = value
                 seed = randomSeed.flatMap { Int(exactly: $0) }
             @unknown default:
@@ -341,6 +341,4 @@ public enum AFMFoundationModelsRequestAdapter {
     }
 }
 
-@available(macOS 27.0, *)
-typealias MLXFoundationRequestAdapter = AFMFoundationModelsRequestAdapter
 #endif

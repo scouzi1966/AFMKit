@@ -125,6 +125,7 @@ def main() -> int:
         "Tests/AFMKitVisionTests/AFMKitVisionTests.swift",
         "Tests/AFMKitServicesTests/AFMKitServicesTests.swift",
         "Packages/AFMKitDwarfStar/Sources/AFMKitDwarfStar/AFMDwarfStarProvider.swift",
+        "Packages/AFMKitDwarfStar/Sources/AFMKitFoundationModelsDwarfStar/DwarfStarFoundationLanguageModel.swift",
         "Packages/AFMKitMLX/Sources/AFMKitMLX/AFMMLXProvider.swift",
         "docs/api-baselines/AFMKitCore.symbols.json",
         "docs/api-baselines/AFMKitInference.symbols.json",
@@ -134,6 +135,7 @@ def main() -> int:
         "docs/api-baselines/AFMKitVision.symbols.json",
         "docs/api-baselines/AFMKitServices.symbols.json",
         "docs/api-baselines/AFMKitDwarfStar.symbols.json",
+        "docs/api-baselines/AFMKitFoundationModelsDwarfStar.symbols.json",
         "docs/api-baselines/AFMKitMLX.symbols.json",
     }
     missing = required - seen

@@ -21,7 +21,6 @@ public enum AFMFoundationModelsExecutorBridge {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
-                    _ = try await model.load()
                     for try await event in model.streamResponse(to: request) {
                         try Task.checkCancellation()
                         continuation.yield(event)

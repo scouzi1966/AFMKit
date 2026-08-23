@@ -56,7 +56,7 @@ expected = {
     },
     "xcode27": {
         "root": {"AFMKitCore", "AFMOpenAICompat", "AFMKitInference", "AFMKitEmbeddings", "AFMKitSpeech", "AFMKitSpeechSynthesis", "AFMKitVision", "AFMKitServices", "AFMKitApple"},
-        "dwarfstar": {"AFMKitDwarfStar"},
+        "dwarfstar": {"AFMKitDwarfStar", "AFMKitFoundationModelsDwarfStar"},
         "mlx": {"AFMKitMLX", "AFMKitFoundationModelsMLX"},
     },
 }[mode]
@@ -80,14 +80,24 @@ targets = {
 }
 macos27_targets = {"AFMKitApple", "AFMKitAppleTests"}
 fmmlx_targets = {"AFMKitFoundationModelsMLX", "AFMKitFoundationModelsMLXTests"}
+fmdwarf_targets = {
+    "AFMKitFoundationModelsDwarfStar",
+    "AFMKitFoundationModelsDwarfStarTests",
+}
 if mode == "xcode26":
-    if targets["root"] & macos27_targets or targets["mlx"] & fmmlx_targets:
+    if (
+        targets["root"] & macos27_targets
+        or targets["mlx"] & fmmlx_targets
+        or targets["dwarfstar"] & fmdwarf_targets
+    ):
         raise SystemExit("Xcode 26 manifest exposes Xcode 27-only targets.")
 else:
     if not macos27_targets.issubset(targets["root"]):
         raise SystemExit("Xcode 27 root manifest omits AFMKitApple targets.")
     if not fmmlx_targets.issubset(targets["mlx"]):
         raise SystemExit("Xcode 27 MLX manifest omits Foundation Models bridge targets.")
+    if not fmdwarf_targets.issubset(targets["dwarfstar"]):
+        raise SystemExit("Xcode 27 DwarfStar manifest omits Foundation Models bridge targets.")
 
 print(f"{mode} product exposure matches the macOS 26/27 compatibility contract.")
 PY

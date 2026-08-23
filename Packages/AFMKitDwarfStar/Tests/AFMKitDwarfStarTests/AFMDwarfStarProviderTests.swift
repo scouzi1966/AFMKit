@@ -3,6 +3,61 @@ import AFMKitCore
 @testable import AFMKitDwarfStar
 
 final class AFMDwarfStarProviderTests: XCTestCase {
+    func testTwoExecutorsRetainSharedRuntimeUntilFinalLeaseEnds() {
+        let firstExecutor = UUID()
+        let secondExecutor = UUID()
+        let identity = "deepseek.gguf|32768|metal"
+        var leases = AFMDwarfStarRuntimeLeaseRegistry()
+
+        XCTAssertEqual(
+            leases.acquisition(
+                for: firstExecutor,
+                runtimeIdentity: identity,
+                residentRuntimeMatches: false
+            ),
+            .loadRuntime
+        )
+        leases.commit(leaseID: firstExecutor, runtimeIdentity: identity)
+        XCTAssertEqual(
+            leases.acquisition(
+                for: secondExecutor,
+                runtimeIdentity: identity,
+                residentRuntimeMatches: true
+            ),
+            .shareResident
+        )
+        leases.commit(leaseID: secondExecutor, runtimeIdentity: identity)
+
+        XCTAssertFalse(leases.release(leaseID: firstExecutor))
+        XCTAssertEqual(leases.leaseIDs, [secondExecutor])
+        XCTAssertTrue(leases.release(leaseID: secondExecutor))
+        XCTAssertTrue(leases.leaseIDs.isEmpty)
+    }
+
+    func testLoadedExecutorCannotBeRetargetedOrDisplaced() {
+        let activeExecutor = UUID()
+        let competingExecutor = UUID()
+        var leases = AFMDwarfStarRuntimeLeaseRegistry()
+        leases.commit(leaseID: activeExecutor, runtimeIdentity: "model-a")
+
+        XCTAssertEqual(
+            leases.acquisition(
+                for: activeExecutor,
+                runtimeIdentity: "model-b",
+                residentRuntimeMatches: false
+            ),
+            .blockedByDifferentRuntime
+        )
+        XCTAssertEqual(
+            leases.acquisition(
+                for: competingExecutor,
+                runtimeIdentity: "model-b",
+                residentRuntimeMatches: false
+            ),
+            .blockedByDifferentRuntime
+        )
+    }
+
     func testProviderContractDescribesInProcessDeviceRuntime() {
         let descriptor = AFMDwarfStarProviderFactory().descriptor
 

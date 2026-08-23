@@ -173,15 +173,10 @@ public struct AFMFoundationModelsEventChannelAdapter {
                     )
                 )
             )
-        case .removeToolCall(let id, let name, let arguments):
-            let content = (try? GeneratedContent(json: arguments)) ?? GeneratedContent(
-                kind: .structure(properties: [:], orderedKeys: [])
-            )
+        case .removeToolCall(let id, _, _):
             await channel.send(
                 .toolCalls(
-                    action: .removeToolCall(
-                        Transcript.ToolCall(id: id, toolName: name, arguments: content)
-                    )
+                    action: .removeToolCall(id: id)
                 )
             )
         case .metadata(let values):
@@ -217,6 +212,4 @@ public struct AFMFoundationModelsEventChannelAdapter {
     }
 }
 
-@available(macOS 27.0, *)
-typealias MLXFoundationEventChannelAdapter = AFMFoundationModelsEventChannelAdapter
 #endif

@@ -160,6 +160,7 @@ targets.append(
         name: "AFMKitFoundationModelsMLX",
         dependencies: [
             .product(name: "AFMKitCore", package: "AFMKit"),
+            .product(name: "AFMKitApple", package: "AFMKit"),
             "AFMKitMLX"
         ]
     )

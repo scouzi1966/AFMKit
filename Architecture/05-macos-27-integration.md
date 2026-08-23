@@ -62,6 +62,7 @@ Intents and owns credentials, entitlements, tools, and user consent.
 | `LanguageModel` abstraction | **Implemented** | `AFMKitFoundationModelsMLX` | `MLXLanguageModel` advertises vision, reasoning, tools, and guided generation according to configuration. |
 | `LanguageModelExecutor` lifecycle | **Implemented** | `AFMKitFoundationModelsMLX` | Configuration, prewarm, transcript conversion, streamed channel output, unload. |
 | Custom MLX provider | **Implemented** | `AFMKitFoundationModelsMLX` + `AFMKitMLX` | Uses Apple protocol surface while keeping MLX engine details behind AFMKit. |
+| Custom DwarfStar provider | **Implemented** | `AFMKitFoundationModelsDwarfStar` + `AFMKitDwarfStar` | Uses the provider-neutral request/event bridge and retains the shared runtime with executor leases. |
 | Apple on-device system model | **Implemented** | `AFMKitApple` | Runtime-gated; normal AFM provider route. |
 | Private Cloud Compute model | **Implemented** | `AFMKitApple` | Explicit model ID; availability, locale, entitlement, and quota checks. |
 | PCC managed entitlement | **Host-owned** | Signed host app | Host needs `com.apple.developer.private-cloud-compute` in its signed entitlements/provisioning. AFMKit can inspect current-process entitlement. |
