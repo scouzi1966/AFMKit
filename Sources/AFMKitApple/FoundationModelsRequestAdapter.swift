@@ -48,10 +48,10 @@ public enum AFMFoundationModelsRequestAdapter {
             switch mode {
             case .greedy:
                 temperature = 0
-            case .top(let value, let randomSeed):
+            case .randomTopK(let value, seed: let randomSeed):
                 topK = value
                 seed = randomSeed.flatMap { Int(exactly: $0) }
-            case .nucleus(let value, let randomSeed):
+            case .randomProbabilityThreshold(let value, seed: let randomSeed):
                 topP = value
                 seed = randomSeed.flatMap { Int(exactly: $0) }
             @unknown default:

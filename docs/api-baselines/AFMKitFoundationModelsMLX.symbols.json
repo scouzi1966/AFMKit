@@ -64,7 +64,7 @@
       "source": "s:25AFMKitFoundationModelsMLX16MLXLanguageModelV17supportsReasoningSbvp",
       "sourceOrigin": {
         "displayName": "AFMFoundationModelsModelConfiguration.supportsReasoning",
-        "identifier": "s:25AFMKitFoundationModelsMLX013AFMFoundationC18ModelConfigurationP17supportsReasoningSbvp"
+        "identifier": "s:11AFMKitApple37AFMFoundationModelsModelConfigurationP17supportsReasoningSbvp"
       },
       "target": "s:25AFMKitFoundationModelsMLX16MLXLanguageModelV"
     },
@@ -82,7 +82,7 @@
       "source": "s:25AFMKitFoundationModelsMLX16MLXLanguageModelV28defaultMaximumResponseTokensSivp",
       "sourceOrigin": {
         "displayName": "AFMFoundationModelsModelConfiguration.defaultMaximumResponseTokens",
-        "identifier": "s:25AFMKitFoundationModelsMLX013AFMFoundationC18ModelConfigurationP28defaultMaximumResponseTokensSivp"
+        "identifier": "s:11AFMKitApple37AFMFoundationModelsModelConfigurationP28defaultMaximumResponseTokensSivp"
       },
       "target": "s:25AFMKitFoundationModelsMLX16MLXLanguageModelV"
     },
@@ -135,6 +135,10 @@
     {
       "kind": "conformsTo",
       "source": "s:25AFMKitFoundationModelsMLX24MLXLanguageModelExecutorC13ConfigurationV",
+      "sourceOrigin": {
+        "displayName": "LanguageModelExecutor.Configuration",
+        "identifier": "s:16FoundationModels21LanguageModelExecutorP13ConfigurationQa"
+      },
       "target": "s:11AFMKitApple37AFMFoundationModelsModelConfigurationP",
       "targetFallback": "AFMKitApple.AFMFoundationModelsModelConfiguration"
     },
@@ -217,7 +221,7 @@
       "source": "s:25AFMKitFoundationModelsMLX24MLXLanguageModelExecutorC13ConfigurationV17supportsReasoningSbvp",
       "sourceOrigin": {
         "displayName": "AFMFoundationModelsModelConfiguration.supportsReasoning",
-        "identifier": "s:25AFMKitFoundationModelsMLX013AFMFoundationC18ModelConfigurationP17supportsReasoningSbvp"
+        "identifier": "s:11AFMKitApple37AFMFoundationModelsModelConfigurationP17supportsReasoningSbvp"
       },
       "target": "s:25AFMKitFoundationModelsMLX24MLXLanguageModelExecutorC13ConfigurationV"
     },
@@ -241,7 +245,7 @@
       "source": "s:25AFMKitFoundationModelsMLX24MLXLanguageModelExecutorC13ConfigurationV28defaultMaximumResponseTokensSivp",
       "sourceOrigin": {
         "displayName": "AFMFoundationModelsModelConfiguration.defaultMaximumResponseTokens",
-        "identifier": "s:25AFMKitFoundationModelsMLX013AFMFoundationC18ModelConfigurationP28defaultMaximumResponseTokensSivp"
+        "identifier": "s:11AFMKitApple37AFMFoundationModelsModelConfigurationP28defaultMaximumResponseTokensSivp"
       },
       "target": "s:25AFMKitFoundationModelsMLX24MLXLanguageModelExecutorC13ConfigurationV"
     },
