@@ -205,7 +205,20 @@ cp -R "$ROOT/Qualification/TrustedSeed" "$SANDBOX/TrustedSeed"
 cp "$EXTRACTED/Packages/AFMKitMLX/Package.resolved" "$SANDBOX/Package.resolved"
 mv "$EXTRACTED" "$SANDBOX/Candidate"
 /usr/bin/xcrun --toolchain XcodeDefault swift package dump-package \
-    --package-path "$SANDBOX" > /dev/null
+    --package-path "$SANDBOX" > "$SANDBOX/private-package.json"
+/usr/bin/python3 - "$SANDBOX/private-package.json" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    package = json.load(handle)
+
+products = {product["name"] for product in package["products"]}
+targets = {target["name"] for target in package["targets"]}
+assert "AFMEvalKit" in products, "Private qualification omits AFMEvalKit product"
+assert "AFMEvalKit" in targets, "Private qualification omits AFMEvalKit target"
+assert "AFMEvalKitTests" in targets, "Private qualification omits AFMEvalKit tests"
+PY
 
 SANDBOX_BUILD="$SANDBOX/compiler-build"
 mkdir -p \

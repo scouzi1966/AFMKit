@@ -88,14 +88,38 @@ final class AFMEvalKitTests: XCTestCase {
         XCTAssertThrowsError(try AFMEvaluationRunPolicy.validatePlannedOutput(
             suites: [oversized],
             baseParameters: .init(maxTokens: 256)))
+
+        let invalid = AFMEvaluationSuite(
+            name: "invalid",
+            description: "Programmatic suite still requires validation.",
+            cases: [.init(id: "duplicate", prompt: "one"),
+                    .init(id: "duplicate", prompt: "two")])
+        XCTAssertThrowsError(try AFMEvaluationRunPolicy.validatePlannedOutput(
+            suites: [invalid],
+            baseParameters: .init(maxTokens: 16)))
+    }
+
+    func testValidatorRejectsUnsafeNestedGenerationConfiguration() throws {
+        XCTAssertThrowsError(try AFMEvaluationValidator.validateParameters(
+            .init(topLogprobs: 3),
+            context: "case"))
+        XCTAssertThrowsError(try AFMEvaluationValidator.validateParameters(
+            .init(stop: [""]),
+            context: "case"))
+        XCTAssertThrowsError(try AFMEvaluationValidator.validateParameters(
+            .init(responseFormat: .init(type: "json_schema")),
+            context: "case"))
     }
 
     func testReportWriterEscapesUntrustedText() {
         let parameters = AFMEvaluationParameters(maxTokens: 16)
         let result = AFMEvaluationCaseResult(
             suite: "suite<script>", caseID: "case", prompt: "<img>", system: nil,
-            output: "<script>alert('x')</script>", reasoning: nil, toolCalls: [],
-            outcome: .error, checks: [], error: "bad & worse",
+            output: "<script>alert('x')</script>", reasoning: "<reasoning>",
+            toolCalls: [.init(name: "lookup", arguments: "</pre><script>x</script>")],
+            outcome: .error,
+            checks: [.init(name: "<check>", passed: false, detail: "<detail>")],
+            error: "bad & worse",
             startedAt: Date(timeIntervalSince1970: 0), durationSeconds: 1,
             timeToFirstTokenSeconds: nil, promptTimeSeconds: nil,
             generationTimeSeconds: nil, promptTokens: 1, cachedPromptTokens: 0,
@@ -111,6 +135,7 @@ final class AFMEvalKitTests: XCTestCase {
             results: [result])
         let html = AFMEvaluationReportWriter.html(for: report)
         XCTAssertFalse(html.contains("<script>alert('x')</script>"))
+        XCTAssertFalse(html.contains("</pre><script>x</script>"))
         XCTAssertTrue(html.contains("bad &amp; worse"))
     }
 }

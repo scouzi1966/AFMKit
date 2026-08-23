@@ -64,7 +64,9 @@ scoring, throughput metrics, aggregate output-token budgets, report models and
 HTML/JSON rendering. It depends only on `AFMOpenAICompat` and Foundation and
 does not load or select a model. Hosts continue to own suite discovery and
 defaults, bundled suites, CLI planning, execution, signals, persistence paths,
-and browser launching.
+and browser launching. Validation applies equally to decoded and
+programmatically constructed suites, including bounded nested generation
+configuration, tool names, response formats, stop strings, and expectations.
 
 ## Local development
 

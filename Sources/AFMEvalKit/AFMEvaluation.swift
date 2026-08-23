@@ -349,8 +349,13 @@ public enum AFMEvaluationRunPolicy {
         suites: [AFMEvaluationSuite],
         baseParameters: AFMEvaluationParameters
     ) throws {
+        try AFMEvaluationValidator.validateParameters(baseParameters, context: "base parameters")
         var total = 0
         for suite in suites {
+            try AFMEvaluationValidator.validate(
+                suite,
+                allowsCrossCaseMatching: true
+            )
             for testCase in suite.cases {
                 let parameters = baseParameters
                     .merging(suite.defaults)
@@ -463,6 +468,9 @@ public enum AFMEvaluationValidator {
             let suite = try JSONDecoder().decode(AFMEvaluationSuite.self, from: data)
             try validate(suite, allowsCrossCaseMatching: allowsCrossCaseMatching)
             return suite
+        } catch AFMEvaluationError.invalidSuite(let message) {
+            let prefix = source.map { "\($0): " } ?? ""
+            throw AFMEvaluationError.invalidSuite("\(prefix)\(message)")
         } catch let error as AFMEvaluationError {
             throw error
         } catch {
@@ -482,6 +490,9 @@ public enum AFMEvaluationValidator {
         guard !suite.description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw AFMEvaluationError.invalidSuite("description must not be empty")
         }
+        guard suite.description.utf8.count <= 65_536 else {
+            throw AFMEvaluationError.invalidSuite("description exceeds 64 KB")
+        }
         guard !suite.cases.isEmpty, suite.cases.count <= 1_000 else {
             throw AFMEvaluationError.invalidSuite("cases must contain 1...1000 entries")
         }
@@ -496,9 +507,11 @@ public enum AFMEvaluationValidator {
                 throw AFMEvaluationError.invalidSuite("Case '\(testCase.id)' has an empty prompt")
             }
             guard testCase.prompt.utf8.count <= 65_536,
+                  (testCase.description?.utf8.count ?? 0) <= 65_536,
                   (testCase.system?.utf8.count ?? 0) <= 65_536,
                   (testCase.developer?.utf8.count ?? 0) <= 65_536 else {
-                throw AFMEvaluationError.invalidSuite("Case '\(testCase.id)' prompt/system/developer text exceeds 64 KB")
+                throw AFMEvaluationError.invalidSuite(
+                    "Case '\(testCase.id)' description/prompt/system/developer text exceeds 64 KB")
             }
             try validateParameters(testCase.parameters, context: "case '\(testCase.id)'")
             if let expectations = testCase.expectations {
@@ -514,10 +527,11 @@ public enum AFMEvaluationValidator {
                     throw AFMEvaluationError.invalidSuite(
                         "Case '\(testCase.id)' minimumCharacters must be <= maximumCharacters")
                 }
+                try validateExpectations(expectations, caseID: testCase.id)
                 if let match = expectations.matchesCase {
                     guard allowsCrossCaseMatching else {
                         throw AFMEvaluationError.invalidSuite(
-                            "Case '\(testCase.id)' uses matchesCase, which is reserved for trusted suites")
+                            "Case '\(testCase.id)' uses matchesCase, which is reserved for bundled suites or other explicitly trusted suites")
                     }
                     guard identifiers.contains(match), match != testCase.id else {
                         throw AFMEvaluationError.invalidSuite(
@@ -533,19 +547,24 @@ public enum AFMEvaluationValidator {
         context: String
     ) throws {
         guard let value else { return }
-        if let temperature = value.temperature, !(0...2).contains(temperature) {
+        guard let encoded = try? JSONEncoder().encode(value), encoded.count <= 1_000_000 else {
+            throw AFMEvaluationError.invalidSuite(
+                "\(context) must be valid JSON and no larger than 1 MB")
+        }
+        if let temperature = value.temperature,
+           !temperature.isFinite || !(0...2).contains(temperature) {
             throw AFMEvaluationError.invalidSuite("\(context) temperature must be 0...2")
         }
         if let maxTokens = value.maxTokens, !(1...32_768).contains(maxTokens) {
             throw AFMEvaluationError.invalidSuite("\(context) maxTokens must be 1...32768")
         }
-        if let topP = value.topP, !(0...1).contains(topP) {
+        if let topP = value.topP, !topP.isFinite || !(0...1).contains(topP) {
             throw AFMEvaluationError.invalidSuite("\(context) topP must be 0...1")
         }
         if let topK = value.topK, topK < 0 || topK > 100_000 {
             throw AFMEvaluationError.invalidSuite("\(context) topK must be 0...100000")
         }
-        if let minP = value.minP, !(0...1).contains(minP) {
+        if let minP = value.minP, !minP.isFinite || !(0...1).contains(minP) {
             throw AFMEvaluationError.invalidSuite("\(context) minP must be 0...1")
         }
         if let repetitionPenalty = value.repetitionPenalty,
@@ -563,8 +582,76 @@ public enum AFMEvaluationValidator {
         if let topLogprobs = value.topLogprobs, !(0...20).contains(topLogprobs) {
             throw AFMEvaluationError.invalidSuite("\(context) topLogprobs must be 0...20")
         }
-        if let stop = value.stop, stop.count > 16 || stop.contains(where: { $0.utf8.count > 1_024 }) {
-            throw AFMEvaluationError.invalidSuite("\(context) stop allows at most 16 strings of 1 KB each")
+        if value.topLogprobs != nil, value.logprobs != true {
+            throw AFMEvaluationError.invalidSuite(
+                "\(context) topLogprobs requires logprobs=true")
+        }
+        if let stop = value.stop,
+           stop.count > 16 || stop.contains(where: { $0.isEmpty || $0.utf8.count > 1_024 }) {
+            throw AFMEvaluationError.invalidSuite(
+                "\(context) stop allows at most 16 nonempty strings of 1 KB each")
+        }
+        if let tools = value.tools {
+            guard tools.count <= 128 else {
+                throw AFMEvaluationError.invalidSuite("\(context) tools allows at most 128 functions")
+            }
+            var names = Set<String>()
+            for tool in tools {
+                guard tool.type == "function" else {
+                    throw AFMEvaluationError.invalidSuite(
+                        "\(context) tool type must be 'function'")
+                }
+                try validateFunctionName(tool.function.name, context: context)
+                guard names.insert(tool.function.name).inserted else {
+                    throw AFMEvaluationError.invalidSuite(
+                        "\(context) contains duplicate tool '\(tool.function.name)'")
+                }
+                if let description = tool.function.description,
+                   description.utf8.count > 65_536 {
+                    throw AFMEvaluationError.invalidSuite(
+                        "\(context) tool '\(tool.function.name)' description exceeds 64 KB")
+                }
+            }
+        }
+        if let responseFormat = value.responseFormat {
+            guard ["text", "json_object", "json_schema"].contains(responseFormat.type) else {
+                throw AFMEvaluationError.invalidSuite(
+                    "\(context) responseFormat.type must be text, json_object, or json_schema")
+            }
+            if responseFormat.type == "json_schema", responseFormat.jsonSchema?.schema == nil {
+                throw AFMEvaluationError.invalidSuite(
+                    "\(context) json_schema responseFormat requires a schema")
+            }
+        }
+    }
+
+    private static func validateExpectations(
+        _ value: AFMEvaluationExpectations,
+        caseID: String
+    ) throws {
+        let scalarValues = [value.exact, value.toolCallName, value.matchesCase].compactMap { $0 }
+        let listValues = (value.contains ?? []) + (value.notContains ?? [])
+        guard (value.contains?.count ?? 0) <= 64,
+              (value.notContains?.count ?? 0) <= 64,
+              (scalarValues + listValues).allSatisfy({ $0.utf8.count <= 65_536 }) else {
+            throw AFMEvaluationError.invalidSuite(
+                "Case '\(caseID)' expectations allow at most 64 values of 64 KB each")
+        }
+        if let toolName = value.toolCallName {
+            try validateFunctionName(toolName, context: "Case '\(caseID)' toolCallName")
+        }
+        if (value.contains ?? []).contains(where: { $0.isEmpty })
+            || (value.notContains ?? []).contains(where: { $0.isEmpty }) {
+            throw AFMEvaluationError.invalidSuite(
+                "Case '\(caseID)' contains/notContains values must not be empty")
+        }
+    }
+
+    private static func validateFunctionName(_ value: String, context: String) throws {
+        let pattern = "^[A-Za-z0-9_-]{1,64}$"
+        guard value.range(of: pattern, options: .regularExpression) != nil else {
+            throw AFMEvaluationError.invalidSuite(
+                "\(context) must use 1...64 letters, digits, underscores, or hyphens")
         }
     }
 
