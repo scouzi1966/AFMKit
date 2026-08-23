@@ -61,23 +61,10 @@ import json
 import sys
 
 package = json.load(sys.stdin)
-expected_vendored = {
-    "mlx-swift": "/vendor/MLX/mlx-swift",
-    "mlx-swift-lm": "/vendor/MLX/mlx-swift-lm",
-}
-seen_vendored = set()
 for dependency in package.get("dependencies", []):
     file_system = dependency.get("fileSystem", [])
     if file_system:
-        if len(file_system) != 1:
-            raise SystemExit("AFMKit has an ambiguous vendored dependency.")
-        entry = file_system[0]
-        identity = entry.get("identity", "")
-        expected_suffix = expected_vendored.get(identity)
-        if expected_suffix is None or not entry.get("path", "").endswith(expected_suffix):
-            raise SystemExit(f"AFMKit has an unexpected local dependency: {identity}")
-        seen_vendored.add(identity)
-        continue
+        raise SystemExit("AFMKit must not expose local package dependencies.")
     source_control = dependency.get("sourceControl", [])
     if len(source_control) != 1:
         raise SystemExit("AFMKit dependencies must be remote or approved vendored packages.")
@@ -87,8 +74,11 @@ for dependency in package.get("dependencies", []):
         raise SystemExit("AFMKit dependencies must use public HTTPS locations.")
     if set(entry.get("requirement", {})) != {"exact"}:
         raise SystemExit("AFMKit dependencies must use exact versions.")
-if seen_vendored != set(expected_vendored):
-    raise SystemExit("AFMKit must expose both vendored MLX packages.")
+targets = {target.get("name") for target in package.get("targets", [])}
+required_vendored_targets = {"Cmlx", "MLX", "MLXLMCommon", "MLXLLM", "MLXVLM"}
+missing = required_vendored_targets - targets
+if missing:
+    raise SystemExit(f"AFMKit is missing flattened MLX targets: {sorted(missing)}")
 products = {product.get("name") for product in package.get("products", [])}
 expected = {
     "AFMKitCore", "AFMOpenAICompat", "AFMKitInference", "AFMKitApple",
