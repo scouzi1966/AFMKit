@@ -42,6 +42,7 @@ portability.
 | Errors | `AFMError` | Stable failure categories with provider detail retained as text/metadata. |
 | Optional inspection | `AnyAFMModel.supportsTokenization`, `supportsPrewarming`, `supportsAdmissionReporting`, `supportsTelemetryReporting` | Capability checks before invoking optional model protocols. |
 | High-level inference | `AFMEngine`, `AFMLanguageModel`, `GenerationConfig`, `AFMResponse`, `AFMStreamEvent` in `AFMKitInference` | Load, respond, stream, and bounded batch execution over any `AFMModel`, including OpenAI message conversion without importing a provider. |
+| Apple services | `AFMKitEmbeddings`, `AFMKitSpeech`, `AFMKitSpeechSynthesis`, `AFMKitVision` | Independently selectable local embeddings, transcription, synthesis, OCR, document and image analysis. `AFMKitServices` re-exports all four for compatibility. |
 
 Typical app flow:
 

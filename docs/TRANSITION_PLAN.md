@@ -18,7 +18,7 @@ The long-term shape should align with macOS 27 LanguageModel-style provider conc
 
 AFMKit starts as a private repository while the API is still moving. It can become public after the core contract and first provider packages are stable enough that external adopters are not forced to track maclocal-api internals.
 
-Seven public modules use three tagged SwiftPM package boundaries for normal
+Twelve public modules use three tagged SwiftPM package boundaries for normal
 consumers. This is package-level isolation: the root package has no global
 provider dependency graph.
 
@@ -30,7 +30,7 @@ manifest surfaces and clean-builds the root Xcode 26 surface.
 
 | Published package | Public modules | Dependency strategy |
 | --- | --- | --- |
-| `AFMKit` | `AFMKitCore`, `AFMOpenAICompat`, `AFMKitInference`, `AFMKitApple` | No SwiftPM dependencies; Apple frameworks only where imported by the Apple target. |
+| `AFMKit` | Core, OpenAI compatibility, inference, Apple provider, four independently selectable Apple services, and the `AFMKitServices` umbrella | No SwiftPM dependencies; Apple frameworks are isolated to the selected service/provider target. |
 | `AFMKitDwarfStar` | `AFMKitDwarfStar` | Exact AFMKit release, exact public Hub/Xet graph, vanilla DwarfStar plus AFM-owned adapter code. |
 | `AFMKitMLX` | `AFMKitMLX`, `AFMKitFoundationModelsMLX` | Exact AFMKit release and exact AFM-compatible MLX/private dependency graph. |
 | `maclocal-api` | Host executable modules | Aggregates selected AFMKit packages and owns CLI, HTTP server, WebUI, and packaging. |
@@ -138,8 +138,8 @@ Current `AFMKitApple` checkpoint:
   signature. Deterministic tests cover valid, invalid, ad-hoc, missing, and non-Boolean host states.
 - The normalized `AFMKitApple` symbol graph includes the intentional provider, model, managed
   capability, and configuration-key additions with no removed public symbols.
-- Release suites cover Core, OpenAI compatibility, Apple, MLX,
-  Inference, FoundationModelsMLX, and DwarfStar in their owning packages. All seven public API
+- Release suites cover Core, OpenAI compatibility, Apple, the four independently selectable
+  Apple services plus their umbrella, MLX, Inference, FoundationModelsMLX, and DwarfStar. All twelve public API
   baselines and fresh split-package downstream builds are release gates.
 
 ## Phase 4: Runtime Adapters
@@ -277,7 +277,7 @@ Scope:
 - Add a downstream example app that exercises AFMKit without local maclocal-api source checkout assumptions.
 - Keep a standalone downstream build gate that materializes the same root,
   DwarfStar, and MLX manifests intended for publication, resolves each without a
-  lock, compares provider pins to the qualified locks, and builds all seven public
+  lock, compares provider pins to the qualified locks, and builds all twelve public
   products.
 
 Exit criteria:
@@ -299,8 +299,9 @@ Pre-tag exit status:
 
 - `AFMKitCore` must stay dependency-free.
 - macOS 27 features must be compiler-gated at manifest evaluation and runtime-gated.
-- Xcode 26 must expose and build the macOS 26 source-compatible package surface without parsing
-  macOS 27-only targets; Xcode 27 exposes the complete seven-product surface.
+- Xcode 26 must expose and build the macOS 26 source-compatible package surface, including the
+  Apple service products, without parsing macOS 27-only targets; Xcode 27 exposes the complete
+  twelve-product surface.
 - Provider streams should emit structured events for text, reasoning, tool calls, structured output, generated media, usage, timing, progress, completion, and errors.
 - Runtime-specific capabilities must be explicit. Swapping engines should not silently remove tool calling, reasoning, structured JSON, or multimodal support without advertising that limitation.
 - Server and transport observability are not core-provider responsibilities. `AFMKitCore` must
