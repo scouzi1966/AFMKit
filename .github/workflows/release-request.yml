@@ -1,0 +1,55 @@
+name: Request release
+run-name: Request ${{ inputs.tag }} from ${{ github.sha }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: SwiftPM-compatible SemVer tag without build metadata (for example, v1.2.3-rc.1)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  request:
+    name: Record unprivileged release request
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Validate strict SemVer tag
+        env:
+          TAG_NAME: ${{ inputs.tag }}
+        run: Scripts/validate-release-tag.sh "$TAG_NAME"
+      - name: Create immutable request payload
+        env:
+          TAG_NAME: ${{ inputs.tag }}
+          REQUEST_SHA: ${{ github.sha }}
+          REQUEST_RUN_ID: ${{ github.run_id }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/release-request"
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          request = {
+              "run_id": int(os.environ["REQUEST_RUN_ID"]),
+              "sha": os.environ["REQUEST_SHA"],
+              "tag": os.environ["TAG_NAME"],
+          }
+          path = Path(os.environ["RUNNER_TEMP"]) / "release-request" / "request.json"
+          path.write_text(json.dumps(request, sort_keys=True) + "\n", encoding="utf-8")
+          PY
+      - name: Upload release request
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-request-${{ github.run_id }}
+          path: ${{ runner.temp }}/release-request/request.json
+          if-no-files-found: error
+          retention-days: 1

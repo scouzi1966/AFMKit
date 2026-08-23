@@ -1,13 +1,15 @@
 # AFMKit Apple Provider Contract
 
-Last updated: 2026-08-17
+Last updated: 2026-08-21
 
 ## Purpose
 
 `AFMKitApple` exposes Apple's macOS 27 Foundation Models implementations through the same
-`AFMProviderFactory` and `AFMModel` contracts used by AFMKit's local providers. The package keeps
-the AFMKit deployment floor at macOS 26; the provider factory and model adapter are available only
-when the host is running macOS 27 or newer.
+`AFMProviderFactory` and `AFMModel` contracts used by AFMKit's local providers. All manifests use
+Swift tools 6.1 and keep the AFMKit deployment floor at macOS 26. The root manifest exposes this
+product only when evaluated by Xcode 27 / Swift 6.4 or newer; the provider factory and model adapter
+are available only when the host is running macOS 27 or newer. Xcode 26 consumers retain source
+compatibility through `AFMKitCore` and `AFMOpenAICompat` without parsing macOS 27-only targets.
 
 ## Stable identity
 
@@ -20,11 +22,13 @@ model cannot currently run instead of hiding it from discovery.
 
 ## Host-owned capabilities
 
-AFMKit cannot grant a signed application an entitlement. By default, the provider reads
-`com.apple.developer.private-cloud-compute` from the signed host process with Security.framework.
-The host may inject a different entitlement probe for tests or an unusual embedding environment.
-PCC is unavailable until the signed process contains the entitlement, even when the Apple developer
-account has received managed-capability approval.
+AFMKit cannot grant a signed application an entitlement. By default, the provider first validates
+the current host with Security.framework using strict, all-architectures code-signing checks. It
+rejects invalid and ad-hoc signatures, then requires the signed entitlement
+`com.apple.developer.private-cloud-compute` to be the Boolean value `true`. The host may inject a
+different entitlement probe for deterministic tests or an unusual embedding environment. PCC is
+unavailable until the signed process passes all checks, even when the Apple developer account has
+received managed-capability approval.
 
 Apple tools are executable Swift values, while `AFMToolDefinition` contains only a portable name and
 JSON schema. The factory therefore accepts host-provided `FoundationModels.Tool` values. A model

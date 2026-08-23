@@ -56,6 +56,15 @@ API baseline files under `docs/api-baselines` must be updated only when:
 3. quickstart and consumer builds are updated,
 4. package and model qualification pass.
 
+The baselines are toolchain-qualified by `docs/api-baselines/toolchain.env`.
+`Scripts/check-api-baselines.sh` rejects any Xcode or macOS SDK build mismatch
+before extraction and rebuilds every requested target through SwiftPM. Pull
+requests and release qualification discover and validate all six public modules
+across the three package manifests. `AFMKitDwarfStar` currently has 42 normalized
+public symbols; the other checked-in counts are Apple 321, Core 364,
+FoundationModelsMLX 72, MLX 1,215, and OpenAICompat 705. No public module is
+excluded from `Scripts/check-api-baselines.sh`.
+
 The stable compatibility center is `AFMKitCore`. Provider-specific public APIs
 may evolve faster, but still require baseline review.
 
@@ -118,17 +127,15 @@ metadata can carry additional diagnostics without making them universal fields.
 ## Known architectural debt
 
 - Some MLX/provider implementation types are public beyond the preferred facade.
-- `AFMKitFoundationModelsMLX` is a shipping product without a checked-in public
-  API symbol baseline; it remains experimental until that gate is established.
 - Core capability vocabulary includes audio and embeddings without dedicated
   executable protocols for every capability; providers must not over-advertise.
 - Provider discovery and pre-load availability guarantees are not uniform; apps
   must follow the provider contract documented in
   `08-provider-contracts-and-configuration.md`.
-- AFMKit's distributable package depends on tagged AFM-compatible MLX
+- The `AFMKitMLX` provider package depends on tagged AFM-compatible MLX
   materializations. The authoritative delta remains in maclocal-api's patch
   catalog; each tag must be reproducible from a recorded upstream base and patch
-  commit. Runtime materialization publication is not fully automated yet.
+  commit.
 - DwarfStar model discovery currently requires stronger catalog semantics than an
   empty provider descriptor list.
 - No first-party Core AI provider exists yet.

@@ -101,9 +101,9 @@ Public provider-specific types are source APIs, but the long-term compatibility
 boundary is narrower than “every public declaration.” The API-baseline gates in
 `docs/api-baselines` make intentional changes visible.
 
-`AFMKitFoundationModelsMLX` currently has no checked-in symbol baseline. Its
-macOS 27 bridge is implemented and tested, but its public API should be treated as
-experimental until a baseline and stability policy are adopted.
+`AFMKitFoundationModelsMLX` has a checked-in symbol baseline. Changes to its
+public API require the same intentional baseline review as the other products,
+in addition to compatibility review when Apple changes the beta SDK protocols.
 
 ## D. Package-internal interfaces
 

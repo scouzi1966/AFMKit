@@ -1,71 +1,124 @@
 # AFMKit
 
-AFMKit is the provider SDK being extracted from maclocal-api. The goal is to make the AFM provider contract usable by Swift applications without pulling in the full AFM server, patched MLX runtime, DwarfStar adapter, Vapor stack, or model download machinery.
+AFMKit is a provider SDK for Swift applications. It supplies provider-neutral
+model contracts, OpenAI-compatible DTOs, Apple Foundation Models integration,
+and optional MLX and DwarfStar runtime adapters without importing the
+maclocal-api server, CLI, WebUI, or transport layer.
 
-The private development checkpoint contains dependency-free provider and OpenAI-compatible API surfaces, an Apple provider package, and extracted MLX and DwarfStar provider adapters. Both runtime adapters are usable through the stable AFMKit provider contract. Some advanced MLX engine types are still public during extraction; they are provider-specific APIs, not part of the stable cross-provider boundary.
+The canonical boundaries, interfaces, dependency ledger, runtime diagrams, and
+decisions are in [`Architecture/`](Architecture/README.md).
 
-The canonical architecture description, interface boundaries, macOS 27 feature
-map, dependency ledger, runtime diagrams, and decisions are in
-[`Architecture/`](Architecture/README.md).
+## Package architecture
 
-## Current Products
+Six public modules are published across three real Swift package boundaries:
 
-| Product | Status | Dependencies |
+| Package | Public products | Dependency/authentication boundary |
 | --- | --- | --- |
-| `AFMKitCore` | Extracted | Swift Foundation only |
-| `AFMOpenAICompat` | Extracted | Swift Foundation only |
-| `AFMKitApple` | Extracted | Apple FoundationModels, on-device execution, and macOS 27 Private Cloud Compute |
-| `AFMKitMLX` | Extracted and Release-verified | Tagged AFM-compatible MLX package stack |
-| `AFMKitFoundationModelsMLX` | Experimental, extracted and tested | macOS 27 `LanguageModel` / `LanguageModelExecutor` bridge backed by AFMKitMLX |
-| `AFMKitDwarfStar` | Extracted and Release-verified | Vanilla DwarfStar submodule plus AFM-owned Swift/C adapter |
+| `AFMKit` | `AFMKitCore`, `AFMOpenAICompat`, `AFMKitApple` | Zero SwiftPM dependencies. Core-only consumers never resolve or authenticate to MLX. |
+| `AFMKitDwarfStar` | `AFMKitDwarfStar` | Exact AFMKit release plus public, exact-pinned Hub/Xet dependencies and the AFM-owned ds4 adapter/resources. |
+| `AFMKitMLX` | `AFMKitMLX`, `AFMKitFoundationModelsMLX` | Exact AFMKit release plus the exact private AFM-compatible MLX graph. |
 
-## Build
+All three manifests use Swift tools 6.1 and keep a macOS 26 deployment floor.
+With Xcode 26 (Swift 6.3), the root package exposes `AFMKitCore` and
+`AFMOpenAICompat`, and the MLX package exposes `AFMKitMLX`. Xcode 27 (Swift 6.4)
+also exposes `AFMKitApple` and `AFMKitFoundationModelsMLX`; those products import
+macOS 27 Foundation Models APIs and remain runtime-gated to macOS 27. CI checks
+both product matrices with `Scripts/check-sdk-product-exposure.sh`.
+
+The monorepo keeps provider source under `Packages/` for coordinated development.
+Release automation materializes those directories into separate provider
+repositories and rewrites their local AFMKit dependency to the exact same release
+version. Existing Swift `import` and product names remain compatible; consumers
+only migrate their package dependency declarations.
+
+A Core-only consumer needs only the public root package:
+
+```swift
+.package(url: "https://github.com/scouzi1966/AFMKit.git", exact: "0.1.0")
+```
+
+Consumers selecting a runtime add its independently published package:
+
+```swift
+.package(url: "https://github.com/scouzi1966/AFMKitDwarfStar.git", exact: "0.1.0"),
+.package(url: "https://github.com/scouzi1966/AFMKitMLX.git", exact: "0.1.0")
+```
+
+## Local development
 
 ```bash
 git clone --recurse-submodules git@github.com:scouzi1966/AFMKit.git
 cd AFMKit
 swift test
-Scripts/check-afmkit-core-api.sh
-Scripts/check-afmkit-core-api.sh AFMOpenAICompat
-Scripts/check-afmkit-core-api.sh AFMKitApple
-Scripts/check-afmkit-core-api.sh AFMKitMLX
-Scripts/check-afmkit-core-api.sh AFMKitDwarfStar
+swift test --package-path Packages/AFMKitDwarfStar
+swift test --package-path Packages/AFMKitMLX
+Scripts/test-api-gate.sh
+Scripts/check-api-baselines.sh
 ```
 
-Normal consumers resolve the tagged AFM-compatible MLX stack directly:
+The provider manifests use the root checkout by default. Local MLX compatibility
+checkouts can replace the tagged private dependencies during development:
 
 ```bash
-swift test -c release
+AFMKIT_MLX_SWIFT_PATH=/path/to/mlx-swift-afm \
+AFMKIT_MLX_SWIFT_LM_PATH=/path/to/mlx-swift-lm-afm \
+swift test --package-path Packages/AFMKitMLX -c release
 ```
 
-The standalone [MLX quickstart](Examples/AFMKitQuickstart/README.md) shows the downstream provider
-registry and structured streaming path without linking the maclocal-api server, CLI, or WebUI:
+Release qualification rejects these overrides. Direct and qualified transitive
+provider dependencies are constrained exactly, and a fresh no-lock consumer must
+reproduce each committed provider lock before publication.
+
+## Qualification
+
+The checked-in API baselines use Xcode 27 Beta 3 build `27A5218g`, macOS SDK 27.0
+build `26A5378i`, and the compiler identity in
+`docs/api-baselines/toolchain.env`. Baseline coverage discovers all six modules
+across the three manifests. The current DwarfStar baseline contains 42 normalized
+public symbols.
+
+Public CI also proves that a fresh Core consumer builds with isolated credentials
+and no MLX checkout. Private PR qualification consumes only an immutable artifact
+from the exact successful workflow run. Candidate manifests and locks are inert
+inputs whose dependency graph must equal the trusted default-branch graph before
+the trusted qualification manifest can prebuild private dependencies. Candidate
+compiler processes are sandboxed from private source and repository caches, and
+candidate test sources are compiled but never executed on the privileged runner.
+Candidate scripts and plugins never run there. Private source, compiled products,
+caches, and credentials are destroyed before the job exits.
+
+Full release validation runs all package/API/security gates, Release tests for
+all three packages, and fresh downstream builds for all six products:
 
 ```bash
-Scripts/check-downstream-example.sh
+Scripts/validate-release.sh
 ```
 
-When developing the compatibility packages themselves, their persistent local checkouts can replace the tagged dependencies:
+Release qualification uses private staging mirrors. It publishes the two
+qualified provider tags and creates the root AFMKit tag only after all tests pass.
+SwiftPM release tags reject SemVer build metadata. Prerelease GitHub releases are
+created with `prerelease=true` and `make_latest=false`. See
+[`docs/RELEASING.md`](docs/RELEASING.md).
 
-```bash
-AFMKIT_MLX_SWIFT_PATH=/Volumes/edata/dev/git/CODEX/AFMKit-dependencies/mlx-swift-afm \
-AFMKIT_MLX_SWIFT_LM_PATH=/Volumes/edata/dev/git/CODEX/AFMKit-dependencies/mlx-swift-lm-afm \
-swift test -c release
-```
+## Provider boundaries
 
-The normal `AFMKitMLX` entry point is `AFMMLXModel`. It implements the provider-neutral
-`AFMModel` contract and the public `AFMMLXOpenAIChatServing` contract used by server and app hosts.
-The serving contract covers OpenAI-compatible generation and streaming, request admission, batch
-lifecycle, response-format and tool policy, and request profiling. Some concrete engine and
-model-service APIs are still public for advanced consumers; applications should isolate them because
-the intended stable facade is narrower than the module's complete public symbol graph.
-maclocal-api therefore keeps HTTP routing, Prometheus exposure, files, and request orchestration
-local while consuming a stable AFMKit model facade instead of importing MLX engine internals.
+`AFMKitMLX` enters through `AFMMLXModel`, which implements `AFMModel` and the
+provider-specific `AFMMLXOpenAIChatServing` facade. HTTP routing, Prometheus,
+files, request orchestration, and benchmark compatibility stay in maclocal-api.
+Advanced MLX engine types remain public for specialized consumers but are not the
+stable cross-provider contract.
 
-The normal `AFMKitDwarfStar` API exposes only `AFMDwarfStarProviderFactory`, `AFMDwarfStarModel`, and `AFMDwarfStarRuntimeConfiguration`. AFMKit pins an unmodified `antirez/ds4` submodule and compiles it behind an AFM-owned C bridge. Hub resolution, checkpoint selection, scheduling, prefix-cache policy, DSpark integration, DSML parsing, and runtime coordination remain package-scoped.
+`AFMKitDwarfStar` enters through `AFMDwarfStarProviderFactory`,
+`AFMDwarfStarModel`, and `AFMDwarfStarRuntimeConfiguration`. AFMKit pins an
+unmodified `antirez/ds4` submodule and owns the Swift/C adapter, resources,
+checkpoint projection, and provider lifecycle.
 
-`AFMKitApple` keeps the package minimum at macOS 26 and runtime-gates macOS 27 APIs. Its reusable native runtime owns Apple model availability and quota snapshots, entitlement-first PCC validation, reasoning selection, and `LanguageModelSession` reuse. The host app still owns its signed entitlements, provisioning profile, provider UI, and app-specific chat/workflow DTOs.
+`AFMKitApple` is exposed by the manifest only with Xcode 27 or newer while the
+package keeps its macOS 26 deployment floor. It owns reusable availability,
+quota, signed-host entitlement validation, reasoning, and session behavior. The
+host app owns signing, provisioning, entitlements, tools, user consent, UI, and
+application state.
 
-## Transition Plan
-
-The durable plan is tracked in [docs/TRANSITION_PLAN.md](docs/TRANSITION_PLAN.md). Update that document when scope changes so maclocal-api, Vesta, and AFMKit stay aligned.
+The downstream provider example is documented in
+[`Examples/AFMKitQuickstart/README.md`](Examples/AFMKitQuickstart/README.md). The
+durable migration plan is in [`docs/TRANSITION_PLAN.md`](docs/TRANSITION_PLAN.md).

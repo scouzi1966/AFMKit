@@ -44,16 +44,18 @@ The example deliberately uses `AFMProviderRegistry`. An app can therefore keep i
 provider-neutral and select another AFMKit provider by changing registration and configuration
 rather than rewriting its generation loop.
 
-The relative package dependency is named explicitly so it also resolves from a worktree whose
-directory is not named `AFMKit`. After cloning source, initialize declared submodules before building:
+The example declares separate local dependencies on the root AFMKit package and
+the `Packages/AFMKitMLX` provider package. After cloning source, initialize
+declared submodules before building:
 
 ```bash
 git submodule update --init --recursive
 ```
 
-A downstream app should replace it with the tagged repository dependency after AFMKit's first
-package tag is published:
+A downstream app selects the same exact version from both independently
+published repositories:
 
 ```swift
-.package(url: "https://github.com/scouzi1966/AFMKit.git", from: "0.1.0")
+.package(url: "https://github.com/scouzi1966/AFMKit.git", exact: "0.1.0"),
+.package(url: "https://github.com/scouzi1966/AFMKitMLX.git", exact: "0.1.0")
 ```

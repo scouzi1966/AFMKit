@@ -1,0 +1,18 @@
+// Shared ds4 graph code references CUDA-only hooks even when the Metal runtime
+// cannot select those paths. Keep the unavailable ABI in the AFM-owned bridge.
+#define AFM_DWARFSTAR_GPU_UNAVAILABLE(name) \
+    extern "C" int name(...) { return 0; }
+
+AFM_DWARFSTAR_GPU_UNAVAILABLE(ds4_gpu_add_xdev_tensor)
+AFM_DWARFSTAR_GPU_UNAVAILABLE(ds4_gpu_indexer_top1_value_tensor)
+AFM_DWARFSTAR_GPU_UNAVAILABLE(ds4_gpu_kv_fp8_store_raw_decode_rows_tensor)
+AFM_DWARFSTAR_GPU_UNAVAILABLE(ds4_gpu_matmul_q8_0_kslice_hc_expand_add_tensor)
+AFM_DWARFSTAR_GPU_UNAVAILABLE(ds4_gpu_rope_tail_decode_rows_tensor)
+AFM_DWARFSTAR_GPU_UNAVAILABLE(ds4_gpu_routed_moe_batch_owned_tensor)
+AFM_DWARFSTAR_GPU_UNAVAILABLE(ds4_gpu_routed_moe_one_owned_tensor)
+AFM_DWARFSTAR_GPU_UNAVAILABLE(ds4_gpu_routed_moe_owned_packed_combine_tensor)
+AFM_DWARFSTAR_GPU_UNAVAILABLE(ds4_gpu_routed_moe_owned_slots_combine_rows_tensor)
+AFM_DWARFSTAR_GPU_UNAVAILABLE(ds4_gpu_routed_moe_owned_slots_combine_tensor)
+AFM_DWARFSTAR_GPU_UNAVAILABLE(ds4_gpu_shared_down_hc_expand_add_q8_0_tensor)
+AFM_DWARFSTAR_GPU_UNAVAILABLE(ds4_gpu_shared_down_hc_expand_owned_q8_0_tensor)
+AFM_DWARFSTAR_GPU_UNAVAILABLE(ds4_gpu_tensor_wait_xdev_default)

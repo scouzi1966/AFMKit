@@ -1,0 +1,261 @@
+name: Private graph qualification
+
+on:
+  workflow_run:
+    workflows:
+      - CI
+    types:
+      - completed
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  availability:
+    name: Detect private qualification access
+    if: >-
+      github.event.workflow_run.status == 'completed' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      (github.event.workflow_run.event == 'pull_request' ||
+       github.event.workflow_run.event == 'push')
+    runs-on: ubuntu-latest
+    outputs:
+      available: ${{ steps.secret.outputs.available }}
+    steps:
+      - name: Detect dependency token without exposing it
+        id: secret
+        env:
+          AFMKIT_DEPENDENCY_TOKEN: ${{ secrets.AFMKIT_DEPENDENCY_TOKEN }}
+        run: |
+          if [[ -n "$AFMKIT_DEPENDENCY_TOKEN" ]]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Private graph qualification is unavailable until AFMKIT_DEPENDENCY_TOKEN is configured."
+          fi
+
+  qualify:
+    name: Trusted private graph qualification
+    needs: availability
+    if: needs.availability.outputs.available == 'true'
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: read
+    runs-on:
+      group: afmkit-privileged-private-ci
+      labels: afmkit-privileged-private-xcode27-ephemeral
+    steps:
+      - name: Bind qualification to triggering run payload
+        id: metadata
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        with:
+          script: |
+            const run = context.payload.workflow_run;
+            const currentRepository = context.repo.owner + "/" + context.repo.repo;
+            const defaultBranch = context.payload.repository.default_branch;
+            const shaPattern = /^[0-9a-f]{40}$/;
+            const fail = (message) => {
+              core.setFailed(message);
+              return false;
+            };
+
+            if (run.status !== "completed" || run.conclusion !== "success") {
+              fail(`Run ${run.id} is not a completed successful run.`);
+              return;
+            }
+            if (!Number.isSafeInteger(run.id) || !["pull_request", "push"].includes(run.event)) {
+              fail("Unsupported workflow_run identity or event.");
+              return;
+            }
+            if (!defaultBranch || !shaPattern.test(run.head_sha || "")) {
+              fail("workflow_run is missing an immutable head SHA or default branch.");
+              return;
+            }
+
+            const source = (await github.rest.actions.getWorkflowRun({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              run_id: run.id,
+            })).data;
+            if (
+              source.status !== "completed" ||
+              source.conclusion !== "success" ||
+              source.event !== run.event ||
+              source.head_sha !== run.head_sha ||
+              source.name !== "CI" ||
+              source.path !== ".github/workflows/ci.yml" ||
+              source.repository.full_name !== currentRepository
+            ) {
+              fail(`Run ${run.id} does not match its authoritative Actions record.`);
+              return;
+            }
+
+            let trustedSha;
+            let candidateRepo = run.head_repository && run.head_repository.full_name;
+            if (run.event === "push") {
+              if (run.head_branch !== defaultBranch || candidateRepo !== currentRepository) {
+                fail("Push qualification accepts only the repository default branch.");
+                return;
+              }
+              trustedSha = run.head_sha;
+            } else {
+              const pulls = run.pull_requests || [];
+              if (pulls.length !== 1 || !run.head_repository) {
+                fail(`Expected one pull request and a head repository for run ${run.id}.`);
+                return;
+              }
+              const pull = pulls[0];
+              candidateRepo = run.head_repository.full_name;
+              if (candidateRepo !== currentRepository) {
+                core.notice(
+                  "Private graph qualification does not provide compiled private dependencies " +
+                  "to fork pull requests."
+                );
+                core.setOutput("eligible", "false");
+                return;
+              }
+              if (
+                pull.base.ref !== defaultBranch ||
+                !pull.base.repo || pull.base.repo.full_name !== currentRepository ||
+                !pull.head.repo || pull.head.repo.full_name !== currentRepository ||
+                pull.head.sha !== run.head_sha ||
+                !shaPattern.test(pull.base.sha || "")
+              ) {
+                fail("Pull request run is not bound to the repository default base and exact head.");
+                return;
+              }
+              trustedSha = pull.base.sha;
+            }
+
+            await github.rest.git.getCommit({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              commit_sha: trustedSha,
+            });
+            const comparison = (await github.rest.repos.compareCommitsWithBasehead({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              basehead: `${trustedSha}...${defaultBranch}`,
+            })).data;
+            if (!["ahead", "identical"].includes(comparison.status)) {
+              fail(`Trusted harness SHA ${trustedSha} is not in current ${defaultBranch} history.`);
+              return;
+            }
+
+            core.setOutput("eligible", "true");
+            core.setOutput("trusted_sha", trustedSha);
+            core.setOutput("candidate_sha", run.head_sha);
+            core.setOutput("candidate_repo", candidateRepo);
+
+      - name: Check out immutable trusted harness
+        if: steps.metadata.outputs.eligible == 'true'
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ steps.metadata.outputs.trusted_sha }}
+          path: trusted
+          persist-credentials: false
+
+      - name: Download exact successful-run artifact
+        if: steps.metadata.outputs.eligible == 'true'
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          name: private-qualification-${{ github.event.workflow_run.id }}
+          path: ${{ runner.temp }}/candidate-artifact
+          github-token: ${{ github.token }}
+          run-id: ${{ github.event.workflow_run.id }}
+
+      - name: Validate artifact provenance and prepare trusted harness
+        if: steps.metadata.outputs.eligible == 'true'
+        env:
+          CANDIDATE_REPOSITORY: ${{ steps.metadata.outputs.candidate_repo }}
+          CANDIDATE_SHA: ${{ steps.metadata.outputs.candidate_sha }}
+          SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          trusted/Scripts/prepare-private-qualification.py \
+            --artifact "$RUNNER_TEMP/candidate-artifact" \
+            --destination "$RUNNER_TEMP/private-qualification/Candidate" \
+            --expected-run-id "$SOURCE_RUN_ID" \
+            --expected-sha "$CANDIDATE_SHA" \
+            --expected-repository "$CANDIDATE_REPOSITORY"
+          trusted/Scripts/validate-private-qualification-graph.py \
+            --candidate "$RUNNER_TEMP/private-qualification/Candidate" \
+            --trusted "$GITHUB_WORKSPACE/trusted" \
+            --qualification-manifest \
+              "$GITHUB_WORKSPACE/trusted/Qualification/PrivatePackage.swift"
+          cp trusted/Qualification/PrivatePackage.swift \
+            "$RUNNER_TEMP/private-qualification/Package.swift"
+          cp -R trusted/Qualification/TrustedSeed \
+            "$RUNNER_TEMP/private-qualification/TrustedSeed"
+          cp "$RUNNER_TEMP/private-qualification/Candidate/Packages/AFMKitMLX/Package.resolved" \
+            "$RUNNER_TEMP/private-qualification/Package.resolved"
+
+      - name: Prebuild private dependencies from trusted source only
+        if: steps.metadata.outputs.eligible == 'true'
+        env:
+          AFMKIT_DEPENDENCY_TOKEN: ${{ secrets.AFMKIT_DEPENDENCY_TOKEN }}
+          HARNESS_ROOT: ${{ runner.temp }}/private-qualification
+          PRIVATE_BUILD_ROOT: ${{ runner.temp }}/private-qualification-build
+          PRIVATE_SWIFTPM_HOME: ${{ runner.temp }}/private-swiftpm-home
+        run: |
+          mkdir -p "$PRIVATE_SWIFTPM_HOME"
+          HOME="$PRIVATE_SWIFTPM_HOME" \
+            trusted/Scripts/with-private-dependency-auth.sh \
+            /bin/bash -ceu '
+              trusted/Scripts/verify-qualified-toolchain.sh
+              /usr/bin/xcrun --toolchain XcodeDefault swift build \
+                --package-path "$HARNESS_ROOT" \
+                --scratch-path "$PRIVATE_BUILD_ROOT" \
+                --build-system native \
+                --disable-automatic-resolution \
+                --target AFMKitPrivateDependencySeed
+            '
+
+      - name: Compile candidate without private source access
+        if: steps.metadata.outputs.eligible == 'true'
+        env:
+          HARNESS_ROOT: ${{ runner.temp }}/private-qualification
+          PRIVATE_BUILD_ROOT: ${{ runner.temp }}/private-qualification-build
+          HOME: ${{ runner.temp }}/candidate-build-home
+          AFMKIT_REQUIRE_SANDBOX_COMPILERS: swiftc,clang
+        run: |
+          mkdir -p "$HOME"
+          trusted/Scripts/with-private-source-sandbox.sh \
+            "$PRIVATE_BUILD_ROOT" \
+            /usr/bin/xcrun --toolchain XcodeDefault swift build \
+              --package-path "$HARNESS_ROOT" \
+              --scratch-path "$PRIVATE_BUILD_ROOT" \
+              --build-system native \
+              --disable-automatic-resolution \
+              --build-tests
+
+      - name: Validate candidate API baselines with trusted checker
+        if: steps.metadata.outputs.eligible == 'true'
+        env:
+          AFMKIT_API_BASELINE_ROOT: ${{ runner.temp }}/private-qualification/Candidate/docs/api-baselines
+          AFMKIT_API_PACKAGE_ROOT: ${{ runner.temp }}/private-qualification
+          AFMKIT_API_XGRAMMAR_ROOT: ${{ runner.temp }}/private-qualification/Candidate/Packages/AFMKitMLX/Sources/CXGrammar/include
+          AFMKIT_BUILD_ROOT: ${{ runner.temp }}/private-qualification-build
+          HOME: ${{ runner.temp }}/candidate-build-home
+        run: |
+          trusted/Scripts/with-private-source-sandbox.sh \
+            "$AFMKIT_BUILD_ROOT" \
+            trusted/Scripts/check-api-baselines.sh
+
+      - name: Destroy private sources, products, and candidate harness
+        if: always() && steps.metadata.outputs.eligible == 'true'
+        env:
+          PRIVATE_BUILD_ROOT: ${{ runner.temp }}/private-qualification-build
+          PRIVATE_SWIFTPM_HOME: ${{ runner.temp }}/private-swiftpm-home
+          HARNESS_ROOT: ${{ runner.temp }}/private-qualification
+          CANDIDATE_HOME: ${{ runner.temp }}/candidate-build-home
+          CANDIDATE_ARTIFACT: ${{ runner.temp }}/candidate-artifact
+        run: |
+          trusted/Scripts/destroy-private-qualification.py \
+            --root "$RUNNER_TEMP" \
+            --path "$PRIVATE_BUILD_ROOT" \
+            --path "$PRIVATE_SWIFTPM_HOME" \
+            --path "$HARNESS_ROOT" \
+            --path "$CANDIDATE_HOME" \
+            --path "$CANDIDATE_ARTIFACT"

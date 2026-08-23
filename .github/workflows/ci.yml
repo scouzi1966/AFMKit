@@ -1,0 +1,96 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sdk-product-exposure:
+    name: SDK exposure (${{ matrix.sdk }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - sdk: xcode26
+            runner: afmkit-public-xcode26-ephemeral
+          - sdk: xcode27
+            runner: afmkit-public-xcode27-ephemeral
+    runs-on:
+      group: afmkit-public-untrusted
+      labels: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Validate compiler-specific product exposure
+        env:
+          AFMKIT_BUILD_ROOT: ${{ runner.temp }}/afmkit-sdk-exposure
+        run: Scripts/check-sdk-product-exposure.sh "${{ matrix.sdk }}"
+
+  public-gates:
+    name: Token-independent gates
+    runs-on:
+      group: afmkit-public-untrusted
+      labels: afmkit-public-xcode27-ephemeral
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          submodules: recursive
+      - name: Check public module baseline coverage
+        run: Scripts/check-api-baseline-coverage.sh
+      - name: Check every public API baseline
+        run: Scripts/check-api-baselines.sh
+      - name: Run untrusted candidate core tests
+        env:
+          AFMKIT_BUILD_ROOT: ${{ runner.temp }}/afmkit-public-tests
+        run: >-
+          /usr/bin/xcrun --toolchain XcodeDefault swift test
+          --package-path "$GITHUB_WORKSPACE"
+          --scratch-path "$AFMKIT_BUILD_ROOT"
+          --build-system native
+      - name: Check unauthenticated Core package boundary
+        run: Scripts/check-unauthenticated-core-consumer.sh
+      - name: Check DwarfStar release resources
+        run: Scripts/check-dwarfstar-resources.sh
+      - name: Test API gate failure modes
+        run: Scripts/test-api-gate.sh
+      - name: Test private dependency auth cleanup
+        run: Scripts/test-private-dependency-auth.sh
+      - name: Test release qualification guards
+        run: Scripts/test-release-qualification.sh
+      - name: Test idempotent release publication
+        run: node Scripts/test-release-publication.js
+      - name: Test provider mirror publication
+        run: Scripts/test-provider-publication.sh
+      - name: Test workflow trust boundaries
+        run: Scripts/test-workflow-security.sh
+      - name: Check script syntax and whitespace
+        run: |
+          bash -n Scripts/*.sh
+          python3 -m py_compile Scripts/*.py
+          node --check Scripts/*.js
+          git diff --check
+      - name: Package exact private-qualification candidate
+        run: |
+          Scripts/create-qualification-artifact.py \
+            --root "$GITHUB_WORKSPACE" \
+            --output "$RUNNER_TEMP/private-qualification-artifact" \
+            --run-id "${{ github.run_id }}" \
+            --sha "${{ github.event.pull_request.head.sha || github.sha }}" \
+            --repository "${{ github.repository }}"
+      - name: Upload immutable private-qualification candidate
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: private-qualification-${{ github.run_id }}
+          path: ${{ runner.temp }}/private-qualification-artifact
+          if-no-files-found: error
+          retention-days: 7

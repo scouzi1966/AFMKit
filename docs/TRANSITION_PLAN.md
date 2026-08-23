@@ -1,6 +1,6 @@
 # AFMKit Transition Plan
 
-Last updated: 2026-08-19
+Last updated: 2026-08-21
 
 Extraction baseline: `maclocal-api` commit `2581e82410f50c2427a6a11c19344738856850e9`.
 
@@ -18,17 +18,28 @@ The long-term shape should align with macOS 27 LanguageModel-style provider conc
 
 AFMKit starts as a private repository while the API is still moving. It can become public after the core contract and first provider packages are stable enough that external adopters are not forced to track maclocal-api internals.
 
-Use tagged SwiftPM packages for normal consumers:
+Six public modules use three tagged SwiftPM package boundaries for normal
+consumers. This is package-level isolation: the root package has no global
+provider dependency graph.
 
-| Package | Purpose | Dependency Strategy |
+All manifests use Swift tools 6.1 and declare macOS 26. Xcode 26 / Swift 6.3
+exposes the source-compatible Core, OpenAI, DwarfStar, and MLX products. Xcode 27
+/ Swift 6.4 additionally exposes the Apple and FoundationModelsMLX products that
+import macOS 27 Foundation Models APIs. A two-toolchain CI matrix verifies both
+manifest surfaces and clean-builds the root Xcode 26 surface.
+
+| Published package | Public modules | Dependency strategy |
 | --- | --- | --- |
-| `AFMKitCore` | Stable provider contracts and stream events | No external dependencies |
-| `AFMOpenAICompat` | OpenAI-compatible request/response DTOs and schema helpers | No external dependencies |
-| `AFMKitApple` | FoundationModels and macOS 27 provider bridge | Apple frameworks only; no maclocal-api server dependency |
-| `AFMKitMLX` | MLX provider adapter | Depends on an AFM-compatible MLX package or an isolated compatibility fork |
-| `AFMKitDwarfStar` | DwarfStar provider adapter | Depends on vanilla DwarfStar plus AFM-owned adapter code |
-| `maclocal-api` | CLI, OpenAI-compatible HTTP server, WebUI, packaging | Aggregates AFMKit packages and server/runtime services |
-| `Vesta` | Desktop app | Uses AFMKit providers directly where possible and maclocal-api only where process/server isolation is wanted |
+| `AFMKit` | `AFMKitCore`, `AFMOpenAICompat`, `AFMKitApple` | No SwiftPM dependencies; Apple frameworks only where imported by the Apple target. |
+| `AFMKitDwarfStar` | `AFMKitDwarfStar` | Exact AFMKit release, exact public Hub/Xet graph, vanilla DwarfStar plus AFM-owned adapter code. |
+| `AFMKitMLX` | `AFMKitMLX`, `AFMKitFoundationModelsMLX` | Exact AFMKit release and exact AFM-compatible MLX/private dependency graph. |
+| `maclocal-api` | Host executable modules | Aggregates selected AFMKit packages and owns CLI, HTTP server, WebUI, and packaging. |
+| `Vesta` | Host app modules | Selects AFMKit packages directly where possible and maclocal-api only for process/server isolation. |
+
+The development monorepo keeps the provider packages under `Packages/`. Release
+automation materializes and tags separate provider repositories. Existing
+product/module imports remain source-compatible; migration changes only SwiftPM
+package declarations and each `.product(..., package:)` owner.
 
 ## Phase 1: Extract `AFMKitCore`
 
@@ -109,8 +120,8 @@ Extracted runtime boundary:
 
 Deliberate app boundary:
 
-- AFMKit provides an app-agnostic current-process entitlement reader and also accepts an injected
-  entitlement check for tests and specialized hosts.
+- AFMKit validates the current host's strict non-ad-hoc code signature and Boolean PCC entitlement,
+  and also accepts an injected entitlement check for deterministic tests and specialized hosts.
 - Vesta continues to own provisioning profiles, entitlement files, provider selection UI, route metadata, and chat workflow DTOs.
 - Vesta's native request factory and AFM27 chat reducer consume AFMKit runtime events while those
   app concerns remain outside the SDK.
@@ -121,15 +132,15 @@ Current `AFMKitApple` checkpoint:
   and Apple PCC routes through the same registry/model contract.
 - A live on-device quickstart smoke test loaded Apple Intelligence, generated the requested exact
   response, emitted usage, and completed normally.
-- An unsigned PCC quickstart exits cleanly with the missing managed-entitlement reason instead of
-  crashing or masking it as a locale failure. Live PCC generation remains a signed-host integration
-  test because the entitlement belongs to the consuming app's code signature.
+- An unsigned or ad-hoc-signed PCC quickstart exits cleanly with the missing managed-entitlement
+  reason instead of crashing or masking it as a locale failure. Live PCC generation remains a
+  signed-host integration test because the entitlement belongs to the consuming app's code
+  signature. Deterministic tests cover valid, invalid, ad-hoc, missing, and non-Boolean host states.
 - The normalized `AFMKitApple` symbol graph includes the intentional provider, model, managed
   capability, and configuration-key additions with no removed public symbols.
-- The focused Release suite passes 67 Apple tests. The full Release suite passes 271 XCTest cases
-  plus 8 Swift Testing cases across Core, OpenAI compatibility, Apple, MLX, and DwarfStar. All five
-  public API baselines and the clean downstream quickstart build also pass against the published
-  dependency graph.
+- Release suites cover Core, OpenAI compatibility, Apple, MLX,
+  FoundationModelsMLX, and DwarfStar in their owning packages. All six public API
+  baselines and fresh split-package downstream builds are release gates.
 
 ## Phase 4: Runtime Adapters
 
@@ -183,7 +194,9 @@ Current `AFMKitMLX` checkpoint:
 
 Current `AFMKitDwarfStar` checkpoint:
 
-- The public API is limited to `AFMDwarfStarProviderFactory`, `AFMDwarfStarModel`, and `AFMDwarfStarRuntimeConfiguration` (25 normalized public symbols).
+- The preferred facade is `AFMDwarfStarProviderFactory`, `AFMDwarfStarModel`, and
+  `AFMDwarfStarRuntimeConfiguration`; checkpoint, Hub, and projection utilities
+  bring the checked-in baseline to 42 normalized public symbols.
 - The engine is the unmodified `antirez/ds4` submodule pinned at `84cc882352757baf628a1776badf7cc54d584e28`; AFMKit owns the Swift provider, C bridge translation units, Hub/checkpoint resolver, scheduling policy, and runtime integration.
 - Reasoning, DSML tool calls, DSpark generalized draft depth, prefix-cache identity, continuous-prefill scheduling, Metal resource validation, and resumable Hub downloads are covered by 40 focused Release tests.
 - The full provider implementation remains package-scoped so the public contract does not freeze engine internals or force consumers to understand DwarfStar's C API.
@@ -212,9 +225,10 @@ During the atomic maclocal-api consumer migration, AFMKit supports two build-onl
   checkout. AFMKit derives the SwiftPM package identity from the directory name so product lookup
   remains correct for either the legacy checkout or the tagged compatibility package.
 
-These switches are not runtime configuration and do not change the normal published-package graph.
-They exist only to let maclocal-api replace its embedded Core, OpenAI, MLX, and DwarfStar targets in
-one change. They should be removed after maclocal-api consumes the tagged AFM-compatible MLX stack.
+These switches are not runtime configuration and do not change the normal
+published `AFMKitMLX` graph. The monorepo provider manifest separately uses
+`AFMKIT_PUBLIC_PATH` only to locate the root AFMKit package during development;
+release materialization always emits an exact HTTPS AFMKit dependency.
 
 ## Phase 5: Consumer Migration
 
@@ -256,9 +270,10 @@ Scope:
 - Make Vesta consume `AFMKitCore`, `AFMOpenAICompat`, and Apple/PCC packages directly.
 - Keep high-throughput server, WebUI, Homebrew, PyPI, release harness, and model qualification in maclocal-api.
 - Add a downstream example app that exercises AFMKit without local maclocal-api source checkout assumptions.
-- Keep a standalone downstream build gate that imports public AFMKit products only. During private
-  pre-tag development it uses a relative package path; the first AFMKit tag replaces that path with
-  the repository URL and becomes the clean-clone release gate.
+- Keep a standalone downstream build gate that materializes the same root,
+  DwarfStar, and MLX manifests intended for publication, resolves each without a
+  lock, compares provider pins to the qualified locks, and builds all six public
+  products.
 
 Exit criteria:
 
@@ -278,8 +293,9 @@ Pre-tag exit status:
 ## Compatibility Rules
 
 - `AFMKitCore` must stay dependency-free.
-- macOS 27 features must be opt-in and runtime-gated.
-- macOS 26 builds must not import macOS 27-only symbols outside guarded provider packages.
+- macOS 27 features must be compiler-gated at manifest evaluation and runtime-gated.
+- Xcode 26 must expose and build the macOS 26 source-compatible package surface without parsing
+  macOS 27-only targets; Xcode 27 exposes the complete six-product surface.
 - Provider streams should emit structured events for text, reasoning, tool calls, structured output, generated media, usage, timing, progress, completion, and errors.
 - Runtime-specific capabilities must be explicit. Swapping engines should not silently remove tool calling, reasoning, structured JSON, or multimodal support without advertising that limitation.
 - Server and transport observability are not core-provider responsibilities. `AFMKitCore` must
@@ -310,7 +326,6 @@ not in `AFMKitCore`.
 
 ## Open Questions
 
-- Whether `AFMKitApple` should be one package with guarded files or two products: macOS 26 FoundationModels compatibility and macOS 27 advanced providers.
 - Whether AFMKit should own a small download abstraction or leave all Hugging Face/Xet transport in runtime adapters.
 - Whether patched MLX functionality should live in an AFM-compatible fork, upstream MLX packages, or a narrow adapter package with generated patch application.
 - Whether provider runtime telemetry should stay as per-provider implementation detail or become a

@@ -9,9 +9,15 @@ and structured streaming semantics.
 ```mermaid
 flowchart LR
     User["App user"] --> Host["Host application\nSwiftUI, AppKit, or service"]
-    subgraph AFM["AFMKit package"]
-        Core["Provider-neutral SDK\nmodels, requests, events, registry"]
-        Adapters["Provider adapters\nApple, MLX, DwarfStar, MLX bridge"]
+    subgraph AFM["AFMKit package set"]
+        subgraph Public["Public dependency-free package"]
+            Core["Provider-neutral SDK\nmodels, requests, events, registry"]
+            AppleAdapter["Apple adapter"]
+            AppleAdapter --> Core
+        end
+        subgraph Providers["Separate runtime packages"]
+            Adapters["MLX, DwarfStar, MLX bridge"]
+        end
         Adapters --> Core
     end
     Host --> Core
@@ -23,7 +29,7 @@ flowchart LR
     Host --> Transport["Optional app transports\nHTTP, CLI, WebUI, MCP"]
 ```
 
-**Figure 1 — C4 system context.** AFMKit is an in-process SDK. The host app is
+**Figure 1 — C4 system context.** AFMKit is an in-process three-package SDK. The host app is
 the security and product boundary: it owns user interaction, network endpoints,
 credentials, signed capabilities, persistence, and app-specific actions.
 
@@ -33,12 +39,12 @@ credentials, signed capabilities, persistence, and app-specific actions.
 | --- | --- | --- |
 | App user | Supplies prompts, files, images, consent, and action confirmations. | Indirect through the host. |
 | Host app/service | Chooses providers, registers tools, owns UI/state, signs entitlements, and maps failures to UX. | Direct Swift consumer. |
-| AFMKit | Normalizes provider discovery, lifecycle, requests, events, errors, and optional telemetry. | System under description. |
+| AFMKit package set | Normalizes provider discovery, lifecycle, requests, events, errors, and optional telemetry. | Three Swift package boundaries selected by the host. |
 | Apple Foundation Models | Executes Apple on-device/PCC sessions and defines macOS 27 provider protocols. | Framework dependency of Apple products only. |
 | Hugging Face Hub | Supplies optional remote model repositories. | Provider implementation dependency, not core. |
 | Local model storage | Holds downloaded or user-selected checkpoints. | Read by local providers. |
 | App Intents/Siri/Spotlight | Expose app-specific capabilities to system experiences. | Host-owned extension point; no direct AFMKit implementation today. |
-| HTTP/CLI/WebUI/MCP | External application interfaces such as maclocal-api. | Out of package scope. |
+| HTTP/CLI/WebUI/MCP | External application interfaces such as maclocal-api. | Out of AFMKit package scope. |
 
 ## External interfaces of a designed app
 

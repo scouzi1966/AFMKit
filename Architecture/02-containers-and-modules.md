@@ -1,18 +1,24 @@
 # Containers and Modules
 
-## Swift package view
+## Swift package boundary view
 
 ```mermaid
 flowchart TD
     App["Consumer app/service"]
-    Core["AFMKitCore"]
-    OAI["AFMOpenAICompat"]
-    Apple["AFMKitApple"]
-    MLX["AFMKitMLX"]
-    FMMLX["AFMKitFoundationModelsMLX"]
-    DS["AFMKitDwarfStar"]
-    CGram["AFMXGrammar"]
-    CDS["CDwarfStar"]
+    subgraph Public["AFMKit package and repository tag"]
+        Core["AFMKitCore"]
+        OAI["AFMOpenAICompat"]
+        Apple["AFMKitApple"]
+    end
+    subgraph Dwarf["AFMKitDwarfStar package and repository tag"]
+        DS["AFMKitDwarfStar"]
+        CDS["CDwarfStar"]
+    end
+    subgraph PrivateMLX["AFMKitMLX package and repository tag"]
+        MLX["AFMKitMLX"]
+        FMMLX["AFMKitFoundationModelsMLX"]
+        CGram["AFMXGrammar"]
+    end
 
     App --> Core
     App -. optional .-> OAI
@@ -31,22 +37,36 @@ flowchart TD
     DS --> CDS
 ```
 
-**Figure 1 — Swift products and target dependencies.** Solid arrows are direct
-package-target dependencies. The consumer chooses products explicitly; importing
-`AFMKitCore` does not link MLX, DwarfStar, or Apple Foundation Models.
+**Figure 1 — Package and target dependencies.** The root `AFMKit` package has no
+SwiftPM dependencies, so resolving any of its three products cannot contact or
+authenticate to the MLX graph. Runtime providers are separate packages that pin
+the exact same-version AFMKit release. Product and module names remain unchanged.
+
+## Package catalog
+
+| Published package | Source manifest | Products | Authentication |
+| --- | --- | --- | --- |
+| `AFMKit` | `Package.swift` | `AFMKitCore`, `AFMOpenAICompat`, `AFMKitApple` | None; the manifest has no package dependencies. |
+| `AFMKitDwarfStar` | `Packages/AFMKitDwarfStar/Package.swift` | `AFMKitDwarfStar` | None for AFMKit; public Hub/Xet dependencies are exact-pinned. |
+| `AFMKitMLX` | `Packages/AFMKitMLX/Package.swift` | `AFMKitMLX`, `AFMKitFoundationModelsMLX` | Required for the private AFM-compatible MLX dependencies. |
+
+The monorepo layout is a development and qualification convenience. Release
+automation materializes the two provider directories as self-contained Git
+repositories, rewrites their local AFMKit development dependency to the exact
+production AFMKit tag, and tests those exact manifests from fresh no-lock graphs.
 
 ## Product and target catalog
 
-| Product/target | Role | Stable/recommended entry points | Implementation ownership |
+| Product/target | Package | Role | Stable/recommended entry points |
 | --- | --- | --- | --- |
-| `AFMKitCore` | Provider-neutral domain and lifecycle. | `AFMModel`, `AFMProviderFactory`, `AFMProviderRegistry`, request/event/descriptor types. | AFMKit. |
-| `AFMOpenAICompat` | OpenAI-compatible wire DTOs independent of HTTP. | Chat, stream, tool, response-format, file, batch, embedding, error, timing DTOs. | AFMKit; transport remains host-owned. |
-| `AFMKitApple` | Apple on-device and PCC provider. | `AFMFoundationProviderFactory`, `AFMFoundationModel`, capability probes. | AFMKit over Apple frameworks. |
-| `AFMKitMLX` | Native local MLX provider and advanced serving surface. | `AFMMLXProviderFactory`, `AFMMLXModel`, `AFMMLXRuntimeConfiguration`. | AFMKit plus tagged materializations generated from upstream MLX and the maclocal-api patch catalog. |
-| `AFMKitFoundationModelsMLX` | macOS 27 custom `LanguageModel` bridge backed by MLX. | `MLXLanguageModel`, `MLXLanguageModelExecutor`, projection plan. | AFMKit over Apple + MLX APIs. |
-| `AFMKitDwarfStar` | DwarfStar/DS4 local provider. | `AFMDwarfStarProviderFactory`, `AFMDwarfStarModel`, runtime configuration. | AFMKit adapter around vanilla ds4. |
-| `AFMXGrammar` | Swift/C++ bridge to xgrammar. | Used by MLX guided generation. | Internal support target. |
-| `CDwarfStar` | C/Objective-C/Metal bridge and engine integration. | Used by `AFMKitDwarfStar`; not an app integration surface. | Internal support target. |
+| `AFMKitCore` | `AFMKit` | Provider-neutral domain and lifecycle. | `AFMModel`, `AFMProviderFactory`, `AFMProviderRegistry`, request/event/descriptor types. |
+| `AFMOpenAICompat` | `AFMKit` | OpenAI-compatible wire DTOs independent of HTTP. | Chat, stream, tool, response-format, file, batch, embedding, error, timing DTOs. |
+| `AFMKitApple` | `AFMKit` | Apple on-device and PCC provider. | `AFMFoundationProviderFactory`, `AFMFoundationModel`, capability probes. |
+| `AFMKitMLX` | `AFMKitMLX` | Native local MLX provider and advanced serving surface. | `AFMMLXProviderFactory`, `AFMMLXModel`, `AFMMLXRuntimeConfiguration`. |
+| `AFMKitFoundationModelsMLX` | `AFMKitMLX` | macOS 27 custom `LanguageModel` bridge backed by MLX. | `MLXLanguageModel`, `MLXLanguageModelExecutor`, projection plan. |
+| `AFMKitDwarfStar` | `AFMKitDwarfStar` | DwarfStar/DS4 local provider. | `AFMDwarfStarProviderFactory`, `AFMDwarfStarModel`, runtime configuration. |
+| `AFMXGrammar` | `AFMKitMLX` | Swift/C++ bridge to xgrammar. | Internal support target used by MLX guided generation. |
+| `CDwarfStar` | `AFMKitDwarfStar` | C/Objective-C/Metal bridge and engine integration. | Internal support target; not an app integration surface. |
 
 ## Internal component view
 
@@ -109,6 +129,9 @@ the facade, but expose the same neutral lifecycle and event model above it.
    consumer.
 6. New providers implement `AFMProviderFactory`/`AFMModel` and emit structured
    `AFMGenerationEvent` values. They do not require registry changes.
+7. A dependency-free public product must remain in the root `AFMKit` package.
+   Target-only isolation is insufficient because SwiftPM resolves dependencies
+   at package scope.
 
 ## Deployment and availability
 

@@ -1,0 +1,137 @@
+#!/bin/bash
+
+afmkit_release_validate_tag() {
+    local tag_name="${1:-}"
+
+    /usr/bin/python3 - "$tag_name" <<'PY'
+import re
+import sys
+
+tag = sys.argv[1]
+numeric = r"(?:0|[1-9][0-9]*)"
+alphanumeric = r"(?:[0-9]*[A-Za-z-][0-9A-Za-z-]*)"
+prerelease_identifier = rf"(?:{numeric}|{alphanumeric})"
+pattern = re.compile(
+    rf"^v{numeric}\.{numeric}\.{numeric}"
+    rf"(?:-{prerelease_identifier}(?:\.{prerelease_identifier})*)?"
+)
+
+if not pattern.fullmatch(tag):
+    raise SystemExit(
+        "Release tag must be strict SwiftPM-compatible SemVer with a v prefix, "
+        "without build metadata (for example, v1.2.3-rc.1)."
+    )
+PY
+}
+
+afmkit_release_reject_local_overrides() {
+    local variable
+    for variable in AFMKIT_MLX_SWIFT_PATH AFMKIT_MLX_SWIFT_LM_PATH; do
+        if [[ -n "${!variable:-}" ]]; then
+            echo "Release qualification rejects local dependency override $variable." >&2
+            return 1
+        fi
+    done
+}
+
+afmkit_release_validate_manifest() {
+    /usr/bin/python3 -c '
+import json
+import sys
+
+package = json.load(sys.stdin)
+allow_local_public = __import__("os").environ.get("AFMKIT_ALLOW_LOCAL_PUBLIC_PACKAGE") == "1"
+local_public_count = 0
+for dependency in package.get("dependencies", []):
+    source_control = dependency.get("sourceControl")
+    if not source_control:
+        file_system = dependency.get("fileSystem", [])
+        if allow_local_public and len(file_system) == 1:
+            local = file_system[0]
+            if local.get("nameForTargetDependencyResolutionOnly") == "AFMKit":
+                local_public_count += 1
+                continue
+        raise SystemExit("Release qualification requires every root dependency to use remote source control.")
+    for entry in source_control:
+        locations = entry.get("location", {}).get("remote")
+        if not locations or not all(item.get("urlString", "").startswith("https://") for item in locations):
+            identity = entry.get("identity", "unknown")
+            raise SystemExit(f"Release qualification rejected non-remote dependency {identity}.")
+        requirement = entry.get("requirement", {})
+        if set(requirement) != {"exact"}:
+            identity = entry.get("identity", "unknown")
+            raise SystemExit(
+                f"Release qualification requires exact dependency version for {identity}."
+            )
+if allow_local_public and local_public_count != 1:
+    raise SystemExit("Provider source manifest must contain exactly one local AFMKit dependency.")
+for target in package.get("targets", []):
+    for setting in target.get("settings", []):
+        if "unsafeFlags" in setting.get("kind", {}):
+            name = target.get("name", "unknown")
+            raise SystemExit(
+                f"Release qualification rejected unsafe build flags in target {name}."
+            )
+'
+}
+
+afmkit_release_validate_resolved_files() {
+    if [[ $# -eq 0 ]]; then
+        echo "Release qualification requires at least one resolved file." >&2
+        return 64
+    fi
+    /usr/bin/python3 - "$@" <<'PY'
+import json
+import re
+import sys
+
+for path in sys.argv[1:]:
+    with open(path, encoding="utf-8") as handle:
+        resolved = json.load(handle)
+    origin_hash = resolved.get("originHash", "")
+    if not re.fullmatch(r"[0-9a-f]{64}", origin_hash):
+        raise SystemExit(f"{path} has no valid originHash.")
+    pins = resolved.get("pins", [])
+    if not pins:
+        raise SystemExit(f"{path} contains no dependency pins.")
+    identities = set()
+    for pin in pins:
+        identity = pin.get("identity", "")
+        if identity in identities:
+            raise SystemExit(f"{path} contains duplicate pin {identity}.")
+        identities.add(identity)
+        if pin.get("kind") != "remoteSourceControl":
+            raise SystemExit(f"{path} contains non-remote pin {identity}.")
+        if not pin.get("location", "").startswith("https://"):
+            raise SystemExit(f"{path} contains non-HTTPS pin {identity}.")
+        if not re.fullmatch(r"[0-9a-f]{40}", pin.get("state", {}).get("revision", "")):
+            raise SystemExit(f"{path} contains unpinned dependency {identity}.")
+PY
+}
+
+afmkit_release_begin_immutable_worktree() {
+    local root="$1"
+    local status
+
+    status="$(git -C "$root" status --porcelain=v1 --untracked-files=all)"
+    if [[ -n "$status" ]]; then
+        echo "Release qualification requires a clean worktree." >&2
+        printf '%s\n' "$status" >&2
+        return 1
+    fi
+
+    AFMKIT_RELEASE_START_HEAD="$(git -C "$root" rev-parse HEAD)"
+}
+
+afmkit_release_verify_immutable_worktree() {
+    local root="$1"
+    local status current_head
+
+    current_head="$(git -C "$root" rev-parse HEAD)"
+    status="$(git -C "$root" status --porcelain=v1 --untracked-files=all)"
+    if [[ "$current_head" != "${AFMKIT_RELEASE_START_HEAD:-}" ]] || [[ -n "$status" ]]; then
+        echo "Release qualification mutated Package.resolved or the worktree." >&2
+        [[ -z "$status" ]] || printf '%s\n' "$status" >&2
+        return 1
+    fi
+}

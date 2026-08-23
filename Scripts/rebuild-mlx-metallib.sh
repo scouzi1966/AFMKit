@@ -1,5 +1,5 @@
 #!/bin/bash
-# Rebuild AFMKit's Sources/AFMKitMLX/Resources/default.metallib from the
+# Rebuild AFMKitMLX's Sources/AFMKitMLX/Resources/default.metallib from the
 # AFM-compatible mlx-swift dependency.
 #
 # WHY THIS EXISTS
@@ -45,7 +45,7 @@ else
   done
 fi
 KDIR="$MLXROOT/mlx/backend/metal/kernels"
-TARGET_METALLIB="$ROOT_DIR/Sources/AFMKitMLX/Resources/default.metallib"
+TARGET_METALLIB="$ROOT_DIR/Packages/AFMKitMLX/Sources/AFMKitMLX/Resources/default.metallib"
 OSX_MIN="26.0"            # matches `apple-macosx26.0.0` baked into the shipped metallib
 mkdir -p "$ROOT_DIR/.build"
 BUILD_DIR="$(mktemp -d "$ROOT_DIR/.build/afm-metallib.XXXXXX")"

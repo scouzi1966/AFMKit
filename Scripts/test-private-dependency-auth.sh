@@ -1,0 +1,74 @@
+#!/bin/bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+WRAPPER="$ROOT/Scripts/with-private-dependency-auth.sh"
+BUILD_ROOT="${AFMKIT_BUILD_ROOT:-$ROOT/.build}"
+SANDBOX="$BUILD_ROOT/private-auth-tests.$$"
+
+cleanup() {
+    rm -rf "$SANDBOX"
+}
+trap cleanup EXIT
+mkdir -p "$SANDBOX/tmp"
+
+if AFMKIT_DEPENDENCY_TOKEN= "$WRAPPER" true > "$SANDBOX/missing.log" 2>&1; then
+    echo "Private auth regression failed: missing token was accepted." >&2
+    exit 1
+fi
+grep -q "Token-independent validation should run separately" "$SANDBOX/missing.log" \
+    || { echo "Private auth regression failed: missing-token guidance was not actionable." >&2; exit 1; }
+
+set +e
+TMPDIR="$SANDBOX/tmp" AFMKIT_DEPENDENCY_TOKEN="test-token-not-a-secret" \
+    "$WRAPPER" bash -c '
+        set -euo pipefail
+        test -f "$GIT_CONFIG_GLOBAL"
+        test -z "${AFMKIT_DEPENDENCY_TOKEN:-}"
+        test "$(git config --global --get url.https://x-access-token:test-token-not-a-secret@github.com/scouzi1966/mlx-swift-afm.insteadof)" = "https://github.com/scouzi1966/mlx-swift-afm"
+        test "$(git config --global --get url.https://x-access-token:test-token-not-a-secret@github.com/scouzi1966/mlx-swift-lm.git.insteadof)" = "https://github.com/scouzi1966/mlx-swift-lm.git"
+        test "$(git config --global --get-regexp "^url\." | wc -l | tr -d " ")" = 2
+        ! git config --global --get url.https://x-access-token:test-token-not-a-secret@github.com/.insteadof
+        exit 42
+    '
+STATUS=$?
+set -e
+[[ $STATUS -eq 42 ]] \
+    || { echo "Private auth regression failed: wrapped failure status was not preserved." >&2; exit 1; }
+if find "$SANDBOX/tmp" -mindepth 1 -print -quit | grep -q .; then
+    echo "Private auth regression failed: temporary credential config survived a command failure." >&2
+    exit 1
+fi
+if git config --global --get-regexp 'test-token-not-a-secret' >/dev/null 2>&1; then
+    echo "Private auth regression failed: credential reached persistent global Git config." >&2
+    exit 1
+fi
+
+set +e
+TMPDIR="$SANDBOX/tmp" \
+    AFMKIT_DEPENDENCY_TOKEN="test-token-not-a-secret" \
+    AFMKIT_SOURCE_TOKEN="source-token-not-a-secret" \
+    AFMKIT_SOURCE_URL="https://github.com/example/AFMKit.git" \
+    "$WRAPPER" bash -c '
+        set -euo pipefail
+        test -z "${AFMKIT_DEPENDENCY_TOKEN:-}"
+        test -z "${AFMKIT_SOURCE_TOKEN:-}"
+        test -z "${AFMKIT_SOURCE_URL:-}"
+        test "$(git config --global --get url.https://x-access-token:source-token-not-a-secret@github.com/example/AFMKit.git.insteadof)" = "https://github.com/example/AFMKit.git"
+        test "$(git config --global --get-regexp "^url\." | wc -l | tr -d " ")" = 3
+        exit 43
+    '
+STATUS=$?
+set -e
+[[ $STATUS -eq 43 ]] \
+    || { echo "Private auth regression failed: source credential status was not preserved." >&2; exit 1; }
+if find "$SANDBOX/tmp" -mindepth 1 -print -quit | grep -q .; then
+    echo "Private auth regression failed: source credential config survived a command failure." >&2
+    exit 1
+fi
+if git config --global --get-regexp 'source-token-not-a-secret' >/dev/null 2>&1; then
+    echo "Private auth regression failed: source credential reached persistent global Git config." >&2
+    exit 1
+fi
+
+echo "3 private dependency auth regression tests passed."

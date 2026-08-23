@@ -12,7 +12,7 @@ schedules models identically. This document makes those differences explicit.
 | **Tier 2: provider facade** | Apps intentionally choosing Apple, MLX, or DwarfStar | Factory/model/runtime-configuration facades are supported but can evolve with provider capabilities. |
 | **Tier 3: advanced provider API** | Server hosts and engine specialists | Public scheduling, cache, converter, model-service, and profiling APIs have narrower compatibility expectations and should be isolated by consumer adapters. |
 | **Tier 4: implementation/SPI** | AFMKit maintainers | `package`, `internal`, C/C++/Objective-C bridges, Metal resources, and third-party engine interfaces are not consumer contracts. |
-| **Experimental bridge** | macOS 27 custom-provider adopters | `AFMKitFoundationModelsMLX` is implemented and tested, but lacks a checked-in public API baseline; treat its API as experimental until one is adopted. |
+| **macOS 27 bridge** | macOS 27 custom-provider adopters | `AFMKitFoundationModelsMLX` is implemented, tested, and protected by a checked-in public API baseline. Apple beta SDK changes still require explicit compatibility review. |
 
 The current Swift visibility is broader than the intended architecture in parts
 of `AFMKitMLX`: `AFMMLXModel.service` and `AFMMLXRuntime.service` expose
