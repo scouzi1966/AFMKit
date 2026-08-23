@@ -45,7 +45,7 @@ jobs:
         run: Scripts/check-api-baseline-coverage.sh
       - name: Check token-independent API baselines
         run: |
-          for module in AFMKitApple AFMKitCore AFMKitInference AFMOpenAICompat; do
+          for module in AFMKitApple AFMKitCore AFMKitEmbeddings AFMKitInference AFMKitServices AFMKitSpeech AFMKitSpeechSynthesis AFMKitVision AFMOpenAICompat; do
             Scripts/check-afmkit-core-api.sh "$module"
           done
       - name: Run untrusted candidate core tests
