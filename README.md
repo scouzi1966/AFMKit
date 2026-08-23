@@ -69,42 +69,37 @@ configuration, tool names, response formats, stop strings, and expectations.
 ## Local development
 
 ```bash
-git clone --recurse-submodules git@github.com:scouzi1966/AFMKit.git
+git clone --recurse-submodules https://github.com/scouzi1966/AFMKit.git
 cd AFMKit
 swift test
 Scripts/test-api-gate.sh
 Scripts/check-api-baselines.sh
 ```
 
-Local MLX compatibility checkouts can replace the tagged dependencies during development:
-
-```bash
-AFMKIT_MLX_SWIFT_PATH=/path/to/mlx-swift-afm \
-AFMKIT_MLX_SWIFT_LM_PATH=/path/to/mlx-swift-lm-afm \
-swift test -c release
-```
-
-Release qualification rejects these overrides. Direct and qualified transitive
-dependencies are constrained exactly, and a fresh no-lock consumer must
-reproduce the committed root lock before publication.
+The AFM-compatible MLX, MLX C, Swift bindings, and language-model sources live
+under `vendor/MLX`. They are ordinary source snapshots with their upstream
+licenses and provenance, not submodules or separately authenticated packages.
+Release qualification accepts only these two repository-relative package paths;
+all other dependencies remain exact public HTTPS pins.
 
 ## Qualification
 
-The checked-in API baselines use Xcode 27 Beta 3 build `27A5218g`, macOS SDK 27.0
-build `26A5378i`, and the compiler identity in
+The checked-in API baselines use Xcode 27 build `27A5228h`, macOS SDK 27.0
+build `26A5388f`, and the compiler identity in
 `docs/api-baselines/toolchain.env`. Baseline coverage discovers all fourteen modules
 from the root manifest. The current DwarfStar baseline contains 42 normalized
 public symbols.
 
 Public CI also proves that a fresh Core consumer builds without credentials.
-Private PR qualification consumes only an immutable artifact
+Trusted PR qualification consumes only an immutable artifact
 from the exact successful workflow run. Candidate manifests and locks are inert
 inputs whose dependency graph must equal the trusted default-branch graph before
-the trusted qualification manifest can prebuild private dependencies. Candidate
-compiler processes are sandboxed from private source and repository caches, and
+the trusted qualification manifest compiles the candidate. The allowlisted artifact
+contains the vendored MLX sources and licenses required by that graph. Candidate
+compiler processes are sandboxed from unrelated repository caches, and
 candidate test sources are compiled but never executed on the privileged runner.
-Candidate scripts and plugins never run there. Private source, compiled products,
-caches, and credentials are destroyed before the job exits.
+Candidate scripts and plugins never run there. Compiled products, caches, and the
+downloaded candidate artifact are destroyed before the job exits.
 
 Full release validation runs all package/API/security gates, the root Release
 tests, and fresh downstream builds for all fourteen products:

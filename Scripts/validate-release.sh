@@ -43,14 +43,12 @@ qualification_exit() {
 }
 trap qualification_exit EXIT
 
-afmkit_release_reject_local_overrides
 afmkit_verify_qualified_toolchain "$ROOT"
 afmkit_run_qualified_swift package dump-package --package-path "$ROOT" \
     | afmkit_release_validate_manifest
 afmkit_release_validate_resolved_files "$ROOT/Package.resolved"
 
 "$ROOT/Scripts/test-api-gate.sh"
-"$ROOT/Scripts/test-private-dependency-auth.sh"
 "$ROOT/Scripts/test-release-qualification.sh"
 node "$ROOT/Scripts/test-release-publication.js"
 "$ROOT/Scripts/test-workflow-security.sh"

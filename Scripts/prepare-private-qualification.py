@@ -32,6 +32,7 @@ ALLOWED_PREFIXES = (
     "Packages/AFMKitDwarfStar/vendor/",
     "Packages/AFMKitMLX/Sources/",
     "Packages/AFMKitMLX/Tests/",
+    "vendor/MLX/",
     "docs/api-baselines/",
 )
 ALLOWED_FILES = {
@@ -129,6 +130,13 @@ def main() -> int:
         "Packages/AFMKitDwarfStar/Sources/AFMKitFoundationModelsDwarfStar/DwarfStarFoundationLanguageModel.swift",
         "Packages/AFMKitDwarfStar/Tests/AFMKitFoundationModelsDwarfStarTests/DwarfStarFoundationLanguageModelTests.swift",
         "Packages/AFMKitMLX/Sources/AFMKitMLX/AFMMLXProvider.swift",
+        "vendor/MLX/README.md",
+        "vendor/MLX/mlx-swift/Package.swift",
+        "vendor/MLX/mlx-swift/LICENSE",
+        "vendor/MLX/mlx-swift/Source/Cmlx/mlx/LICENSE",
+        "vendor/MLX/mlx-swift/Source/Cmlx/mlx-c/LICENSE",
+        "vendor/MLX/mlx-swift-lm/Package.swift",
+        "vendor/MLX/mlx-swift-lm/LICENSE",
         "docs/api-baselines/AFMKitCore.symbols.json",
         "docs/api-baselines/AFMKitInference.symbols.json",
         "docs/api-baselines/AFMKitEmbeddings.symbols.json",

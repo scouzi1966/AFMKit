@@ -59,8 +59,7 @@ let package = Package(
     ],
     dependencies: [
         .package(
-            url: "https://github.com/scouzi1966/mlx-swift-lm.git",
-            exact: "0.31.6-afm.3"
+            path: "Candidate/vendor/MLX/mlx-swift-lm"
         ),
         .package(
             url: "https://github.com/huggingface/swift-transformers",
@@ -76,25 +75,10 @@ let package = Package(
             exact: "0.2.3"
         ),
         .package(
-            url: "https://github.com/scouzi1966/mlx-swift-afm",
-            exact: "0.31.6-afm.1"
+            path: "Candidate/vendor/MLX/mlx-swift"
         )
     ] + releaseDependencyPins,
     targets: [
-        .executableTarget(
-            name: "AFMKitPrivateDependencySeed",
-            dependencies: [
-                .product(name: "MLX", package: "mlx-swift-afm"),
-                .product(name: "MLXLLM", package: "mlx-swift-lm"),
-                .product(name: "MLXVLM", package: "mlx-swift-lm"),
-                .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
-                .product(name: "Tokenizers", package: "swift-transformers"),
-                .product(name: "Hub", package: "swift-transformers"),
-                .product(name: "HuggingFace", package: "swift-huggingface"),
-                .product(name: "Xet", package: "swift-xet")
-            ],
-            path: "TrustedSeed"
-        ),
         .target(
             name: "AFMKitCore",
             path: "Candidate/Sources/AFMKitCore"
@@ -186,7 +170,7 @@ let package = Package(
                 "AFMKitCore",
                 "AFMOpenAICompat",
                 "AFMXGrammar",
-                .product(name: "MLX", package: "mlx-swift-afm"),
+                .product(name: "MLX", package: "mlx-swift"),
                 .product(name: "MLXLLM", package: "mlx-swift-lm"),
                 .product(name: "MLXVLM", package: "mlx-swift-lm"),
                 .product(name: "MLXLMCommon", package: "mlx-swift-lm"),

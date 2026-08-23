@@ -18,14 +18,6 @@ mkdir -p "$SANDBOX"
 # shellcheck source=/dev/null
 source "$GUARD"
 
-if AFMKIT_MLX_SWIFT_PATH=/tmp/local-mlx \
-    afmkit_release_reject_local_overrides > "$SANDBOX/override.log" 2>&1; then
-    echo "Release qualification regression failed: local override was accepted." >&2
-    exit 1
-fi
-grep -q "rejects local dependency override" "$SANDBOX/override.log"
-PASSED=$((PASSED + 1))
-
 VALID_TAGS=(
     v0.0.0
     v1.2.3
@@ -118,7 +110,12 @@ if afmkit_release_validate_manifest < "$SANDBOX/local-manifest.json" \
     echo "Release qualification regression failed: local manifest dependency was accepted." >&2
     exit 1
 fi
-grep -q "requires every root dependency to use remote source control" "$SANDBOX/manifest.log"
+grep -q "rejected local dependency local" "$SANDBOX/manifest.log"
+PASSED=$((PASSED + 1))
+
+printf '%s\n' '{"dependencies":[{"fileSystem":[{"identity":"mlx-swift","path":"/checkout/vendor/MLX/mlx-swift"}]},{"fileSystem":[{"identity":"mlx-swift-lm","path":"/checkout/vendor/MLX/mlx-swift-lm"}]}]}' \
+    > "$SANDBOX/vendored-manifest.json"
+afmkit_release_validate_manifest < "$SANDBOX/vendored-manifest.json"
 PASSED=$((PASSED + 1))
 
 printf '%s\n' '{"dependencies":[{"sourceControl":[{"identity":"unstable","location":{"remote":[{"urlString":"https://github.com/example/unstable"}]},"requirement":{"revision":["0123456789012345678901234567890123456789"]}}]}]}' \
@@ -141,7 +138,7 @@ fi
 grep -q "requires exact dependency version" "$SANDBOX/range-manifest.log"
 PASSED=$((PASSED + 1))
 
-printf '%s\n' '{"dependencies":[],"targets":[{"name":"UnsafeTarget","settings":[{"kind":{"unsafeFlags":{"_0":["-O3"]}},"tool":"c"}]}]}' \
+printf '%s\n' '{"dependencies":[{"fileSystem":[{"identity":"mlx-swift","path":"/checkout/vendor/MLX/mlx-swift"}]},{"fileSystem":[{"identity":"mlx-swift-lm","path":"/checkout/vendor/MLX/mlx-swift-lm"}]}],"targets":[{"name":"UnsafeTarget","settings":[{"kind":{"unsafeFlags":{"_0":["-O3"]}},"tool":"c"}]}]}' \
     > "$SANDBOX/unsafe-manifest.json"
 if afmkit_release_validate_manifest < "$SANDBOX/unsafe-manifest.json" \
     > "$SANDBOX/unsafe-manifest.log" 2>&1; then

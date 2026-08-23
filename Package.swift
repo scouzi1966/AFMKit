@@ -1,27 +1,10 @@
 // swift-tools-version: 6.1
-import Foundation
 import PackageDescription
 
-let mlxSwiftDependency: Package.Dependency
-let mlxSwiftLMDependency: Package.Dependency
-let mlxSwiftPackageIdentity: String
-let mlxSwiftLMPackageIdentity: String
-
-if let path = ProcessInfo.processInfo.environment["AFMKIT_MLX_SWIFT_PATH"], !path.isEmpty {
-    mlxSwiftDependency = .package(path: path)
-    mlxSwiftPackageIdentity = URL(fileURLWithPath: path).lastPathComponent.lowercased()
-} else {
-    mlxSwiftDependency = .package(url: "https://github.com/scouzi1966/mlx-swift-afm", exact: "0.31.6-afm.1")
-    mlxSwiftPackageIdentity = "mlx-swift-afm"
-}
-
-if let path = ProcessInfo.processInfo.environment["AFMKIT_MLX_SWIFT_LM_PATH"], !path.isEmpty {
-    mlxSwiftLMDependency = .package(path: path)
-    mlxSwiftLMPackageIdentity = URL(fileURLWithPath: path).lastPathComponent.lowercased()
-} else {
-    mlxSwiftLMDependency = .package(url: "https://github.com/scouzi1966/mlx-swift-lm.git", exact: "0.31.6-afm.3")
-    mlxSwiftLMPackageIdentity = "mlx-swift-lm"
-}
+let mlxSwiftDependency = Package.Dependency.package(path: "vendor/MLX/mlx-swift")
+let mlxSwiftLMDependency = Package.Dependency.package(path: "vendor/MLX/mlx-swift-lm")
+let mlxSwiftPackageIdentity = "mlx-swift"
+let mlxSwiftLMPackageIdentity = "mlx-swift-lm"
 
 let releaseDependencyPins: [Package.Dependency] = [
     .package(url: "https://github.com/swift-server/async-http-client", exact: "1.36.0"),

@@ -1,5 +1,5 @@
 {
-  "originHash" : "b250d9e34ce1e69089af3143e184906c1943035ad4c84f0cc0634f5060acefed",
+  "originHash" : "37bb30a55549ebb2aadb141832e074eebf4137c1f8566bca3a6cd02e8e6d8ea1",
   "pins" : [
     {
       "identity" : "async-http-client",
@@ -17,24 +17,6 @@
       "state" : {
         "revision" : "86b5096ac59ab46e66bd1f6377c604bc1dab0bc2",
         "version" : "1.5.1"
-      }
-    },
-    {
-      "identity" : "mlx-swift-afm",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/scouzi1966/mlx-swift-afm",
-      "state" : {
-        "revision" : "6000b7b26b70be2713c74e9ec2adeb89be07b9e5",
-        "version" : "0.31.6-afm.1"
-      }
-    },
-    {
-      "identity" : "mlx-swift-lm",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/scouzi1966/mlx-swift-lm.git",
-      "state" : {
-        "revision" : "e0d7fa71bc5e422a416f191c297264f698391561",
-        "version" : "0.31.6-afm.3"
       }
     },
     {

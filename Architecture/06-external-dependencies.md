@@ -19,8 +19,8 @@ flowchart TB
     UpstreamLM["ml-explore/mlx-swift-lm\nupstream lineage"]
     RuntimePatches["maclocal-api patch catalog\nmlx-swift-deepseek-v4"]
     LMPatches["maclocal-api/Scripts/patches\nAFM LM source of truth"]
-    MLXSwift["scouzi1966/mlx-swift-afm\n0.31.6-afm.1\ntagged materialization"]
-    MLXLM["scouzi1966/mlx-swift-lm\n0.31.6-afm.3\ntagged materialization"]
+    MLXSwift["vendor/MLX/mlx-swift\nsource snapshot"]
+    MLXLM["vendor/MLX/mlx-swift-lm\nsource snapshot"]
     Transformers["huggingface/swift-transformers\nexact 1.3.3"]
     HF["huggingface/swift-huggingface\nexact 0.9.0 + Xet trait"]
     Xet["huggingface/swift-xet\n0.2.3"]
@@ -50,10 +50,9 @@ flowchart TB
 
 **Figure 1 — Runtime dependencies and their derivation.** Solid provider arrows
 show what a downstream SwiftPM build resolves. The upstream-and-patch arrows show
-where the AFM-compatible MLX artifacts come from; the two `scouzi1966` tags are
-distribution materializations, not independent sources of AFM behavior. A
-consumer that declares only the `AFMKit` package does not resolve an inference
-engine or contact a private repository.
+where the AFM-compatible vendored MLX sources come from. A consumer that declares
+only the `AFMKit` package receives the complete source graph from that one tag
+and never contacts a compatibility or private repository.
 
 ## MLX source-of-truth model
 
@@ -66,24 +65,22 @@ plus the checked-in patch catalog:
    `maclocal-api/Scripts/patches/mlx-swift-*` directories.
 3. maclocal-api applies those patches to its pinned dependency checkout for local
    builds and qualification.
-4. The patched trees are materialized and tagged in the `scouzi1966` compatibility
-   repositories for AFMKit distribution.
-5. AFMKit pins those immutable tags because SwiftPM has no package-manifest phase
-   that can safely patch a remote dependency during consumer resolution.
+4. The resulting source snapshots are reviewed into `vendor/MLX` in AFMKit,
+   together with upstream licenses and the provenance ledger.
+5. AFMKit qualifies and publishes those snapshots in the same immutable tag as
+   its provider code, avoiding coordinated repositories and authentication.
 
-The compatibility repositories therefore must not be edited as a second source
-of truth. A tag must identify its upstream base, maclocal-api source commit, patch
-set, and qualification evidence. `mlx-swift-lm` already records regenerated
-commits from maclocal-api. Reproducible publication of the `mlx-swift-afm` runtime
-materialization remains a supply-chain automation gap and must be completed
-before AFMKit is made public.
+The vendored trees are distribution snapshots, not an independent source of
+truth. A snapshot update must identify its upstream base, maclocal-api source
+commit, patch set, and qualification evidence. It must not be edited ad hoc
+without updating the checked-in patch catalog and focused runtime tests.
 
 ## Direct dependency ledger
 
 | Dependency | Resolution | Used by | Purpose | Architecture impact |
 | --- | --- | --- | --- | --- |
-| [`scouzi1966/mlx-swift-afm`](https://github.com/scouzi1966/mlx-swift-afm) | Exact `0.31.6-afm.1` | `AFMKitMLX` | Tagged distribution materialization of upstream MLX plus the AFM runtime compatibility delta. | Not an independent source of truth; updates require provenance plus Metal/runtime regression tests. |
-| [`scouzi1966/mlx-swift-lm`](https://github.com/scouzi1966/mlx-swift-lm) | Exact `0.31.6-afm.3` | `AFMKitMLX` | Tagged distribution materialization generated from the maclocal-api MLX LM patch catalog. | Do not edit independently; public app code must not import it directly. |
+| `vendor/MLX/mlx-swift` | Repository-relative source snapshot | `AFMKitMLX` | Upstream MLX, C bridge, Swift bindings, and AFM runtime compatibility delta. | Updates require provenance, license review, Metal/runtime regression tests, and qualification in the same PR. |
+| `vendor/MLX/mlx-swift-lm` | Repository-relative source snapshot | `AFMKitMLX` | Language-model sources generated from the maclocal-api MLX LM patch catalog. | Do not edit independently; public app code must not import it directly. |
 | [`huggingface/swift-transformers`](https://github.com/huggingface/swift-transformers) | Exact `1.3.3` | `AFMKitMLX` | Tokenizers and Hub facilities. | Provider manifest and fresh graph must agree with the qualified lock. |
 | [`huggingface/swift-huggingface`](https://github.com/huggingface/swift-huggingface) | Exact `0.9.0`, Xet trait | MLX, DwarfStar | Hub repository metadata/download. | Network/cache behavior belongs to provider layer. |
 | [`huggingface/swift-xet`](https://github.com/huggingface/swift-xet) | Exact `0.2.3` | DwarfStar; also Hub trait path | High-throughput Hub transport. | Retry/resume and filesystem-space behavior need integration tests. |
@@ -91,11 +88,10 @@ before AFMKit is made public.
 | [`antirez/ds4`](https://github.com/antirez/ds4) | Submodule `84cc882352757baf628a1776badf7cc54d584e28` | DwarfStar | Vanilla DwarfStar Metal source/resources. | Kept unmodified; AFM-specific behavior belongs in AFM-owned bridge/adapter. |
 
 Repository development and publication use one root manifest. Provider sources
-remain grouped under `Packages/`, but downstream consumers select every product
-from the same AFMKit URL and exact tag. Local MLX development can replace the
-two tagged MLX dependencies through
-`AFMKIT_MLX_SWIFT_PATH` and `AFMKIT_MLX_SWIFT_LM_PATH`. Release qualification
-rejects both MLX overrides.
+remain grouped under `Packages/`, while MLX dependencies live under `vendor/MLX`.
+Downstream consumers select every product and its complete compatible runtime
+from the same AFMKit URL and exact tag. Qualification rejects arbitrary local
+dependencies and accepts only the two repository-relative vendored package paths.
 
 ## Apple platform dependencies
 
@@ -132,8 +128,8 @@ so `Package.resolved` changes require review.
 2. **Keep vanilla upstreams vanilla.** Do not push AFM changes to ds4; adapt it in
    `CDwarfStar`/`AFMKitDwarfStar`.
 3. **Keep one source of truth.** AFM MLX deltas live in maclocal-api's patch
-   catalog. Tagged compatibility repositories are generated distribution output,
-   never an alternate development branch.
+   catalog. AFMKit's vendored trees are reviewed distribution snapshots, never
+   an alternate development branch.
 4. **No transitive API leakage.** Public neutral signatures use AFMKit or Apple
    standard types, not third-party engine types.
 5. **Record provenance.** Release artifacts record commit, dependency pins,

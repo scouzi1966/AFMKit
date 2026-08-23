@@ -6,7 +6,12 @@ import re
 import urllib.parse
 
 
-GRAPH_FILES = ("Package.swift", "Package.resolved")
+GRAPH_FILES = (
+    "Package.swift",
+    "Package.resolved",
+    "vendor/MLX/mlx-swift/Package.swift",
+    "vendor/MLX/mlx-swift-lm/Package.swift",
+)
 EXACT_DEPENDENCY = re.compile(
     r'\.package\(\s*url:\s*"([^"]+)"\s*,\s*exact:\s*"([^"]+)"',
     re.MULTILINE,

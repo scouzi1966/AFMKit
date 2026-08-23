@@ -24,26 +24,33 @@ if not pattern.fullmatch(tag):
 PY
 }
 
-afmkit_release_reject_local_overrides() {
-    local variable
-    for variable in AFMKIT_MLX_SWIFT_PATH AFMKIT_MLX_SWIFT_LM_PATH; do
-        if [[ -n "${!variable:-}" ]]; then
-            echo "Release qualification rejects local dependency override $variable." >&2
-            return 1
-        fi
-    done
-}
-
 afmkit_release_validate_manifest() {
     /usr/bin/python3 -c '
 import json
 import sys
 
 package = json.load(sys.stdin)
+expected_vendored = {
+    "mlx-swift": "/vendor/MLX/mlx-swift",
+    "mlx-swift-lm": "/vendor/MLX/mlx-swift-lm",
+}
+seen_vendored = set()
 for dependency in package.get("dependencies", []):
+    file_system = dependency.get("fileSystem")
+    if file_system:
+        if len(file_system) != 1:
+            raise SystemExit("Release qualification rejected ambiguous vendored dependency.")
+        entry = file_system[0]
+        identity = entry.get("identity", "")
+        expected_suffix = expected_vendored.get(identity)
+        path = entry.get("path", "")
+        if expected_suffix is None or not path.endswith(expected_suffix):
+            raise SystemExit(f"Release qualification rejected local dependency {identity or 'unknown'}.")
+        seen_vendored.add(identity)
+        continue
     source_control = dependency.get("sourceControl")
     if not source_control:
-        raise SystemExit("Release qualification requires every root dependency to use remote source control.")
+        raise SystemExit("Release qualification requires remote or approved vendored dependencies.")
     for entry in source_control:
         locations = entry.get("location", {}).get("remote")
         if not locations or not all(item.get("urlString", "").startswith("https://") for item in locations):
@@ -55,6 +62,8 @@ for dependency in package.get("dependencies", []):
             raise SystemExit(
                 f"Release qualification requires exact dependency version for {identity}."
             )
+if seen_vendored != set(expected_vendored):
+    raise SystemExit("Release qualification requires both vendored MLX packages.")
 for target in package.get("targets", []):
     for setting in target.get("settings", []):
         if "unsafeFlags" in setting.get("kind", {}):

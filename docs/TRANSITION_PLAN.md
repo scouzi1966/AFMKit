@@ -207,29 +207,18 @@ Current `AFMKitDwarfStar` checkpoint:
 
 AFM-compatible dependency checkpoint:
 
-| Repository | Local path | Published tag | Pinned revision | Purpose |
-| --- | --- | --- | --- | --- |
-| `mlx-afm` | `/Volumes/edata/dev/git/CODEX/AFMKit-dependencies/mlx-afm` | `0.31.6-afm.1` | `b9af157b016a470be1ca609531693b822d40f95f` | AFM-compatible MLX C++/Metal source |
-| `mlx-c-afm` | `/Volumes/edata/dev/git/CODEX/AFMKit-dependencies/mlx-c-afm` | `0.31.6-afm.1` | `1692252c78e634a90ae09bd77a9f68929982b8a0` | C bridge pinning `mlx-afm` |
-| `mlx-swift-afm` | `/Volumes/edata/dev/git/CODEX/AFMKit-dependencies/mlx-swift-afm` | `0.31.6-afm.1` | `6000b7b26b70be2713c74e9ec2adeb89be07b9e5` | Swift MLX bindings and bundled Metal runtime |
-| `mlx-swift-lm` compatibility branch | `/Volumes/edata/dev/git/CODEX/AFMKit-dependencies/mlx-swift-lm-afm` | `0.31.6-afm.3` | `e0d7fa7` | AFM model architectures, parsers, generation behavior, and quantization-aware Qwen MTP loading |
+| Vendored directory | Upstream base | AFM compatibility revision | Purpose |
+| --- | --- | --- | --- |
+| `vendor/MLX/mlx-swift/Source/Cmlx/mlx` | `ce45c52505c8158ea48d2a54e8caae05efd86bfe` | `b9af157b016a470be1ca609531693b822d40f95f` | AFM-compatible MLX C++/Metal source |
+| `vendor/MLX/mlx-swift/Source/Cmlx/mlx-c` | `0726ca922fc902c4c61ef9c27d94132be418e945` | `1692252c78e634a90ae09bd77a9f68929982b8a0` | C bridge for the vendored MLX runtime |
+| `vendor/MLX/mlx-swift` | `0bb916c67f4b9e5c682cbe02a42c701c93ab5021` | `6000b7b26b70be2713c74e9ec2adeb89be07b9e5` | Swift MLX bindings and bundled Metal runtime |
+| `vendor/MLX/mlx-swift-lm` | recorded in its source provenance | `e0d7fa71bc5e422a416f191c297264f698391561` | AFM model architectures, parsers, generation behavior, and quantization-aware Qwen MTP loading |
 
-The compatibility repositories are AFM-owned distribution dependencies. Changes are published as
-immutable AFM tags after their own Release build/test gate; AFMKit pins exact tags. They do not
-require pull requests against upstream MLX repositories. The consumer migration has proved that
-the tagged graph covers the clean maclocal-api Release build and packaging paths.
-
-During the atomic maclocal-api consumer migration, AFMKit supports two build-only path overrides:
-
-- `AFMKIT_MLX_SWIFT_PATH` selects a persistent checkout of AFM's MLX fork. The patched
-  `mlx-swift-lm` manifest consumes this same environment variable, ensuring that both dependency
-  chains resolve one package path and identity.
-- `AFMKIT_MLX_SWIFT_LM_PATH` selects maclocal-api's persistent patched `vendor/mlx-swift-lm`
-  checkout. AFMKit derives the SwiftPM package identity from the directory name so product lookup
-  remains correct for either the legacy checkout or the tagged compatibility package.
-
-These switches are not runtime configuration and do not change the normal
-published AFMKit graph.
+These snapshots are shipped in the AFMKit repository with their licenses and
+provenance. A single AFMKit tag therefore contains the complete AFM-compatible
+MLX stack and no private repository authentication or coordinated dependency
+tagging is required. Snapshot changes must update provenance and pass the MLX,
+Metal, model, API, and downstream qualification gates in the same pull request.
 
 ## Phase 5: Consumer Migration
 

@@ -34,6 +34,7 @@ ARCHIVE_ROOTS = (
     "Packages/AFMKitDwarfStar/vendor",
     "Packages/AFMKitMLX/Sources",
     "Packages/AFMKitMLX/Tests",
+    "vendor/MLX",
     "docs/api-baselines",
 )
 ARCHIVE_FILES = (

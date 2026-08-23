@@ -63,9 +63,8 @@ assert "Download exact successful-run artifact" in private_ci
 assert "prepare-private-qualification.py" in private_ci
 assert "validate-private-qualification-graph.py" in private_ci
 assert "Qualification/PrivatePackage.swift" in private_ci
-assert "AFMKitPrivateDependencySeed" in private_ci
-assert "with-private-source-sandbox.sh" in private_ci
-assert "AFMKIT_REQUIRE_SANDBOX_COMPILERS: swiftc,clang" in private_ci
+assert "AFMKIT_DEPENDENCY_TOKEN" not in private_ci
+assert "Compile candidate with vendored MLX sources" in private_ci
 assert "--build-tests" in private_ci
 assert "xctest" not in private_ci
 assert "swift test" not in private_ci
@@ -74,11 +73,8 @@ assert "destroy-private-qualification.py" in private_ci
 assert "--path \"$PRIVATE_BUILD_ROOT\"" in private_ci
 assert "--path \"$HARNESS_ROOT\"" in private_ci
 assert "persist-credentials: false" in private_ci
-assert private_ci.index("Prebuild private dependencies") < private_ci.index(
-    "Compile candidate without private source access"
-)
-assert private_ci.index("Compile candidate without private source access") < private_ci.index(
-    "Destroy private sources, products, and candidate harness"
+assert private_ci.index("Compile candidate with vendored MLX sources") < private_ci.index(
+    "Destroy candidate sources, products, and harness"
 )
 
 request = contents["release-request.yml"]
@@ -123,6 +119,8 @@ EXTRACTED="$SANDBOX/extracted"
 EXPECTED_GRAPH_INPUTS="$(cat <<'EOF'
 Package.resolved
 Package.swift
+vendor/MLX/mlx-swift-lm/Package.swift
+vendor/MLX/mlx-swift/Package.swift
 EOF
 )"
 ACTUAL_GRAPH_INPUTS="$(find "$EXTRACTED" -type f \
@@ -196,7 +194,6 @@ fi
 grep -q "differs from the trusted default-branch copy" "$SANDBOX/lock-equality.log"
 
 cp "$ROOT/Qualification/PrivatePackage.swift" "$SANDBOX/Package.swift"
-cp -R "$ROOT/Qualification/TrustedSeed" "$SANDBOX/TrustedSeed"
 cp "$EXTRACTED/Package.resolved" "$SANDBOX/Package.resolved"
 mv "$EXTRACTED" "$SANDBOX/Candidate"
 /usr/bin/xcrun --toolchain XcodeDefault swift package dump-package \
@@ -214,26 +211,6 @@ assert "AFMEvalKit" in products, "Private qualification omits AFMEvalKit product
 assert "AFMEvalKit" in targets, "Private qualification omits AFMEvalKit target"
 assert "AFMEvalKitTests" in targets, "Private qualification omits AFMEvalKit tests"
 PY
-
-SANDBOX_BUILD="$SANDBOX/compiler-build"
-mkdir -p \
-    "$SANDBOX_BUILD/checkouts/mlx-swift-afm" \
-    "$SANDBOX_BUILD/checkouts/mlx-swift-lm" \
-    "$SANDBOX_BUILD/repositories"
-printf '#define PRIVATE_VALUE 17\n' \
-    > "$SANDBOX_BUILD/checkouts/mlx-swift-afm/private.h"
-printf '#include "%s"\nPRIVATE_VALUE\n' \
-    "$SANDBOX_BUILD/checkouts/mlx-swift-afm/private.h" \
-    > "$SANDBOX/read-private.c"
-if AFMKIT_REQUIRE_SANDBOX_COMPILERS=clang \
-    "$ROOT/Scripts/with-private-source-sandbox.sh" \
-        "$SANDBOX_BUILD" /bin/bash -c '"$CC" -E "$1"' _ \
-        "$SANDBOX/read-private.c" \
-        > "$SANDBOX/compiler-sandbox.log" 2>&1; then
-    echo "Sandboxed candidate compiler read private dependency source." >&2
-    exit 1
-fi
-grep -Eq "Operation not permitted|not found" "$SANDBOX/compiler-sandbox.log"
 
 CLEANUP_ROOT="$SANDBOX/cleanup-root"
 OUTSIDE_ROOT="$SANDBOX/outside-root"

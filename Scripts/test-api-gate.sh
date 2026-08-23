@@ -58,7 +58,7 @@ if AFMKIT_BUILD_ROOT="$MISMATCH_FIXTURE/.build" \
 fi
 grep -q "API baseline toolchain mismatch" "$SANDBOX_ROOT/toolchain-mismatch.log" \
     || fail "toolchain mismatch did not explain the failure"
-grep -q "Select Xcode 27 Beta 3" "$SANDBOX_ROOT/toolchain-mismatch.log" \
+grep -q "Select the qualified Xcode 27 toolchain" "$SANDBOX_ROOT/toolchain-mismatch.log" \
     || fail "toolchain mismatch did not provide an actionable selection"
 PASSED=$((PASSED + 1))
 
@@ -143,7 +143,7 @@ SHIMS=(
     ".build/public/checkouts/swift-atomics/Sources/_AtomicsShims/include"
     ".build/public/checkouts/swift-system/Sources/CSystem/include"
     ".build/public/checkouts/swift-nio/Sources/CNIOWindows/include"
-    ".build/public/checkouts/mlx-swift-afm/Source/Cmlx/include"
+    "vendor/MLX/mlx-swift/Source/Cmlx/include"
     "Packages/AFMKitMLX/Sources/CXGrammar/include"
 )
 for SHIMS_DIR in "${SHIMS[@]}"; do

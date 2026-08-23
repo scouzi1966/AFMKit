@@ -21,20 +21,20 @@ ordinary targets in the root manifest. They are not separately versioned package
 - Hosted Xcode 26 and Xcode 27 runners verify the two compiler product matrices.
 - The qualification runner uses the exact Xcode, SDK, Swift version, and compiler
   digest in `docs/api-baselines/toolchain.env`.
-- Every exact dependency in `Package.swift` and `Package.resolved` is anonymously
-  readable before a public release. Qualification may use
-  `AFMKIT_DEPENDENCY_TOKEN` during the private-development phase, but the
-  unauthenticated consumer gate prevents publishing a graph that requires it.
+- The two approved repository-relative dependencies under `vendor/MLX` are
+  included in the tag and qualification artifact with their licenses and
+  provenance. Every other dependency in `Package.swift` and `Package.resolved`
+  is an exact, anonymously readable HTTPS pin.
 - The root workflow token receives `contents: write` only in the final publish job.
 
 ## Pull request qualification
 
 Public CI packages an allowlisted immutable source artifact from the exact PR
-head. The trusted `workflow_run` handler verifies provenance, compares the
-candidate `Package.swift` and `Package.resolved` byte-for-byte with trusted graph
-inputs, prebuilds dependencies, and compiles candidate sources through sandboxed
-compiler wrappers. Candidate scripts and test executables never run with private
-credentials. Private sources, products, caches, and credentials are destroyed
+head, including the vendored MLX stack. The trusted `workflow_run` handler
+verifies provenance, compares all root and nested package manifests plus the
+lockfile byte-for-byte with trusted graph inputs, and compiles candidate sources
+through sandboxed compiler wrappers. Candidate scripts and test executables do
+not run in that job. Products, caches, and the downloaded artifact are destroyed
 after qualification.
 
 ## Release sequence

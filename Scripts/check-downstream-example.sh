@@ -8,7 +8,6 @@ GENERATOR="$ROOT/Scripts/generate-downstream-package.py"
 source "$ROOT/Scripts/release-qualification-guard.sh"
 source "$ROOT/Scripts/verify-qualified-toolchain.sh"
 
-afmkit_release_reject_local_overrides
 afmkit_verify_qualified_toolchain "$ROOT"
 mkdir -p "$BUILD_ROOT"
 QUALIFICATION_ROOT="$(mktemp -d "$BUILD_ROOT/downstream-qualification.XXXXXX")"

@@ -1,4 +1,4 @@
-name: Private graph qualification
+name: Trusted graph qualification
 
 on:
   workflow_run:
@@ -12,33 +12,13 @@ permissions:
   contents: read
 
 jobs:
-  availability:
-    name: Detect private qualification access
+  qualify:
+    name: Trusted vendored graph qualification
     if: >-
       github.event.workflow_run.status == 'completed' &&
       github.event.workflow_run.conclusion == 'success' &&
       (github.event.workflow_run.event == 'pull_request' ||
        github.event.workflow_run.event == 'push')
-    runs-on: ubuntu-latest
-    outputs:
-      available: ${{ steps.secret.outputs.available }}
-    steps:
-      - name: Detect dependency token without exposing it
-        id: secret
-        env:
-          AFMKIT_DEPENDENCY_TOKEN: ${{ secrets.AFMKIT_DEPENDENCY_TOKEN }}
-        run: |
-          if [[ -n "$AFMKIT_DEPENDENCY_TOKEN" ]]; then
-            echo "available=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "available=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::Private graph qualification is unavailable until AFMKIT_DEPENDENCY_TOKEN is configured."
-          fi
-
-  qualify:
-    name: Trusted private graph qualification
-    needs: availability
-    if: needs.availability.outputs.available == 'true'
     permissions:
       actions: read
       contents: read
@@ -184,49 +164,23 @@ jobs:
               "$GITHUB_WORKSPACE/trusted/Qualification/PrivatePackage.swift"
           cp trusted/Qualification/PrivatePackage.swift \
             "$RUNNER_TEMP/private-qualification/Package.swift"
-          cp -R trusted/Qualification/TrustedSeed \
-            "$RUNNER_TEMP/private-qualification/TrustedSeed"
           cp "$RUNNER_TEMP/private-qualification/Candidate/Package.resolved" \
             "$RUNNER_TEMP/private-qualification/Package.resolved"
 
-      - name: Prebuild private dependencies from trusted source only
-        if: steps.metadata.outputs.eligible == 'true'
-        env:
-          AFMKIT_DEPENDENCY_TOKEN: ${{ secrets.AFMKIT_DEPENDENCY_TOKEN }}
-          HARNESS_ROOT: ${{ runner.temp }}/private-qualification
-          PRIVATE_BUILD_ROOT: ${{ runner.temp }}/private-qualification-build
-          PRIVATE_SWIFTPM_HOME: ${{ runner.temp }}/private-swiftpm-home
-        run: |
-          mkdir -p "$PRIVATE_SWIFTPM_HOME"
-          HOME="$PRIVATE_SWIFTPM_HOME" \
-            trusted/Scripts/with-private-dependency-auth.sh \
-            /bin/bash -ceu '
-              trusted/Scripts/verify-qualified-toolchain.sh
-              /usr/bin/xcrun --toolchain XcodeDefault swift build \
-                --package-path "$HARNESS_ROOT" \
-                --scratch-path "$PRIVATE_BUILD_ROOT" \
-                --build-system native \
-                --disable-automatic-resolution \
-                --target AFMKitPrivateDependencySeed
-            '
-
-      - name: Compile candidate without private source access
+      - name: Compile candidate with vendored MLX sources
         if: steps.metadata.outputs.eligible == 'true'
         env:
           HARNESS_ROOT: ${{ runner.temp }}/private-qualification
           PRIVATE_BUILD_ROOT: ${{ runner.temp }}/private-qualification-build
           HOME: ${{ runner.temp }}/candidate-build-home
-          AFMKIT_REQUIRE_SANDBOX_COMPILERS: swiftc,clang
         run: |
           mkdir -p "$HOME"
-          trusted/Scripts/with-private-source-sandbox.sh \
-            "$PRIVATE_BUILD_ROOT" \
-            /usr/bin/xcrun --toolchain XcodeDefault swift build \
-              --package-path "$HARNESS_ROOT" \
-              --scratch-path "$PRIVATE_BUILD_ROOT" \
-              --build-system native \
-              --disable-automatic-resolution \
-              --build-tests
+          /usr/bin/xcrun --toolchain XcodeDefault swift build \
+            --package-path "$HARNESS_ROOT" \
+            --scratch-path "$PRIVATE_BUILD_ROOT" \
+            --build-system native \
+            --disable-automatic-resolution \
+            --build-tests
 
       - name: Validate candidate API baselines with trusted checker
         if: steps.metadata.outputs.eligible == 'true'
@@ -237,15 +191,12 @@ jobs:
           AFMKIT_BUILD_ROOT: ${{ runner.temp }}/private-qualification-build
           HOME: ${{ runner.temp }}/candidate-build-home
         run: |
-          trusted/Scripts/with-private-source-sandbox.sh \
-            "$AFMKIT_BUILD_ROOT" \
-            trusted/Scripts/check-api-baselines.sh
+          trusted/Scripts/check-api-baselines.sh
 
-      - name: Destroy private sources, products, and candidate harness
+      - name: Destroy candidate sources, products, and harness
         if: always() && steps.metadata.outputs.eligible == 'true'
         env:
           PRIVATE_BUILD_ROOT: ${{ runner.temp }}/private-qualification-build
-          PRIVATE_SWIFTPM_HOME: ${{ runner.temp }}/private-swiftpm-home
           HARNESS_ROOT: ${{ runner.temp }}/private-qualification
           CANDIDATE_HOME: ${{ runner.temp }}/candidate-build-home
           CANDIDATE_ARTIFACT: ${{ runner.temp }}/candidate-artifact
@@ -253,7 +204,6 @@ jobs:
           trusted/Scripts/destroy-private-qualification.py \
             --root "$RUNNER_TEMP" \
             --path "$PRIVATE_BUILD_ROOT" \
-            --path "$PRIVATE_SWIFTPM_HOME" \
             --path "$HARNESS_ROOT" \
             --path "$CANDIDATE_HOME" \
             --path "$CANDIDATE_ARTIFACT"
