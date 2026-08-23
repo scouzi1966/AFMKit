@@ -3164,24 +3164,7 @@
         },
         {
           "kind": "text",
-          "spelling": ", "
-        },
-        {
-          "kind": "externalParam",
-          "spelling": "strict"
-        },
-        {
-          "kind": "text",
-          "spelling": ": "
-        },
-        {
-          "kind": "typeIdentifier",
-          "preciseIdentifier": "s:Sb",
-          "spelling": "Bool"
-        },
-        {
-          "kind": "text",
-          "spelling": "? = nil)"
+          "spelling": ")"
         }
       ],
       "functionSignature": {
@@ -12192,7 +12175,24 @@
         },
         {
           "kind": "text",
-          "spelling": ")"
+          "spelling": ", "
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "strict"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Sb",
+          "spelling": "Bool"
+        },
+        {
+          "kind": "text",
+          "spelling": "? = nil)"
         }
       ],
       "functionSignature": {
