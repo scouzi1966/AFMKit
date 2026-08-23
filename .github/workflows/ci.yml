@@ -45,7 +45,7 @@ jobs:
         run: Scripts/check-api-baseline-coverage.sh
       - name: Check token-independent API baselines
         run: |
-          for module in AFMKitApple AFMKitCore AFMKitEmbeddings AFMKitInference AFMKitServices AFMKitSpeech AFMKitSpeechSynthesis AFMKitVision AFMOpenAICompat; do
+          for module in AFMEvalKit AFMKitApple AFMKitCore AFMKitEmbeddings AFMKitInference AFMKitServices AFMKitSpeech AFMKitSpeechSynthesis AFMKitVision AFMOpenAICompat; do
             Scripts/check-afmkit-core-api.sh "$module"
           done
       - name: Run untrusted candidate core tests
@@ -62,6 +62,10 @@ jobs:
         env:
           AFMKIT_BUILD_ROOT: ${{ runner.temp }}/afmkit-service-products
         run: Scripts/check-service-product-isolation.sh
+      - name: Check evaluation product isolation
+        env:
+          AFMKIT_BUILD_ROOT: ${{ runner.temp }}/afmkit-evalkit
+        run: Scripts/check-evalkit-isolation.sh
       - name: Check DwarfStar release resources
         run: Scripts/check-dwarfstar-resources.sh
       - name: Test API gate failure modes

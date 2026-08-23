@@ -70,7 +70,7 @@ products = {product.get("name") for product in package.get("products", [])}
 expected = {
     "AFMKitCore", "AFMOpenAICompat", "AFMKitInference", "AFMKitApple",
     "AFMKitEmbeddings", "AFMKitSpeech", "AFMKitSpeechSynthesis",
-    "AFMKitVision", "AFMKitServices",
+    "AFMKitVision", "AFMKitServices", "AFMEvalKit",
 }
 if products != expected:
     raise SystemExit(f"Unexpected public package products: {sorted(products)}")

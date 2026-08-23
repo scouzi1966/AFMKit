@@ -10,17 +10,17 @@ decisions are in [`Architecture/`](Architecture/README.md).
 
 ## Package architecture
 
-Thirteen public modules are published across three real Swift package boundaries:
+Fourteen public modules are published across three real Swift package boundaries:
 
 | Package | Public products | Dependency/authentication boundary |
 | --- | --- | --- |
-| `AFMKit` | `AFMKitCore`, `AFMOpenAICompat`, `AFMKitInference`, `AFMKitApple`, `AFMKitEmbeddings`, `AFMKitSpeech`, `AFMKitSpeechSynthesis`, `AFMKitVision`, `AFMKitServices` | Zero SwiftPM dependencies. Apple services are independently selectable; `AFMKitServices` is the compatibility umbrella. |
+| `AFMKit` | `AFMKitCore`, `AFMOpenAICompat`, `AFMKitInference`, `AFMEvalKit`, `AFMKitApple`, `AFMKitEmbeddings`, `AFMKitSpeech`, `AFMKitSpeechSynthesis`, `AFMKitVision`, `AFMKitServices` | Zero SwiftPM dependencies. `AFMEvalKit` depends only on `AFMOpenAICompat`; Apple services are independently selectable and `AFMKitServices` is their compatibility umbrella. |
 | `AFMKitDwarfStar` | `AFMKitDwarfStar`, `AFMKitFoundationModelsDwarfStar` | Exact AFMKit release plus public, exact-pinned Hub/Xet dependencies, the AFM-owned ds4 adapter/resources, and an Xcode 27-only `LanguageModel` bridge. |
 | `AFMKitMLX` | `AFMKitMLX`, `AFMKitFoundationModelsMLX` | Exact AFMKit release plus the exact private AFM-compatible MLX graph. |
 
 All three manifests use Swift tools 6.1 and keep a macOS 26 deployment floor.
 With Xcode 26 (Swift 6.3), the root package exposes `AFMKitCore`,
-`AFMOpenAICompat`, `AFMKitInference`, and the five service products, and the MLX package exposes `AFMKitMLX`. Xcode 27 (Swift 6.4)
+`AFMOpenAICompat`, `AFMKitInference`, `AFMEvalKit`, and the five service products, and the MLX package exposes `AFMKitMLX`. Xcode 27 (Swift 6.4)
 also exposes `AFMKitApple`, `AFMKitFoundationModelsMLX`, and
 `AFMKitFoundationModelsDwarfStar`; those products import
 macOS 27 Foundation Models APIs and remain runtime-gated to macOS 27. CI checks
@@ -57,6 +57,15 @@ system `/usr/bin/afconvert` tool after synthesis. Sandboxed applications that
 cannot launch subprocesses should request WAV or CAF; replacing that AAC path
 with an in-process resampler/encoder is tracked separately.
 
+## Provider-free evaluation contracts
+
+`AFMEvalKit` contains evaluation schemas, strict validation, deterministic
+scoring, throughput metrics, aggregate output-token budgets, report models and
+HTML/JSON rendering. It depends only on `AFMOpenAICompat` and Foundation and
+does not load or select a model. Hosts continue to own suite discovery and
+defaults, bundled suites, CLI planning, execution, signals, persistence paths,
+and browser launching.
+
 ## Local development
 
 ```bash
@@ -86,7 +95,7 @@ reproduce each committed provider lock before publication.
 
 The checked-in API baselines use Xcode 27 Beta 3 build `27A5218g`, macOS SDK 27.0
 build `26A5378i`, and the compiler identity in
-`docs/api-baselines/toolchain.env`. Baseline coverage discovers all twelve modules
+`docs/api-baselines/toolchain.env`. Baseline coverage discovers all fourteen modules
 across the three manifests. The current DwarfStar baseline contains 42 normalized
 public symbols.
 
@@ -101,7 +110,7 @@ Candidate scripts and plugins never run there. Private source, compiled products
 caches, and credentials are destroyed before the job exits.
 
 Full release validation runs all package/API/security gates, Release tests for
-all three packages, and fresh downstream builds for all twelve products:
+all three packages, and fresh downstream builds for all fourteen products:
 
 ```bash
 Scripts/validate-release.sh

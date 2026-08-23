@@ -17,7 +17,7 @@ if [[ -n "${AFMKIT_API_PACKAGE_ROOT:-}" ]]; then
     PACKAGE_BUILD_DIR="$BUILD_DIR"
 else
 case "$MODULE" in
-    AFMKitCore|AFMOpenAICompat|AFMKitInference|AFMKitApple|AFMKitEmbeddings|AFMKitSpeech|AFMKitSpeechSynthesis|AFMKitVision|AFMKitServices)
+    AFMKitCore|AFMOpenAICompat|AFMKitInference|AFMKitApple|AFMKitEmbeddings|AFMKitSpeech|AFMKitSpeechSynthesis|AFMKitVision|AFMKitServices|AFMEvalKit)
         PACKAGE_ROOT="$ROOT"
         PACKAGE_BUILD_DIR="$BUILD_DIR/public"
         ;;
