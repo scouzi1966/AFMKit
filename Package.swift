@@ -311,6 +311,7 @@ var targets: [Target] = [
             .headerSearchPath("xgrammar/cpp"),
             .headerSearchPath("xgrammar/3rdparty/dlpack/include"),
             .headerSearchPath("xgrammar/3rdparty/picojson"),
+            .define("xgrammar", to: "afmkit_xgrammar"),
             .define("XGRAMMAR_ENABLE_LOG_DEBUG", to: "0"),
             .define("XGRAMMAR_ENABLE_CPPTRACE", to: "0")
         ]
