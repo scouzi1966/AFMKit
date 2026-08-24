@@ -53,6 +53,7 @@ actor BatchScheduler {
         let endTag: String
         let parser: String?
         let tools: [RequestTool]?
+        let repairToolArguments: Bool
     }
 
     /// Default maximum concurrent generations.
@@ -1397,11 +1398,16 @@ actor BatchScheduler {
                     toolCallEndTag: config.endTag,
                     toolCallParser: config.parser,
                     tools: config.tools,
+                    repairToolArguments: config.repairToolArguments,
                     applyFixToolArgs: { rtc in
-                        Self.applyFixToolArgs(rtc, tools: config.tools)
+                        config.repairToolArguments
+                            ? Self.applyFixToolArgs(rtc, tools: config.tools)
+                            : rtc
                     },
                     remapSingleKey: { key, toolName in
-                        Self.remapSingleKey(key, toolName: toolName, tools: config.tools)
+                        config.repairToolArguments
+                            ? Self.remapSingleKey(key, toolName: toolName, tools: config.tools)
+                            : key
                     }
                 )
             },
@@ -1730,11 +1736,16 @@ actor BatchScheduler {
                         toolCallEndTag: config.endTag,
                         toolCallParser: config.parser,
                         tools: config.tools,
+                        repairToolArguments: config.repairToolArguments,
                         applyFixToolArgs: { rtc in
-                            Self.applyFixToolArgs(rtc, tools: config.tools)
+                            config.repairToolArguments
+                                ? Self.applyFixToolArgs(rtc, tools: config.tools)
+                                : rtc
                         },
                         remapSingleKey: { key, toolName in
-                            Self.remapSingleKey(key, toolName: toolName, tools: config.tools)
+                            config.repairToolArguments
+                                ? Self.remapSingleKey(key, toolName: toolName, tools: config.tools)
+                                : key
                         }
                     )
                 },

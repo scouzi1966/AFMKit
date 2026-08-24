@@ -24,9 +24,14 @@ public enum AFMMLXToolCallPolicy {
 
     public static func coerceArgumentTypes(
         _ toolCall: ResponseToolCall,
-        tools: [RequestTool]?
+        tools: [RequestTool]?,
+        repairArguments: Bool = false
     ) -> ResponseToolCall {
-        MLXModelService.coerceArgumentTypes(toolCall, tools: tools)
+        MLXModelService.coerceArgumentTypes(
+            toolCall,
+            tools: tools,
+            repairArguments: repairArguments
+        )
     }
 
     public static func remapArgumentKeys(

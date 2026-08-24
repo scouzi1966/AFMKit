@@ -217,6 +217,42 @@ final class AFMMLXProviderTests: XCTestCase {
         })
     }
 
+    func testRawToolStreamFallbackPreservesMarkupWhenDisabled() throws {
+        let tools = [
+            RequestTool(
+                type: "function",
+                function: RequestToolFunction(
+                    name: "get_weather",
+                    description: nil,
+                    parameters: AnyCodable([
+                        "type": "object",
+                        "properties": ["city": ["type": "string"]],
+                        "required": ["city"]
+                    ]),
+                    strict: true
+                )
+            )
+        ]
+        var fallback = AFMMLXRawToolStreamFallback(
+            isEnabled: false,
+            toolCallStartTag: "<tool_call>",
+            toolCallEndTag: "</tool_call>",
+            toolCallParser: nil,
+            tools: tools,
+            applyFixToolArgs: { $0 },
+            remapSingleKey: { key, _ in key }
+        )
+        let raw = #"<tool_call><function=get_weather><parameter=city>Tokyo</parameter></function></tool_call>"#
+
+        let chunks = fallback.consume(StreamChunk(text: raw))
+
+        XCTAssertEqual(chunks.count, 1)
+        XCTAssertEqual(chunks[0].text, raw)
+        XCTAssertNil(chunks[0].toolCalls)
+        XCTAssertNil(chunks[0].toolCallDeltas)
+        XCTAssertTrue(fallback.finish().isEmpty)
+    }
+
     func testRawToolStreamFallbackConvertsDeepseekDSMLWhenAdapterOmitsTags() throws {
         let tools = [
             RequestTool(

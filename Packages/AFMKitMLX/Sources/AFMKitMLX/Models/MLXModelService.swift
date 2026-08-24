@@ -368,9 +368,9 @@ public final class MLXModelService: @unchecked Sendable {
         }
         switch detectedFormat {
         case .xmlFunction:
-            // Preserve the compatibility parser for auto-detected Qwen XML models.
-            // Explicit qwen3_xml remains the strict native-parser mode.
-            return "afm_adaptive_xml"
+            // Qwen's model-owned template already emits this native format. Keep
+            // repair/fuzzy behavior behind the explicit compatibility parser.
+            return "qwen3_xml"
         default:
             return nil
         }
@@ -413,7 +413,7 @@ public final class MLXModelService: @unchecked Sendable {
         }
         switch detectedFormat {
         case .xmlFunction:
-            return "afm_adaptive_xml"
+            return "qwen3_xml"
         default:
             return nil
         }
@@ -462,7 +462,8 @@ public final class MLXModelService: @unchecked Sendable {
                 startTag: "<｜DSML｜tool_calls>",
                 endTag: "</｜DSML｜tool_calls>",
                 parser: "deepseek_dsml",
-                tools: tools
+                tools: tools,
+                repairToolArguments: fixToolArgs
             )
         }
 
@@ -474,7 +475,8 @@ public final class MLXModelService: @unchecked Sendable {
                     startTag: "<tool_call>",
                     endTag: "</tool_call>",
                     parser: resolvedToolCallParser(logBypass: false),
-                    tools: tools
+                    tools: tools,
+                    repairToolArguments: fixToolArgs
                 )
             default:
                 let parser = format.createParser()
@@ -482,7 +484,8 @@ public final class MLXModelService: @unchecked Sendable {
                     startTag: parser.startTag ?? "<tool_call>",
                     endTag: parser.endTag ?? "</tool_call>",
                     parser: resolvedToolCallParser(logBypass: false),
-                    tools: tools
+                    tools: tools,
+                    repairToolArguments: fixToolArgs
                 )
             }
         }
@@ -491,7 +494,8 @@ public final class MLXModelService: @unchecked Sendable {
             startTag: "<tool_call>",
             endTag: "</tool_call>",
             parser: resolvedToolCallParser(logBypass: false),
-            tools: tools
+            tools: tools,
+            repairToolArguments: fixToolArgs
         )
     }
 
@@ -3727,6 +3731,9 @@ public final class MLXModelService: @unchecked Sendable {
                         var insideThink = templateInjectedThink
                         let genStart = Date()
                         var firstTokenTime: Date?
+                        var observedGenerationTokenCount = 0
+                        var receivedCompletionInfo = false
+                        streamScratch.streamStatPromptTokens = fullPromptTokenCount
 
                         var pendingLogprobs: [TokenLogprobData]? = nil
                         // INSTRUMENT: Dump cache state right before generation starts (streaming)
@@ -3774,6 +3781,11 @@ public final class MLXModelService: @unchecked Sendable {
                                 if case .tokenLogprobs(let lps) = piece {
                                     pendingLogprobs = lps
                                 } else if case .chunk(let rawText) = piece {
+                                    // MLXLMCommon emits one chunk event per generated token,
+                                    // including tokens that complete an API stop sequence.
+                                    // Keep an independent count because stopping early cancels
+                                    // the task before its terminal `.info` event is guaranteed.
+                                    observedGenerationTokenCount += 1
                                     if firstTokenTime == nil { firstTokenTime = Date() }
                                     var resolved: [ResolvedLogprob]?
                                     if let lps = pendingLogprobs {
@@ -3849,6 +3861,7 @@ public final class MLXModelService: @unchecked Sendable {
                                     let responseTC = Self.convertToolCall(tc, index: 0)
                                     continuation.yield(StreamChunk(text: "", toolCalls: [responseTC]))
                                 } else if case .info(let info) = piece {
+                                    receivedCompletionInfo = true
                                     // Emit real token counts and timing as a final info chunk
                                     let finalPromptTokens = fullPromptTokenCount
                                     self.logUsageChunk(
@@ -3889,6 +3902,20 @@ public final class MLXModelService: @unchecked Sendable {
                             generationTask.cancel()
                         }
                         await generationTask.value
+                        if !receivedCompletionInfo {
+                            let fallbackGenerateTime = Date().timeIntervalSince(genStart)
+                            streamScratch.streamStatPromptTokens = fullPromptTokenCount
+                            streamScratch.streamStatCompletionTokens = observedGenerationTokenCount
+                            streamScratch.streamStatGenerateTime = fallbackGenerateTime
+                            continuation.yield(StreamChunk(
+                                text: "",
+                                promptTokens: fullPromptTokenCount,
+                                completionTokens: observedGenerationTokenCount,
+                                promptTime: 0,
+                                generateTime: fallbackGenerateTime,
+                                stoppedBySequence: streamScratch.streamStatStoppedBySequence ? true : nil
+                            ))
+                        }
                         // Flush any remaining buffered text (no stop match found)
                         let remainingStopBuffer = stopBuffer.finish()
                         if !remainingStopBuffer.isEmpty {
@@ -4134,7 +4161,13 @@ public final class MLXModelService: @unchecked Sendable {
         guard let tools, !tools.isEmpty else { return false }
         guard nativeToolJSONChatTemplate != nil else { return false }
         guard builtinChatTemplate == nil else { return false }
-        return resolvedChatTemplateToolCallParser(logBypass: false) == nil
+        return Self.usesModelOwnedToolTemplate(
+            parser: resolvedChatTemplateToolCallParser(logBypass: false)
+        )
+    }
+
+    static func usesModelOwnedToolTemplate(parser: String?) -> Bool {
+        parser == nil || parser == "qwen3_xml"
     }
 
     private static func nativeToolJSONChatTemplate(directory: URL) -> String? {
@@ -4310,7 +4343,11 @@ public final class MLXModelService: @unchecked Sendable {
         if fixToolArgs, let tools, !tools.isEmpty {
             converted = remapResponseToolCallArguments(converted, tools: tools)
         }
-        return coerceArgumentTypes(converted, tools: tools)
+        return coerceArgumentTypes(
+            converted,
+            tools: tools,
+            repairArguments: fixToolArgs
+        )
     }
 
     public static func normalizeToolCalls(
@@ -4540,8 +4577,13 @@ public final class MLXModelService: @unchecked Sendable {
 
     /// Coerce string argument values to match the tool's declared schema types.
     /// XML tool call parsers emit all values as strings; this converts "true" → true, "5" → 5, etc.
-    /// Also fills in default values for missing required parameters (model omission fix).
-    public static func coerceArgumentTypes(_ rtc: ResponseToolCall, tools: [RequestTool]?) -> ResponseToolCall {
+    /// Schema repair is deliberately opt-in: native parsers must preserve omissions
+    /// and malformed values so downstream validation can report the model's output.
+    public static func coerceArgumentTypes(
+        _ rtc: ResponseToolCall,
+        tools: [RequestTool]?,
+        repairArguments: Bool = false
+    ) -> ResponseToolCall {
         guard let tools, !tools.isEmpty else { return rtc }
         guard let tool = tools.first(where: { $0.function.name == rtc.function.name }),
               let paramsAny = tool.function.parameters?.toSendable() as? [String: Any],
@@ -4556,7 +4598,11 @@ public final class MLXModelService: @unchecked Sendable {
             guard let stringValue = value as? String,
                   let propSchema = props[key] as? [String: Any],
                   let schemaType = propSchema["type"] as? String else { continue }
-            if let coerced = coerceStringValue(stringValue, schemaType: schemaType) {
+            if let coerced = coerceStringValue(
+                stringValue,
+                schemaType: schemaType,
+                allowMalformedRepair: repairArguments
+            ) {
                 if debugLogging {
                     print("[\(ts())] [ToolCallParser] coerce \(rtc.function.name).\(key): \"\(stringValue)\" → \(coerced) (schema: \(schemaType))")
                 }
@@ -4569,7 +4615,8 @@ public final class MLXModelService: @unchecked Sendable {
         // Models (especially Qwen3-Coder) often omit required params like "description"
         // which causes downstream validation errors ("expected string, received undefined").
         // This walks the full schema tree: top-level object → array items → nested objects.
-        if fillMissingRequired(&argsDict, schema: paramsAny, toolName: rtc.function.name) {
+        if repairArguments,
+           fillMissingRequired(&argsDict, schema: paramsAny, toolName: rtc.function.name) {
             changed = true
         }
 
@@ -4589,7 +4636,11 @@ public final class MLXModelService: @unchecked Sendable {
     }
 
     /// Coerce a single string value to the schema-declared type.
-    static func coerceStringValue(_ stringValue: String, schemaType: String) -> Any? {
+    static func coerceStringValue(
+        _ stringValue: String,
+        schemaType: String,
+        allowMalformedRepair: Bool = false
+    ) -> Any? {
         switch schemaType {
         case "integer":
             return Int(stringValue)
@@ -4611,7 +4662,8 @@ public final class MLXModelService: @unchecked Sendable {
                let parsed = try? JSONSerialization.jsonObject(with: jsonData) {
                 return parsed
             }
-            // Gemma 4 uses <|"|> as string escapes and bare keys: {key:<|"|>val<|"|>}
+            guard allowMalformedRepair else { return nil }
+            // Compatibility repair for models that use escape markers or bare keys.
             // Convert to valid JSON: quote keys and replace escape markers with quotes
             var normalized = stringValue.replacingOccurrences(of: "<|\"|>", with: "\"")
             // Quote bare keys: word characters before a colon that aren't already quoted
@@ -4942,7 +4994,10 @@ public final class MLXModelService: @unchecked Sendable {
     /// Parse <function=name><parameter=key>value</parameter></function> via regex.
     /// NSXMLParser silently drops parameters when values contain bare < or & (common in code),
     /// so we go straight to regex which handles arbitrary content correctly.
-    private static func parseXMLFunction(_ content: String) -> ToolCall? {
+    static func parseXMLFunction(
+        _ content: String,
+        repairArguments: Bool = true
+    ) -> ToolCall? {
         var funcName: String?
         var normalized = content
 
@@ -4988,7 +5043,11 @@ public final class MLXModelService: @unchecked Sendable {
         if debugLogging {
             print("[\(ts())] [ToolCallParser] parseXMLFunction: \(funcName) (\(content.count) chars)")
         }
-        return parseXMLFunctionRegex(normalized, funcName: funcName)
+        return parseXMLFunctionRegex(
+            normalized,
+            funcName: funcName,
+            repairArguments: repairArguments
+        )
     }
 
     /// Parse hybrid format: `<function=NAME", "arguments": {JSON}}` or `<function=NAME, "arguments": {JSON}>`
@@ -5053,7 +5112,11 @@ public final class MLXModelService: @unchecked Sendable {
     }
 
     /// Regex-based XML function parser with entity decoding.
-    private static func parseXMLFunctionRegex(_ content: String, funcName: String) -> ToolCall? {
+    private static func parseXMLFunctionRegex(
+        _ content: String,
+        funcName: String,
+        repairArguments: Bool = true
+    ) -> ToolCall? {
         let funcRegex = try! NSRegularExpression(
             pattern: #"<function=([^>]+)>(.*?)</function>"#,
             options: [.dotMatchesLineSeparators]
@@ -5097,7 +5160,8 @@ public final class MLXModelService: @unchecked Sendable {
             pattern: #"<parameter=([^>]+)>([\s\S]+)$"#,
             options: []
         )
-        if let unclosedMatch = unclosedRegex.firstMatch(in: body, range: NSRange(body.startIndex..., in: body)),
+        if repairArguments,
+           let unclosedMatch = unclosedRegex.firstMatch(in: body, range: NSRange(body.startIndex..., in: body)),
            let keyRange = Range(unclosedMatch.range(at: 1), in: body),
            let valRange = Range(unclosedMatch.range(at: 2), in: body) {
             let key = String(body[keyRange])
@@ -5125,7 +5189,7 @@ public final class MLXModelService: @unchecked Sendable {
         // Cross-parameter deduplication: strip JSON fragments leaked into parameter
         // values when the same key+value exists as a separate <parameter> tag.
         // Only when grammar constraints are active (XML structure is reliable).
-        if grammarConstraintsActive && arguments.count > 1 {
+        if repairArguments && grammarConstraintsActive && arguments.count > 1 {
             let otherKeys = arguments.keys
             for key in otherKeys {
                 guard var val = arguments[key] as? String else { continue }
@@ -6422,13 +6486,18 @@ public final class MLXModelService: @unchecked Sendable {
         let hasTools = tools != nil && !tools!.isEmpty
         var appliedChatTemplateOverride = false
 
-        // Compatibility and explicitly selected XML/JSON parsers can override the chat template.
-        // Explicit `qwen3_xml` remains the strict native XML mode; `none` bypasses this path.
+        // Compatibility parsers can override the chat template. Native Qwen XML
+        // keeps the model-owned template so AFM changes the prompt as little as possible.
         if let parser = resolvedChatTemplateToolCallParser(logBypass: true), hasTools {
             let templateOverride: String?
             switch parser {
-            case "qwen3_xml", "afm_adaptive_xml":
+            case "afm_adaptive_xml":
                 templateOverride = Self.qwen3XMLTemplate
+            case "qwen3_xml":
+                templateOverride = nil
+            case "deepseek_dsml":
+                // DeepSeek V4 uses its architecture-owned encoder below.
+                templateOverride = nil
             case "hermes":
                 templateOverride = Self.hermesTemplate
             case "llama3_json":
