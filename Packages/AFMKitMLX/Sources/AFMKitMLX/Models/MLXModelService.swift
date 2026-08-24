@@ -101,6 +101,48 @@ public struct StreamChunk: Sendable {
     }
 }
 
+/// Buffers enough trailing text to recognize stop sequences split across
+/// tokenizer chunks without leaking the matched sequence downstream.
+struct MLXStreamingStopBuffer: Sendable {
+    private let stopSequences: [String]
+    private let maximumStopLength: Int
+    private var pending = ""
+    private(set) var stopped = false
+
+    init(stopSequences: [String]) {
+        self.stopSequences = Array(Set(stopSequences.filter { !$0.isEmpty }))
+        self.maximumStopLength = self.stopSequences.map(\.count).max() ?? 0
+    }
+
+    mutating func consume(_ text: String) -> (text: String?, stopped: Bool) {
+        guard !stopped else { return (nil, true) }
+        pending += text
+
+        let firstMatch = stopSequences.compactMap { pending.range(of: $0) }.min {
+            $0.lowerBound < $1.lowerBound
+        }
+        if let firstMatch {
+            let visible = String(pending[..<firstMatch.lowerBound])
+            pending.removeAll(keepingCapacity: false)
+            stopped = true
+            return (visible, true)
+        }
+
+        guard maximumStopLength > 0, pending.count > maximumStopLength else {
+            return (nil, false)
+        }
+        let flushEnd = pending.index(pending.endIndex, offsetBy: -maximumStopLength)
+        let visible = String(pending[..<flushEnd])
+        pending = String(pending[flushEnd...])
+        return (visible.isEmpty ? nil : visible, false)
+    }
+
+    mutating func finish() -> String {
+        defer { pending.removeAll(keepingCapacity: false) }
+        return stopped ? "" : pending
+    }
+}
+
 public enum MLXLoadStage: String {
     case checkingCache = "checking cache"
     case downloading = "downloading"
@@ -2831,8 +2873,21 @@ public final class MLXModelService: @unchecked Sendable {
                 fflush(stdout)
             }
             try Task.checkCancellation()
+            let generationIterator = try TokenIterator(
+                input: generateInput,
+                model: context.model,
+                cache: generationCache,
+                parameters: params
+            )
+            let (generationStream, generationTask) = MLXLMCommon.generateTask(
+                promptTokenCount: generateInput.text.tokens.size,
+                modelConfiguration: context.configuration,
+                tokenizer: context.tokenizer,
+                iterator: generationIterator,
+                stopAfterToolCall: params.stopAfterToolCall
+            )
             do {
-                for await piece in try MLXLMCommon.generate(input: generateInput, cache: generationCache, parameters: params, context: context) {
+                for await piece in generationStream {
                     if Task.isCancelled {
                         if debugLogging {
                             print("[\(ts())] [MLX] Non-streaming generation cancelled by client")
@@ -2879,7 +2934,13 @@ public final class MLXModelService: @unchecked Sendable {
                         completionInfo = info
                     }
                 }
+                if stoppedBySequence {
+                    generationTask.cancel()
+                }
+                await generationTask.value
             } catch {
+                generationTask.cancel()
+                await generationTask.value
                 // On generation error, invalidate prompt cache inside the
                 // serialized block so no stale state leaks to the next request.
                 if debugLogging {
@@ -3662,8 +3723,7 @@ public final class MLXModelService: @unchecked Sendable {
                         // Stop sequences only apply to content OUTSIDE <think> blocks —
                         // thinking models emit reasoning inside <think>...</think> tags
                         // and stop strings like "3." or "\n" commonly appear in reasoning.
-                        let maxStopLen = activeStops.map(\.count).max() ?? 0
-                        var stopBuffer = ""
+                        var stopBuffer = MLXStreamingStopBuffer(stopSequences: activeStops)
                         var insideThink = templateInjectedThink
                         let genStart = Date()
                         var firstTokenTime: Date?
@@ -3681,10 +3741,34 @@ public final class MLXModelService: @unchecked Sendable {
                             }
                             fflush(stdout)
                         }
+                        let generationIterator: TokenIterator
                         do {
-                            for await piece in try MLXLMCommon.generate(input: generateInput, cache: generationCache, parameters: params, context: context) {
+                            generationIterator = try TokenIterator(
+                                input: generateInput,
+                                model: context.model,
+                                cache: generationCache,
+                                parameters: params
+                            )
+                        } catch {
+                            if debugLogging {
+                                print("[\(ts())] [PrefixCache] Invalidate: generation setup error (streaming)")
+                            }
+                            self.radixCache?.invalidateAll()
+                            throw error
+                        }
+                        let (generationStream, generationTask) = MLXLMCommon.generateTask(
+                            promptTokenCount: generateInput.text.tokens.size,
+                            modelConfiguration: context.configuration,
+                            tokenizer: context.tokenizer,
+                            iterator: generationIterator,
+                            stopAfterToolCall: params.stopAfterToolCall
+                        )
+                        var generationWasCancelled = false
+                        do {
+                            for await piece in generationStream {
                                 if Task.isCancelled {
                                     print("[\(ts())] [MLX] Generation cancelled by client")
+                                    generationWasCancelled = true
                                     break
                                 }
                                 if case .tokenLogprobs(let lps) = piece {
@@ -3728,31 +3812,32 @@ public final class MLXModelService: @unchecked Sendable {
                                             resolved = nil
                                             let afterThink = String(text[thinkEndRange.upperBound...])
                                             if !afterThink.isEmpty {
-                                                stopBuffer += afterThink
-                                            }
-                                        } else {
-                                            stopBuffer += text
-                                        }
-                                        // Check for a complete stop string match
-                                        if let match = activeStops.first(where: { stopBuffer.contains($0) }) {
-                                            // Emit text up to the stop string
-                                            if let range = stopBuffer.range(of: match) {
-                                                let before = String(stopBuffer[..<range.lowerBound])
-                                                if !before.isEmpty {
-                                                    continuation.yield(StreamChunk(text: before, logprobs: resolved, stoppedBySequence: true))
-                                                } else {
-                                                    continuation.yield(StreamChunk(text: "", logprobs: resolved, stoppedBySequence: true))
+                                                let outcome = stopBuffer.consume(afterThink)
+                                                if let visible = outcome.text {
+                                                    continuation.yield(StreamChunk(
+                                                        text: visible,
+                                                        logprobs: resolved,
+                                                        stoppedBySequence: outcome.stopped ? true : nil
+                                                    ))
+                                                }
+                                                if outcome.stopped {
+                                                    streamScratch.streamStatStoppedBySequence = true
+                                                    break
                                                 }
                                             }
-                                            streamScratch.streamStatStoppedBySequence = true  // /metrics: finished_reason=stop
-                                            break
-                                        }
-                                        // Flush safe portion of the buffer (keep tail that could be partial stop match)
-                                        if stopBuffer.count > maxStopLen {
-                                            let flushEnd = stopBuffer.index(stopBuffer.endIndex, offsetBy: -maxStopLen)
-                                            let flushText = String(stopBuffer[..<flushEnd])
-                                            stopBuffer = String(stopBuffer[flushEnd...])
-                                            continuation.yield(StreamChunk(text: flushText, logprobs: resolved))
+                                        } else {
+                                            let outcome = stopBuffer.consume(text)
+                                            if let visible = outcome.text {
+                                                continuation.yield(StreamChunk(
+                                                    text: visible,
+                                                    logprobs: resolved,
+                                                    stoppedBySequence: outcome.stopped ? true : nil
+                                                ))
+                                            }
+                                            if outcome.stopped {
+                                                streamScratch.streamStatStoppedBySequence = true
+                                                break
+                                            }
                                         }
                                     } else {
                                         // Inside <think> or no stop sequences — pass through
@@ -3799,18 +3884,15 @@ public final class MLXModelService: @unchecked Sendable {
                                     }
                                 }
                             }
-                        } catch {
-                            // On generation error, invalidate prompt cache inside the
-                            // serialized block so no stale state leaks to the next request.
-                            if debugLogging {
-                                print("[\(ts())] [PrefixCache] Invalidate: generation error (streaming)")
-                            }
-                            self.radixCache?.invalidateAll()
-                            throw error
                         }
+                        if streamScratch.streamStatStoppedBySequence || generationWasCancelled {
+                            generationTask.cancel()
+                        }
+                        await generationTask.value
                         // Flush any remaining buffered text (no stop match found)
-                        if !activeStops.isEmpty && !stopBuffer.isEmpty {
-                            continuation.yield(StreamChunk(text: stopBuffer))
+                        let remainingStopBuffer = stopBuffer.finish()
+                        if !remainingStopBuffer.isEmpty {
+                            continuation.yield(StreamChunk(text: remainingStopBuffer))
                         }
                         // Synchronize GPU after generation completes (or breaks early).
                         Stream.gpu.synchronize()
