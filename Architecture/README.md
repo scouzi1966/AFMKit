@@ -70,12 +70,14 @@ flowchart LR
     Host --> Inference["AFMKitInference\nhigh-level facade"]
     Host --> Apple["AFMKitApple\nApple on-device + PCC"]
     Host --> MLX["AFMKitMLX\nlocal MLX runtime"]
+    Host --> Audio["AFMKitMLXAudio\nlocal speech generation"]
     Host --> DS["AFMKitDwarfStar\nlocal DwarfStar runtime"]
     Host --> FMMLX["AFMKitFoundationModelsMLX\nmacOS 27 LanguageModel bridge"]
     Apple --> Core
     Inference --> Core
     Inference --> OAI
     MLX --> Core
+    Audio --> MLX
     DS --> Core
     FMMLX --> Core
     FMMLX --> MLX

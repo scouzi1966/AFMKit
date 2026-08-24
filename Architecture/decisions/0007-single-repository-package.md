@@ -14,7 +14,7 @@ that resolver-level isolation.
 
 ## Decision
 
-Publish all fourteen products from the root `Package.swift` and one AFMKit tag.
+Publish all fifteen products from the root `Package.swift` and one AFMKit tag.
 Provider source may remain organized under `Packages/`, but those directories do
 not contain independently versioned manifests or locks. Consumers declare one
 exact AFMKit dependency and select the products they need.

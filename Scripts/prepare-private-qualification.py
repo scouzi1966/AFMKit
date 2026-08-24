@@ -32,6 +32,8 @@ ALLOWED_PREFIXES = (
     "Packages/AFMKitDwarfStar/vendor/",
     "Packages/AFMKitMLX/Sources/",
     "Packages/AFMKitMLX/Tests/",
+    "Packages/AFMKitMLXAudio/Sources/",
+    "Packages/AFMKitMLXAudio/Tests/",
     "vendor/MLX/",
     "docs/api-baselines/",
 )
@@ -130,6 +132,7 @@ def main() -> int:
         "Packages/AFMKitDwarfStar/Sources/AFMKitFoundationModelsDwarfStar/DwarfStarFoundationLanguageModel.swift",
         "Packages/AFMKitDwarfStar/Tests/AFMKitFoundationModelsDwarfStarTests/DwarfStarFoundationLanguageModelTests.swift",
         "Packages/AFMKitMLX/Sources/AFMKitMLX/AFMMLXProvider.swift",
+        "Packages/AFMKitMLXAudio/Sources/AFMKitMLXAudio/AFMMLXAudioRuntime.swift",
         "vendor/MLX/README.md",
         "vendor/MLX/mlx-swift/Package.swift",
         "vendor/MLX/mlx-swift/LICENSE",
@@ -137,6 +140,8 @@ def main() -> int:
         "vendor/MLX/mlx-swift/Source/Cmlx/mlx-c/LICENSE",
         "vendor/MLX/mlx-swift-lm/Package.swift",
         "vendor/MLX/mlx-swift-lm/LICENSE",
+        "vendor/MLX/mlx-audio-swift/LICENSE",
+        "vendor/MLX/mlx-audio-swift/README.md",
         "docs/api-baselines/AFMKitCore.symbols.json",
         "docs/api-baselines/AFMKitInference.symbols.json",
         "docs/api-baselines/AFMKitEmbeddings.symbols.json",
@@ -148,6 +153,7 @@ def main() -> int:
         "docs/api-baselines/AFMKitDwarfStar.symbols.json",
         "docs/api-baselines/AFMKitFoundationModelsDwarfStar.symbols.json",
         "docs/api-baselines/AFMKitMLX.symbols.json",
+        "docs/api-baselines/AFMKitMLXAudio.symbols.json",
     }
     missing = required - seen
     if missing:

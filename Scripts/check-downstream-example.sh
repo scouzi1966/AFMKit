@@ -85,4 +85,4 @@ done < "$CONSUMER/validator-products.txt"
     echo "Downstream qualification built $TOTAL products; expected 14." >&2
     exit 1
 }
-echo "AFMKit downstream qualification built all fourteen products from one exact tag."
+echo "AFMKit downstream qualification built all fifteen products from one exact tag."

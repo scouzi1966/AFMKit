@@ -17,7 +17,7 @@ if [[ -n "${AFMKIT_API_PACKAGE_ROOT:-}" ]]; then
     PACKAGE_BUILD_DIR="$BUILD_DIR"
 else
 case "$MODULE" in
-    AFMKitCore|AFMOpenAICompat|AFMKitInference|AFMKitApple|AFMKitEmbeddings|AFMKitSpeech|AFMKitSpeechSynthesis|AFMKitVision|AFMKitServices|AFMEvalKit|AFMKitDwarfStar|AFMKitFoundationModelsDwarfStar|AFMKitMLX|AFMKitFoundationModelsMLX)
+    AFMKitCore|AFMOpenAICompat|AFMKitInference|AFMKitApple|AFMKitEmbeddings|AFMKitSpeech|AFMKitSpeechSynthesis|AFMKitVision|AFMKitServices|AFMEvalKit|AFMKitDwarfStar|AFMKitFoundationModelsDwarfStar|AFMKitMLX|AFMKitMLXAudio|AFMKitFoundationModelsMLX)
         PACKAGE_ROOT="$ROOT"
         PACKAGE_BUILD_DIR="$BUILD_DIR/public"
         ;;
@@ -92,7 +92,7 @@ SHIMS_DIRS=(
 )
 
 case "$MODULE" in
-    AFMKitMLX|AFMKitFoundationModelsMLX)
+    AFMKitMLX|AFMKitMLXAudio|AFMKitFoundationModelsMLX)
         for SHIMS_DIR in "${SHIMS_DIRS[@]}"; do
             if [[ ! -f "$SHIMS_DIR/module.modulemap" ]]; then
                 echo "$MODULE API extraction requires $SHIMS_DIR/module.modulemap after its SwiftPM build." >&2

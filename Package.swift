@@ -182,6 +182,7 @@ var products: [Product] = [
     .library(name: "AFMKitServices", targets: ["AFMKitServices"]),
     .library(name: "AFMEvalKit", targets: ["AFMEvalKit"]),
     .library(name: "AFMKitMLX", targets: ["AFMKitMLX"]),
+    .library(name: "AFMKitMLXAudio", targets: ["AFMKitMLXAudio"]),
     .library(name: "AFMKitDwarfStar", targets: ["AFMKitDwarfStar"])
 ]
 
@@ -316,6 +317,44 @@ var targets: [Target] = [
     ),
     .target(name: "AFMKitMLXReleaseGraph", dependencies: releaseGraphProductPins, path: "Packages/AFMKitMLX/Sources/AFMKitMLXReleaseGraph"),
     .target(
+        name: "MLXAudioCore",
+        dependencies: [
+            "MLX", "MLXNN",
+            .product(name: "HuggingFace", package: "swift-huggingface")
+        ],
+        path: "vendor/MLX/mlx-audio-swift/Sources/MLXAudioCore",
+        linkerSettings: [.linkedFramework("AVFoundation")]
+    ),
+    .target(
+        name: "MLXAudioCodecs",
+        dependencies: [
+            "MLXAudioCore", "MLX", "MLXNN", "MLXLMCommon",
+            .product(name: "Tokenizers", package: "swift-transformers"),
+            .product(name: "HuggingFace", package: "swift-huggingface")
+        ],
+        path: "vendor/MLX/mlx-audio-swift/Sources/MLXAudioCodecs",
+        linkerSettings: [.linkedFramework("Accelerate"), .linkedFramework("AVFoundation")]
+    ),
+    .target(
+        name: "MLXAudioTTS",
+        dependencies: [
+            "MLXAudioCore", "MLXAudioCodecs", "MLX", "MLXNN", "MLXLMCommon", "MLXLLM",
+            .product(name: "Transformers", package: "swift-transformers"),
+            .product(name: "Tokenizers", package: "swift-transformers"),
+            .product(name: "Hub", package: "swift-transformers"),
+            .product(name: "HuggingFace", package: "swift-huggingface")
+        ],
+        path: "vendor/MLX/mlx-audio-swift/Sources/MLXAudioTTS",
+        exclude: [
+            "Models/Marvis/README.md",
+            "Models/Llama/README.md",
+            "Models/PocketTTS/README.md",
+            "Models/Qwen3/README.md",
+            "Models/Soprano/README.md"
+        ],
+        linkerSettings: [.linkedFramework("Accelerate"), .linkedFramework("AVFoundation")]
+    ),
+    .target(
         name: "AFMKitMLX",
         dependencies: [
             "AFMKitCore", "AFMOpenAICompat", "AFMXGrammar", "AFMKitMLXReleaseGraph",
@@ -327,6 +366,15 @@ var targets: [Target] = [
         path: "Packages/AFMKitMLX/Sources/AFMKitMLX",
         resources: [.copy("Resources/default.metallib")],
         linkerSettings: [.linkedFramework("Security"), .linkedFramework("IOKit"), .linkedLibrary("IOReport"), .linkedLibrary("sqlite3")]
+    ),
+    .target(
+        name: "AFMKitMLXAudio",
+        dependencies: [
+            "AFMKitMLX", "MLXAudioCore", "MLXAudioTTS", "MLX", "MLXLMCommon",
+            .product(name: "HuggingFace", package: "swift-huggingface")
+        ],
+        path: "Packages/AFMKitMLXAudio/Sources/AFMKitMLXAudio",
+        linkerSettings: [.linkedFramework("AVFoundation")]
     ),
     .target(
         name: "CDwarfStar",
@@ -363,6 +411,14 @@ var targets: [Target] = [
         name: "AFMKitMLXTests",
         dependencies: ["AFMKitMLX", "AFMKitCore", "AFMOpenAICompat", "MLXLMCommon"],
         path: "Packages/AFMKitMLX/Tests/AFMKitMLXTests"
+    ),
+    .testTarget(
+        name: "AFMKitMLXAudioTests",
+        dependencies: [
+            "AFMKitMLXAudio", "AFMKitMLX", "MLXAudioCore",
+            .product(name: "HuggingFace", package: "swift-huggingface")
+        ],
+        path: "Packages/AFMKitMLXAudio/Tests/AFMKitMLXAudioTests"
     ),
     .testTarget(name: "AFMKitDwarfStarTests", dependencies: ["AFMKitCore", "AFMKitDwarfStar", "CDwarfStar"], path: "Packages/AFMKitDwarfStar/Tests/AFMKitDwarfStarTests")
 ]

@@ -98,7 +98,7 @@ let package = Package(
     output_directory.mkdir(parents=True, exist_ok=True)
     (output_directory / "Package.swift").write_text(manifest, encoding="utf-8")
     (output_directory / "validator-products.txt").write_text(
-        "\n".join(validator_products) + "\n",
+        "\n".join(sorted(validator_products)) + "\n",
         encoding="utf-8",
     )
     return 0
