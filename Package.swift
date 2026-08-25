@@ -142,7 +142,11 @@ let releaseDependencyPins: [Package.Dependency] = [
     .package(url: "https://github.com/ibireme/yyjson.git", exact: "0.12.0")
 ]
 
-let releaseGraphProductPins: [Target.Dependency] = [
+// DwarfStar still uses a compatibility target to keep its complete release graph
+// reachable. AFMKitMLX intentionally does not: downstream MLX consumers should
+// compile only the products required by the MLX runtime. The exact package pins
+// above remain audited against Package.resolved by the release dependency gate.
+let dwarfStarReleaseGraphProductPins: [Target.Dependency] = [
     .product(name: "AsyncHTTPClient", package: "async-http-client"),
     .product(name: "EventSource", package: "eventsource"),
     .product(name: "Algorithms", package: "swift-algorithms"),
@@ -316,7 +320,6 @@ var targets: [Target] = [
             .define("XGRAMMAR_ENABLE_CPPTRACE", to: "0")
         ]
     ),
-    .target(name: "AFMKitMLXReleaseGraph", dependencies: releaseGraphProductPins, path: "Packages/AFMKitMLX/Sources/AFMKitMLXReleaseGraph"),
     .target(
         name: "MLXAudioCore",
         dependencies: [
@@ -358,7 +361,7 @@ var targets: [Target] = [
     .target(
         name: "AFMKitMLX",
         dependencies: [
-            "AFMKitCore", "AFMOpenAICompat", "AFMXGrammar", "AFMKitMLXReleaseGraph",
+            "AFMKitCore", "AFMOpenAICompat", "AFMXGrammar",
             "MLX", "MLXLLM", "MLXVLM", "MLXLMCommon",
             .product(name: "Tokenizers", package: "swift-transformers"),
             .product(name: "Hub", package: "swift-transformers"),
@@ -388,7 +391,7 @@ var targets: [Target] = [
         publicHeadersPath: "include",
         linkerSettings: [.linkedFramework("Foundation"), .linkedFramework("Metal")]
     ),
-    .target(name: "AFMKitDwarfStarReleaseGraph", dependencies: releaseGraphProductPins, path: "Packages/AFMKitDwarfStar/Sources/AFMKitDwarfStarReleaseGraph"),
+    .target(name: "AFMKitDwarfStarReleaseGraph", dependencies: dwarfStarReleaseGraphProductPins, path: "Packages/AFMKitDwarfStar/Sources/AFMKitDwarfStarReleaseGraph"),
     .target(
         name: "AFMKitDwarfStar",
         dependencies: [

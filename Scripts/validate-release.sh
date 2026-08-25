@@ -49,6 +49,7 @@ afmkit_verify_qualified_toolchain "$ROOT"
 afmkit_run_qualified_swift package dump-package --package-path "$ROOT" \
     | afmkit_release_validate_manifest
 afmkit_release_validate_resolved_files "$ROOT/Package.resolved"
+"$ROOT/Scripts/check-release-dependency-policy.sh"
 
 "$ROOT/Scripts/test-api-gate.sh"
 "$ROOT/Scripts/test-release-qualification.sh"

@@ -234,8 +234,14 @@ final class AFMMLXAudioModelStoreTests: XCTestCase {
         )
 
         XCTAssertEqual(location.repositoryID, modelID)
-        XCTAssertEqual(resolvedMain.resolvingSymlinksInPath(), main.resolvingSymlinksInPath())
-        XCTAssertEqual(resolvedDependency.resolvingSymlinksInPath(), dependency.resolvingSymlinksInPath())
+        XCTAssertEqual(
+            resolvedMain.resolvingSymlinksInPath().standardizedFileURL.path,
+            main.resolvingSymlinksInPath().standardizedFileURL.path
+        )
+        XCTAssertEqual(
+            resolvedDependency.resolvingSymlinksInPath().standardizedFileURL.path,
+            dependency.resolvingSymlinksInPath().standardizedFileURL.path
+        )
         XCTAssertNotEqual(location.cacheDirectory.standardizedFileURL, nativeHubRoot.standardizedFileURL)
     }
 
