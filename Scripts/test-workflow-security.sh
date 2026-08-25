@@ -157,6 +157,8 @@ assert unstable_case_lines == [
     'testTranscriptTranslationPreservesRolesAndText"',
     '"AFMKitFoundationModelsMLXTests.AFMKitFoundationModelsMLXTests/'
     'testTranscriptTranslationPreservesToolCallsAndOutputs"',
+    '"AFMKitAppleTests.FoundationModelSessionCoordinatorTests/'
+    'testDynamicProfileSessionReusesExactProviderAndSignature"',
 ]
 assert isolated_xctest.count("HOSTED_FOUNDATION_MODELS_UNSTABLE_CASES") == 2
 assert isolated_xctest.count(

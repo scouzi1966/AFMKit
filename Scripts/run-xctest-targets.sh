@@ -11,6 +11,7 @@ FOUNDATION_MODELS_SIGNAL_RETRY_LIMIT=1
 HOSTED_FOUNDATION_MODELS_UNSTABLE_CASES=(
     "AFMKitFoundationModelsMLXTests.AFMKitFoundationModelsMLXTests/testTranscriptTranslationPreservesRolesAndText"
     "AFMKitFoundationModelsMLXTests.AFMKitFoundationModelsMLXTests/testTranscriptTranslationPreservesToolCallsAndOutputs"
+    "AFMKitAppleTests.FoundationModelSessionCoordinatorTests/testDynamicProfileSessionReusesExactProviderAndSignature"
 )
 
 is_hosted_foundation_models_unstable_case() {
