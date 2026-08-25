@@ -119,6 +119,12 @@ release_validator = (workflows.parent.parent / "Scripts" / "validate-release.sh"
 isolated_xctest = (workflows.parent.parent / "Scripts" / "run-xctest-targets.sh").read_text(
     encoding="utf-8"
 )
+service_isolation = (
+    workflows.parent.parent / "Scripts" / "check-service-product-isolation.sh"
+).read_text(encoding="utf-8")
+evalkit_isolation = (
+    workflows.parent.parent / "Scripts" / "check-evalkit-isolation.sh"
+).read_text(encoding="utf-8")
 assert release_validator.count("afmkit_run_qualified_swift test") == 1
 assert release_validator.count("run-xctest-targets.sh") == 1
 assert release_validator.count("--disable-xctest") == 1
@@ -201,6 +207,14 @@ assert 'FOUNDATION_MODELS_SIGNAL_RETRY_LIMIT=1' in isolated_xctest
 assert 'unexpected signal code 11' in isolated_xctest
 assert isolated_xctest.count('--filter "$test_case"') == 1
 assert "--skip-build" in isolated_xctest
+for isolation_script, lock_copy in (
+    (service_isolation, 'cp "$ROOT/Package.resolved" "$CONSUMER/Package.resolved"'),
+    (evalkit_isolation, 'cp "$ROOT/Package.resolved" "$SANDBOX/Package.resolved"'),
+):
+    assert isolation_script.count(lock_copy) == 1
+    assert isolation_script.count("swift build") == 1
+    assert isolation_script.count("--disable-automatic-resolution") == 1
+    assert isolation_script.index(lock_copy) < isolation_script.index("swift build")
 assert "--disable-swift-testing" in isolated_xctest
 assert "--disable-automatic-resolution" in isolated_xctest
 assert "-c release" in isolated_xctest
