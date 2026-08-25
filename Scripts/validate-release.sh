@@ -29,6 +29,13 @@ run_release_tests() {
         --disable-automatic-resolution \
         --disable-swift-testing \
         -c release
+    afmkit_run_qualified_swift test \
+        --package-path "$package_root" \
+        --scratch-path "$package_build_root" \
+        --build-system native \
+        --disable-automatic-resolution \
+        --disable-xctest \
+        -c release
     clean_build_configuration "$package_build_root" release
 }
 

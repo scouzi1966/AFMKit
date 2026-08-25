@@ -41,10 +41,17 @@ assert "SDK exposure (${{ matrix.sdk }})" in public_ci
 assert "vars.AFMKIT_XCODE26_RUNNER || 'macos-26'" in public_ci
 assert "vars.AFMKIT_XCODE27_RUNNER || 'xcode-27'" in public_ci
 assert "check-sdk-product-exposure.sh" in public_ci
-assert "Run untrusted candidate XCTest suite" in public_ci
-assert "--disable-swift-testing" in public_ci
-assert "Run untrusted candidate Swift Testing suite" in public_ci
-assert "--disable-xctest" in public_ci
+
+xctest_step = public_ci.split(
+    "- name: Run untrusted candidate XCTest suite", 1
+)[1].split("\n      - name:", 1)[0]
+swift_testing_step = public_ci.split(
+    "- name: Run untrusted candidate Swift Testing suite", 1
+)[1].split("\n      - name:", 1)[0]
+assert "--disable-swift-testing" in xctest_step
+assert "--disable-xctest" not in xctest_step
+assert "--disable-xctest" in swift_testing_step
+assert "--disable-swift-testing" not in swift_testing_step
 
 private_ci = contents["private-ci.yml"]
 assert "workflow_run:" in private_ci
@@ -105,6 +112,13 @@ assert release.index("Record immutable publication intent") < release.index(
     "Publish root tag and GitHub release"
 )
 assert "actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd" in release
+
+release_validator = (workflows.parent.parent / "Scripts" / "validate-release.sh").read_text(
+    encoding="utf-8"
+)
+assert release_validator.count("afmkit_run_qualified_swift test") == 2
+assert release_validator.count("--disable-swift-testing") == 1
+assert release_validator.count("--disable-xctest") == 1
 PY
 
 SHA="1111111111111111111111111111111111111111"
