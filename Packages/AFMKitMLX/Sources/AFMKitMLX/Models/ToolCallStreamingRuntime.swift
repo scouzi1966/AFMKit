@@ -69,7 +69,8 @@ public final class ToolCallStreamingRuntime {
         self.remapSingleKey = remapSingleKey
 
         var mapping = [String: String]()
-        if let tools {
+        let shouldRepairArgumentNames = repairToolArguments || toolCallParser == "afm_adaptive_xml"
+        if shouldRepairArgumentNames, let tools {
             for tool in tools {
                 if let paramsAny = tool.function.parameters?.toSendable() as? [String: Any],
                    let props = paramsAny["properties"] as? [String: Any] {

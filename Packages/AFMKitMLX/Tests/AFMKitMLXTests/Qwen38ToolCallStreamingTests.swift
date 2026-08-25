@@ -227,6 +227,31 @@ struct Qwen38ToolCallStreamingTests {
         #expect(try decodeArguments(repaired.function.arguments)["enabled"] as? Bool == false)
     }
 
+    @Test("Native Qwen parser preserves model-emitted argument names")
+    func nativeParserDoesNotRemapArgumentNames() throws {
+        let tool = makeTool(
+            name: "schedule_event",
+            properties: ["startDate": ["type": "string"]],
+            required: ["startDate"]
+        )
+        let text = #"<tool_call><function=schedule_event><parameter=start_date>2026-08-25</parameter></function></tool_call>"#
+
+        let native = makeRuntime(tools: [tool], parser: "qwen3_xml")
+        let nativeCalls = native.process(piece: text).events.compactMap { event -> ResponseToolCall? in
+            guard case .appendCollected(let call) = event else { return nil }
+            return call
+        }
+        #expect(try decodeArguments(nativeCalls[0].function.arguments)["start_date"] as? String == "2026-08-25")
+        #expect(try decodeArguments(nativeCalls[0].function.arguments)["startDate"] == nil)
+
+        let adaptive = makeRuntime(tools: [tool], parser: "afm_adaptive_xml")
+        let repairedCalls = adaptive.process(piece: text).events.compactMap { event -> ResponseToolCall? in
+            guard case .appendCollected(let call) = event else { return nil }
+            return call
+        }
+        #expect(try decodeArguments(repairedCalls[0].function.arguments)["startDate"] as? String == "2026-08-25")
+    }
+
     private var weatherTool: RequestTool {
         makeTool(
             name: "get_weather",
