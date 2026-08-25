@@ -124,7 +124,23 @@ assert release_validator.count("run-xctest-targets.sh") == 1
 assert release_validator.count("--disable-xctest") == 1
 assert 'target.get("type") == "test"' in isolated_xctest
 assert '--filter "$test_target"' in isolated_xctest
-assert 'CASE_ISOLATED_TARGET="AFMKitFoundationModelsMLXTests"' in isolated_xctest
+isolated_targets_match = re.search(
+    r'CASE_ISOLATED_TARGETS=\(\n(?P<body>.*?)\n\)',
+    isolated_xctest,
+    re.DOTALL,
+)
+assert isolated_targets_match is not None
+isolated_target_lines = [
+    line.strip()
+    for line in isolated_targets_match.group("body").splitlines()
+    if line.strip()
+]
+assert isolated_target_lines == [
+    '"AFMKitAppleTests"',
+    '"AFMKitFoundationModelsMLXTests"',
+]
+assert isolated_xctest.count("CASE_ISOLATED_TARGETS") == 2
+assert isolated_xctest.count('if is_case_isolated_target "$test_target"; then') == 1
 unstable_cases_match = re.search(
     r'HOSTED_FOUNDATION_MODELS_UNSTABLE_CASES=\(\n(?P<body>.*?)\n\)',
     isolated_xctest,
