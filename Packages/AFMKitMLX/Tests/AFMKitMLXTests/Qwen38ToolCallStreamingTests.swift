@@ -5,6 +5,49 @@ import Foundation
 import Testing
 
 struct Qwen38ToolCallStreamingTests {
+    @Test("Native Qwen template keeps the model template with the tool JSON serialization shim")
+    func nativeQwenUsesModelOwnedToolTemplateSerialization() {
+        #expect(MLXModelService.usesModelOwnedToolTemplate(parser: "qwen3_xml"))
+        #expect(MLXModelService.usesModelOwnedToolTemplate(parser: nil))
+        #expect(!MLXModelService.usesModelOwnedToolTemplate(parser: "afm_adaptive_xml"))
+
+        let template = "{% for tool in tools %}{{- tool | tojson }}{% endfor %}"
+        let patched = MLXModelService.patchNativeTemplateForPythonToolJSON(template)
+        #expect(patched.contains("tool.__python_json__"))
+        #expect(!patched.contains("tool | tojson"))
+    }
+
+    @Test("Auto-detected Qwen XML uses the native parser without compatibility mode")
+    func autoDetectedXMLUsesNativeParser() {
+        #expect(MLXModelService.effectiveToolCallParser(
+            configuredParser: nil,
+            detectedFormat: .xmlFunction
+        ) == "qwen3_xml")
+        #expect(MLXModelService.effectiveChatTemplateToolCallParser(
+            configuredParser: nil,
+            detectedFormat: .xmlFunction
+        ) == "qwen3_xml")
+    }
+
+    @Test("Native Qwen parser does not reinterpret compatibility JSON")
+    func nativeParserRejectsCompatibilityJSON() {
+        let text = #"<tool_call>{"name":"get_weather","arguments":{"location":"Paris"}}</tool_call>"#
+        let (nativeCalls, nativeRemaining) = ToolCallStreamingRuntime.parseCompletedToolCalls(
+            from: text,
+            toolCallParser: "qwen3_xml",
+            tools: [weatherTool]
+        )
+        let (adaptiveCalls, _) = ToolCallStreamingRuntime.parseCompletedToolCalls(
+            from: text,
+            toolCallParser: "afm_adaptive_xml",
+            tools: [weatherTool]
+        )
+
+        #expect(nativeCalls.isEmpty)
+        #expect(nativeRemaining == text)
+        #expect(adaptiveCalls.count == 1)
+    }
+
     @Test("Qwen 3.8 JSON-in-XML preserves nested Unicode arguments")
     func nativeJSONInXMLPreservesComplexArguments() throws {
         let text = #"""
@@ -107,6 +150,112 @@ struct Qwen38ToolCallStreamingTests {
         #expect(output.passthroughText == nil)
     }
 
+    @Test("Qwen 3.8 native XML preserves distinct adjacent calls through translation")
+    func nativeXMLPreservesDistinctAdjacentCallsThroughTranslation() throws {
+        let runtime = makeRuntime(
+            tools: [weatherTool, timeTool],
+            parser: "qwen3_xml"
+        )
+        let output = runtime.process(piece: #"<tool_call><function=get_weather><parameter=location>London</parameter><parameter=days>1</parameter></function></tool_call><tool_call><function=get_time><parameter=timezone>Asia/Tokyo</parameter></function></tool_call>"#)
+        let chunks = BatchScheduler.streamChunksToEmit(from: output.events)
+        var translator = MLXStreamEventTranslator(
+            thinkStartTag: nil,
+            thinkEndTag: nil,
+            maximumResponseTokens: 100,
+            tools: [weatherTool, timeTool]
+        )
+        var translated = chunks.flatMap { translator.consume($0) }
+        translated += translator.finish()
+
+        let completed = translated.compactMap { event -> AFMToolCall? in
+            guard case .toolCall(let call, .completed) = event else { return nil }
+            return call
+        }
+        #expect(completed.map(\.name) == ["get_weather", "get_time"])
+        #expect(try decodeArguments(completed[0].arguments)["location"] as? String == "London")
+        #expect(try decodeArguments(completed[1].arguments)["timezone"] as? String == "Asia/Tokyo")
+    }
+
+    @Test("Qwen 3.8 native XML preserves distinct calls across token fragments")
+    func nativeXMLPreservesDistinctCallsAcrossFragments() throws {
+        let runtime = makeRuntime(tools: [weatherTool, timeTool], parser: "qwen3_xml")
+        let pieces = [
+            "<tool_call><function=get_wea", "ther><parameter=location>Lon",
+            "don</parameter><parameter=days>1</parameter></function></tool_call>",
+            "<tool_call><function=get_time><parameter=timezone>Asia/",
+            "Tokyo</parameter></function></tool_call>",
+        ]
+        let events = pieces.flatMap { runtime.process(piece: $0).events }
+        let completed = events.compactMap { event -> ResponseToolCall? in
+            guard case .replaceCollected(_, let call) = event else { return nil }
+            return call
+        }
+
+        #expect(completed.map(\.function.name) == ["get_weather", "get_time"])
+        #expect(completed.map(\.index) == [0, 1])
+        #expect(try decodeArguments(completed[0].function.arguments)["location"] as? String == "London")
+        #expect(try decodeArguments(completed[1].function.arguments)["timezone"] as? String == "Asia/Tokyo")
+    }
+
+    @Test("Native Qwen coercion does not fabricate omitted required arguments")
+    func nativeCoercionDoesNotFabricateRequiredArguments() throws {
+        let tool = makeTool(
+            name: "set_alarm",
+            properties: [
+                "hour": ["type": "integer"],
+                "enabled": ["type": "boolean"],
+            ],
+            required: ["hour", "enabled"]
+        )
+        let raw = ResponseToolCall(
+            index: 0,
+            id: "call_alarm",
+            type: "function",
+            function: .init(name: "set_alarm", arguments: #"{"hour":"7"}"#)
+        )
+
+        let native = MLXModelService.coerceArgumentTypes(
+            raw,
+            tools: [tool],
+            repairArguments: false
+        )
+        let repaired = MLXModelService.coerceArgumentTypes(
+            raw,
+            tools: [tool],
+            repairArguments: true
+        )
+
+        let nativeArguments = try decodeArguments(native.function.arguments)
+        #expect(nativeArguments["hour"] as? Int == 7)
+        #expect(nativeArguments["enabled"] == nil)
+        #expect(try decodeArguments(repaired.function.arguments)["enabled"] as? Bool == false)
+    }
+
+    @Test("Native Qwen parser preserves model-emitted argument names")
+    func nativeParserDoesNotRemapArgumentNames() throws {
+        let tool = makeTool(
+            name: "schedule_event",
+            properties: ["startDate": ["type": "string"]],
+            required: ["startDate"]
+        )
+        let text = #"<tool_call><function=schedule_event><parameter=start_date>2026-08-25</parameter></function></tool_call>"#
+
+        let native = makeRuntime(tools: [tool], parser: "qwen3_xml")
+        let nativeCalls = native.process(piece: text).events.compactMap { event -> ResponseToolCall? in
+            guard case .appendCollected(let call) = event else { return nil }
+            return call
+        }
+        #expect(try decodeArguments(nativeCalls[0].function.arguments)["start_date"] as? String == "2026-08-25")
+        #expect(try decodeArguments(nativeCalls[0].function.arguments)["startDate"] == nil)
+
+        let adaptive = makeRuntime(tools: [tool], parser: "afm_adaptive_xml")
+        let repairedCalls = adaptive.process(piece: text).events.compactMap { event -> ResponseToolCall? in
+            guard case .appendCollected(let call) = event else { return nil }
+            return call
+        }
+        #expect(try decodeArguments(repairedCalls[0].function.arguments)["startDate"] as? String == "2026-08-25")
+    }
+
     private var weatherTool: RequestTool {
         makeTool(
             name: "get_weather",
@@ -131,12 +280,24 @@ struct Qwen38ToolCallStreamingTests {
         )
     }
 
-    private func makeRuntime(tools: [RequestTool]) -> ToolCallStreamingRuntime {
+    private var timeTool: RequestTool {
+        makeTool(
+            name: "get_time",
+            properties: ["timezone": ["type": "string"]],
+            required: ["timezone"]
+        )
+    }
+
+    private func makeRuntime(
+        tools: [RequestTool],
+        parser: String = "afm_adaptive_xml"
+    ) -> ToolCallStreamingRuntime {
         ToolCallStreamingRuntime(
             toolCallStartTag: "<tool_call>",
             toolCallEndTag: "</tool_call>",
-            toolCallParser: "afm_adaptive_xml",
+            toolCallParser: parser,
             tools: tools,
+            repairToolArguments: false,
             applyFixToolArgs: { $0 },
             remapSingleKey: { key, _ in key }
         )

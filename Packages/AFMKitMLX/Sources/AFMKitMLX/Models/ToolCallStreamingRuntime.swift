@@ -30,6 +30,7 @@ public final class ToolCallStreamingRuntime {
     private let toolCallEndTag: String
     private let toolCallParser: String?
     private let tools: [RequestTool]?
+    private var repairToolArguments: Bool
     public private(set) var paramNameMapping: [String: String]
     private let applyFixToolArgs: @Sendable (ResponseToolCall) -> ResponseToolCall
     private let remapSingleKey: @Sendable (String, String) -> String
@@ -62,6 +63,7 @@ public final class ToolCallStreamingRuntime {
         self.toolCallEndTag = toolCallEndTag
         self.toolCallParser = toolCallParser
         self.tools = tools
+        self.repairToolArguments = true
         self.applyFixToolArgs = applyFixToolArgs
         self.remapSingleKey = remapSingleKey
 
@@ -80,6 +82,29 @@ public final class ToolCallStreamingRuntime {
             }
         }
         self.paramNameMapping = mapping
+    }
+
+    convenience init(
+        toolCallStartTag: String,
+        toolCallEndTag: String,
+        toolCallParser: String?,
+        tools: [RequestTool]?,
+        repairToolArguments: Bool,
+        applyFixToolArgs: @escaping @Sendable (ResponseToolCall) -> ResponseToolCall,
+        remapSingleKey: @escaping @Sendable (String, String) -> String
+    ) {
+        self.init(
+            toolCallStartTag: toolCallStartTag,
+            toolCallEndTag: toolCallEndTag,
+            toolCallParser: toolCallParser,
+            tools: tools,
+            applyFixToolArgs: applyFixToolArgs,
+            remapSingleKey: remapSingleKey
+        )
+        self.repairToolArguments = repairToolArguments
+        if !repairToolArguments, toolCallParser != "afm_adaptive_xml" {
+            self.paramNameMapping = [:]
+        }
     }
 
     public func process(piece: String) -> ToolCallStreamingOutput {
@@ -234,9 +259,11 @@ public final class ToolCallStreamingRuntime {
         }
 
         let wrapped = "\(toolCallStartTag)\(currentToolText)\(toolCallEndTag)"
-        let (parsed, _) = MLXModelService.extractToolCallsFallback(
-            from: wrapped, tools: tools,
-            allowMalformedRepair: toolCallParser == "afm_adaptive_xml")
+        let (parsed, _) = Self.parseCompletedToolCalls(
+            from: wrapped,
+            toolCallParser: toolCallParser,
+            tools: tools
+        )
         if !parsed.isEmpty {
             return parsed
         }
@@ -292,7 +319,11 @@ public final class ToolCallStreamingRuntime {
             tools: tools
         )
         let fixedToolCall = applyFixToolArgs(responseToolCall)
-        return MLXModelService.coerceArgumentTypes(fixedToolCall, tools: tools)
+        return MLXModelService.coerceArgumentTypes(
+            fixedToolCall,
+            tools: tools,
+            repairArguments: repairToolArguments || toolCallParser == "afm_adaptive_xml"
+        )
     }
 
     private func scanIncrementalMarkers() -> [ToolCallStreamingEvent] {
@@ -644,6 +675,9 @@ public final class ToolCallStreamingRuntime {
         if let dsml = parseDeepseekDSMLToolCalls(from: text, tools: tools) {
             return dsml
         }
+        if toolCallParser == "qwen3_xml" {
+            return parseQwen3NativeXMLToolCalls(from: text)
+        }
         if toolCallParser == "afm_adaptive_xml",
            let direct = parseSingleAdaptiveJSONToolCall(from: text, tools: tools) {
             return direct
@@ -653,6 +687,60 @@ public final class ToolCallStreamingRuntime {
             allowMalformedRepair: toolCallParser == "afm_adaptive_xml")
         guard !parsed.isEmpty else { return (parsed, remaining) }
         return (normalizeParsedToolCalls(parsed, toolCallParser: toolCallParser, tools: tools), remaining)
+    }
+
+    /// Parse only Qwen's model-owned function/parameter XML protocol. This is
+    /// intentionally narrower than AFM's compatibility fallback and mirrors the
+    /// structural parser used by current vLLM Qwen 3 serving.
+    private static func parseQwen3NativeXMLToolCalls(
+        from text: String
+    ) -> ([ToolCall], String) {
+        guard let envelopeRegex = try? NSRegularExpression(
+            pattern: #"<tool_call>\s*(.*?)\s*</tool_call>"#,
+            options: [.dotMatchesLineSeparators]
+        ),
+        let functionRegex = try? NSRegularExpression(
+            pattern: #"<function=([^>]+)>[\s\S]*?</function>"#,
+            options: [.dotMatchesLineSeparators]
+        ) else { return ([], text) }
+
+        let source = text as NSString
+        let envelopes = envelopeRegex.matches(
+            in: text,
+            range: NSRange(location: 0, length: source.length)
+        )
+        guard !envelopes.isEmpty else { return ([], text) }
+
+        var calls: [ToolCall] = []
+        var consumedEnvelopes: [NSTextCheckingResult] = []
+        for envelope in envelopes {
+            guard let bodyRange = Range(envelope.range(at: 1), in: text) else { continue }
+            let body = String(text[bodyRange])
+            let bodySource = body as NSString
+            let functions = functionRegex.matches(
+                in: body,
+                range: NSRange(location: 0, length: bodySource.length)
+            )
+            var parsedEnvelope = false
+            for function in functions {
+                let functionText = bodySource.substring(with: function.range)
+                if let call = MLXModelService.parseXMLFunction(
+                    functionText,
+                    repairArguments: false
+                ) {
+                    calls.append(call)
+                    parsedEnvelope = true
+                }
+            }
+            if parsedEnvelope { consumedEnvelopes.append(envelope) }
+        }
+        guard !calls.isEmpty else { return ([], text) }
+
+        let remaining = NSMutableString(string: text)
+        for envelope in consumedEnvelopes.reversed() {
+            remaining.replaceCharacters(in: envelope.range, with: "")
+        }
+        return (calls, remaining.trimmingCharacters(in: .whitespacesAndNewlines))
     }
 
     /// Parse Muse Glimmer's ATEM envelope. Detection is syntax-based so the

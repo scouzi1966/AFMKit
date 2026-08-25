@@ -342,6 +342,7 @@ public final class AFMMLXModel: AFMModel, AFMTextTokenizing, AFMPrewarmableModel
                     )
                     let streamService = service
                     var rawToolFallback = AFMMLXRawToolStreamFallback(
+                        isEnabled: !streamService.toolCallParserDisabled,
                         toolCallStartTag: result.toolCallStartTag,
                         toolCallEndTag: result.toolCallEndTag,
                         toolCallParser: streamService.resolvedToolCallParser(logBypass: false),
@@ -495,6 +496,7 @@ struct AFMMLXRawToolStreamFallback {
     private let runtime: ToolCallStreamingRuntime?
 
     init(
+        isEnabled: Bool = true,
         toolCallStartTag: String?,
         toolCallEndTag: String?,
         toolCallParser: String?,
@@ -505,12 +507,13 @@ struct AFMMLXRawToolStreamFallback {
         let startTag = toolCallStartTag ?? Self.defaultDeepseekToolCallStartTag
         let endTag = toolCallEndTag ?? Self.defaultDeepseekToolCallEndTag
         self.toolCallStartTag = startTag
-        if tools?.isEmpty == false {
+        if isEnabled, tools?.isEmpty == false {
             self.runtime = ToolCallStreamingRuntime(
                 toolCallStartTag: startTag,
                 toolCallEndTag: endTag,
                 toolCallParser: toolCallParser,
                 tools: tools,
+                repairToolArguments: false,
                 applyFixToolArgs: applyFixToolArgs,
                 remapSingleKey: remapSingleKey
             )

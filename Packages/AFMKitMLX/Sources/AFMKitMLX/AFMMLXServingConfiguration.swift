@@ -95,7 +95,11 @@ public extension AFMMLXServingConfigurationProviding {
         _ toolCall: ResponseToolCall,
         tools: [RequestTool]?
     ) -> ResponseToolCall {
-        AFMMLXToolCallPolicy.coerceArgumentTypes(toolCall, tools: tools)
+        AFMMLXToolCallPolicy.coerceArgumentTypes(
+            toolCall,
+            tools: tools,
+            repairArguments: fixToolArgs
+        )
     }
 
     func remapArgumentKeys(
