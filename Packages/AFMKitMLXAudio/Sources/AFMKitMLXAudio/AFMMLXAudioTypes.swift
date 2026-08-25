@@ -144,6 +144,7 @@ public enum AFMMLXAudioError: Error, LocalizedError, Equatable, Sendable {
     case emptyText
     case modelNotLoaded
     case modelNotDownloaded(String)
+    case externalModelDeletionNotAllowed(String)
     case invalidSampleRate(Int)
     case invalidStreamingInterval(TimeInterval)
     case loadSuperseded
@@ -160,6 +161,8 @@ public enum AFMMLXAudioError: Error, LocalizedError, Equatable, Sendable {
             return "No MLX audio model is loaded."
         case .modelNotDownloaded(let modelID):
             return "MLX audio model assets are not downloaded: \(modelID)."
+        case .externalModelDeletionNotAllowed(let modelID):
+            return "Cannot delete externally owned MLX audio model assets: \(modelID)."
         case .invalidSampleRate(let value):
             return "Invalid audio sample rate: \(value)."
         case .invalidStreamingInterval(let value):

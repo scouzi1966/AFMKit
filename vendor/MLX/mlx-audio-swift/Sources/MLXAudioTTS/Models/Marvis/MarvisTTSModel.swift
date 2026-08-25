@@ -366,7 +366,7 @@ public extension MarvisTTSModel {
     ) -> AsyncThrowingStream<GenerationResult, Error> {
         let (stream, continuation) = AsyncThrowingStream<GenerationResult, Error>.makeStream()
         
-        Task { @Sendable [weak self, continuation] in
+        let producer = Task { @Sendable [weak self, continuation] in
             guard let self else { return }
             do {
                 guard voice != nil || refAudio != nil else {
@@ -481,6 +481,7 @@ public extension MarvisTTSModel {
                 continuation.finish(throwing: error)
             }
         }
+        continuation.onTermination = { @Sendable _ in producer.cancel() }
         return stream
     }
     
@@ -604,7 +605,7 @@ extension MarvisTTSModel: SpeechGenerationModel, @unchecked Sendable {
     ) -> AsyncThrowingStream<AudioGeneration, Error> {
         let (stream, continuation) = AsyncThrowingStream<AudioGeneration, Error>.makeStream()
         
-        Task { @Sendable [weak self, continuation] in
+        let producer = Task { @Sendable [weak self, continuation] in
             guard let self else { return }
             
             do {
@@ -628,6 +629,7 @@ extension MarvisTTSModel: SpeechGenerationModel, @unchecked Sendable {
             }
         }
         
+        continuation.onTermination = { @Sendable _ in producer.cancel() }
         return stream
     }
 }

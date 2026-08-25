@@ -42,6 +42,12 @@ public actor AFMMLXAudioRuntime {
         cancelActiveGeneration()
         operationEpoch &+= 1
         let loadEpoch = operationEpoch
+        let hadLoadedModel = modelBox != nil
+        modelBox = nil
+        descriptor = nil
+        if hadLoadedModel {
+            AFMMLXRuntimeMemoryController.clearCache()
+        }
         state = .loading(modelID: trimmedID)
         progress?(0)
 
@@ -53,6 +59,11 @@ public actor AFMMLXAudioRuntime {
                 _ = try await modelStore.download(modelID: trimmedID, progress: progress)
             }
             let resolvedFamily = family ?? modelStore.inferredFamily(for: trimmedID)
+            try await modelStore.prepareDependencies(
+                for: resolvedFamily,
+                downloadIfNeeded: downloadIfNeeded,
+                progress: progress
+            )
             let location = try modelStore.runtimeLocation(for: trimmedID)
             let model = try await TTS.loadModel(
                 modelRepo: location.repositoryID,
@@ -75,16 +86,20 @@ public actor AFMMLXAudioRuntime {
             progress?(1)
             return loadedDescriptor
         } catch let error as AFMMLXAudioError {
-            if error != .loadSuperseded {
+            if loadEpoch == operationEpoch, error != .loadSuperseded {
                 state = .failed(error.localizedDescription)
             }
             throw error
         } catch is CancellationError {
-            state = .unloaded
+            if loadEpoch == operationEpoch {
+                state = .unloaded
+            }
             throw CancellationError()
         } catch {
             let mapped = AFMMLXAudioError.loadingFailed(error.localizedDescription)
-            state = .failed(mapped.localizedDescription)
+            if loadEpoch == operationEpoch {
+                state = .failed(mapped.localizedDescription)
+            }
             throw mapped
         }
     }
@@ -243,6 +258,9 @@ public actor AFMMLXAudioRuntime {
             throw AFMMLXAudioError.invalidStreamingInterval(request.configuration.streamingInterval)
         }
         guard let modelBox, let descriptor else {
+            throw AFMMLXAudioError.modelNotLoaded
+        }
+        guard state == .ready(descriptor) else {
             throw AFMMLXAudioError.modelNotLoaded
         }
 

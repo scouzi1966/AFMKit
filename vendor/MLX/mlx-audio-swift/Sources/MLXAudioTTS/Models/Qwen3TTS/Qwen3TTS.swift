@@ -103,7 +103,7 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
         streamingInterval: Double
     ) -> AsyncThrowingStream<AudioGeneration, Error> {
         let (stream, continuation) = AsyncThrowingStream<AudioGeneration, Error>.makeStream()
-        Task { @Sendable [weak self] in
+        let producer = Task { @Sendable [weak self] in
             guard let self else { return }
             do {
                 guard speechTokenizer != nil else {
@@ -149,6 +149,7 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
                 continuation.finish(throwing: error)
             }
         }
+        continuation.onTermination = { @Sendable _ in producer.cancel() }
         return stream
     }
 
@@ -267,6 +268,7 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
         }
 
         for step in 0 ..< effectiveMaxTokens {
+            if Task.isCancelled { break }
             // Forward pass through talker
             let (logits, hidden) = talker(inputEmbeds, cache: cache)
 

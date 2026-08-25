@@ -698,7 +698,7 @@ public class SopranoModel: Module, KVCacheDimensionProvider, SpeechGenerationMod
         )
     ) -> AsyncThrowingStream<SopranoGeneration, Error> {
         let (stream, continuation) = AsyncThrowingStream<SopranoGeneration, Error>.makeStream()
-        Task { @Sendable [weak self, continuation] in
+        let producer = Task { @Sendable [weak self, continuation] in
             guard let self else { return }
             
             do {
@@ -785,6 +785,7 @@ public class SopranoModel: Module, KVCacheDimensionProvider, SpeechGenerationMod
                 continuation.finish(throwing: error)
             }
         }
+        continuation.onTermination = { @Sendable _ in producer.cancel() }
         return stream
     }
 
@@ -798,7 +799,7 @@ public class SopranoModel: Module, KVCacheDimensionProvider, SpeechGenerationMod
         repetitionContextSize: Int = 30
     ) -> AsyncStream<(Int?, MLXArray)> {
         AsyncStream { continuation in
-            Task {
+            let producer = Task {
                 var ids = inputIds
                 if ids.ndim == 1 {
                     ids = ids.expandedDimensions(axis: 0)
@@ -825,6 +826,7 @@ public class SopranoModel: Module, KVCacheDimensionProvider, SpeechGenerationMod
                 var currentLogits = logits
 
                 for _ in 0..<maxTokens {
+                    if Task.isCancelled { break }
                     // Get last logits
                     var lastLogits = currentLogits[0..., -1, 0...]
                     eval(lastLogits)
@@ -870,6 +872,7 @@ public class SopranoModel: Module, KVCacheDimensionProvider, SpeechGenerationMod
 
                 continuation.finish()
             }
+            continuation.onTermination = { @Sendable _ in producer.cancel() }
         }
     }
 

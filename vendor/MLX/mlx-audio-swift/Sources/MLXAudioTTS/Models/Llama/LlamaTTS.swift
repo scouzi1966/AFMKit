@@ -787,7 +787,7 @@ public class LlamaTTSModel: Module, KVCacheDimensionProvider, SpeechGenerationMo
         )
     ) -> AsyncThrowingStream<LlamaTTSGeneration, Error> {
         let (stream, continuation) = AsyncThrowingStream<LlamaTTSGeneration, Error>.makeStream()
-        Task { @Sendable [weak self] in
+        let producer = Task { @Sendable [weak self] in
             guard let self else { return }
             
             do {
@@ -905,6 +905,7 @@ public class LlamaTTSModel: Module, KVCacheDimensionProvider, SpeechGenerationMo
                 continuation.finish(throwing: error)
             }
         }
+        continuation.onTermination = { @Sendable _ in producer.cancel() }
         return stream
     }
 

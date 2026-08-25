@@ -102,6 +102,11 @@
     },
     {
       "kind": "memberOf",
+      "source": "s:14AFMKitMLXAudio16AFMMLXAudioErrorO31externalModelDeletionNotAllowedyACSScACmF",
+      "target": "s:14AFMKitMLXAudio16AFMMLXAudioErrorO"
+    },
+    {
+      "kind": "memberOf",
       "source": "s:14AFMKitMLXAudio16AFMMLXAudioErrorO9emptyTextyA2CmF",
       "target": "s:14AFMKitMLXAudio16AFMMLXAudioErrorO"
     },
@@ -1396,6 +1401,78 @@
       "pathComponents": [
         "AFMMLXAudioError",
         "invalidStreamingInterval(_:)"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "case"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "externalModelDeletionNotAllowed"
+        },
+        {
+          "kind": "text",
+          "spelling": "("
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:SS",
+          "spelling": "String"
+        },
+        {
+          "kind": "text",
+          "spelling": ")"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:14AFMKitMLXAudio16AFMMLXAudioErrorO31externalModelDeletionNotAllowedyACSScACmF"
+      },
+      "kind": {
+        "displayName": "Case",
+        "identifier": "swift.enum.case"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "case"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "externalModelDeletionNotAllowed"
+          },
+          {
+            "kind": "text",
+            "spelling": "("
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:SS",
+            "spelling": "String"
+          },
+          {
+            "kind": "text",
+            "spelling": ")"
+          }
+        ],
+        "title": "AFMMLXAudioError.externalModelDeletionNotAllowed(_:)"
+      },
+      "pathComponents": [
+        "AFMMLXAudioError",
+        "externalModelDeletionNotAllowed(_:)"
       ]
     },
     {

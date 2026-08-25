@@ -72,6 +72,22 @@ final class AFMMLXAudioModelStoreTests: XCTestCase {
         XCTAssertEqual(store.inferredFamily(for: modelDirectory.path), .qwen3TTS)
     }
 
+    func testRequiredCodecDependenciesAreDeclaredByFamily() {
+        XCTAssertEqual(
+            AFMMLXAudioModelStore.requiredModelDependencies(for: .orpheus),
+            ["mlx-community/snac_24khz"]
+        )
+        XCTAssertEqual(
+            AFMMLXAudioModelStore.requiredModelDependencies(for: .qwen3),
+            ["mlx-community/snac_24khz"]
+        )
+        XCTAssertEqual(
+            AFMMLXAudioModelStore.requiredModelDependencies(for: .marvis),
+            ["kyutai/moshiko-pytorch-bf16"]
+        )
+        XCTAssertTrue(AFMMLXAudioModelStore.requiredModelDependencies(for: .qwen3TTS).isEmpty)
+    }
+
     func testImportedModelGetsNonCopyingRuntimeReference() throws {
         let modelDirectory = try makeModelDirectory(modelType: "soprano")
         defer { try? FileManager.default.removeItem(at: modelDirectory) }
@@ -90,15 +106,18 @@ final class AFMMLXAudioModelStoreTests: XCTestCase {
         )
     }
 
-    func testDeleteRemovesResolvedAudioModelPackage() throws {
+    func testDeletePreservesExternallyOwnedAudioModelPackage() throws {
         let modelDirectory = try makeModelDirectory(modelType: "orpheus")
+        defer { try? FileManager.default.removeItem(at: modelDirectory) }
         let store = AFMMLXAudioModelStore()
 
-        let result = try store.delete(modelID: modelDirectory.path)
-
-        XCTAssertTrue(result.deleted)
-        XCTAssertEqual(result.removedDirectory, modelDirectory)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: modelDirectory.path))
+        XCTAssertThrowsError(try store.delete(modelID: modelDirectory.path)) { error in
+            XCTAssertEqual(
+                error as? AFMMLXAudioError,
+                .externalModelDeletionNotAllowed(modelDirectory.path)
+            )
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: modelDirectory.path))
     }
 
     private func makeModelDirectory(modelType: String) throws -> URL {

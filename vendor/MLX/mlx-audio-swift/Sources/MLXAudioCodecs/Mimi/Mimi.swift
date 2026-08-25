@@ -259,23 +259,17 @@ public extension Mimi {
                 userInfo: [NSLocalizedDescriptionKey: "Invalid repository ID: \(repoId)"]
             )
         }
-        let modelSubdir = repoID.description.replacingOccurrences(of: "/", with: "_")
-        let modelDir = cache.cacheDirectory
-            .appendingPathComponent("mlx-audio")
-            .appendingPathComponent(modelSubdir)
+        let modelDir = try await ModelUtils.resolveOrDownloadModel(
+            repoID: repoID,
+            requiredExtension: "safetensors",
+            cache: cache
+        )
         let weightFileURL = modelDir.appendingPathComponent(filename)
-
-        if !FileManager.default.fileExists(atPath: weightFileURL.path) {
-            try FileManager.default.createDirectory(at: modelDir, withIntermediateDirectories: true)
-
-            let client = HubClient(cache: cache)
-            _ = try await client.downloadSnapshot(
-                of: repoID,
-                kind: .model,
-                to: modelDir,
-                revision: "main",
-                matching: [filename],
-                progressHandler: progressHandler
+        guard FileManager.default.fileExists(atPath: weightFileURL.path) else {
+            throw NSError(
+                domain: "Mimi",
+                code: 2,
+                userInfo: [NSLocalizedDescriptionKey: "Missing Mimi checkpoint: \(filename)"]
             )
         }
 

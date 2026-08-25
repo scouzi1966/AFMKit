@@ -733,7 +733,7 @@ public class Qwen3Model: Module, KVCacheDimensionProvider, SpeechGenerationModel
     ) -> AsyncThrowingStream<Qwen3Generation, Error> {
         let (stream, continuation) = AsyncThrowingStream<Qwen3Generation, Error>.makeStream()
         
-        Task { @Sendable [weak self, continuation] in
+        let producer = Task { @Sendable [weak self, continuation] in
             guard let self else { return }
             
             do {
@@ -861,6 +861,7 @@ public class Qwen3Model: Module, KVCacheDimensionProvider, SpeechGenerationModel
                 continuation.finish(throwing: error)
             }
         }
+        continuation.onTermination = { @Sendable _ in producer.cancel() }
         return stream
     }
 

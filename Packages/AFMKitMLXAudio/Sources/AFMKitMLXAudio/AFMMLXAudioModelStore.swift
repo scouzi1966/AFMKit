@@ -53,8 +53,15 @@ public struct AFMMLXAudioModelStore: Sendable {
     ) async throws -> AFMMLXAudioDownloadResult {
         let result = try await modelStore.downloadTTSModelPackage(
             for: modelID,
-            progress: { snapshot in progress?(snapshot.fractionCompleted) }
+            progress: { snapshot in progress?(snapshot.fractionCompleted * 0.8) }
         )
+        let family = inferredFamily(for: modelID)
+        try await prepareDependencies(
+            for: family,
+            downloadIfNeeded: true,
+            progress: { progress?(0.8 + ($0 * 0.2)) }
+        )
+        progress?(1)
         return AFMMLXAudioDownloadResult(
             modelID: result.requestedID,
             localDirectory: result.downloadedDirectory,
@@ -64,6 +71,9 @@ public struct AFMMLXAudioModelStore: Sendable {
 
     @discardableResult
     public func delete(modelID: String) throws -> AFMMLXAudioDeleteResult {
+        guard !Self.isPathLike(modelID) else {
+            throw AFMMLXAudioError.externalModelDeletionNotAllowed(modelID)
+        }
         let result = try modelStore.deleteLocalModelPackage(for: modelID)
         return AFMMLXAudioDeleteResult(
             modelID: result.requestedID,
@@ -96,6 +106,46 @@ public struct AFMMLXAudioModelStore: Sendable {
             modelID: modelID,
             directory: reference.localDirectory
         )
+    }
+
+    func prepareDependencies(
+        for family: AFMMLXAudioModelFamily?,
+        downloadIfNeeded: Bool,
+        progress: (@Sendable (Double) -> Void)? = nil
+    ) async throws {
+        let dependencies = Self.requiredModelDependencies(for: family)
+        guard !dependencies.isEmpty else {
+            progress?(1)
+            return
+        }
+
+        for (index, dependencyID) in dependencies.enumerated() {
+            if !modelStore.isAvailableLocally(dependencyID) {
+                guard downloadIfNeeded else {
+                    throw AFMMLXAudioError.modelNotDownloaded(dependencyID)
+                }
+                _ = try await modelStore.downloadTTSModelPackage(
+                    for: dependencyID,
+                    progress: { snapshot in
+                        progress?((Double(index) + snapshot.fractionCompleted) / Double(dependencies.count))
+                    }
+                )
+            }
+            progress?(Double(index + 1) / Double(dependencies.count))
+        }
+    }
+
+    static func requiredModelDependencies(
+        for family: AFMMLXAudioModelFamily?
+    ) -> [String] {
+        switch family {
+        case .orpheus, .qwen3:
+            return ["mlx-community/snac_24khz"]
+        case .marvis:
+            return ["kyutai/moshiko-pytorch-bf16"]
+        case .qwen3TTS, .soprano, .pocketTTS, nil:
+            return []
+        }
     }
 
     private static func familyFromConfiguration(in directory: URL) -> AFMMLXAudioModelFamily? {
@@ -172,5 +222,13 @@ public struct AFMMLXAudioModelStore: Sendable {
             hash &*= 1_099_511_628_211
         }
         return String(hash, radix: 16)
+    }
+
+    private static func isPathLike(_ modelID: String) -> Bool {
+        let trimmed = modelID.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.hasPrefix("/")
+            || trimmed.hasPrefix("./")
+            || trimmed.hasPrefix("../")
+            || trimmed.hasPrefix("~/")
     }
 }
