@@ -592,12 +592,21 @@ public class LlamaTTSModel: Module, KVCacheDimensionProvider, SpeechGenerationMo
         return weights
     }
 
-    public func post_load_hook(model: LlamaTTSModel, modelDir: URL, cache: HubCache = .default) async throws {
+    public func post_load_hook(
+        model: LlamaTTSModel,
+        modelDir: URL,
+        cache: HubCache = .default,
+        downloadIfNeeded: Bool = true
+    ) async throws {
         if model.tokenizer == nil {
             model.tokenizer = try await AutoTokenizer.from(modelFolder: modelDir)
         }
         if model._snacModel == nil {
-            model._snacModel = try await SNAC.fromPretrained("mlx-community/snac_24khz", cache: cache)
+            model._snacModel = try await SNAC.fromPretrained(
+                "mlx-community/snac_24khz",
+                cache: cache,
+                downloadIfNeeded: downloadIfNeeded
+            )
         }
     }
 
@@ -917,7 +926,8 @@ public class LlamaTTSModel: Module, KVCacheDimensionProvider, SpeechGenerationMo
     /// - Returns: The loaded model
     public static func fromPretrained(
         _ modelRepo: String,
-        cache: HubCache = .default
+        cache: HubCache = .default,
+        downloadIfNeeded: Bool = true
     ) async throws -> LlamaTTSModel {
         guard let repoID = Repo.ID(rawValue: modelRepo) else {
             throw NSError(
@@ -930,7 +940,8 @@ public class LlamaTTSModel: Module, KVCacheDimensionProvider, SpeechGenerationMo
         let modelDir = try await ModelUtils.resolveOrDownloadModel(
             repoID: repoID,
             requiredExtension: ".safetensors",
-            cache: cache
+            cache: cache,
+            resolutionPolicy: downloadIfNeeded ? .downloadIfNeeded : .localOnly
         )
 
         let configPath = modelDir.appendingPathComponent("config.json")
@@ -961,7 +972,12 @@ public class LlamaTTSModel: Module, KVCacheDimensionProvider, SpeechGenerationMo
         try model.update(parameters: ModuleParameters.unflattened(sanitizedWeights), verify: .all)
         eval(model)
 
-        try await model.post_load_hook(model: model, modelDir: modelDir, cache: cache)
+        try await model.post_load_hook(
+            model: model,
+            modelDir: modelDir,
+            cache: cache,
+            downloadIfNeeded: downloadIfNeeded
+        )
 
         return model
     }

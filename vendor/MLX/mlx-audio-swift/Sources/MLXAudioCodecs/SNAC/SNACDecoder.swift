@@ -155,7 +155,8 @@ public class SNAC: Module {
 
     public static func fromPretrained(
         _ modelRepo: String,
-        cache: HubCache = .default
+        cache: HubCache = .default,
+        downloadIfNeeded: Bool = true
     ) async throws -> SNAC {
         guard let repoID = Repo.ID(rawValue: modelRepo) else {
             throw NSError(domain: "SNAC", code: 1, userInfo: [NSLocalizedDescriptionKey: "Invalid repository ID: \(modelRepo)"])
@@ -165,7 +166,8 @@ public class SNAC: Module {
         let modelDir = try await ModelUtils.resolveOrDownloadModel(
             repoID: repoID,
             requiredExtension: ".safetensors",
-            cache: cache
+            cache: cache,
+            resolutionPolicy: downloadIfNeeded ? .downloadIfNeeded : .localOnly
         )
 
 

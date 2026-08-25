@@ -337,7 +337,8 @@ public final class PocketTTSModel: Module, SpeechGenerationModel, @unchecked Sen
 
     public static func fromPretrained(
         _ modelRepo: String,
-        cache: HubCache = .default
+        cache: HubCache = .default,
+        downloadIfNeeded: Bool = true
     ) async throws -> PocketTTSModel {
         let hfToken: String? = ProcessInfo.processInfo.environment["HF_TOKEN"]
             ?? Bundle.main.object(forInfoDictionaryKey: "HF_TOKEN") as? String
@@ -350,7 +351,8 @@ public final class PocketTTSModel: Module, SpeechGenerationModel, @unchecked Sen
             repoID: repoID,
             requiredExtension: ".safetensors",
             hfToken: hfToken,
-            cache: cache
+            cache: cache,
+            resolutionPolicy: downloadIfNeeded ? .downloadIfNeeded : .localOnly
         )
         let configURL = modelDir.appendingPathComponent("config.json")
         let config = try PocketTTSModelConfig.load(from: configURL)

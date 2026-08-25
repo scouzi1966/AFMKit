@@ -14,10 +14,17 @@ private final class AFMMLXAudioModelBox: @unchecked Sendable {
     }
 }
 
+typealias AFMMLXAudioModelLoader = @Sendable (
+    _ location: AFMMLXAudioRuntimeLocation,
+    _ family: AFMMLXAudioModelFamily?,
+    _ downloadIfNeeded: Bool
+) async throws -> any SpeechGenerationModel
+
 public actor AFMMLXAudioRuntime {
     private var modelBox: AFMMLXAudioModelBox?
     private var descriptor: AFMMLXAudioModelDescriptor?
     private let modelStore: AFMMLXAudioModelStore
+    private let modelLoader: AFMMLXAudioModelLoader
     private var operationEpoch: UInt64 = 0
     private var generationEpoch: UInt64 = 0
     private var generationTask: Task<AFMMLXAudioResult, Error>?
@@ -27,6 +34,22 @@ public actor AFMMLXAudioRuntime {
 
     public init(modelStore: AFMMLXAudioModelStore = .init()) {
         self.modelStore = modelStore
+        self.modelLoader = { location, family, downloadIfNeeded in
+            try await TTS.loadModel(
+                modelRepo: location.repositoryID,
+                modelType: family?.rawValue,
+                cache: HubCache(cacheDirectory: location.cacheDirectory),
+                downloadIfNeeded: downloadIfNeeded
+            )
+        }
+    }
+
+    init(
+        modelStore: AFMMLXAudioModelStore,
+        modelLoader: @escaping AFMMLXAudioModelLoader
+    ) {
+        self.modelStore = modelStore
+        self.modelLoader = modelLoader
     }
 
     @discardableResult
@@ -64,12 +87,8 @@ public actor AFMMLXAudioRuntime {
                 downloadIfNeeded: downloadIfNeeded,
                 progress: progress
             )
-            let location = try modelStore.runtimeLocation(for: trimmedID)
-            let model = try await TTS.loadModel(
-                modelRepo: location.repositoryID,
-                modelType: resolvedFamily?.rawValue,
-                cache: HubCache(cacheDirectory: location.cacheDirectory)
-            )
+            let location = try modelStore.runtimeLocation(for: trimmedID, family: resolvedFamily)
+            let model = try await modelLoader(location, resolvedFamily, downloadIfNeeded)
             guard loadEpoch == operationEpoch else {
                 throw AFMMLXAudioError.loadSuperseded
             }

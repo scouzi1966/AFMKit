@@ -527,12 +527,21 @@ public class Qwen3Model: Module, KVCacheDimensionProvider, SpeechGenerationModel
         return weights
     }
 
-    public func post_load_hook(model: Qwen3Model, modelDir: URL, cache: HubCache = .default) async throws {
+    public func post_load_hook(
+        model: Qwen3Model,
+        modelDir: URL,
+        cache: HubCache = .default,
+        downloadIfNeeded: Bool = true
+    ) async throws {
         if model.tokenizer == nil {
             model.tokenizer = try await AutoTokenizer.from(modelFolder: modelDir)
         }
         if model._snacModel == nil {
-            model._snacModel = try await SNAC.fromPretrained("mlx-community/snac_24khz", cache: cache)
+            model._snacModel = try await SNAC.fromPretrained(
+                "mlx-community/snac_24khz",
+                cache: cache,
+                downloadIfNeeded: downloadIfNeeded
+            )
         }
     }
 
@@ -867,7 +876,8 @@ public class Qwen3Model: Module, KVCacheDimensionProvider, SpeechGenerationModel
 
     public static func fromPretrained(
         _ modelRepo: String,
-        cache: HubCache = .default
+        cache: HubCache = .default,
+        downloadIfNeeded: Bool = true
     ) async throws -> Qwen3Model {
         // Check for HF token in environment (macOS) or Info.plist (iOS)
         let hfToken: String? = ProcessInfo.processInfo.environment["HF_TOKEN"]
@@ -882,7 +892,8 @@ public class Qwen3Model: Module, KVCacheDimensionProvider, SpeechGenerationModel
             repoID: repoID,
             requiredExtension: ".safetensors",
             hfToken: hfToken,
-            cache: cache
+            cache: cache,
+            resolutionPolicy: downloadIfNeeded ? .downloadIfNeeded : .localOnly
         )
 
 
@@ -924,7 +935,12 @@ public class Qwen3Model: Module, KVCacheDimensionProvider, SpeechGenerationModel
         try model.update(parameters: ModuleParameters.unflattened(sanitizedWeights), verify: .all)
         eval(model)
 
-        try await model.post_load_hook(model: model, modelDir: modelDir, cache: cache)
+        try await model.post_load_hook(
+            model: model,
+            modelDir: modelDir,
+            cache: cache,
+            downloadIfNeeded: downloadIfNeeded
+        )
 
         return model
     }

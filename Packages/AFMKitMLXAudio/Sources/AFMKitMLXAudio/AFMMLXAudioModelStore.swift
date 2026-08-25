@@ -34,9 +34,16 @@ public struct AFMMLXAudioDeleteResult: Equatable, Sendable {
 
 public struct AFMMLXAudioModelStore: Sendable {
     private let modelStore: AFMMLXModelStore
+    private let importCacheDirectory: URL
 
     public init(modelStore: AFMMLXModelStore = .init()) {
         self.modelStore = modelStore
+        self.importCacheDirectory = Self.defaultImportCacheDirectory
+    }
+
+    init(modelStore: AFMMLXModelStore, importCacheDirectory: URL) {
+        self.modelStore = modelStore
+        self.importCacheDirectory = importCacheDirectory
     }
 
     public func localDirectory(for modelID: String) -> URL? {
@@ -71,7 +78,7 @@ public struct AFMMLXAudioModelStore: Sendable {
 
     @discardableResult
     public func delete(modelID: String) throws -> AFMMLXAudioDeleteResult {
-        guard !Self.isPathLike(modelID) else {
+        guard !Self.isExternalFilesystemReference(modelID) else {
             throw AFMMLXAudioError.externalModelDeletionNotAllowed(modelID)
         }
         let result = try modelStore.deleteLocalModelPackage(for: modelID)
@@ -90,21 +97,34 @@ public struct AFMMLXAudioModelStore: Sendable {
         return Self.familyFromIdentifier(modelID)
     }
 
-    func runtimeLocation(for modelID: String) throws -> AFMMLXAudioRuntimeLocation {
+    func runtimeLocation(
+        for modelID: String,
+        family: AFMMLXAudioModelFamily? = nil
+    ) throws -> AFMMLXAudioRuntimeLocation {
         guard let reference = modelStore.loadReference(for: modelID) else {
             throw AFMMLXAudioError.modelNotDownloaded(modelID)
         }
-        if Repo.ID(rawValue: modelID) != nil,
-           let hubRoot = Self.hubCacheRoot(containing: reference.localDirectory) {
+        let dependencies = try Self.requiredModelDependencies(for: family).map { dependencyID in
+            guard let dependency = modelStore.loadReference(for: dependencyID) else {
+                throw AFMMLXAudioError.modelNotDownloaded(dependencyID)
+            }
+            return (repositoryID: dependencyID, directory: dependency.localDirectory)
+        }
+        let nativeHubRoot = Repo.ID(rawValue: modelID) != nil
+            ? Self.hubCacheRoot(containing: reference.localDirectory)
+            : nil
+        if dependencies.isEmpty, let nativeHubRoot {
             return AFMMLXAudioRuntimeLocation(
                 repositoryID: modelID,
-                cacheDirectory: hubRoot,
+                cacheDirectory: nativeHubRoot,
                 modelDirectory: reference.localDirectory
             )
         }
         return try Self.stageLocalReference(
-            modelID: modelID,
-            directory: reference.localDirectory
+            repositoryID: nativeHubRoot == nil ? nil : modelID,
+            directory: reference.localDirectory,
+            dependencies: dependencies,
+            cacheRoot: importCacheDirectory
         )
     }
 
@@ -181,19 +201,48 @@ public struct AFMMLXAudioModelStore: Sendable {
     }
 
     private static func stageLocalReference(
-        modelID: String,
-        directory: URL
+        repositoryID requestedRepositoryID: String?,
+        directory: URL,
+        dependencies: [(repositoryID: String, directory: URL)],
+        cacheRoot: URL
     ) throws -> AFMMLXAudioRuntimeLocation {
-        let repositoryID = Repo.ID(rawValue: modelID)?.description
+        let repositoryID = requestedRepositoryID
             ?? "afmkit-imports/model-\(stableIdentifier(for: directory.path))"
-        guard let repo = Repo.ID(rawValue: repositoryID) else {
-            throw AFMMLXAudioError.loadingFailed("Could not construct a repository reference for \(modelID).")
+        let overlayRoot = cacheRoot.appendingPathComponent(
+            "model-\(stableIdentifier(for: directory.standardizedFileURL.path))",
+            isDirectory: true
+        )
+        let cache = HubCache(cacheDirectory: overlayRoot)
+        try stageSnapshot(
+            repositoryID: repositoryID,
+            directory: directory,
+            cache: cache
+        )
+        for dependency in dependencies {
+            try stageSnapshot(
+                repositoryID: dependency.repositoryID,
+                directory: dependency.directory,
+                cache: cache
+            )
         }
-        let cacheRoot = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?
-            .appendingPathComponent("AFMKit/MLXAudioImports", isDirectory: true)
-            ?? FileManager.default.temporaryDirectory.appendingPathComponent("AFMKit/MLXAudioImports", isDirectory: true)
-        let cache = HubCache(cacheDirectory: cacheRoot)
-        let revision = "afmkit-local"
+        return AFMMLXAudioRuntimeLocation(
+            repositoryID: repositoryID,
+            cacheDirectory: overlayRoot,
+            modelDirectory: directory
+        )
+    }
+
+    private static func stageSnapshot(
+        repositoryID: String,
+        directory: URL,
+        cache: HubCache
+    ) throws {
+        guard let repo = Repo.ID(rawValue: repositoryID) else {
+            throw AFMMLXAudioError.loadingFailed(
+                "Could not construct a repository reference for \(repositoryID)."
+            )
+        }
+        let revision = "afmkit-local-\(stableIdentifier(for: directory.standardizedFileURL.path))"
         let snapshot = try cache.snapshotPath(repo: repo, kind: .model, commitHash: revision)
         try FileManager.default.createDirectory(
             at: snapshot.deletingLastPathComponent(),
@@ -208,11 +257,13 @@ public struct AFMMLXAudioModelStore: Sendable {
             try FileManager.default.createSymbolicLink(at: snapshot, withDestinationURL: directory)
         }
         try cache.updateRef(repo: repo, kind: .model, ref: "main", commit: revision)
-        return AFMMLXAudioRuntimeLocation(
-            repositoryID: repositoryID,
-            cacheDirectory: cacheRoot,
-            modelDirectory: directory
-        )
+    }
+
+    private static var defaultImportCacheDirectory: URL {
+        FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?
+            .appendingPathComponent("AFMKit/MLXAudioImports", isDirectory: true)
+            ?? FileManager.default.temporaryDirectory
+                .appendingPathComponent("AFMKit/MLXAudioImports", isDirectory: true)
     }
 
     private static func stableIdentifier(for value: String) -> String {
@@ -224,11 +275,21 @@ public struct AFMMLXAudioModelStore: Sendable {
         return String(hash, radix: 16)
     }
 
-    private static func isPathLike(_ modelID: String) -> Bool {
+    private static func isExternalFilesystemReference(_ modelID: String) -> Bool {
         let trimmed = modelID.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.hasPrefix("/")
+        if trimmed.hasPrefix("/")
             || trimmed.hasPrefix("./")
             || trimmed.hasPrefix("../")
-            || trimmed.hasPrefix("~/")
+            || trimmed.hasPrefix("~/") {
+            return true
+        }
+        guard trimmed.contains("/") else { return false }
+        let expanded = NSString(string: trimmed).expandingTildeInPath
+        let shellDirectory = ProcessInfo.processInfo.environment["PWD"]
+            ?? FileManager.default.currentDirectoryPath
+        let candidate = URL(fileURLWithPath: shellDirectory)
+            .appendingPathComponent(expanded)
+            .standardizedFileURL
+        return FileManager.default.fileExists(atPath: candidate.path)
     }
 }

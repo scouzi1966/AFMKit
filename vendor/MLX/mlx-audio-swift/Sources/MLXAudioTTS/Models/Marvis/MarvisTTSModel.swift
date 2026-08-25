@@ -53,10 +53,16 @@ public final class MarvisTTSModel: Module {
         hub: HubApi = .shared,
         repoId: String,
         promptURLs: [URL]? = nil,
+        cache: HubCache = .default,
+        downloadIfNeeded: Bool = true,
         progressHandler: @Sendable @escaping (Progress) -> Void
     ) async throws {
         let textTokenizer = try await loadTokenizer(configuration: ModelConfiguration(id: repoId), hub: hub)
-        let codec = try await Mimi.fromPretrained(progressHandler: progressHandler)
+        let codec = try await Mimi.fromPretrained(
+            cache: cache,
+            downloadIfNeeded: downloadIfNeeded,
+            progressHandler: progressHandler
+        )
         let audioTokenizer = MimiTokenizer(codec)
         self.init(
             config: config,
@@ -144,6 +150,7 @@ public extension MarvisTTSModel {
     static func fromPretrained(
         _ modelRepo: String = "Marvis-AI/marvis-tts-250m-v0.2-MLX-8bit",
         cache: HubCache = .default,
+        downloadIfNeeded: Bool = true,
         progressHandler: @Sendable @escaping (Progress) -> Void = { _ in }
     ) async throws -> MarvisTTSModel {
         Memory.cacheLimit = 100 * 1024 * 1024
@@ -163,7 +170,8 @@ public extension MarvisTTSModel {
             repoID: repoID,
             requiredExtension: "safetensors",
             hfToken: hfToken,
-            cache: cache
+            cache: cache,
+            resolutionPolicy: downloadIfNeeded ? .downloadIfNeeded : .localOnly
         )
 
         let promptFileURLs = modelDirectoryURL.appendingPathComponent("prompts", isDirectory: true)
@@ -180,7 +188,11 @@ public extension MarvisTTSModel {
         let args = try JSONDecoder().decode(CSMModelArgs.self, from: Data(contentsOf: configFileURL))
 
         let textTokenizer = try await AutoTokenizer.from(modelFolder: modelDirectoryURL)
-        let codec = try await Mimi.fromPretrained(cache: cache, progressHandler: progressHandler)
+        let codec = try await Mimi.fromPretrained(
+            cache: cache,
+            downloadIfNeeded: downloadIfNeeded,
+            progressHandler: progressHandler
+        )
         let audioTokenizer = MimiTokenizer(codec)
         let model = MarvisTTSModel(
             config: args,
@@ -216,10 +228,16 @@ public extension MarvisTTSModel {
         hub: HubApi = .shared,
         repoId: String = "Marvis-AI/marvis-tts-250m-v0.2-MLX-8bit",
         cache: HubCache = .default,
+        downloadIfNeeded: Bool = true,
         progressHandler: @Sendable @escaping (Progress) -> Void
     ) async throws -> MarvisTTSModel {
         _ = hub
-        return try await fromPretrained(repoId, cache: cache, progressHandler: progressHandler)
+        return try await fromPretrained(
+            repoId,
+            cache: cache,
+            downloadIfNeeded: downloadIfNeeded,
+            progressHandler: progressHandler
+        )
     }
     
     private static func sanitize(weights: [String: MLXArray]) -> [String: MLXArray] {

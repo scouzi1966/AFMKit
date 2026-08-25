@@ -237,19 +237,10 @@ public extension Mimi {
         repoId: String = "kyutai/moshiko-pytorch-bf16",
         filename: String = "tokenizer-e351c8d8-checkpoint125.safetensors",
         cache: HubCache = .default,
+        downloadIfNeeded: Bool = true,
         progressHandler: @Sendable @escaping (Progress) -> Void
     ) async throws -> Mimi {
         print("[Mimi] Starting Mimi model loading from \(repoId)")
-
-        print("[Mimi] Creating configuration...")
-        let cfg = mimi_202407(numCodebooks: 32)
-
-        print("[Mimi] Initializing Mimi model with config...")
-        let modelInitStart = CFAbsoluteTimeGetCurrent()
-        let model = Mimi(cfg: cfg)
-        let modelInitTime = CFAbsoluteTimeGetCurrent() - modelInitStart
-        print(String(format: "[Mimi] Model initialization completed in %.2f seconds", modelInitTime))
-
         print("[Mimi] Downloading/snapshotting weights file...")
         let snapshotStart = CFAbsoluteTimeGetCurrent()
         guard let repoID = Repo.ID(rawValue: repoId) else {
@@ -262,7 +253,8 @@ public extension Mimi {
         let modelDir = try await ModelUtils.resolveOrDownloadModel(
             repoID: repoID,
             requiredExtension: "safetensors",
-            cache: cache
+            cache: cache,
+            resolutionPolicy: downloadIfNeeded ? .downloadIfNeeded : .localOnly
         )
         let weightFileURL = modelDir.appendingPathComponent(filename)
         guard FileManager.default.fileExists(atPath: weightFileURL.path) else {
@@ -273,15 +265,17 @@ public extension Mimi {
             )
         }
 
-        guard FileManager.default.fileExists(atPath: weightFileURL.path) else {
-            throw NSError(
-                domain: "Mimi",
-                code: 2,
-                userInfo: [NSLocalizedDescriptionKey: "Expected weights file not found at \(weightFileURL.path)"]
-            )
-        }
         let snapshotTime = CFAbsoluteTimeGetCurrent() - snapshotStart
         print(String(format: "[Mimi] Weights file snapshot completed in %.2f seconds", snapshotTime))
+
+        print("[Mimi] Creating configuration...")
+        let cfg = mimi_202407(numCodebooks: 32)
+
+        print("[Mimi] Initializing Mimi model with config...")
+        let modelInitStart = CFAbsoluteTimeGetCurrent()
+        let model = Mimi(cfg: cfg)
+        let modelInitTime = CFAbsoluteTimeGetCurrent() - modelInitStart
+        print(String(format: "[Mimi] Model initialization completed in %.2f seconds", modelInitTime))
 
         print("[Mimi] Loading weight arrays from safetensors file...")
         let loadStart = CFAbsoluteTimeGetCurrent()

@@ -896,7 +896,8 @@ public class SopranoModel: Module, KVCacheDimensionProvider, SpeechGenerationMod
 
     public static func fromPretrained(
         _ modelRepo: String,
-        cache: HubCache = .default
+        cache: HubCache = .default,
+        downloadIfNeeded: Bool = true
     ) async throws -> SopranoModel {
         let hfToken: String? = ProcessInfo.processInfo.environment["HF_TOKEN"]
             ?? Bundle.main.object(forInfoDictionaryKey: "HF_TOKEN") as? String
@@ -911,7 +912,8 @@ public class SopranoModel: Module, KVCacheDimensionProvider, SpeechGenerationMod
             repoID: repoID,
             requiredExtension: ".safetensors",
             hfToken: hfToken,
-            cache: cache
+            cache: cache,
+            resolutionPolicy: downloadIfNeeded ? .downloadIfNeeded : .localOnly
         )
 
         // Load config

@@ -1,18 +1,25 @@
 import Foundation
 import HuggingFace
 
+public enum ModelResolutionPolicy: Sendable {
+    case localOnly
+    case downloadIfNeeded
+}
+
 public enum ModelUtils {
     public static func resolveModelType(
         repoID: Repo.ID,
         hfToken: String? = nil,
-        cache: HubCache = .default
+        cache: HubCache = .default,
+        resolutionPolicy: ModelResolutionPolicy = .downloadIfNeeded
     ) async throws -> String? {
         let modelNameComponents = repoID.name.split(separator: "/").last?.split(separator: "-")
         let modelURL = try await resolveOrDownloadModel(
             repoID: repoID,
             requiredExtension: "safetensors",
             hfToken: hfToken,
-            cache: cache
+            cache: cache,
+            resolutionPolicy: resolutionPolicy
         )
         let configJSON = try JSONSerialization.jsonObject(with: Data(contentsOf: modelURL.appendingPathComponent("config.json")))
         if let config = configJSON as? [String: Any] {
@@ -31,8 +38,21 @@ public enum ModelUtils {
         repoID: Repo.ID,
         requiredExtension: String,
         hfToken: String? = nil,
-        cache: HubCache = .default
+        cache: HubCache = .default,
+        resolutionPolicy: ModelResolutionPolicy = .downloadIfNeeded
     ) async throws -> URL {
+        let normalizedRequiredExtension = normalizedExtension(requiredExtension)
+        if let cached = cachedModelDirectory(
+            cache: cache,
+            repoID: repoID,
+            requiredExtension: normalizedRequiredExtension
+        ) {
+            return cached
+        }
+        guard resolutionPolicy == .downloadIfNeeded else {
+            throw ModelUtilsError.modelNotAvailableLocally(repoID.description)
+        }
+
         let client: HubClient
         if let token = hfToken, !token.isEmpty {
             print("Using HuggingFace token from configuration")
@@ -45,7 +65,8 @@ public enum ModelUtils {
             client: client,
             cache: resolvedCache,
             repoID: repoID,
-            requiredExtension: requiredExtension
+            requiredExtension: normalizedRequiredExtension,
+            resolutionPolicy: resolutionPolicy
         )
     }
 
@@ -60,18 +81,19 @@ public enum ModelUtils {
         client: HubClient,
         cache: HubCache = .default,
         repoID: Repo.ID,
-        requiredExtension: String
+        requiredExtension: String,
+        resolutionPolicy: ModelResolutionPolicy = .downloadIfNeeded
     ) async throws -> URL {
-        let normalizedRequiredExtension = requiredExtension.hasPrefix(".")
-            ? String(requiredExtension.dropFirst())
-            : requiredExtension
-
-        if let sharedSnapshot = completeSharedSnapshot(
+        let normalizedRequiredExtension = normalizedExtension(requiredExtension)
+        if let cached = cachedModelDirectory(
             cache: cache,
             repoID: repoID,
             requiredExtension: normalizedRequiredExtension
         ) {
-            return sharedSnapshot
+            return cached
+        }
+        guard resolutionPolicy == .downloadIfNeeded else {
+            throw ModelUtilsError.modelNotAvailableLocally(repoID.description)
         }
 
         // Store downloaded model snapshots under the configured Hugging Face cache root.
@@ -80,32 +102,10 @@ public enum ModelUtils {
             .appendingPathComponent("mlx-audio")
             .appendingPathComponent(modelSubdir)
 
-        // Check if model already exists with required files
+        // An incomplete download-enabled cache entry is safe to replace.
         if FileManager.default.fileExists(atPath: modelDir.path) {
-            let files = try? FileManager.default.contentsOfDirectory(at: modelDir, includingPropertiesForKeys: [.fileSizeKey])
-            let hasRequiredFile = files?.contains { file in
-                guard file.pathExtension == normalizedRequiredExtension else { return false }
-                let size = (try? file.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
-                return size > 0
-            } ?? false
-
-            if hasRequiredFile {
-                // Validate that config.json is valid JSON
-                let configPath = modelDir.appendingPathComponent("config.json")
-                if FileManager.default.fileExists(atPath: configPath.path) {
-                    if let configData = try? Data(contentsOf: configPath),
-                       let _ = try? JSONSerialization.jsonObject(with: configData) {
-                        print("Using cached model at: \(modelDir.path)")
-                        return modelDir
-                    } else {
-                        print("Cached config.json is invalid, clearing cache...")
-                        Self.clearCaches(modelDir: modelDir, repoID: repoID, hubCache: cache)
-                    }
-                }
-            } else {
-                print("Cached model appears incomplete, clearing cache...")
-                Self.clearCaches(modelDir: modelDir, repoID: repoID, hubCache: cache)
-            }
+            print("Cached model appears incomplete, clearing cache...")
+            Self.clearCaches(modelDir: modelDir, repoID: repoID, hubCache: cache)
         }
 
         // Create directory if needed
@@ -144,6 +144,33 @@ public enum ModelUtils {
         return modelDir
     }
 
+    private static func normalizedExtension(_ requiredExtension: String) -> String {
+        requiredExtension.hasPrefix(".")
+            ? String(requiredExtension.dropFirst())
+            : requiredExtension
+    }
+
+    private static func cachedModelDirectory(
+        cache: HubCache,
+        repoID: Repo.ID,
+        requiredExtension: String
+    ) -> URL? {
+        if let sharedSnapshot = completeSharedSnapshot(
+            cache: cache,
+            repoID: repoID,
+            requiredExtension: requiredExtension
+        ) {
+            return sharedSnapshot
+        }
+
+        let flatCache = cache.cacheDirectory
+            .appendingPathComponent("mlx-audio")
+            .appendingPathComponent(repoID.description.replacingOccurrences(of: "/", with: "_"))
+        return isCompleteModelDirectory(flatCache, requiredExtension: requiredExtension)
+            ? flatCache
+            : nil
+    }
+
     private static func completeSharedSnapshot(
         cache: HubCache,
         repoID: Repo.ID,
@@ -179,11 +206,12 @@ public enum ModelUtils {
         _ directory: URL,
         requiredExtension: String
     ) -> Bool {
-        let config = directory.appendingPathComponent("config.json")
+        let resolvedDirectory = directory.resolvingSymlinksInPath()
+        let config = resolvedDirectory.appendingPathComponent("config.json")
         guard let configData = try? Data(contentsOf: config),
               (try? JSONSerialization.jsonObject(with: configData)) != nil,
               let enumerator = FileManager.default.enumerator(
-                at: directory,
+                at: resolvedDirectory,
                 includingPropertiesForKeys: [.fileSizeKey, .isRegularFileKey],
                 options: [.skipsHiddenFiles]
               ) else {
@@ -211,12 +239,15 @@ public enum ModelUtils {
 
 public enum ModelUtilsError: LocalizedError {
     case incompleteDownload(String)
+    case modelNotAvailableLocally(String)
 
     public var errorDescription: String? {
         switch self {
         case .incompleteDownload(let repo):
             return "Downloaded model '\(repo)' has missing or zero-byte weight files. "
                 + "The cache has been cleared — please try again."
+        case .modelNotAvailableLocally(let repo):
+            return "Model '\(repo)' is not complete in the selected local cache."
         }
     }
 }
