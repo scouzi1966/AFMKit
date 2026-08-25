@@ -42,6 +42,7 @@ assert "SDK exposure (${{ matrix.sdk }})" in public_ci
 assert "vars.AFMKIT_XCODE26_RUNNER || 'macos-26'" in public_ci
 assert "vars.AFMKIT_XCODE27_RUNNER || 'xcode-27'" in public_ci
 assert "check-sdk-product-exposure.sh" in public_ci
+assert public_ci.count("run: Scripts/check-release-dependency-policy.sh") == 1
 
 xctest_step = public_ci.split(
     "- name: Run untrusted candidate XCTest suite", 1
@@ -133,6 +134,7 @@ assert release_validator.count("afmkit_run_qualified_swift test") == 1
 assert release_validator.count("run-xctest-targets.sh") == 1
 assert release_validator.count("--disable-xctest") == 1
 assert release_validator.count("test-release-local.js") == 1
+assert release_validator.count('"$ROOT/Scripts/check-release-dependency-policy.sh"') == 1
 candidate_call = "await publication.assertReleaseCandidate(publicationArguments)"
 validator_call = 'path.join(root, "Scripts/validate-release.sh")'
 intent_call = "await publication.ensurePublicationIntent(publicationArguments)"
@@ -371,5 +373,68 @@ if "$ROOT/Scripts/destroy-private-qualification.py" \
     exit 1
 fi
 grep -q "outside cleanup root" "$SANDBOX/cleanup-boundary.log"
+
+/usr/bin/python3 - "$ROOT/Scripts/check-release-dependency-policy.py" "$SANDBOX" <<'PY'
+import copy
+import json
+import pathlib
+import subprocess
+import sys
+
+checker = pathlib.Path(sys.argv[1])
+sandbox = pathlib.Path(sys.argv[2])
+base_manifest = {
+    "dependencies": [{
+        "sourceControl": [{
+            "identity": "example",
+            "requirement": {"exact": ["1.2.3"]},
+        }]
+    }],
+    "targets": [{"name": "AFMKitMLX", "dependencies": []}],
+}
+base_resolved = {
+    "pins": [{"identity": "example", "state": {"version": "1.2.3"}}]
+}
+
+def expect_rejection(name, manifest, resolved, message):
+    manifest_path = sandbox / f"{name}-manifest.json"
+    resolved_path = sandbox / f"{name}-resolved.json"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    resolved_path.write_text(json.dumps(resolved), encoding="utf-8")
+    result = subprocess.run(
+        [sys.executable, str(checker), str(manifest_path), str(resolved_path)],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode != 0, f"{name} unexpectedly passed"
+    assert message in result.stdout + result.stderr, (name, result.stdout, result.stderr)
+
+non_exact = copy.deepcopy(base_manifest)
+non_exact["dependencies"][0]["sourceControl"][0]["requirement"] = {
+    "range": [{"lowerBound": "1.0.0", "upperBound": "2.0.0"}]
+}
+expect_rejection("non-exact", non_exact, base_resolved, "not pinned to one exact version")
+
+local_dependency = copy.deepcopy(base_manifest)
+local_dependency["dependencies"] = [{"fileSystem": [{"identity": "local", "path": "../local"}]}]
+expect_rejection("local", local_dependency, base_resolved, "Unsupported non-source-control")
+
+duplicate = copy.deepcopy(base_manifest)
+duplicate["dependencies"].append(copy.deepcopy(duplicate["dependencies"][0]))
+expect_rejection("duplicate", duplicate, base_resolved, "declared more than once")
+
+mismatch = copy.deepcopy(base_resolved)
+mismatch["pins"][0]["state"]["version"] = "1.2.4"
+expect_rejection("mismatch", base_manifest, mismatch, "mismatched=['example']")
+
+missing = copy.deepcopy(base_resolved)
+missing["pins"].append({"identity": "extra", "state": {"version": "4.5.6"}})
+expect_rejection("missing", base_manifest, missing, "missing=['extra']")
+
+forced_graph = copy.deepcopy(base_manifest)
+forced_graph["targets"].append({"name": "AFMKitMLXReleaseGraph", "dependencies": []})
+expect_rejection("forced-graph", forced_graph, base_resolved, "must not be present")
+PY
 
 echo "Workflow trust boundaries and qualification artifact checks passed."

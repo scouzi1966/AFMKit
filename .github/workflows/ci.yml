@@ -43,6 +43,8 @@ jobs:
           submodules: recursive
       - name: Check public module baseline coverage
         run: Scripts/check-api-baseline-coverage.sh
+      - name: Check exact release pins and lean MLX graph
+        run: Scripts/check-release-dependency-policy.sh
       - name: Check token-independent API baselines
         run: |
           for module in AFMEvalKit AFMKitApple AFMKitCore AFMKitEmbeddings AFMKitInference AFMKitServices AFMKitSpeech AFMKitSpeechSynthesis AFMKitVision AFMOpenAICompat; do

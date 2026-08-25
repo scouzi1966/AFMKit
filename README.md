@@ -110,6 +110,12 @@ tests, and fresh downstream builds for all fifteen products:
 Scripts/validate-release.sh
 ```
 
+The release dependency gate verifies that all external dependencies remain
+exact-pinned and match `Package.resolved` without forcing unrelated products
+into `AFMKitMLX` consumers. Clean downstream MLX build measurements and their
+minimal fixture are documented in
+[`docs/MLX_CONSUMER_BUILD.md`](docs/MLX_CONSUMER_BUILD.md).
+
 Release qualification creates one AFMKit tag only after all tests pass.
 SwiftPM release tags reject SemVer build metadata. Prerelease GitHub releases are
 created with `prerelease=true` and `make_latest=false`. See
