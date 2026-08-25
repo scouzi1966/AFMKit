@@ -20,6 +20,7 @@ public struct Qwen3_5MoEVLConfiguration: Codable, Sendable {
     var modelType: String = "qwen3_5_moe"
     var textConfig: Qwen3_5MoEVLTextConfiguration
     var visionConfig: Qwen3VLConfiguration.VisionConfiguration
+    var visionPatchEmbeddingLayout: Qwen3_5VisionPatchEmbeddingLayout?
 
     // Token IDs (defaults match Qwen3-VL)
     private var _imageTokenId: Int?
@@ -41,6 +42,7 @@ public struct Qwen3_5MoEVLConfiguration: Codable, Sendable {
         case modelType = "model_type"
         case textConfig = "text_config"
         case visionConfig = "vision_config"
+        case visionPatchEmbeddingLayout = "vision_patch_embedding_layout"
         case _imageTokenId = "image_token_id"
         case _videoTokenId = "video_token_id"
         case _imageTokenIndex = "image_token_index"
@@ -48,6 +50,51 @@ public struct Qwen3_5MoEVLConfiguration: Codable, Sendable {
         case _visionStartTokenId = "vision_start_token_id"
         case _visionEndTokenId = "vision_end_token_id"
         case _visionTokenId = "vision_token_id"
+    }
+}
+
+public enum Qwen3_5VisionPatchEmbeddingLayout: String, Codable, Equatable, Sendable {
+    case mlx
+    case rawConv3D = "raw_conv3d"
+
+    public static func classify(
+        shape: [Int],
+        outputChannels: Int,
+        inputChannels: Int,
+        temporalPatchSize: Int,
+        patchSize: Int,
+        trustedProvenance: Self? = nil
+    ) -> Self? {
+        let mlxShape = [
+            outputChannels, temporalPatchSize, patchSize, patchSize, inputChannels,
+        ]
+        let rawShape = [
+            outputChannels, inputChannels, temporalPatchSize, patchSize, patchSize,
+        ]
+        let matchesMLX = shape == mlxShape
+        let matchesRaw = shape == rawShape
+
+        if matchesMLX && matchesRaw {
+            return trustedProvenance
+        }
+        if matchesMLX {
+            return trustedProvenance == nil || trustedProvenance == .mlx ? .mlx : nil
+        }
+        if matchesRaw {
+            return trustedProvenance == nil || trustedProvenance == .rawConv3D
+                ? .rawConv3D
+                : nil
+        }
+        return nil
+    }
+
+    public func sanitize(_ weight: MLXArray) -> MLXArray {
+        switch self {
+        case .mlx:
+            return weight
+        case .rawConv3D:
+            return weight.transposed(0, 2, 3, 4, 1)
+        }
     }
 }
 
@@ -983,7 +1030,8 @@ public final class Qwen3_5MTPHead: Module {
         sidecarPath: String,
         config: Qwen3_5MoEVLTextConfiguration,
         groupSize: Int = 32,
-        bits: Int = 4
+        bits: Int = 4,
+        mode: QuantizationMode = .affine
     ) throws -> Qwen3_5MTPHead {
         let head = Qwen3_5MTPHead(config)
 
@@ -1002,7 +1050,9 @@ public final class Qwen3_5MTPHead: Module {
         // Quantize exactly the linears that have a matching `.scales` tensor (the projections);
         // `fc` and the norms stay full-precision (no scales in the sidecar).
         quantize(model: head, filter: { path, _ in
-            weights["\(path).scales"] != nil ? (groupSize: groupSize, bits: bits) : nil
+            weights["\(path).scales"] != nil
+                ? (groupSize: groupSize, bits: bits, mode: mode)
+                : nil
         })
 
         try head.update(parameters: ModuleParameters.unflattened(weights), verify: [.all])
@@ -1655,8 +1705,19 @@ public final class Qwen3_5MoEVL: Module, VLMModel, KVCacheDimensionProvider {
     public func projectLMHead(_ hidden: MLXArray) -> MLXArray { languageModel.projectLMHead(hidden) }
 
     /// Build an MTP head matching this model's config from a `mtp.safetensors` sidecar.
-    public func loadMTPHead(sidecarPath: String) throws -> Qwen3_5MTPHead {
-        try Qwen3_5MTPHead.load(sidecarPath: sidecarPath, config: config.textConfig)
+    public func loadMTPHead(
+        sidecarPath: String,
+        groupSize: Int = 32,
+        bits: Int = 4,
+        mode: QuantizationMode = .affine
+    ) throws -> Qwen3_5MTPHead {
+        try Qwen3_5MTPHead.load(
+            sidecarPath: sidecarPath,
+            config: config.textConfig,
+            groupSize: groupSize,
+            bits: bits,
+            mode: mode
+        )
     }
 
     public func sanitize(weights: [String: MLXArray]) -> [String: MLXArray] {
@@ -1694,8 +1755,16 @@ public final class Qwen3_5MoEVL: Module, VLMModel, KVCacheDimensionProvider {
         // 4. Vision patch_embed transpose
         for (key, value) in sanitizedWeights {
             if key.contains("patch_embed.proj.weight") && key.contains("vision_tower") {
-                if value.ndim == 5 && value.dim(-1) != config.visionConfig.inChannels {
-                    sanitizedWeights[key] = value.transposed(0, 2, 3, 4, 1)
+                let vision = config.visionConfig
+                if let layout = Qwen3_5VisionPatchEmbeddingLayout.classify(
+                    shape: value.shape,
+                    outputChannels: vision.hiddenSize,
+                    inputChannels: vision.inChannels,
+                    temporalPatchSize: vision.temporalPatchSize,
+                    patchSize: vision.patchSize,
+                    trustedProvenance: config.visionPatchEmbeddingLayout
+                ) {
+                    sanitizedWeights[key] = layout.sanitize(value)
                 }
             }
         }

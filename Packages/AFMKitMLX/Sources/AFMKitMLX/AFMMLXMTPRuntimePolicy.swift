@@ -1,9 +1,25 @@
 import Foundation
 
+enum AFMMLXMTPRuntimeModelKind: Equatable, Sendable {
+    case qwenText
+    case qwenVision
+}
+
 /// Pure lifecycle decisions shared by model loading and request dispatch.
 /// Keeping these rules independent of MLX objects makes failure/retry and
 /// model-switch behavior deterministic and directly testable.
 enum AFMMLXMTPRuntimePolicy {
+    static func compatibleModelKind(
+        mtpEnabled: Bool,
+        factory: AFMMLXModelFactoryKind,
+        canonicalModelType: String
+    ) -> AFMMLXMTPRuntimeModelKind? {
+        guard mtpEnabled,
+              canonicalModelType == "qwen3_5" || canonicalModelType == "qwen3_5_moe"
+        else { return nil }
+        return factory == .vlm ? .qwenVision : .qwenText
+    }
+
     static func canReuseLoadedModel(
         loadedModelID: String?,
         requestedModelID: String,
@@ -20,6 +36,21 @@ enum AFMMLXMTPRuntimePolicy {
         bindingModelID: String?
     ) -> Bool {
         mtpEnabled && bindingModelID == requestedModelID
+    }
+
+    static func shouldUseSpeculativeBinding(
+        requestedModelID: String,
+        mtpEnabled: Bool,
+        bindingModelID: String?,
+        isMultimodal: Bool,
+        isCancelled: Bool
+    ) -> Bool {
+        guard !isMultimodal, !isCancelled else { return false }
+        return bindingIsUsable(
+            for: requestedModelID,
+            mtpEnabled: mtpEnabled,
+            bindingModelID: bindingModelID
+        )
     }
 
     static func allowSynchronousSidecarDownload(mtpEnabled: Bool) -> Bool {

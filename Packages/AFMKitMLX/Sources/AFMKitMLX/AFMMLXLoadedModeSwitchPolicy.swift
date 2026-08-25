@@ -45,7 +45,26 @@ public enum AFMMLXModelFactoryPolicy {
         forceVLM: Bool,
         architecture: AFMMLXModelArchitecturePreflight
     ) -> AFMMLXModelFactoryKind {
+        initialFactory(
+            forceVLM: forceVLM,
+            architecture: architecture,
+            visionQualification: nil
+        )
+    }
+
+    public static func initialFactory(
+        forceVLM: Bool,
+        architecture: AFMMLXModelArchitecturePreflight,
+        visionQualification: AFMMLXVisionAssetQualification?
+    ) -> AFMMLXModelFactoryKind {
+        if visionQualification?.isQwenFamilyConfiguration == true,
+           visionQualification?.isAssetUsable != true {
+            return .llm
+        }
         if forceVLM || architecture.requiresVisionModelFactory {
+            return .vlm
+        }
+        if visionQualification?.isUsableQwenConditionalGeneration == true {
             return .vlm
         }
         return .llm
@@ -56,6 +75,14 @@ public enum AFMMLXRequestMediaKind: Hashable, Sendable {
     case image
     case video
     case audio
+
+    public var label: String {
+        switch self {
+        case .image: "image"
+        case .video: "video"
+        case .audio: "audio"
+        }
+    }
 }
 
 public enum AFMMLXRequestMediaPolicy {
@@ -79,9 +106,6 @@ public enum AFMMLXRequestMediaPolicy {
             if mediaURL.lowercased().hasPrefix("data:video/") {
                 return .video
             }
-            if let url = URL(string: mediaURL), videoExtensions.contains(url.pathExtension.lowercased()) {
-                return .video
-            }
             return .image
         default:
             return nil
@@ -102,6 +126,4 @@ public enum AFMMLXRequestMediaPolicy {
                 && videoModelTypes.contains(architecture.canonicalModelType)
         }
     }
-
-    private static let videoExtensions: Set<String> = ["mp4", "mov", "avi", "mkv", "webm", "m4v"]
 }

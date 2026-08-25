@@ -69,6 +69,54 @@ final class AnyAFMModelCapabilityTests: XCTestCase {
         XCTAssertNil((capable as any AFMModel) as? any AFMAdmissionReportingModel)
         XCTAssertNil((basic as any AFMModel) as? any AFMTelemetryReportingModel)
     }
+
+    func testTypeErasureReadsDescriptorDynamicallyAfterLoad() async throws {
+        let state = DescriptorState(testDescriptor(modelID: "declared"))
+        let erased = AnyAFMModel(DynamicDescriptorModel(state: state))
+
+        XCTAssertEqual(erased.descriptor.modelID, "declared")
+        let loaded = try await erased.load()
+
+        XCTAssertEqual(loaded.modelID, "qualified")
+        XCTAssertEqual(erased.descriptor.modelID, "qualified")
+        XCTAssertTrue(erased.descriptor.capabilities.contains(.vision))
+    }
+}
+
+private final class DescriptorState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: AFMModelDescriptor
+
+    init(_ value: AFMModelDescriptor) { self.value = value }
+
+    func read() -> AFMModelDescriptor { lock.withLock { value } }
+    func write(_ descriptor: AFMModelDescriptor) { lock.withLock { value = descriptor } }
+}
+
+private struct DynamicDescriptorModel: AFMModel {
+    let state: DescriptorState
+    var descriptor: AFMModelDescriptor { state.read() }
+
+    func availability() async -> AFMModelAvailability { .available }
+    func load(progress: (@Sendable (Double) -> Void)?) async throws -> AFMModelDescriptor {
+        let qualified = AFMModelDescriptor(
+            providerID: "test",
+            modelID: "qualified",
+            displayName: "qualified",
+            capabilities: [.text, .vision],
+            privacyBoundary: .device
+        )
+        state.write(qualified)
+        return qualified
+    }
+    func respond(to request: AFMRequest) async throws -> AFMModelResponse {
+        AFMModelResponse(text: "")
+    }
+    func streamResponse(
+        to request: AFMRequest
+    ) -> AsyncThrowingStream<AFMGenerationEvent, Error> {
+        AsyncThrowingStream { $0.finish() }
+    }
 }
 
 private actor CapabilityState {

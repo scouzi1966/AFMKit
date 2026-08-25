@@ -5,6 +5,42 @@ import MLXLMCommon
 import XCTest
 
 final class AFMMLXProviderTests: XCTestCase {
+    func testQualifiedDescriptorPropagatesThroughModelAndTypeErasure() async throws {
+        let declared = AFMModelDescriptor(
+            providerID: "mlx",
+            modelID: "org/model",
+            displayName: "declared",
+            capabilities: [.text],
+            privacyBoundary: .device
+        )
+        let qualified = AFMModelDescriptor(
+            providerID: "mlx",
+            modelID: "org/model",
+            displayName: "qualified",
+            capabilities: [.text, .vision],
+            privacyBoundary: .device
+        )
+        let box = AFMMLXDescriptorBox(declared)
+        let harness = AFMMLXExecutionHarness(
+            descriptor: declared,
+            load: { _ in
+                box.write(qualified)
+                return qualified
+            },
+            stream: { _, _ in AsyncThrowingStream { $0.finish() } },
+            descriptorProvider: { box.read() }
+        )
+        let model = AFMMLXModel(harness: harness)
+        let erased = AnyAFMModel(model)
+
+        XCTAssertEqual(model.descriptor.displayName, "declared")
+        XCTAssertEqual(erased.descriptor.displayName, "declared")
+        _ = try await erased.load()
+        XCTAssertEqual(model.descriptor.displayName, "qualified")
+        XCTAssertEqual(erased.descriptor.displayName, "qualified")
+        XCTAssertTrue(erased.descriptor.capabilities.contains(.vision))
+    }
+
     func testOpenAIToolsPreserveExplicitStrictnessAndDefaultNilToStrict() throws {
         let schema: AFMJSONValue = .object(["type": .string("object")])
         let request = AFMRequest(
@@ -1011,6 +1047,15 @@ final class AFMMLXProviderTests: XCTestCase {
         try JSONSerialization.data(withJSONObject: value).write(to: url)
     }
 
+}
+
+private final class AFMMLXDescriptorBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var descriptor: AFMModelDescriptor
+
+    init(_ descriptor: AFMModelDescriptor) { self.descriptor = descriptor }
+    func read() -> AFMModelDescriptor { lock.withLock { descriptor } }
+    func write(_ value: AFMModelDescriptor) { lock.withLock { descriptor = value } }
 }
 
 private actor HarnessState {

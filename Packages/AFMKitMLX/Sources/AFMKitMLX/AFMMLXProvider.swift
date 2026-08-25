@@ -67,7 +67,11 @@ public struct AFMMLXProviderFactory: AFMProviderFactory {
 }
 
 public struct AFMMLXExecutionHarness: Sendable {
-    public let descriptor: AFMModelDescriptor
+    private let declaredDescriptor: AFMModelDescriptor
+    private let descriptorProvider: (@Sendable () -> AFMModelDescriptor)?
+    public var descriptor: AFMModelDescriptor {
+        descriptorProvider?() ?? declaredDescriptor
+    }
     public let load:
         @Sendable ((@Sendable (Double) -> Void)?) async throws -> AFMModelDescriptor
     public let stream:
@@ -96,7 +100,37 @@ public struct AFMMLXExecutionHarness: Sendable {
             AFMTelemetrySnapshot()
         }
     ) {
-        self.descriptor = descriptor
+        self.declaredDescriptor = descriptor
+        self.descriptorProvider = nil
+        self.load = load
+        self.stream = stream
+        self.unload = unload
+        self.tokenize = tokenize
+        self.admissionSnapshot = admissionSnapshot
+        self.telemetrySnapshot = telemetrySnapshot
+    }
+
+    public init(
+        descriptor: AFMModelDescriptor,
+        load: @escaping @Sendable
+            ((@Sendable (Double) -> Void)?) async throws -> AFMModelDescriptor,
+        stream: @escaping @Sendable
+            (AFMRequest, String?) async throws
+            -> AsyncThrowingStream<AFMGenerationEvent, Error>,
+        unload: @escaping @Sendable () async -> Void = {},
+        tokenize: @escaping @Sendable (String) async throws -> [Int] = { _ in
+            throw AFMError.unsupportedCapability("tokenization")
+        },
+        admissionSnapshot: @escaping @Sendable () async -> AFMAdmissionSnapshot = {
+            AFMAdmissionSnapshot(executionMode: .serial)
+        },
+        telemetrySnapshot: @escaping @Sendable () async -> AFMTelemetrySnapshot = {
+            AFMTelemetrySnapshot()
+        },
+        descriptorProvider: @escaping @Sendable () -> AFMModelDescriptor
+    ) {
+        self.declaredDescriptor = descriptor
+        self.descriptorProvider = descriptorProvider
         self.load = load
         self.stream = stream
         self.unload = unload
@@ -108,9 +142,13 @@ public struct AFMMLXExecutionHarness: Sendable {
 
 public final class AFMMLXModel: AFMModel, AFMTextTokenizing, AFMPrewarmableModel,
     AFMAdmissionReportingModel, AFMTelemetryReportingModel, AFMMLXOpenAIChatServing,
+    AFMMLXMediaRequestServing,
     @unchecked Sendable
 {
-    public let descriptor: AFMModelDescriptor
+    private let declaredDescriptor: AFMModelDescriptor
+    public var descriptor: AFMModelDescriptor {
+        runtime?.descriptor ?? harness?.descriptor ?? declaredDescriptor
+    }
 
     private let runtime: AFMMLXRuntime?
     public let service: MLXModelService?
@@ -146,7 +184,7 @@ public final class AFMMLXModel: AFMModel, AFMTextTokenizing, AFMPrewarmableModel
         self.runtime = runtime
         self.service = runtime.service
         self.modelID = runtime.modelID
-        self.descriptor = runtime.descriptor
+        self.declaredDescriptor = runtime.descriptor
         self.harness = nil
     }
 
@@ -166,7 +204,7 @@ public final class AFMMLXModel: AFMModel, AFMTextTokenizing, AFMPrewarmableModel
         self.runtime = runtime
         self.service = runtime.service
         self.modelID = runtime.modelID
-        self.descriptor = runtime.descriptor
+        self.declaredDescriptor = runtime.descriptor
         self.harness = nil
     }
 
@@ -185,7 +223,7 @@ public final class AFMMLXModel: AFMModel, AFMTextTokenizing, AFMPrewarmableModel
         self.runtime = runtime
         self.service = service
         self.modelID = runtime.modelID
-        self.descriptor = runtime.descriptor
+        self.declaredDescriptor = runtime.descriptor
         self.harness = nil
     }
 
@@ -193,7 +231,7 @@ public final class AFMMLXModel: AFMModel, AFMTextTokenizing, AFMPrewarmableModel
         self.runtime = nil
         self.service = nil
         self.modelID = harness.descriptor.modelID.rawValue
-        self.descriptor = harness.descriptor
+        self.declaredDescriptor = harness.descriptor
         self.harness = harness
     }
 
@@ -266,6 +304,40 @@ public final class AFMMLXModel: AFMModel, AFMTextTokenizing, AFMPrewarmableModel
             preconditionFailure("AFMMLXModel.normalizeModel requires a concrete MLX service.")
         }
         return service.normalizeModel(raw)
+    }
+
+    public func loadedModelDescriptor(model: String) -> AFMModelDescriptor? {
+        service?.loadedModelDescriptor(model: model)
+    }
+
+    public func validateMediaRequestCapabilities(
+        model: String,
+        messages: [Message]
+    ) throws {
+        guard let service else {
+            throw AFMError.unsupportedCapability("MLX media request validation")
+        }
+        try service.validateMediaRequestCapabilities(model: model, messages: messages)
+    }
+
+    public func preflightMediaRequest(
+        model: String,
+        messages: [Message]
+    ) async throws -> AFMMLXResolvedMediaRequest {
+        guard let service else {
+            throw AFMError.unsupportedCapability("MLX media request preflight")
+        }
+        return try await service.preflightMediaRequest(model: model, messages: messages)
+    }
+
+    public func withPreflightedMediaRequest<Result: Sendable>(
+        _ request: AFMMLXResolvedMediaRequest,
+        operation: ([Message]) async throws -> Result
+    ) async throws -> Result {
+        guard let service else {
+            throw AFMError.unsupportedCapability("MLX media request preflight")
+        }
+        return try await service.withPreflightedMediaRequest(request, operation: operation)
     }
 
     public func admissionSnapshot() async -> AFMAdmissionSnapshot {

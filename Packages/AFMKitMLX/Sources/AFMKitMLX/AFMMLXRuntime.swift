@@ -205,7 +205,10 @@ public struct AFMMLXRuntimeConfiguration: Sendable {
 
 public final class AFMMLXRuntime: @unchecked Sendable {
     public let modelID: String
-    public let descriptor: AFMModelDescriptor
+    private let declaredDescriptor: AFMModelDescriptor
+    public var descriptor: AFMModelDescriptor {
+        service.loadedModelDescriptor(model: modelID) ?? declaredDescriptor
+    }
     public let service: MLXModelService
 
     private let configuration: AFMMLXRuntimeConfiguration
@@ -224,7 +227,7 @@ public final class AFMMLXRuntime: @unchecked Sendable {
         self.initializesSchedulerOnLoad = true
         self.service = service
         self.modelID = service.normalizeModel(modelID)
-        self.descriptor = AFMMLXModelDescriptor.describe(
+        self.declaredDescriptor = AFMMLXModelDescriptor.describe(
             modelID: self.modelID,
             resolver: resolver
         )
@@ -250,7 +253,7 @@ public final class AFMMLXRuntime: @unchecked Sendable {
         self.initializesSchedulerOnLoad = false
         self.service = service
         self.modelID = service.normalizeModel(modelID)
-        self.descriptor = AFMMLXModelDescriptor.describe(
+        self.declaredDescriptor = AFMMLXModelDescriptor.describe(
             modelID: self.modelID,
             resolver: resolver
         )
@@ -285,7 +288,7 @@ public final class AFMMLXRuntime: @unchecked Sendable {
         if initializesSchedulerOnLoad && configuration.maxConcurrent >= 2 {
             try await service.initScheduler()
         }
-        return descriptor
+        return service.loadedModelDescriptor(model: modelID) ?? descriptor
     }
 
     public func prewarm(
