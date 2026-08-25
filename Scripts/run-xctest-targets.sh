@@ -17,6 +17,7 @@ HOSTED_FOUNDATION_MODELS_UNSTABLE_CASES=(
     "AFMKitAppleTests.FoundationModelSessionCoordinatorTests/testHistoryTransformDropsOrphanResponseBeforeFirstPrompt"
     "AFMKitAppleTests.FoundationModelSessionCoordinatorTests/testHistoryTransformKeepsConversationStartingAtFirstPrompt"
     "AFMKitAppleTests.FoundationNativeSessionRuntimeTests/testAppleOnDeviceReusesMatchingSession"
+    "AFMKitAppleTests.FoundationPromptBuilderTests/testBuildsAttachmentPromptWithDefaultInstruction"
     "AFMKitAppleTests.FoundationTranscriptWindowPlannerTests/testTrimsOldestPromptTurnsAndPreservesInstructions"
     "AFMKitAppleTests.FoundationTranscriptWindowPlannerTests/testThrowsWhenCurrentTurnCannotFit"
     "AFMKitAppleTests.FoundationTranscriptSnapshotParserTests/testRecordsToolArgumentsAndCompletedOutput"

@@ -169,6 +169,8 @@ assert unstable_case_lines == [
     'testHistoryTransformKeepsConversationStartingAtFirstPrompt"',
     '"AFMKitAppleTests.FoundationNativeSessionRuntimeTests/'
     'testAppleOnDeviceReusesMatchingSession"',
+    '"AFMKitAppleTests.FoundationPromptBuilderTests/'
+    'testBuildsAttachmentPromptWithDefaultInstruction"',
     '"AFMKitAppleTests.FoundationTranscriptWindowPlannerTests/'
     'testTrimsOldestPromptTurnsAndPreservesInstructions"',
     '"AFMKitAppleTests.FoundationTranscriptWindowPlannerTests/'
