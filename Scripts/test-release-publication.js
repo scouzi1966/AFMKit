@@ -9,6 +9,7 @@ const {
     publishRelease,
     publicationIntentRef,
     releaseSemVer,
+    validatePublishedRelease,
 } = require("./release-publication");
 
 const SHA = "1".repeat(40);
@@ -25,7 +26,9 @@ function fakeGitHub(options = {}) {
         intentRef: options.intentRef || null,
         tagObjects: new Map(options.tagObjects || []),
         release: options.release || null,
-        latestRelease: options.latestRelease || options.release || null,
+        latestRelease: Object.prototype.hasOwnProperty.call(options, "latestRelease")
+            ? options.latestRelease
+            : options.release || null,
         createRefRace: Boolean(options.createRefRace),
         createIntentRace: Boolean(options.createIntentRace),
         createReleaseRace: Boolean(options.createReleaseRace),
@@ -106,7 +109,9 @@ function fakeGitHub(options = {}) {
                         draft: arguments_.draft,
                         prerelease: arguments_.prerelease,
                     };
-                    state.latestRelease = arguments_.prerelease ? null : state.release;
+                    state.latestRelease = arguments_.prerelease || options.createReleaseNotLatest
+                        ? null
+                        : state.release;
                     if (state.createReleaseRace) {
                         state.createReleaseRace = false;
                         throw apiError(422);
@@ -305,6 +310,32 @@ async function run() {
     });
     assert.equal(result.release.recoveredRace, true);
 
+    fixture = fakeGitHub({ createReleaseNotLatest: true });
+    await assert.rejects(
+        () => publishRelease({
+            github: fixture.github,
+            owner: "owner",
+            repo: "repo",
+            tagName: "v1.2.3",
+            qualifiedSha: SHA,
+            defaultBranch: "main",
+        }),
+        /must be the latest release/
+    );
+
+    fixture = fakeGitHub({
+        tagRef: { type: "commit", sha: SHA },
+        release: { id: 11, tag_name: "v1.2.3", draft: false, prerelease: false },
+    });
+    const verified = await validatePublishedRelease({
+        github: fixture.github,
+        owner: "owner",
+        repo: "repo",
+        tagName: "v1.2.3",
+        qualifiedSha: SHA,
+    });
+    assert.equal(verified.id, 11);
+
     fixture = fakeGitHub();
     result = await publishRelease({
         github: fixture.github,
@@ -372,7 +403,7 @@ async function run() {
     assert.throws(() => releaseSemVer("v1.2.3+build.1"), /not SwiftPM-compatible/);
     assert.equal(publicationIntentRef("v1.2.3"), "tags/afmkit-publication-v1.2.3");
 
-    console.log("18 release publication regression scenarios passed.");
+    console.log("Release publication regression scenarios passed.");
 }
 
 run().catch((error) => {

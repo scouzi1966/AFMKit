@@ -311,7 +311,14 @@ async function ensureGitHubRelease({ github, owner, repo, tagName, qualifiedSha 
             prerelease,
             make_latest: prerelease ? "false" : "true",
         });
-        validateReleaseRecord(release.data, tagName, prerelease);
+        await validateExistingRelease({
+            github,
+            owner,
+            repo,
+            release: release.data,
+            tagName,
+            prerelease,
+        });
         return { created: true, release: release.data };
     } catch (error) {
         if (!statusIs(error, 422)) {
@@ -332,6 +339,38 @@ async function ensureGitHubRelease({ github, owner, repo, tagName, qualifiedSha 
         });
         return { created: false, recoveredRace: true, release: release.data };
     }
+}
+
+async function validatePublishedRelease({
+    github,
+    owner,
+    repo,
+    tagName,
+    qualifiedSha,
+}) {
+    validateQualifiedSha(qualifiedSha);
+    const { prerelease } = releaseSemVer(tagName);
+    const taggedSha = await getTagCommit(github, owner, repo, tagName);
+    if (taggedSha !== qualifiedSha) {
+        throw new Error(
+            `Published tag ${tagName} points to ${taggedSha}, not ${qualifiedSha}.`
+        );
+    }
+
+    const release = await github.rest.repos.getReleaseByTag({
+        owner,
+        repo,
+        tag: tagName,
+    });
+    await validateExistingRelease({
+        github,
+        owner,
+        repo,
+        release: release.data,
+        tagName,
+        prerelease,
+    });
+    return release.data;
 }
 
 async function publishRelease({
@@ -370,5 +409,6 @@ module.exports = {
     publicationIntentRef,
     publishRelease,
     releaseSemVer,
+    validatePublishedRelease,
     validateReleaseRecord,
 };

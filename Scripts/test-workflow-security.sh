@@ -126,9 +126,29 @@ service_isolation = (
 evalkit_isolation = (
     workflows.parent.parent / "Scripts" / "check-evalkit-isolation.sh"
 ).read_text(encoding="utf-8")
+local_release = (
+    workflows.parent.parent / "Scripts" / "release-local.js"
+).read_text(encoding="utf-8")
 assert release_validator.count("afmkit_run_qualified_swift test") == 1
 assert release_validator.count("run-xctest-targets.sh") == 1
 assert release_validator.count("--disable-xctest") == 1
+assert release_validator.count("test-release-local.js") == 1
+candidate_call = "await publication.assertReleaseCandidate(publicationArguments)"
+validator_call = 'path.join(root, "Scripts/validate-release.sh")'
+intent_call = "await publication.ensurePublicationIntent(publicationArguments)"
+publish_call = "await publication.publishRelease(publicationArguments)"
+verify_call = "await publication.validatePublishedRelease(publicationArguments)"
+for snippet in (candidate_call, validator_call, intent_call, publish_call, verify_call):
+    assert local_release.count(snippet) == 1
+assert local_release.index(candidate_call) < local_release.index(validator_call)
+assert local_release.index(validator_call) < local_release.index(intent_call)
+assert local_release.index(intent_call) < local_release.index(publish_call)
+assert local_release.index(publish_call) < local_release.index(verify_call)
+assert 'delete clean.GH_TOKEN' in local_release
+assert 'delete clean.GITHUB_TOKEN' in local_release
+assert '"gh",\n            ["auth", "token"' in local_release
+assert "git push" not in local_release
+assert "git tag" not in local_release
 assert 'target.get("type") == "test"' in isolated_xctest
 assert '--filter "$test_target"' in isolated_xctest
 isolated_targets_match = re.search(
