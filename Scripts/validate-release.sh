@@ -22,13 +22,8 @@ run_release_tests() {
     local package_build_root="$2"
 
     clean_build_configuration "$package_build_root" release
-    afmkit_run_qualified_swift test \
-        --package-path "$package_root" \
-        --scratch-path "$package_build_root" \
-        --build-system native \
-        --disable-automatic-resolution \
-        --disable-swift-testing \
-        -c release
+    AFMKIT_BUILD_ROOT="$package_build_root" \
+        "$ROOT/Scripts/run-xctest-targets.sh"
     afmkit_run_qualified_swift test \
         --package-path "$package_root" \
         --scratch-path "$package_build_root" \

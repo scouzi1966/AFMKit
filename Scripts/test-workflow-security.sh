@@ -48,9 +48,7 @@ xctest_step = public_ci.split(
 swift_testing_step = public_ci.split(
     "- name: Run untrusted candidate Swift Testing suite", 1
 )[1].split("\n      - name:", 1)[0]
-assert "--disable-swift-testing" in xctest_step
-assert "--disable-xctest" not in xctest_step
-assert "-c release" in xctest_step
+assert "run: Scripts/run-xctest-targets.sh" in xctest_step
 assert "--disable-xctest" in swift_testing_step
 assert "--disable-swift-testing" not in swift_testing_step
 assert "-c release" in swift_testing_step
@@ -118,9 +116,17 @@ assert "actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd" in relea
 release_validator = (workflows.parent.parent / "Scripts" / "validate-release.sh").read_text(
     encoding="utf-8"
 )
-assert release_validator.count("afmkit_run_qualified_swift test") == 2
-assert release_validator.count("--disable-swift-testing") == 1
+isolated_xctest = (workflows.parent.parent / "Scripts" / "run-xctest-targets.sh").read_text(
+    encoding="utf-8"
+)
+assert release_validator.count("afmkit_run_qualified_swift test") == 1
+assert release_validator.count("run-xctest-targets.sh") == 1
 assert release_validator.count("--disable-xctest") == 1
+assert 'target.get("type") == "test"' in isolated_xctest
+assert '--filter "$test_target"' in isolated_xctest
+assert "--disable-swift-testing" in isolated_xctest
+assert "--disable-automatic-resolution" in isolated_xctest
+assert "-c release" in isolated_xctest
 PY
 
 SHA="1111111111111111111111111111111111111111"

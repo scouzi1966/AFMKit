@@ -51,13 +51,7 @@ jobs:
       - name: Run untrusted candidate XCTest suite
         env:
           AFMKIT_BUILD_ROOT: ${{ runner.temp }}/afmkit-public-tests
-        run: >-
-          /usr/bin/xcrun --toolchain XcodeDefault swift test
-          --package-path "$GITHUB_WORKSPACE"
-          --scratch-path "$AFMKIT_BUILD_ROOT"
-          --build-system native
-          --disable-swift-testing
-          -c release
+        run: Scripts/run-xctest-targets.sh
       - name: Run untrusted candidate Swift Testing suite
         env:
           AFMKIT_BUILD_ROOT: ${{ runner.temp }}/afmkit-public-tests
