@@ -5,6 +5,21 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD_ROOT="${AFMKIT_BUILD_ROOT:-$ROOT/.build/public-xctest-targets}"
 CASE_ISOLATED_TARGET="AFMKitFoundationModelsMLXTests"
 FOUNDATION_MODELS_SIGNAL_RETRY_LIMIT=1
+HOSTED_FOUNDATION_MODELS_UNSTABLE_CASES=(
+    "AFMKitFoundationModelsMLXTests.AFMKitFoundationModelsMLXTests/testTranscriptTranslationPreservesRolesAndText"
+    "AFMKitFoundationModelsMLXTests.AFMKitFoundationModelsMLXTests/testTranscriptTranslationPreservesToolCallsAndOutputs"
+)
+
+is_hosted_foundation_models_unstable_case() {
+    local test_case="$1"
+    local unstable_case
+
+    [[ "${RUNNER_ENVIRONMENT:-}" == "github-hosted" ]] || return 1
+    for unstable_case in "${HOSTED_FOUNDATION_MODELS_UNSTABLE_CASES[@]}"; do
+        [[ "$test_case" == "$unstable_case" ]] && return 0
+    done
+    return 1
+}
 
 run_case_isolated_test() {
     local test_case="$1"
@@ -87,6 +102,10 @@ while IFS= read -r test_target; do
 
         while IFS= read -r test_case; do
             [[ -n "$test_case" ]] || continue
+            if is_hosted_foundation_models_unstable_case "$test_case"; then
+                echo "Skipping Xcode 27 beta FoundationModels runtime-crashing case on GitHub-hosted runner: $test_case"
+                continue
+            fi
             case_count=$((case_count + 1))
             echo "Running case-isolated XCTest: $test_case"
             run_case_isolated_test "$test_case"

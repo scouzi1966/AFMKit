@@ -125,6 +125,30 @@ assert release_validator.count("--disable-xctest") == 1
 assert 'target.get("type") == "test"' in isolated_xctest
 assert '--filter "$test_target"' in isolated_xctest
 assert 'CASE_ISOLATED_TARGET="AFMKitFoundationModelsMLXTests"' in isolated_xctest
+unstable_cases_match = re.search(
+    r'HOSTED_FOUNDATION_MODELS_UNSTABLE_CASES=\(\n(?P<body>.*?)\n\)',
+    isolated_xctest,
+    re.DOTALL,
+)
+assert unstable_cases_match is not None
+unstable_case_lines = [
+    line.strip()
+    for line in unstable_cases_match.group("body").splitlines()
+    if line.strip()
+]
+assert unstable_case_lines == [
+    '"AFMKitFoundationModelsMLXTests.AFMKitFoundationModelsMLXTests/'
+    'testTranscriptTranslationPreservesRolesAndText"',
+    '"AFMKitFoundationModelsMLXTests.AFMKitFoundationModelsMLXTests/'
+    'testTranscriptTranslationPreservesToolCallsAndOutputs"',
+]
+assert isolated_xctest.count("HOSTED_FOUNDATION_MODELS_UNSTABLE_CASES") == 2
+assert isolated_xctest.count(
+    '[[ "${RUNNER_ENVIRONMENT:-}" == "github-hosted" ]] || return 1'
+) == 1
+assert isolated_xctest.count(
+    'if is_hosted_foundation_models_unstable_case "$test_case"; then'
+) == 1
 assert '/usr/bin/awk -v prefix="${test_target}."' in isolated_xctest
 assert 'run_case_isolated_test "$test_case"' in isolated_xctest
 assert 'FOUNDATION_MODELS_SIGNAL_RETRY_LIMIT=1' in isolated_xctest
