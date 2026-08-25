@@ -2,29 +2,27 @@
 import Foundation
 import FoundationModels
 
+@available(macOS 27.0, *)
+struct AFMFoundationSessionIdentity<ProviderID: Hashable>: Equatable {
+    let provider: ProviderID
+    let signature: String
+}
+
 /// Reusable session identity, reuse, prewarm, and history-view coordination for
 /// apps that expose Foundation Models providers behind their own provider IDs.
 @MainActor
 @available(macOS 27.0, *)
 public final class AFMFoundationModelSessionCoordinator<ProviderID: Hashable & Sendable> {
     private struct FoundationSessionSlot {
-        let provider: ProviderID
-        let signature: String
+        let identity: AFMFoundationSessionIdentity<ProviderID>
         let session: LanguageModelSession
         let profileState: AFMFoundationDynamicProfileState?
     }
 
     private var foundationSession: FoundationSessionSlot?
     private var preservedHistory: [Transcript.Entry] = []
-    private let transcriptSnapshot: (LanguageModelSession) -> [Transcript.Entry]
 
-    public init() {
-        transcriptSnapshot = { Array($0.transcript) }
-    }
-
-    init(transcriptSnapshot: @escaping (LanguageModelSession) -> [Transcript.Entry]) {
-        self.transcriptSnapshot = transcriptSnapshot
-    }
+    public init() {}
 
     public func dynamicProfileSession<Model: LanguageModel>(
         for provider: ProviderID,
@@ -33,14 +31,14 @@ public final class AFMFoundationModelSessionCoordinator<ProviderID: Hashable & S
         tools: [any FoundationModels.Tool],
         instructions: String
     ) -> LanguageModelSession {
+        let identity = AFMFoundationSessionIdentity(provider: provider, signature: signature)
         if let existing = foundationSession,
-           existing.provider == provider,
-           existing.signature == signature {
+           existing.identity == identity {
             return existing.session
         }
 
         if let existing = foundationSession {
-            preservedHistory = transcriptSnapshot(existing.session)
+            preservedHistory = Array(existing.session.transcript)
             foundationSession = nil
         }
 
@@ -52,8 +50,7 @@ public final class AFMFoundationModelSessionCoordinator<ProviderID: Hashable & S
         let profile = AFMFoundationDynamicProfile(state: profileState)
         let session = LanguageModelSession(profile: profile, history: preservedHistory)
         foundationSession = FoundationSessionSlot(
-            provider: provider,
-            signature: signature,
+            identity: identity,
             session: session,
             profileState: profileState
         )
@@ -70,9 +67,9 @@ public final class AFMFoundationModelSessionCoordinator<ProviderID: Hashable & S
         tools: [any FoundationModels.Tool],
         instructions: String
     ) -> LanguageModelSession {
+        let identity = AFMFoundationSessionIdentity(provider: provider, signature: signature)
         if let existing = foundationSession,
-           existing.provider == provider,
-           existing.signature == signature {
+           existing.identity == identity {
             return existing.session
         }
 
@@ -85,8 +82,7 @@ public final class AFMFoundationModelSessionCoordinator<ProviderID: Hashable & S
             instructions: instructions
         )
         foundationSession = FoundationSessionSlot(
-            provider: provider,
-            signature: signature,
+            identity: identity,
             session: session,
             profileState: nil
         )
@@ -94,21 +90,21 @@ public final class AFMFoundationModelSessionCoordinator<ProviderID: Hashable & S
     }
 
     public func invalidate(for provider: ProviderID) {
-        guard let current = foundationSession, current.provider == provider else { return }
-        preservedHistory = transcriptSnapshot(current.session)
+        guard let current = foundationSession, current.identity.provider == provider else { return }
+        preservedHistory = Array(current.session.transcript)
         foundationSession = nil
     }
 
     public func setHistoryView(_ entries: [Transcript.Entry], for provider: ProviderID) {
         guard let current = foundationSession,
-              current.provider == provider,
+              current.identity.provider == provider,
               let profileState = current.profileState else { return }
         profileState.setHistoryView(entries)
     }
 
     public func clearHistoryView(for provider: ProviderID) {
         guard let current = foundationSession,
-              current.provider == provider,
+              current.identity.provider == provider,
               let profileState = current.profileState else { return }
         profileState.setHistoryView(nil)
     }
@@ -116,7 +112,7 @@ public final class AFMFoundationModelSessionCoordinator<ProviderID: Hashable & S
     @discardableResult
     public func prewarm(promptPrefix: String, for provider: ProviderID) -> Bool {
         guard let current = foundationSession,
-              current.provider == provider,
+              current.identity.provider == provider,
               !current.session.isResponding else { return false }
         current.session.prewarm(promptPrefix: Prompt { promptPrefix })
         return true

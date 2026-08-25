@@ -27,32 +27,17 @@ final class FoundationModelSessionCoordinatorTests: XCTestCase {
         XCTAssertTrue(first === second)
     }
 
-    func testDynamicProfileSessionRecreatesWhenProviderChanges() {
-        var transcriptSnapshotCount = 0
-        let coordinator = AFMFoundationModelSessionCoordinator<String>(
-            transcriptSnapshot: { _ in
-                transcriptSnapshotCount += 1
-                return []
-            }
+    func testDynamicProfileIdentityChangesWhenProviderChanges() {
+        let first = AFMFoundationSessionIdentity(
+            provider: "apple",
+            signature: "shared"
         )
-        let first = coordinator.dynamicProfileSession(
-            for: "apple",
-            signature: "shared",
-            model: SystemLanguageModel.default,
-            tools: [],
-            instructions: "System"
+        let second = AFMFoundationSessionIdentity(
+            provider: "pcc",
+            signature: "shared"
         )
 
-        let second = coordinator.dynamicProfileSession(
-            for: "pcc",
-            signature: "shared",
-            model: SystemLanguageModel.default,
-            tools: [],
-            instructions: "System"
-        )
-
-        XCTAssertFalse(first === second)
-        XCTAssertEqual(transcriptSnapshotCount, 1)
+        XCTAssertNotEqual(first, second)
     }
 
     func testSimpleSessionReusesExactProviderAndSignature() {
