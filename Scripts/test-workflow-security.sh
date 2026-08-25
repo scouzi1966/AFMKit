@@ -41,6 +41,10 @@ assert "SDK exposure (${{ matrix.sdk }})" in public_ci
 assert "vars.AFMKIT_XCODE26_RUNNER || 'macos-26'" in public_ci
 assert "vars.AFMKIT_XCODE27_RUNNER || 'xcode-27'" in public_ci
 assert "check-sdk-product-exposure.sh" in public_ci
+assert "Run untrusted candidate XCTest suite" in public_ci
+assert "--disable-swift-testing" in public_ci
+assert "Run untrusted candidate Swift Testing suite" in public_ci
+assert "--disable-xctest" in public_ci
 
 private_ci = contents["private-ci.yml"]
 assert "workflow_run:" in private_ci
