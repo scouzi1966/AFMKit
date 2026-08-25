@@ -51,10 +51,10 @@ final class AFMKitFoundationModelsMLXTests: XCTestCase {
         XCTAssertEqual(model.modelID, "/cache/model-a")
         XCTAssertEqual(model.executorConfiguration.defaultMaximumResponseTokens, 384)
         XCTAssertFalse(model.executorConfiguration.enablePrefixCaching)
-        XCTAssertTrue(model.capabilities.contains(.vision))
-        XCTAssertTrue(model.capabilities.contains(.reasoning))
-        XCTAssertFalse(model.capabilities.contains(.toolCalling))
-        XCTAssertTrue(model.capabilities.contains(.guidedGeneration))
+        XCTAssertTrue(model.executorConfiguration.supportsVision)
+        XCTAssertTrue(model.executorConfiguration.supportsReasoning)
+        XCTAssertFalse(model.executorConfiguration.supportsToolCalling)
+        XCTAssertTrue(model.executorConfiguration.supportsGuidedGeneration)
     }
 
     func testExecutorConfigurationIncludesModelAndRuntimeIdentity() {
