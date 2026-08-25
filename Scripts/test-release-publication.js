@@ -190,6 +190,22 @@ async function run() {
     assert.equal(result.tag.created, false);
     assert.equal(result.release.created, false);
 
+    fixture = fakeGitHub({
+        tagRef: { type: "commit", sha: SHA },
+        intentRef: { type: "commit", sha: OTHER_SHA },
+    });
+    await assert.rejects(
+        () => assertReleaseCandidate({
+            github: fixture.github,
+            owner: "owner",
+            repo: "repo",
+            tagName: "v1.2.3",
+            qualifiedSha: SHA,
+            defaultBranch: "main",
+        }),
+        /Publication intent.*not/
+    );
+
     fixture = fakeGitHub({ tagRef: { type: "commit", sha: OTHER_SHA } });
     await assert.rejects(
         () => ensureReleaseTag({

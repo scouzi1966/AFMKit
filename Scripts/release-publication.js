@@ -94,11 +94,8 @@ async function assertReleaseCandidate({
     validateQualifiedSha(qualifiedSha);
     releaseSemVer(tagName);
     const taggedSha = await getTagCommit(github, owner, repo, tagName);
-    if (taggedSha !== null) {
-        if (taggedSha !== qualifiedSha) {
-            throw new Error(`Tag ${tagName} already points to ${taggedSha}, not ${qualifiedSha}.`);
-        }
-        return { recoverableTag: true };
+    if (taggedSha !== null && taggedSha !== qualifiedSha) {
+        throw new Error(`Tag ${tagName} already points to ${taggedSha}, not ${qualifiedSha}.`);
     }
 
     const intentSha = await getPublicationIntentCommit(
@@ -107,13 +104,16 @@ async function assertReleaseCandidate({
         repo,
         tagName
     );
+    if (intentSha !== null && intentSha !== qualifiedSha) {
+        throw new Error(
+            `Publication intent for ${tagName} points to ${intentSha}, ` +
+            `not ${qualifiedSha}.`
+        );
+    }
+    if (taggedSha !== null) {
+        return { recoverableTag: true };
+    }
     if (intentSha !== null) {
-        if (intentSha !== qualifiedSha) {
-            throw new Error(
-                `Publication intent for ${tagName} points to ${intentSha}, ` +
-                `not ${qualifiedSha}.`
-            );
-        }
         return { recoverableTag: false, recoverablePublication: true };
     }
 
