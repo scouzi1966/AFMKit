@@ -248,6 +248,105 @@ async function run() {
     assert.match(redactedError.message, /fixture failure/);
     assert.equal(redactedError.message.includes(token), false);
 
+    let transportAttempts = 0;
+    let retryHeaders = null;
+    const retryingGitHub = createGitHubRESTClient({
+        token,
+        fetchImpl: async (_url, options) => {
+            transportAttempts += 1;
+            retryHeaders = options.headers;
+            if (transportAttempts === 1) {
+                throw new Error(`stale connection ${token}`);
+            }
+            return {
+                ok: true,
+                status: 200,
+                async text() {
+                    return JSON.stringify({ object: { type: "commit", sha: SHA } });
+                },
+            };
+        },
+    });
+    const retriedRef = await retryingGitHub.rest.git.getRef({
+        owner: "owner",
+        repo: "AFMKit",
+        ref: "heads/main",
+    });
+    assert.equal(transportAttempts, 2);
+    assert.equal(retriedRef.data.object.sha, SHA);
+    assert.equal(retryHeaders.Connection, "close");
+
+    for (const invoke of [
+        (client) => client.rest.git.createRef({
+            owner: "owner",
+            repo: "AFMKit",
+            ref: "refs/tags/fixture",
+            sha: SHA,
+        }),
+        (client) => client.rest.git.createTag({
+            owner: "owner",
+            repo: "AFMKit",
+            tag: "v1.2.3",
+            message: "AFMKit v1.2.3",
+            object: SHA,
+            type: "commit",
+        }),
+        (client) => client.rest.repos.createRelease({
+            owner: "owner",
+            repo: "AFMKit",
+            tag_name: "v1.2.3",
+            draft: false,
+            prerelease: false,
+        }),
+    ]) {
+        const requests = [];
+        const retryingWriteClient = createGitHubRESTClient({
+            token,
+            fetchImpl: async (url, options) => {
+                requests.push({ url, options });
+                if (requests.length === 1) {
+                    throw new Error("response lost after write may have completed");
+                }
+                return {
+                    ok: true,
+                    status: 201,
+                    async text() {
+                        return JSON.stringify({ sha: SHA, id: 1 });
+                    },
+                };
+            },
+        });
+        await invoke(retryingWriteClient);
+        assert.equal(requests.length, 2);
+        assert.equal(requests[0].options.method, "POST");
+        assert.equal(requests[1].options.method, "POST");
+        assert.equal(requests[0].options.body, requests[1].options.body);
+        assert.equal(requests[0].options.headers.Connection, "close");
+    }
+
+    let failedTransportAttempts = 0;
+    const failingGitHub = createGitHubRESTClient({
+        token,
+        fetchImpl: async () => {
+            failedTransportAttempts += 1;
+            throw new Error(`transport failure ${token}`);
+        },
+    });
+    await assert.rejects(
+        () => failingGitHub.rest.git.createRef({
+            owner: "owner",
+            repo: "AFMKit",
+            ref: "refs/tags/fixture",
+            sha: SHA,
+        }),
+        (error) => {
+            assert.match(error.message, /failed after retry/);
+            assert.equal(error.message.includes(token), false);
+            return true;
+        }
+    );
+    assert.equal(failedTransportAttempts, 2);
+
     process.stdout.write("Local release ordering, recovery, and credential-safety checks passed.\n");
 }
 
