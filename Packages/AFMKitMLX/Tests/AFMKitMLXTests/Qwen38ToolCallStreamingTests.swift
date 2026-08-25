@@ -214,7 +214,11 @@ struct Qwen38ToolCallStreamingTests {
             function: .init(name: "set_alarm", arguments: #"{"hour":"7"}"#)
         )
 
-        let native = MLXModelService.coerceArgumentTypes(raw, tools: [tool])
+        let native = MLXModelService.coerceArgumentTypes(
+            raw,
+            tools: [tool],
+            repairArguments: false
+        )
         let repaired = MLXModelService.coerceArgumentTypes(
             raw,
             tools: [tool],
@@ -293,6 +297,7 @@ struct Qwen38ToolCallStreamingTests {
             toolCallEndTag: "</tool_call>",
             toolCallParser: parser,
             tools: tools,
+            repairToolArguments: false,
             applyFixToolArgs: { $0 },
             remapSingleKey: { key, _ in key }
         )

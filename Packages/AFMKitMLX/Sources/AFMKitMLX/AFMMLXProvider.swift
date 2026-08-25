@@ -513,6 +513,7 @@ struct AFMMLXRawToolStreamFallback {
                 toolCallEndTag: endTag,
                 toolCallParser: toolCallParser,
                 tools: tools,
+                repairToolArguments: false,
                 applyFixToolArgs: applyFixToolArgs,
                 remapSingleKey: remapSingleKey
             )

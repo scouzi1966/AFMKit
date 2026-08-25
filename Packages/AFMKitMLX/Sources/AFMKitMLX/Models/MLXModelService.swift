@@ -4577,12 +4577,19 @@ public final class MLXModelService: @unchecked Sendable {
 
     /// Coerce string argument values to match the tool's declared schema types.
     /// XML tool call parsers emit all values as strings; this converts "true" → true, "5" → 5, etc.
-    /// Schema repair is deliberately opt-in: native parsers must preserve omissions
-    /// and malformed values so downstream validation can report the model's output.
+    /// Also fills in default values for missing required parameters (model omission fix).
     public static func coerceArgumentTypes(
         _ rtc: ResponseToolCall,
+        tools: [RequestTool]?
+    ) -> ResponseToolCall {
+        coerceArgumentTypes(rtc, tools: tools, repairArguments: true)
+    }
+
+    /// Internal strict path can disable repairs so native parsers preserve model output.
+    static func coerceArgumentTypes(
+        _ rtc: ResponseToolCall,
         tools: [RequestTool]?,
-        repairArguments: Bool = false
+        repairArguments: Bool
     ) -> ResponseToolCall {
         guard let tools, !tools.isEmpty else { return rtc }
         guard let tool = tools.first(where: { $0.function.name == rtc.function.name }),

@@ -30,7 +30,7 @@ public final class ToolCallStreamingRuntime {
     private let toolCallEndTag: String
     private let toolCallParser: String?
     private let tools: [RequestTool]?
-    private let repairToolArguments: Bool
+    private var repairToolArguments: Bool
     public private(set) var paramNameMapping: [String: String]
     private let applyFixToolArgs: @Sendable (ResponseToolCall) -> ResponseToolCall
     private let remapSingleKey: @Sendable (String, String) -> String
@@ -56,7 +56,6 @@ public final class ToolCallStreamingRuntime {
         toolCallEndTag: String,
         toolCallParser: String?,
         tools: [RequestTool]?,
-        repairToolArguments: Bool = false,
         applyFixToolArgs: @escaping @Sendable (ResponseToolCall) -> ResponseToolCall,
         remapSingleKey: @escaping @Sendable (String, String) -> String
     ) {
@@ -64,13 +63,12 @@ public final class ToolCallStreamingRuntime {
         self.toolCallEndTag = toolCallEndTag
         self.toolCallParser = toolCallParser
         self.tools = tools
-        self.repairToolArguments = repairToolArguments
+        self.repairToolArguments = true
         self.applyFixToolArgs = applyFixToolArgs
         self.remapSingleKey = remapSingleKey
 
         var mapping = [String: String]()
-        let shouldRepairArgumentNames = repairToolArguments || toolCallParser == "afm_adaptive_xml"
-        if shouldRepairArgumentNames, let tools {
+        if let tools {
             for tool in tools {
                 if let paramsAny = tool.function.parameters?.toSendable() as? [String: Any],
                    let props = paramsAny["properties"] as? [String: Any] {
@@ -84,6 +82,29 @@ public final class ToolCallStreamingRuntime {
             }
         }
         self.paramNameMapping = mapping
+    }
+
+    convenience init(
+        toolCallStartTag: String,
+        toolCallEndTag: String,
+        toolCallParser: String?,
+        tools: [RequestTool]?,
+        repairToolArguments: Bool,
+        applyFixToolArgs: @escaping @Sendable (ResponseToolCall) -> ResponseToolCall,
+        remapSingleKey: @escaping @Sendable (String, String) -> String
+    ) {
+        self.init(
+            toolCallStartTag: toolCallStartTag,
+            toolCallEndTag: toolCallEndTag,
+            toolCallParser: toolCallParser,
+            tools: tools,
+            applyFixToolArgs: applyFixToolArgs,
+            remapSingleKey: remapSingleKey
+        )
+        self.repairToolArguments = repairToolArguments
+        if !repairToolArguments, toolCallParser != "afm_adaptive_xml" {
+            self.paramNameMapping = [:]
+        }
     }
 
     public func process(piece: String) -> ToolCallStreamingOutput {

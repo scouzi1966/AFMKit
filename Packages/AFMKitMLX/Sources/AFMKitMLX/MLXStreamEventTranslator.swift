@@ -236,7 +236,8 @@ public struct MLXStreamEventTranslator {
         for (fallbackIndex, rawCompletedCall) in completedCalls.enumerated() {
             let completedCall = MLXModelService.coerceArgumentTypes(
                 rawCompletedCall,
-                tools: requestTools
+                tools: requestTools,
+                repairArguments: false
             )
             let index = completedCall.index ?? fallbackIndex
             let existing = tools[index]
@@ -306,7 +307,11 @@ public struct MLXStreamEventTranslator {
                 arguments: arguments
             )
         )
-        return MLXModelService.coerceArgumentTypes(call, tools: requestTools)
+        return MLXModelService.coerceArgumentTypes(
+            call,
+            tools: requestTools,
+            repairArguments: false
+        )
             .function.arguments
     }
 }
