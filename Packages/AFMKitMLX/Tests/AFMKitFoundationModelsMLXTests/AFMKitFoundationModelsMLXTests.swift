@@ -255,18 +255,16 @@ final class AFMKitFoundationModelsMLXTests: XCTestCase {
         XCTAssertEqual(adapted.options.seed, 73)
     }
 
-    func testRequestLeavesUnspecifiedSamplingUnset() throws {
-        let adapted = try adaptedRequest(
-            generationOptions: GenerationOptions(
-                temperature: 0.45,
-                maximumResponseTokens: 64
-            )
+    func testSamplingPlanLeavesUnspecifiedSamplingUnset() {
+        let sampling = AFMFoundationModelsRequestAdapter.samplingPlan(
+            temperature: 0.45,
+            selection: nil
         )
 
-        XCTAssertEqual(adapted.options.temperature, 0.45)
-        XCTAssertNil(adapted.options.topK)
-        XCTAssertNil(adapted.options.topP)
-        XCTAssertNil(adapted.options.seed)
+        XCTAssertEqual(sampling.temperature, 0.45)
+        XCTAssertNil(sampling.topK)
+        XCTAssertNil(sampling.topP)
+        XCTAssertNil(sampling.seed)
     }
 
     func testEventAdapterCoalescesAppendText() {

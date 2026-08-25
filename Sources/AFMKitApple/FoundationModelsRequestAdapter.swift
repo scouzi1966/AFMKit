@@ -22,6 +22,19 @@ struct AFMRuntimeSymbolResolver: Sendable {
     }
 }
 
+enum AFMFoundationSamplingSelection: Equatable, Sendable {
+    case greedy
+    case randomTopK(Int, seed: Int?)
+    case randomProbabilityThreshold(Double, seed: Int?)
+}
+
+struct AFMFoundationSamplingPlan: Equatable, Sendable {
+    let temperature: Double?
+    let topP: Double?
+    let topK: Int?
+    let seed: Int?
+}
+
 @available(macOS 27.0, *)
 public enum AFMFoundationModelsRequestAdapter {
     public static func request<Model: AFMFoundationModelsModelConfiguration>(
@@ -40,24 +53,31 @@ public enum AFMFoundationModelsRequestAdapter {
         model: Model,
         metadataAccessorAvailable: Bool
     ) throws -> AFMRequest {
-        var temperature = request.generationOptions.temperature
-        var topP: Double?
-        var topK: Int?
-        var seed: Int?
+        let samplingSelection: AFMFoundationSamplingSelection?
         if let mode = request.generationOptions.samplingMode?.kind {
             switch mode {
             case .greedy:
-                temperature = 0
+                samplingSelection = .greedy
             case .randomTopK(let value, seed: let randomSeed):
-                topK = value
-                seed = randomSeed.flatMap { Int(exactly: $0) }
+                samplingSelection = .randomTopK(
+                    value,
+                    seed: randomSeed.flatMap { Int(exactly: $0) }
+                )
             case .randomProbabilityThreshold(let value, seed: let randomSeed):
-                topP = value
-                seed = randomSeed.flatMap { Int(exactly: $0) }
+                samplingSelection = .randomProbabilityThreshold(
+                    value,
+                    seed: randomSeed.flatMap { Int(exactly: $0) }
+                )
             @unknown default:
-                break
+                samplingSelection = nil
             }
+        } else {
+            samplingSelection = nil
         }
+        let sampling = samplingPlan(
+            temperature: request.generationOptions.temperature,
+            selection: samplingSelection
+        )
 
         let toolCallingMode: String?
         switch request.generationOptions.toolCallingMode?.kind {
@@ -104,16 +124,52 @@ public enum AFMFoundationModelsRequestAdapter {
             messages: try messages(from: request.transcript),
             tools: try tools(from: definitions),
             options: AFMGenerationOptions(
-                temperature: temperature,
+                temperature: sampling.temperature,
                 maximumResponseTokens: request.generationOptions.maximumResponseTokens
                     ?? model.defaultMaximumResponseTokens,
-                topP: topP,
-                topK: topK,
-                seed: seed,
+                topP: sampling.topP,
+                topK: sampling.topK,
+                seed: sampling.seed,
                 responseConstraint: try responseConstraint(from: request.schema)
             ),
             metadata: metadata
         )
+    }
+
+    static func samplingPlan(
+        temperature: Double?,
+        selection: AFMFoundationSamplingSelection?
+    ) -> AFMFoundationSamplingPlan {
+        switch selection {
+        case .greedy:
+            return AFMFoundationSamplingPlan(
+                temperature: 0,
+                topP: nil,
+                topK: nil,
+                seed: nil
+            )
+        case .randomTopK(let value, seed: let seed):
+            return AFMFoundationSamplingPlan(
+                temperature: temperature,
+                topP: nil,
+                topK: value,
+                seed: seed
+            )
+        case .randomProbabilityThreshold(let value, seed: let seed):
+            return AFMFoundationSamplingPlan(
+                temperature: temperature,
+                topP: value,
+                topK: nil,
+                seed: seed
+            )
+        case nil:
+            return AFMFoundationSamplingPlan(
+                temperature: temperature,
+                topP: nil,
+                topK: nil,
+                seed: nil
+            )
+        }
     }
 
     public static func messages(from transcript: Transcript) throws -> [AFMMessage] {
