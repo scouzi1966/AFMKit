@@ -56,20 +56,31 @@ function createGitHubRESTClient({ token, fetchImpl = globalThis.fetch, apiBase =
 
     async function request(method, endpoint, body) {
         let response;
-        try {
-            response = await fetchImpl(`${apiBase}${endpoint}`, {
-                method,
-                headers: {
-                    Accept: "application/vnd.github+json",
-                    Authorization: `Bearer ${token}`,
-                    "User-Agent": "AFMKit-local-release",
-                    "X-GitHub-Api-Version": "2022-11-28",
-                    ...(body === undefined ? {} : { "Content-Type": "application/json" }),
-                },
-                body: body === undefined ? undefined : JSON.stringify(body),
-            });
-        } catch (error) {
-            throw new Error(`GitHub API request failed: ${redacted(error.message, [token])}`);
+        let transportError;
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+            try {
+                response = await fetchImpl(`${apiBase}${endpoint}`, {
+                    method,
+                    headers: {
+                        Accept: "application/vnd.github+json",
+                        Authorization: `Bearer ${token}`,
+                        Connection: "close",
+                        "User-Agent": "AFMKit-local-release",
+                        "X-GitHub-Api-Version": "2022-11-28",
+                        ...(body === undefined ? {} : { "Content-Type": "application/json" }),
+                    },
+                    body: body === undefined ? undefined : JSON.stringify(body),
+                });
+                transportError = null;
+                break;
+            } catch (error) {
+                transportError = error;
+            }
+        }
+        if (transportError) {
+            throw new Error(
+                `GitHub API request failed after retry: ${redacted(transportError.message, [token])}`
+            );
         }
 
         const text = await response.text();

@@ -248,6 +248,31 @@ async function run() {
     assert.match(redactedError.message, /fixture failure/);
     assert.equal(redactedError.message.includes(token), false);
 
+    let transportAttempts = 0;
+    const retryingGitHub = createGitHubRESTClient({
+        token,
+        fetchImpl: async () => {
+            transportAttempts += 1;
+            if (transportAttempts === 1) {
+                throw new Error(`stale connection ${token}`);
+            }
+            return {
+                ok: true,
+                status: 200,
+                async text() {
+                    return JSON.stringify({ object: { type: "commit", sha: SHA } });
+                },
+            };
+        },
+    });
+    const retriedRef = await retryingGitHub.rest.git.getRef({
+        owner: "owner",
+        repo: "AFMKit",
+        ref: "heads/main",
+    });
+    assert.equal(transportAttempts, 2);
+    assert.equal(retriedRef.data.object.sha, SHA);
+
     process.stdout.write("Local release ordering, recovery, and credential-safety checks passed.\n");
 }
 
