@@ -16,8 +16,15 @@ public final class AFMFoundationModelSessionCoordinator<ProviderID: Hashable & S
 
     private var foundationSession: FoundationSessionSlot?
     private var preservedHistory: [Transcript.Entry] = []
+    private let transcriptSnapshot: (LanguageModelSession) -> [Transcript.Entry]
 
-    public init() {}
+    public init() {
+        transcriptSnapshot = { Array($0.transcript) }
+    }
+
+    init(transcriptSnapshot: @escaping (LanguageModelSession) -> [Transcript.Entry]) {
+        self.transcriptSnapshot = transcriptSnapshot
+    }
 
     public func dynamicProfileSession<Model: LanguageModel>(
         for provider: ProviderID,
@@ -33,7 +40,7 @@ public final class AFMFoundationModelSessionCoordinator<ProviderID: Hashable & S
         }
 
         if let existing = foundationSession {
-            preservedHistory = Array(existing.session.transcript)
+            preservedHistory = transcriptSnapshot(existing.session)
             foundationSession = nil
         }
 
@@ -88,7 +95,7 @@ public final class AFMFoundationModelSessionCoordinator<ProviderID: Hashable & S
 
     public func invalidate(for provider: ProviderID) {
         guard let current = foundationSession, current.provider == provider else { return }
-        preservedHistory = Array(current.session.transcript)
+        preservedHistory = transcriptSnapshot(current.session)
         foundationSession = nil
     }
 

@@ -28,7 +28,13 @@ final class FoundationModelSessionCoordinatorTests: XCTestCase {
     }
 
     func testDynamicProfileSessionRecreatesWhenProviderChanges() {
-        let coordinator = AFMFoundationModelSessionCoordinator<String>()
+        var transcriptSnapshotCount = 0
+        let coordinator = AFMFoundationModelSessionCoordinator<String>(
+            transcriptSnapshot: { _ in
+                transcriptSnapshotCount += 1
+                return []
+            }
+        )
         let first = coordinator.dynamicProfileSession(
             for: "apple",
             signature: "shared",
@@ -46,6 +52,7 @@ final class FoundationModelSessionCoordinatorTests: XCTestCase {
         )
 
         XCTAssertFalse(first === second)
+        XCTAssertEqual(transcriptSnapshotCount, 1)
     }
 
     func testSimpleSessionReusesExactProviderAndSignature() {
