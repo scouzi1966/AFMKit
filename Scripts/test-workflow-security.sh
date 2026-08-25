@@ -124,6 +124,10 @@ assert release_validator.count("run-xctest-targets.sh") == 1
 assert release_validator.count("--disable-xctest") == 1
 assert 'target.get("type") == "test"' in isolated_xctest
 assert '--filter "$test_target"' in isolated_xctest
+assert 'CASE_ISOLATED_TARGET="AFMKitFoundationModelsMLXTests"' in isolated_xctest
+assert '/usr/bin/awk -v prefix="${test_target}."' in isolated_xctest
+assert '--filter "$test_case"' in isolated_xctest
+assert "--skip-build" in isolated_xctest
 assert "--disable-swift-testing" in isolated_xctest
 assert "--disable-automatic-resolution" in isolated_xctest
 assert "-c release" in isolated_xctest
