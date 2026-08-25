@@ -283,6 +283,7 @@ let package = Package(
         .library(name: "AFMKitDwarfStar", targets: ["AFMKitDwarfStar"]),
         .library(name: "AFMKitFoundationModelsDwarfStar", targets: ["AFMKitFoundationModelsDwarfStar"]),
         .library(name: "AFMKitMLX", targets: ["AFMKitMLX"]),
+        .library(name: "AFMKitMLXAudio", targets: ["AFMKitMLXAudio"]),
         .library(name: "AFMKitFoundationModelsMLX", targets: ["AFMKitFoundationModelsMLX"]),
         .executable(name: "AFMKitTool", targets: ["AFMKitTool"]),
     ],
@@ -294,6 +295,7 @@ let package = Package(
         .target(name: "AFMKitDwarfStar"),
         .target(name: "AFMKitFoundationModelsDwarfStar"),
         .target(name: "AFMKitMLX"),
+        .target(name: "AFMKitMLXAudio"),
         .target(name: "AFMKitFoundationModelsMLX"),
         .executableTarget(name: "AFMKitTool"),
     ]
@@ -302,7 +304,7 @@ SWIFT
 for MODULE in \
     AFMKitCore AFMOpenAICompat AFMKitInference AFMKitApple \
     AFMKitDwarfStar AFMKitFoundationModelsDwarfStar \
-    AFMKitMLX AFMKitFoundationModelsMLX; do
+    AFMKitMLX AFMKitMLXAudio AFMKitFoundationModelsMLX; do
     mkdir -p "$AGGREGATE_FIXTURE/Sources/$MODULE"
     printf '// fixture\n' > "$AGGREGATE_FIXTURE/Sources/$MODULE/Fixture.swift"
     printf '{}\n' > "$AGGREGATE_FIXTURE/docs/api-baselines/$MODULE.symbols.json"
@@ -322,6 +324,8 @@ grep -qx "AFMKitApple" "$AGGREGATE_FIXTURE/checker-calls" \
     || fail "aggregate API gate omitted AFMKitApple"
 grep -qx "AFMKitDwarfStar" "$AGGREGATE_FIXTURE/checker-calls" \
     || fail "aggregate API gate omitted AFMKitDwarfStar"
+grep -qx "AFMKitMLXAudio" "$AGGREGATE_FIXTURE/checker-calls" \
+    || fail "aggregate API gate omitted AFMKitMLXAudio"
 grep -qx "AFMKitFoundationModelsDwarfStar" "$AGGREGATE_FIXTURE/checker-calls" \
     || fail "aggregate API gate omitted AFMKitFoundationModelsDwarfStar"
 PASSED=$((PASSED + 1))

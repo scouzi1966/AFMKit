@@ -14,6 +14,7 @@ flowchart TD
         DS["AFMKitDwarfStar"]
         CDS["CDwarfStar"]
         MLX["AFMKitMLX"]
+        Audio["AFMKitMLXAudio"]
         FMMLX["AFMKitFoundationModelsMLX"]
         CGram["AFMXGrammar"]
     end
@@ -24,6 +25,7 @@ flowchart TD
     App -. optional service .-> Services
     App -. provider .-> Apple
     App -. provider .-> MLX
+    App -. audio synthesis .-> Audio
     App -. provider .-> DS
     App -. macOS 27 bridge .-> FMMLX
     Apple --> Core
@@ -33,6 +35,7 @@ flowchart TD
     MLX --> Core
     MLX --> OAI
     MLX --> CGram
+    Audio --> MLX
     FMMLX --> Core
     FMMLX --> MLX
     DS --> Core
@@ -47,7 +50,7 @@ from linking into a consumer; SwiftPM still resolves the one root dependency gra
 
 | Published package | Source manifest | Products | Authentication |
 | --- | --- | --- | --- |
-| `AFMKit` | `Package.swift` | All fourteen Core, Apple, service, MLX, DwarfStar, and Foundation Models bridge products | External dependencies are exact-pinned in one root lock and must be public before release. |
+| `AFMKit` | `Package.swift` | All fifteen Core, Apple, service, MLX, DwarfStar, and Foundation Models bridge products | External dependencies are exact-pinned in one root lock and must be public before release. |
 
 Provider directories organize implementation source only. Release qualification
 builds every product from one staged root tag and compares the fresh graph with
@@ -67,6 +70,7 @@ the committed root lock.
 | `AFMKitVision` | `AFMKit` | Apple Vision/PDF document analysis. | OCR, tables, barcodes, classification and saliency. |
 | `AFMKitServices` | `AFMKit` | Compatibility umbrella for all four service modules. | Re-exports the independently selectable products. |
 | `AFMKitMLX` | `AFMKit` | Native local MLX provider and advanced serving surface. | `AFMMLXProviderFactory`, `AFMMLXModel`, `AFMMLXRuntimeConfiguration`. |
+| `AFMKitMLXAudio` | `AFMKit` | Local MLX speech generation and shared audio-model management. | `AFMMLXAudioRuntime`, `AFMMLXAudioModelStore`, request/result/stream types. |
 | `AFMKitFoundationModelsMLX` | `AFMKit` | macOS 27 custom `LanguageModel` bridge backed by MLX. | `MLXLanguageModel`, `MLXLanguageModelExecutor`, projection plan. |
 | `AFMKitDwarfStar` | `AFMKit` | DwarfStar/DS4 local provider. | `AFMDwarfStarProviderFactory`, `AFMDwarfStarModel`, runtime configuration. |
 | `AFMKitFoundationModelsDwarfStar` | `AFMKit` | macOS 27 custom `LanguageModel` bridge backed by DwarfStar. | `DwarfStarLanguageModel`, `DwarfStarLanguageModelExecutor`. |

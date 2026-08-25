@@ -277,6 +277,10 @@ public struct AFMMLXModelStore: Sendable {
         "*.safetensors",
         "*.json",
         "*.jinja",
+        "*.txt",
+        "*.wav",
+        "*.model",
+        "tokenizer*",
         "tiktoken.model"
     ]
 

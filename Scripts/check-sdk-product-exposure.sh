@@ -42,8 +42,8 @@ if mode == "xcode27" and compiler < (6, 4):
 
 document = json.loads((root / "root.json").read_text(encoding="utf-8"))
 expected = {
-    "xcode26": {"AFMKitCore", "AFMOpenAICompat", "AFMKitInference", "AFMKitEmbeddings", "AFMKitSpeech", "AFMKitSpeechSynthesis", "AFMKitVision", "AFMKitServices", "AFMEvalKit", "AFMKitDwarfStar", "AFMKitMLX"},
-    "xcode27": {"AFMKitCore", "AFMOpenAICompat", "AFMKitInference", "AFMKitEmbeddings", "AFMKitSpeech", "AFMKitSpeechSynthesis", "AFMKitVision", "AFMKitServices", "AFMEvalKit", "AFMKitApple", "AFMKitDwarfStar", "AFMKitFoundationModelsDwarfStar", "AFMKitMLX", "AFMKitFoundationModelsMLX"},
+    "xcode26": {"AFMKitCore", "AFMOpenAICompat", "AFMKitInference", "AFMKitEmbeddings", "AFMKitSpeech", "AFMKitSpeechSynthesis", "AFMKitVision", "AFMKitServices", "AFMEvalKit", "AFMKitDwarfStar", "AFMKitMLX", "AFMKitMLXAudio"},
+    "xcode27": {"AFMKitCore", "AFMOpenAICompat", "AFMKitInference", "AFMKitEmbeddings", "AFMKitSpeech", "AFMKitSpeechSynthesis", "AFMKitVision", "AFMKitServices", "AFMEvalKit", "AFMKitApple", "AFMKitDwarfStar", "AFMKitFoundationModelsDwarfStar", "AFMKitMLX", "AFMKitMLXAudio", "AFMKitFoundationModelsMLX"},
 }[mode]
 
 products = {product["name"] for product in document.get("products", [])}

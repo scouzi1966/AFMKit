@@ -75,7 +75,7 @@ for dependency in package.get("dependencies", []):
     if set(entry.get("requirement", {})) != {"exact"}:
         raise SystemExit("AFMKit dependencies must use exact versions.")
 targets = {target.get("name") for target in package.get("targets", [])}
-required_vendored_targets = {"Cmlx", "MLX", "MLXLMCommon", "MLXLLM", "MLXVLM"}
+required_vendored_targets = {"Cmlx", "MLX", "MLXLMCommon", "MLXLLM", "MLXVLM", "MLXAudioCore", "MLXAudioCodecs", "MLXAudioTTS"}
 missing = required_vendored_targets - targets
 if missing:
     raise SystemExit(f"AFMKit is missing flattened MLX targets: {sorted(missing)}")
@@ -83,7 +83,7 @@ products = {product.get("name") for product in package.get("products", [])}
 expected = {
     "AFMKitCore", "AFMOpenAICompat", "AFMKitInference", "AFMKitApple",
     "AFMKitEmbeddings", "AFMKitSpeech", "AFMKitSpeechSynthesis",
-    "AFMKitVision", "AFMKitServices", "AFMEvalKit", "AFMKitMLX",
+    "AFMKitVision", "AFMKitServices", "AFMEvalKit", "AFMKitMLX", "AFMKitMLXAudio",
     "AFMKitFoundationModelsMLX", "AFMKitDwarfStar",
     "AFMKitFoundationModelsDwarfStar",
 }

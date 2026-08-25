@@ -1,5 +1,36 @@
 # Runtime Flows
 
+## MLX audio model and synthesis flow
+
+```mermaid
+sequenceDiagram
+    participant Host as Host UI
+    participant Store as AFMMLXAudioModelStore
+    participant Shared as AFMMLXModelStore / Hub cache
+    participant Runtime as AFMMLXAudioRuntime
+    participant Audio as Vendored mlx-audio
+
+    Host->>Store: isDownloaded(modelID)
+    alt user approves missing model
+        Host->>Store: download(modelID, progress)
+        Store->>Shared: downloadTTSModelPackage
+        Shared-->>Store: shared snapshot reference
+    end
+    Host->>Runtime: load(modelID)
+    Runtime->>Store: runtimeLocation(modelID)
+    Store-->>Runtime: repository ID + exact cache root
+    Runtime->>Audio: load from existing snapshot
+    Host->>Runtime: synthesize or stream(request)
+    Runtime-->>Host: samples, metrics, completion
+    Host->>Runtime: cancel or unload
+```
+
+The host owns the consent prompt, selected model, and presentation state.
+AFMKit owns discovery, download patterns and progress, cache resolution,
+import-reference staging, deletion, model loading, generation, cancellation,
+telemetry, and cache release. Loading defaults to local-only and must not perform
+an unapproved second download.
+
 ## Provider-neutral generation
 
 ```mermaid

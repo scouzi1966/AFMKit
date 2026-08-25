@@ -13,6 +13,7 @@ root `Package.resolved` are authoritative for exact resolution.
 flowchart TB
     Core["AFMKitCore"]
     MLX["AFMKitMLX"]
+    Audio["AFMKitMLXAudio"]
     DS["AFMKitDwarfStar"]
     FMMLX["AFMKitFoundationModelsMLX"]
     UpstreamMLX["ml-explore/mlx-swift\nupstream 0.31.6 lineage"]
@@ -21,6 +22,7 @@ flowchart TB
     LMPatches["maclocal-api/Scripts/patches\nAFM LM source of truth"]
     MLXSwift["vendor/MLX/mlx-swift\nsource snapshot"]
     MLXLM["vendor/MLX/mlx-swift-lm\nsource snapshot"]
+    MLXAudio["vendor/MLX/mlx-audio-swift\nv0.1.2 source subset"]
     Transformers["huggingface/swift-transformers\nexact 1.3.3"]
     HF["huggingface/swift-huggingface\nexact 0.9.0 + Xet trait"]
     Xet["huggingface/swift-xet\n0.2.3"]
@@ -33,6 +35,8 @@ flowchart TB
     DS --> Core
     MLX --> MLXSwift
     MLX --> MLXLM
+    Audio --> MLX
+    Audio --> MLXAudio
     UpstreamMLX --> MLXSwift
     RuntimePatches --> MLXSwift
     UpstreamLM --> MLXLM
@@ -81,6 +85,7 @@ without updating the checked-in patch catalog and focused runtime tests.
 | --- | --- | --- | --- | --- |
 | `vendor/MLX/mlx-swift` | Repository-relative source snapshot | `AFMKitMLX` | Upstream MLX, C bridge, Swift bindings, and AFM runtime compatibility delta. | Updates require provenance, license review, Metal/runtime regression tests, and qualification in the same PR. |
 | `vendor/MLX/mlx-swift-lm` | Repository-relative source snapshot | `AFMKitMLX` | Language-model sources generated from the maclocal-api MLX LM patch catalog. | Do not edit independently; public app code must not import it directly. |
+| `vendor/MLX/mlx-audio-swift` | Source subset from upstream tag `v0.1.2` (`fcbd04d`) | `AFMKitMLXAudio` | Audio core, codecs, and TTS implementations sharing AFMKit's single MLX graph. | Public apps import only `AFMKitMLXAudio`; snapshot updates require provenance, license review, synthesis tests, and graph qualification. |
 | [`huggingface/swift-transformers`](https://github.com/huggingface/swift-transformers) | Exact `1.3.3` | `AFMKitMLX` | Tokenizers and Hub facilities. | Provider manifest and fresh graph must agree with the qualified lock. |
 | [`huggingface/swift-huggingface`](https://github.com/huggingface/swift-huggingface) | Exact `0.9.0`, Xet trait | MLX, DwarfStar | Hub repository metadata/download. | Network/cache behavior belongs to provider layer. |
 | [`huggingface/swift-xet`](https://github.com/huggingface/swift-xet) | Exact `0.2.3` | DwarfStar; also Hub trait path | High-throughput Hub transport. | Retry/resume and filesystem-space behavior need integration tests. |

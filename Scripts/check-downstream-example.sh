@@ -81,8 +81,8 @@ while IFS= read -r product; do
     TOTAL=$((TOTAL + 1))
 done < "$CONSUMER/validator-products.txt"
 
-[[ "$TOTAL" == "14" ]] || {
-    echo "Downstream qualification built $TOTAL products; expected 14." >&2
+[[ "$TOTAL" == "15" ]] || {
+    echo "Downstream qualification built $TOTAL products; expected 15." >&2
     exit 1
 }
-echo "AFMKit downstream qualification built all fourteen products from one exact tag."
+echo "AFMKit downstream qualification built all fifteen products from one exact tag."
