@@ -38,6 +38,7 @@ print(suite.name)
 EOF
 
 SCRATCH="$SANDBOX/build"
+cp "$ROOT/Package.resolved" "$SANDBOX/Package.resolved"
 /usr/bin/xcrun --toolchain XcodeDefault swift build \
     --package-path "$SANDBOX" \
     --scratch-path "$SCRATCH" \

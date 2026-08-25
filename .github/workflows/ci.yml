@@ -48,7 +48,11 @@ jobs:
           for module in AFMEvalKit AFMKitApple AFMKitCore AFMKitEmbeddings AFMKitInference AFMKitServices AFMKitSpeech AFMKitSpeechSynthesis AFMKitVision AFMOpenAICompat; do
             Scripts/check-afmkit-core-api.sh "$module"
           done
-      - name: Run untrusted candidate core tests
+      - name: Run untrusted candidate XCTest suite
+        env:
+          AFMKIT_BUILD_ROOT: ${{ runner.temp }}/afmkit-public-tests
+        run: Scripts/run-xctest-targets.sh
+      - name: Run untrusted candidate Swift Testing suite
         env:
           AFMKIT_BUILD_ROOT: ${{ runner.temp }}/afmkit-public-tests
         run: >-
@@ -56,6 +60,8 @@ jobs:
           --package-path "$GITHUB_WORKSPACE"
           --scratch-path "$AFMKIT_BUILD_ROOT"
           --build-system native
+          --disable-xctest
+          -c release
       - name: Check unauthenticated Core package boundary
         run: Scripts/check-unauthenticated-core-consumer.sh
       - name: Check optional Apple service isolation
@@ -74,8 +80,6 @@ jobs:
         run: Scripts/test-release-qualification.sh
       - name: Test idempotent release publication
         run: node Scripts/test-release-publication.js
-      - name: Test provider mirror publication
-        run: Scripts/test-provider-publication.sh
       - name: Test workflow trust boundaries
         run: Scripts/test-workflow-security.sh
       - name: Check script syntax and whitespace

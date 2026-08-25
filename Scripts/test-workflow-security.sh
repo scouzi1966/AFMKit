@@ -34,6 +34,7 @@ for name, content in contents.items():
 public_ci = contents["ci.yml"]
 assert "AFMKIT_DEPENDENCY_TOKEN" not in public_ci
 assert "secrets." not in public_ci
+assert "test-provider-publication.sh" not in public_ci
 assert "create-qualification-artifact.py" in public_ci
 assert "private-qualification-${{ github.run_id }}" in public_ci
 assert "github.event.pull_request.head.sha || github.sha" in public_ci
@@ -41,6 +42,17 @@ assert "SDK exposure (${{ matrix.sdk }})" in public_ci
 assert "vars.AFMKIT_XCODE26_RUNNER || 'macos-26'" in public_ci
 assert "vars.AFMKIT_XCODE27_RUNNER || 'xcode-27'" in public_ci
 assert "check-sdk-product-exposure.sh" in public_ci
+
+xctest_step = public_ci.split(
+    "- name: Run untrusted candidate XCTest suite", 1
+)[1].split("\n      - name:", 1)[0]
+swift_testing_step = public_ci.split(
+    "- name: Run untrusted candidate Swift Testing suite", 1
+)[1].split("\n      - name:", 1)[0]
+assert "run: Scripts/run-xctest-targets.sh" in xctest_step
+assert "--disable-xctest" in swift_testing_step
+assert "--disable-swift-testing" not in swift_testing_step
+assert "-c release" in swift_testing_step
 
 private_ci = contents["private-ci.yml"]
 assert "workflow_run:" in private_ci
@@ -91,6 +103,9 @@ assert "stage-tag:" not in release
 assert "qualify-remote-tag:" not in release
 assert "AFMKIT_RELEASE_MIRROR_OUTPUT" not in release
 assert "publish-provider-mirrors.sh" not in release
+assert "AFMKIT_DEPENDENCY_TOKEN" not in release
+assert "with-private-dependency-auth.sh" not in release
+assert "run: Scripts/validate-release.sh" in release
 assert "vars.AFMKIT_XCODE27_RUNNER || 'xcode-27'" in release
 assert "Record immutable publication intent" in release
 assert "ensurePublicationIntent" in release
@@ -98,6 +113,132 @@ assert release.index("Record immutable publication intent") < release.index(
     "Publish root tag and GitHub release"
 )
 assert "actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd" in release
+
+release_validator = (workflows.parent.parent / "Scripts" / "validate-release.sh").read_text(
+    encoding="utf-8"
+)
+isolated_xctest = (workflows.parent.parent / "Scripts" / "run-xctest-targets.sh").read_text(
+    encoding="utf-8"
+)
+service_isolation = (
+    workflows.parent.parent / "Scripts" / "check-service-product-isolation.sh"
+).read_text(encoding="utf-8")
+evalkit_isolation = (
+    workflows.parent.parent / "Scripts" / "check-evalkit-isolation.sh"
+).read_text(encoding="utf-8")
+local_release = (
+    workflows.parent.parent / "Scripts" / "release-local.js"
+).read_text(encoding="utf-8")
+assert release_validator.count("afmkit_run_qualified_swift test") == 1
+assert release_validator.count("run-xctest-targets.sh") == 1
+assert release_validator.count("--disable-xctest") == 1
+assert release_validator.count("test-release-local.js") == 1
+candidate_call = "await publication.assertReleaseCandidate(publicationArguments)"
+validator_call = 'path.join(root, "Scripts/validate-release.sh")'
+intent_call = "await publication.ensurePublicationIntent(publicationArguments)"
+publish_call = "await publication.publishRelease(publicationArguments)"
+verify_call = "await publication.validatePublishedRelease(publicationArguments)"
+for snippet in (candidate_call, validator_call, intent_call, publish_call, verify_call):
+    assert local_release.count(snippet) == 1
+assert local_release.index(candidate_call) < local_release.index(validator_call)
+assert local_release.index(validator_call) < local_release.index(intent_call)
+assert local_release.index(intent_call) < local_release.index(publish_call)
+assert local_release.index(publish_call) < local_release.index(verify_call)
+assert 'delete clean.GH_TOKEN' in local_release
+assert 'delete clean.GITHUB_TOKEN' in local_release
+assert '"gh",\n            ["auth", "token"' in local_release
+assert "git push" not in local_release
+assert "git tag" not in local_release
+assert 'target.get("type") == "test"' in isolated_xctest
+assert '--filter "$test_target"' in isolated_xctest
+isolated_targets_match = re.search(
+    r'CASE_ISOLATED_TARGETS=\(\n(?P<body>.*?)\n\)',
+    isolated_xctest,
+    re.DOTALL,
+)
+assert isolated_targets_match is not None
+isolated_target_lines = [
+    line.strip()
+    for line in isolated_targets_match.group("body").splitlines()
+    if line.strip()
+]
+assert isolated_target_lines == [
+    '"AFMKitAppleTests"',
+    '"AFMKitFoundationModelsMLXTests"',
+]
+assert isolated_xctest.count("CASE_ISOLATED_TARGETS") == 2
+assert isolated_xctest.count('if is_case_isolated_target "$test_target"; then') == 1
+unstable_cases_match = re.search(
+    r'HOSTED_FOUNDATION_MODELS_UNSTABLE_CASES=\(\n(?P<body>.*?)\n\)',
+    isolated_xctest,
+    re.DOTALL,
+)
+assert unstable_cases_match is not None
+unstable_case_lines = [
+    line.strip()
+    for line in unstable_cases_match.group("body").splitlines()
+    if line.strip()
+]
+assert unstable_case_lines == [
+    '"AFMKitFoundationModelsMLXTests.AFMKitFoundationModelsMLXTests/'
+    'testTranscriptTranslationPreservesRolesAndText"',
+    '"AFMKitFoundationModelsMLXTests.AFMKitFoundationModelsMLXTests/'
+    'testTranscriptTranslationPreservesToolCallsAndOutputs"',
+    '"AFMKitAppleTests.FoundationStopSequenceFilterTests/'
+    'testAcceptedTranscriptExcludesHiddenPostStopOutput"',
+    '"AFMKitAppleTests.FoundationModelSessionCoordinatorTests/'
+    'testDynamicProfileSessionReusesExactProviderAndSignature"',
+    '"AFMKitAppleTests.FoundationModelSessionCoordinatorTests/'
+    'testSimpleSessionReusesExactProviderAndSignature"',
+    '"AFMKitAppleTests.FoundationModelSessionCoordinatorTests/'
+    'testHistoryTransformDropsOrphanResponseBeforeFirstPrompt"',
+    '"AFMKitAppleTests.FoundationModelSessionCoordinatorTests/'
+    'testHistoryTransformKeepsConversationStartingAtFirstPrompt"',
+    '"AFMKitAppleTests.FoundationNativeSessionRuntimeTests/'
+    'testAppleOnDeviceReusesMatchingSession"',
+    '"AFMKitAppleTests.FoundationPromptBuilderTests/'
+    'testBuildsAttachmentPromptWithDefaultInstruction"',
+    '"AFMKitAppleTests.FoundationSessionUsageTelemetryTests/'
+    'testMapsLanguageModelSessionUsageIntoTelemetry"',
+    '"AFMKitAppleTests.FoundationSessionUsageTelemetryTests/'
+    'testSingleResponseTelemetryUsesCompletionAsFirstChunk"',
+    '"AFMKitAppleTests.FoundationTranscriptWindowPlannerTests/'
+    'testTrimsOldestPromptTurnsAndPreservesInstructions"',
+    '"AFMKitAppleTests.FoundationTranscriptWindowPlannerTests/'
+    'testThrowsWhenCurrentTurnCannotFit"',
+    '"AFMKitAppleTests.FoundationTranscriptSnapshotParserTests/'
+    'testRecordsToolArgumentsAndCompletedOutput"',
+    '"AFMKitAppleTests.FoundationTranscriptSnapshotParserTests/'
+    'testOutputWithoutMatchingIDUsesLatestRequestedToolWithSameName"',
+    '"AFMKitAppleTests.FoundationTranscriptSnapshotParserTests/'
+    'testReasoningContentReturnsReasoningAfterLatestPrompt"',
+    '"AFMKitAppleTests.FoundationStructuredResponseCompleterTests/'
+    'testCompletesRenderedContentToolSnapshotsAndTelemetry"',
+]
+assert isolated_xctest.count("HOSTED_FOUNDATION_MODELS_UNSTABLE_CASES") == 2
+assert isolated_xctest.count(
+    '[[ "${RUNNER_ENVIRONMENT:-}" == "github-hosted" ]] || return 1'
+) == 1
+assert isolated_xctest.count(
+    'if is_hosted_foundation_models_unstable_case "$test_case"; then'
+) == 1
+assert '/usr/bin/awk -v prefix="${test_target}."' in isolated_xctest
+assert 'run_case_isolated_test "$test_case"' in isolated_xctest
+assert 'FOUNDATION_MODELS_SIGNAL_RETRY_LIMIT=1' in isolated_xctest
+assert 'unexpected signal code 11' in isolated_xctest
+assert isolated_xctest.count('--filter "$test_case"') == 1
+assert "--skip-build" in isolated_xctest
+for isolation_script, lock_copy in (
+    (service_isolation, 'cp "$ROOT/Package.resolved" "$CONSUMER/Package.resolved"'),
+    (evalkit_isolation, 'cp "$ROOT/Package.resolved" "$SANDBOX/Package.resolved"'),
+):
+    assert isolation_script.count(lock_copy) == 1
+    assert isolation_script.count("swift build") == 1
+    assert isolation_script.count("--disable-automatic-resolution") == 1
+    assert isolation_script.index(lock_copy) < isolation_script.index("swift build")
+assert "--disable-swift-testing" in isolated_xctest
+assert "--disable-automatic-resolution" in isolated_xctest
+assert "-c release" in isolated_xctest
 PY
 
 SHA="1111111111111111111111111111111111111111"

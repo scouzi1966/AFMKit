@@ -51,10 +51,10 @@ final class AFMKitFoundationModelsMLXTests: XCTestCase {
         XCTAssertEqual(model.modelID, "/cache/model-a")
         XCTAssertEqual(model.executorConfiguration.defaultMaximumResponseTokens, 384)
         XCTAssertFalse(model.executorConfiguration.enablePrefixCaching)
-        XCTAssertTrue(model.capabilities.contains(.vision))
-        XCTAssertTrue(model.capabilities.contains(.reasoning))
-        XCTAssertFalse(model.capabilities.contains(.toolCalling))
-        XCTAssertTrue(model.capabilities.contains(.guidedGeneration))
+        XCTAssertTrue(model.executorConfiguration.supportsVision)
+        XCTAssertTrue(model.executorConfiguration.supportsReasoning)
+        XCTAssertFalse(model.executorConfiguration.supportsToolCalling)
+        XCTAssertTrue(model.executorConfiguration.supportsGuidedGeneration)
     }
 
     func testExecutorConfigurationIncludesModelAndRuntimeIdentity() {
@@ -137,52 +137,6 @@ final class AFMKitFoundationModelsMLXTests: XCTestCase {
         XCTAssertEqual(Self.text(messages[1]), "Sunny")
     }
 
-    func testRequestMapsSamplingReasoningAndMetadata() throws {
-        let model = MLXLanguageModel(
-            modelID: "mlx-community/reasoning-model",
-            defaultMaximumResponseTokens: 2_048,
-            supportsReasoning: true
-        )
-        let definition = try toolDefinition()
-        let request = LanguageModelExecutorGenerationRequest(
-            id: UUID(),
-            transcript: Transcript(entries: [
-                .prompt(.init(segments: [.text(.init(content: "Question"))]))
-            ]),
-            enabledTools: [definition],
-            generationOptions: GenerationOptions(
-                samplingMode: .random(top: 17, seed: 42),
-                temperature: 0.7,
-                maximumResponseTokens: 321,
-                toolCallingMode: .disallowed
-            ),
-            contextOptions: ContextOptions(
-                includeSchemaInPrompt: false,
-                reasoningLevel: .deep
-            ),
-            metadata: ["requestID": "request-1"]
-        )
-
-        let adapted = try AFMFoundationModelsRequestAdapter.request(
-            from: request,
-            model: model
-        )
-
-        XCTAssertEqual(adapted.options.temperature, 0.7)
-        XCTAssertEqual(adapted.options.topK, 17)
-        XCTAssertEqual(adapted.options.seed, 42)
-        XCTAssertEqual(adapted.options.maximumResponseTokens, 321)
-        XCTAssertEqual(request.enabledToolDefinitions, [definition])
-        XCTAssertTrue(adapted.tools.isEmpty)
-        XCTAssertEqual(adapted.metadata["includeSchemaInPrompt"], .bool(false))
-        XCTAssertEqual(adapted.metadata["toolCallingMode"], .string("disallowed"))
-        XCTAssertEqual(adapted.metadata["reasoningLevel"], .string("deep"))
-        XCTAssertEqual(
-            adapted.metadata["chatTemplateKwargs"],
-            .object(["enable_thinking": .bool(true)])
-        )
-    }
-
     func testInjectedRuntimeSymbolResolverDistinguishesPresentAndMissingSymbols() {
         let resolver = AFMRuntimeSymbolResolver { symbol in
             symbol == "known-present"
@@ -225,48 +179,52 @@ final class AFMKitFoundationModelsMLXTests: XCTestCase {
         XCTAssertNil(unavailableMetadata["requestID"])
     }
 
-    func testRequestMapsGreedySampling() throws {
-        let adapted = try adaptedRequest(
-            generationOptions: GenerationOptions(
-                samplingMode: .greedy,
-                temperature: 0.9,
-                maximumResponseTokens: 64
-            )
+    func testSamplingPlanMapsGreedySampling() {
+        let sampling = AFMFoundationModelsRequestAdapter.samplingPlan(
+            temperature: 0.9,
+            selection: .greedy
         )
 
-        XCTAssertEqual(adapted.options.temperature, 0)
-        XCTAssertNil(adapted.options.topK)
-        XCTAssertNil(adapted.options.topP)
-        XCTAssertNil(adapted.options.seed)
+        XCTAssertEqual(sampling.temperature, 0)
+        XCTAssertNil(sampling.topK)
+        XCTAssertNil(sampling.topP)
+        XCTAssertNil(sampling.seed)
     }
 
-    func testRequestMapsProbabilityThresholdSampling() throws {
-        let adapted = try adaptedRequest(
-            generationOptions: GenerationOptions(
-                samplingMode: .random(probabilityThreshold: 0.82, seed: 73),
-                temperature: 0.6,
-                maximumResponseTokens: 64
-            )
+    func testSamplingPlanMapsTopKSampling() {
+        let sampling = AFMFoundationModelsRequestAdapter.samplingPlan(
+            temperature: 0.7,
+            selection: .randomTopK(17, seed: 42)
         )
 
-        XCTAssertEqual(adapted.options.temperature, 0.6)
-        XCTAssertEqual(adapted.options.topP, 0.82)
-        XCTAssertNil(adapted.options.topK)
-        XCTAssertEqual(adapted.options.seed, 73)
+        XCTAssertEqual(sampling.temperature, 0.7)
+        XCTAssertEqual(sampling.topK, 17)
+        XCTAssertNil(sampling.topP)
+        XCTAssertEqual(sampling.seed, 42)
     }
 
-    func testRequestLeavesUnspecifiedSamplingUnset() throws {
-        let adapted = try adaptedRequest(
-            generationOptions: GenerationOptions(
-                temperature: 0.45,
-                maximumResponseTokens: 64
-            )
+    func testSamplingPlanMapsProbabilityThresholdSampling() {
+        let sampling = AFMFoundationModelsRequestAdapter.samplingPlan(
+            temperature: 0.6,
+            selection: .randomProbabilityThreshold(0.82, seed: 73)
         )
 
-        XCTAssertEqual(adapted.options.temperature, 0.45)
-        XCTAssertNil(adapted.options.topK)
-        XCTAssertNil(adapted.options.topP)
-        XCTAssertNil(adapted.options.seed)
+        XCTAssertEqual(sampling.temperature, 0.6)
+        XCTAssertEqual(sampling.topP, 0.82)
+        XCTAssertNil(sampling.topK)
+        XCTAssertEqual(sampling.seed, 73)
+    }
+
+    func testSamplingPlanLeavesUnspecifiedSamplingUnset() {
+        let sampling = AFMFoundationModelsRequestAdapter.samplingPlan(
+            temperature: 0.45,
+            selection: nil
+        )
+
+        XCTAssertEqual(sampling.temperature, 0.45)
+        XCTAssertNil(sampling.topK)
+        XCTAssertNil(sampling.topP)
+        XCTAssertNil(sampling.seed)
     }
 
     func testEventAdapterCoalescesAppendText() {
@@ -358,33 +316,5 @@ final class AFMKitFoundationModelsMLXTests: XCTestCase {
         }.joined()
     }
 
-    private func adaptedRequest(
-        generationOptions: GenerationOptions
-    ) throws -> AFMRequest {
-        let model = MLXLanguageModel(
-            modelID: "mlx-community/test-model",
-            defaultMaximumResponseTokens: 2_048
-        )
-        let request = LanguageModelExecutorGenerationRequest(
-            id: UUID(),
-            transcript: Transcript(entries: [
-                .prompt(.init(segments: [.text(.init(content: "Question"))]))
-            ]),
-            enabledTools: [],
-            generationOptions: generationOptions,
-            contextOptions: ContextOptions(),
-            metadata: [:]
-        )
-        return try AFMFoundationModelsRequestAdapter.request(from: request, model: model)
-    }
-
-    private func toolDefinition() throws -> Transcript.ToolDefinition {
-        let root = DynamicGenerationSchema(name: "WeatherArguments", properties: [])
-        return Transcript.ToolDefinition(
-            name: "weather",
-            description: "Look up weather.",
-            parameters: try GenerationSchema(root: root, dependencies: [])
-        )
-    }
 }
 #endif

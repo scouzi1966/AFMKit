@@ -81,10 +81,9 @@ jobs:
       - name: Run full single-repository release qualification
         env:
           AFMKIT_BUILD_ROOT: ${{ runner.temp }}/afmkit-release-${{ github.event.workflow_run.head_sha }}
-          AFMKIT_DEPENDENCY_TOKEN: ${{ secrets.AFMKIT_DEPENDENCY_TOKEN }}
           AFMKIT_DOWNSTREAM_SHA: ${{ github.event.workflow_run.head_sha }}
           AFMKIT_DOWNSTREAM_TAG: ${{ steps.request.outputs.tag }}
-        run: Scripts/with-private-dependency-auth.sh Scripts/validate-release.sh
+        run: Scripts/validate-release.sh
 
   publish:
     name: Publish qualified AFMKit tag

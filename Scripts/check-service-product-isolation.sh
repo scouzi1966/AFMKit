@@ -39,6 +39,7 @@ import $PRODUCT
 print("$PRODUCT loaded")
 SWIFT
 
+    cp "$ROOT/Package.resolved" "$CONSUMER/Package.resolved"
     /usr/bin/xcrun --toolchain XcodeDefault swift build \
         --package-path "$CONSUMER" \
         --scratch-path "$SCRATCH" \

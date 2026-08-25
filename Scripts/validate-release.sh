@@ -22,12 +22,14 @@ run_release_tests() {
     local package_build_root="$2"
 
     clean_build_configuration "$package_build_root" release
+    AFMKIT_BUILD_ROOT="$package_build_root" \
+        "$ROOT/Scripts/run-xctest-targets.sh"
     afmkit_run_qualified_swift test \
         --package-path "$package_root" \
         --scratch-path "$package_build_root" \
         --build-system native \
         --disable-automatic-resolution \
-        --disable-swift-testing \
+        --disable-xctest \
         -c release
     clean_build_configuration "$package_build_root" release
 }
@@ -51,6 +53,7 @@ afmkit_release_validate_resolved_files "$ROOT/Package.resolved"
 "$ROOT/Scripts/test-api-gate.sh"
 "$ROOT/Scripts/test-release-qualification.sh"
 node "$ROOT/Scripts/test-release-publication.js"
+node "$ROOT/Scripts/test-release-local.js"
 "$ROOT/Scripts/test-workflow-security.sh"
 "$ROOT/Scripts/check-dwarfstar-resources.sh"
 "$ROOT/Scripts/check-unauthenticated-core-consumer.sh"
