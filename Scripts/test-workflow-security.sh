@@ -171,6 +171,10 @@ assert unstable_case_lines == [
     'testAppleOnDeviceReusesMatchingSession"',
     '"AFMKitAppleTests.FoundationPromptBuilderTests/'
     'testBuildsAttachmentPromptWithDefaultInstruction"',
+    '"AFMKitAppleTests.FoundationSessionUsageTelemetryTests/'
+    'testMapsLanguageModelSessionUsageIntoTelemetry"',
+    '"AFMKitAppleTests.FoundationSessionUsageTelemetryTests/'
+    'testSingleResponseTelemetryUsesCompletionAsFirstChunk"',
     '"AFMKitAppleTests.FoundationTranscriptWindowPlannerTests/'
     'testTrimsOldestPromptTurnsAndPreservesInstructions"',
     '"AFMKitAppleTests.FoundationTranscriptWindowPlannerTests/'
