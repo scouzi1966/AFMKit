@@ -157,8 +157,30 @@ assert unstable_case_lines == [
     'testTranscriptTranslationPreservesRolesAndText"',
     '"AFMKitFoundationModelsMLXTests.AFMKitFoundationModelsMLXTests/'
     'testTranscriptTranslationPreservesToolCallsAndOutputs"',
+    '"AFMKitAppleTests.FoundationStopSequenceFilterTests/'
+    'testAcceptedTranscriptExcludesHiddenPostStopOutput"',
     '"AFMKitAppleTests.FoundationModelSessionCoordinatorTests/'
     'testDynamicProfileSessionReusesExactProviderAndSignature"',
+    '"AFMKitAppleTests.FoundationModelSessionCoordinatorTests/'
+    'testSimpleSessionReusesExactProviderAndSignature"',
+    '"AFMKitAppleTests.FoundationModelSessionCoordinatorTests/'
+    'testHistoryTransformDropsOrphanResponseBeforeFirstPrompt"',
+    '"AFMKitAppleTests.FoundationModelSessionCoordinatorTests/'
+    'testHistoryTransformKeepsConversationStartingAtFirstPrompt"',
+    '"AFMKitAppleTests.FoundationNativeSessionRuntimeTests/'
+    'testAppleOnDeviceReusesMatchingSession"',
+    '"AFMKitAppleTests.FoundationTranscriptWindowPlannerTests/'
+    'testTrimsOldestPromptTurnsAndPreservesInstructions"',
+    '"AFMKitAppleTests.FoundationTranscriptWindowPlannerTests/'
+    'testThrowsWhenCurrentTurnCannotFit"',
+    '"AFMKitAppleTests.FoundationTranscriptSnapshotParserTests/'
+    'testRecordsToolArgumentsAndCompletedOutput"',
+    '"AFMKitAppleTests.FoundationTranscriptSnapshotParserTests/'
+    'testOutputWithoutMatchingIDUsesLatestRequestedToolWithSameName"',
+    '"AFMKitAppleTests.FoundationTranscriptSnapshotParserTests/'
+    'testReasoningContentReturnsReasoningAfterLatestPrompt"',
+    '"AFMKitAppleTests.FoundationStructuredResponseCompleterTests/'
+    'testCompletesRenderedContentToolSnapshotsAndTelemetry"',
 ]
 assert isolated_xctest.count("HOSTED_FOUNDATION_MODELS_UNSTABLE_CASES") == 2
 assert isolated_xctest.count(
