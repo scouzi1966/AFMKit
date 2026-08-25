@@ -57,6 +57,7 @@ jobs:
           --scratch-path "$AFMKIT_BUILD_ROOT"
           --build-system native
           --disable-swift-testing
+          -c release
       - name: Run untrusted candidate Swift Testing suite
         env:
           AFMKIT_BUILD_ROOT: ${{ runner.temp }}/afmkit-public-tests
@@ -66,6 +67,7 @@ jobs:
           --scratch-path "$AFMKIT_BUILD_ROOT"
           --build-system native
           --disable-xctest
+          -c release
       - name: Check unauthenticated Core package boundary
         run: Scripts/check-unauthenticated-core-consumer.sh
       - name: Check optional Apple service isolation

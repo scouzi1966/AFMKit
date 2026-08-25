@@ -50,8 +50,10 @@ swift_testing_step = public_ci.split(
 )[1].split("\n      - name:", 1)[0]
 assert "--disable-swift-testing" in xctest_step
 assert "--disable-xctest" not in xctest_step
+assert "-c release" in xctest_step
 assert "--disable-xctest" in swift_testing_step
 assert "--disable-swift-testing" not in swift_testing_step
+assert "-c release" in swift_testing_step
 
 private_ci = contents["private-ci.yml"]
 assert "workflow_run:" in private_ci
