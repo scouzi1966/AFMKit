@@ -80,8 +80,6 @@ jobs:
         run: Scripts/test-release-qualification.sh
       - name: Test idempotent release publication
         run: node Scripts/test-release-publication.js
-      - name: Test provider mirror publication
-        run: Scripts/test-provider-publication.sh
       - name: Test workflow trust boundaries
         run: Scripts/test-workflow-security.sh
       - name: Check script syntax and whitespace

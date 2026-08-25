@@ -34,6 +34,7 @@ for name, content in contents.items():
 public_ci = contents["ci.yml"]
 assert "AFMKIT_DEPENDENCY_TOKEN" not in public_ci
 assert "secrets." not in public_ci
+assert "test-provider-publication.sh" not in public_ci
 assert "create-qualification-artifact.py" in public_ci
 assert "private-qualification-${{ github.run_id }}" in public_ci
 assert "github.event.pull_request.head.sha || github.sha" in public_ci
