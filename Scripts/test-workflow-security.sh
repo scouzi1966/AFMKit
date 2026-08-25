@@ -91,6 +91,9 @@ assert "stage-tag:" not in release
 assert "qualify-remote-tag:" not in release
 assert "AFMKIT_RELEASE_MIRROR_OUTPUT" not in release
 assert "publish-provider-mirrors.sh" not in release
+assert "AFMKIT_DEPENDENCY_TOKEN" not in release
+assert "with-private-dependency-auth.sh" not in release
+assert "run: Scripts/validate-release.sh" in release
 assert "vars.AFMKIT_XCODE27_RUNNER || 'xcode-27'" in release
 assert "Record immutable publication intent" in release
 assert "ensurePublicationIntent" in release
