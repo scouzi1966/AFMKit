@@ -4,6 +4,38 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD_ROOT="${AFMKIT_BUILD_ROOT:-$ROOT/.build/public-xctest-targets}"
 CASE_ISOLATED_TARGET="AFMKitFoundationModelsMLXTests"
+FOUNDATION_MODELS_SIGNAL_RETRY_LIMIT=1
+
+run_case_isolated_test() {
+    local test_case="$1"
+    local attempt=0
+    local log_file
+    log_file="$(mktemp "${TMPDIR:-/tmp}/afmkit-xctest.XXXXXX")"
+
+    while true; do
+        if afmkit_run_qualified_swift test \
+            --package-path "$ROOT" \
+            --scratch-path "$BUILD_ROOT" \
+            --build-system native \
+            --disable-automatic-resolution \
+            --disable-swift-testing \
+            --skip-build \
+            --filter "$test_case" \
+            -c release 2>&1 | tee "$log_file"; then
+            rm -f "$log_file"
+            return 0
+        fi
+
+        if [[ "$attempt" -ge "$FOUNDATION_MODELS_SIGNAL_RETRY_LIMIT" ]] \
+            || ! grep -q "unexpected signal code 11" "$log_file"; then
+            rm -f "$log_file"
+            return 1
+        fi
+
+        attempt=$((attempt + 1))
+        echo "Retrying Xcode 27 beta FoundationModels case after signal 11 ($attempt/$FOUNDATION_MODELS_SIGNAL_RETRY_LIMIT): $test_case" >&2
+    done
+}
 
 # shellcheck source=/dev/null
 source "$ROOT/Scripts/verify-qualified-toolchain.sh"
@@ -57,15 +89,7 @@ while IFS= read -r test_target; do
             [[ -n "$test_case" ]] || continue
             case_count=$((case_count + 1))
             echo "Running case-isolated XCTest: $test_case"
-            afmkit_run_qualified_swift test \
-                --package-path "$ROOT" \
-                --scratch-path "$BUILD_ROOT" \
-                --build-system native \
-                --disable-automatic-resolution \
-                --disable-swift-testing \
-                --skip-build \
-                --filter "$test_case" \
-                -c release
+            run_case_isolated_test "$test_case"
         done <<< "$test_cases"
         continue
     fi

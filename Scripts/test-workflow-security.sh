@@ -126,7 +126,10 @@ assert 'target.get("type") == "test"' in isolated_xctest
 assert '--filter "$test_target"' in isolated_xctest
 assert 'CASE_ISOLATED_TARGET="AFMKitFoundationModelsMLXTests"' in isolated_xctest
 assert '/usr/bin/awk -v prefix="${test_target}."' in isolated_xctest
-assert '--filter "$test_case"' in isolated_xctest
+assert 'run_case_isolated_test "$test_case"' in isolated_xctest
+assert 'FOUNDATION_MODELS_SIGNAL_RETRY_LIMIT=1' in isolated_xctest
+assert 'unexpected signal code 11' in isolated_xctest
+assert isolated_xctest.count('--filter "$test_case"') == 1
 assert "--skip-build" in isolated_xctest
 assert "--disable-swift-testing" in isolated_xctest
 assert "--disable-automatic-resolution" in isolated_xctest
