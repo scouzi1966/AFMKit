@@ -4,6 +4,13 @@ import Foundation
 import MLX
 import XCTest
 
+private final class StreamTestState: @unchecked Sendable {
+    let lock = NSLock()
+    var value: MLXArray?
+    var result: Int?
+    var results: [Int] = []
+}
+
 class StreamTests: XCTestCase {
 
     func testEquatableDevice() {
@@ -46,14 +53,66 @@ class StreamTests: XCTestCase {
     }
 
     func testDefaultGPUStreamCarriesLazyGraphAcrossThreads() {
-        let value = DispatchQueue(label: "mlx.stream.create").sync {
-            MLXArray(1) + 1
+        let state = StreamTestState()
+        let created = DispatchSemaphore(value: 0)
+        let releaseCreator = DispatchSemaphore(value: 0)
+        let evaluated = DispatchSemaphore(value: 0)
+
+        // Keep the creator alive while a second OS thread evaluates the lazy
+        // graph. This makes the thread hop deterministic rather than relying
+        // on DispatchQueue.sync scheduling behavior.
+        Thread.detachNewThread {
+            state.lock.withLock {
+                state.value = MLXArray(1) + 1
+            }
+            created.signal()
+            releaseCreator.wait()
         }
 
-        DispatchQueue(label: "mlx.stream.evaluate").sync {
+        XCTAssertEqual(created.wait(timeout: .now() + 5), .success)
+
+        Thread.detachNewThread {
+            let value = state.lock.withLock { state.value! }
             eval(value)
-            XCTAssertEqual(value.item(Int.self), 2)
+            state.lock.withLock {
+                state.result = value.item(Int.self)
+            }
+            evaluated.signal()
         }
+
+        XCTAssertEqual(evaluated.wait(timeout: .now() + 30), .success)
+        releaseCreator.signal()
+        XCTAssertEqual(state.lock.withLock { state.result }, 2)
+    }
+
+    func testDefaultGPUStreamSerializesConcurrentEvaluation() {
+        let state = StreamTestState()
+        let ready = DispatchSemaphore(value: 0)
+        let start = DispatchSemaphore(value: 0)
+        let finished = DispatchSemaphore(value: 0)
+
+        for input in [2, 3] {
+            Thread.detachNewThread {
+                // Both OS threads remain alive at this barrier, which makes
+                // the concurrent attempt deterministic.
+                ready.signal()
+                start.wait()
+                let value = MLXArray(input) * input
+                eval(value)
+                state.lock.withLock {
+                    state.results.append(value.item(Int.self))
+                }
+                finished.signal()
+            }
+        }
+
+        XCTAssertEqual(ready.wait(timeout: .now() + 5), .success)
+        XCTAssertEqual(ready.wait(timeout: .now() + 5), .success)
+        start.signal()
+        start.signal()
+        XCTAssertEqual(finished.wait(timeout: .now() + 30), .success)
+        XCTAssertEqual(finished.wait(timeout: .now() + 30), .success)
+        XCTAssertEqual(state.lock.withLock { state.results.sorted() }, [4, 9])
     }
 
     func testSetUnsetDefaultDevice() {

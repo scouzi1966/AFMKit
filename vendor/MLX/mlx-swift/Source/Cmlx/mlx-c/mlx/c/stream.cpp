@@ -11,19 +11,36 @@
 
 namespace {
 
-const mlx::core::Stream& swift_default_stream(mlx::core::Device device) {
-  static std::map<mlx::core::Device, mlx::core::Stream> streams;
-  static std::mutex mutex;
-
-  std::lock_guard lock(mutex);
-  auto it = streams.find(device);
-  if (it == streams.end()) {
-    it = streams
-             .emplace(
-                 device, mlx::core::new_thread_unsafe_stream(device))
-             .first;
+struct SwiftDefaultStreams {
+  mlx::core::Stream get(mlx::core::Device device) {
+    std::lock_guard lock(mutex);
+    auto it = streams.find(device);
+    if (it == streams.end()) {
+      it = streams
+               .emplace(
+                   device, mlx::core::new_thread_unsafe_stream(device))
+               .first;
+    }
+    return it->second;
   }
-  return it->second;
+
+  void set(mlx::core::Stream stream) {
+    std::lock_guard lock(mutex);
+    streams.insert_or_assign(stream.device, stream);
+  }
+
+ private:
+  std::map<mlx::core::Device, mlx::core::Stream> streams;
+  std::mutex mutex;
+};
+
+SwiftDefaultStreams& swift_default_streams() {
+  static SwiftDefaultStreams streams;
+  return streams;
+}
+
+mlx::core::Stream swift_default_stream(mlx::core::Device device) {
+  return swift_default_streams().get(device);
 }
 
 } // namespace
@@ -117,7 +134,11 @@ extern "C" int mlx_get_default_stream(mlx_stream* stream, mlx_device dev) {
 }
 extern "C" int mlx_set_default_stream(mlx_stream stream) {
   try {
-    mlx::core::set_default_stream(mlx_stream_get_(stream));
+    const auto& value = mlx_stream_get_(stream);
+    // Preserve the MLX core contract for callers on this thread and update
+    // the Swift cross-thread default observed by mlx_get_default_stream.
+    mlx::core::set_default_stream(value);
+    swift_default_streams().set(value);
   } catch (std::exception& e) {
     mlx_error(e.what());
     return 1;

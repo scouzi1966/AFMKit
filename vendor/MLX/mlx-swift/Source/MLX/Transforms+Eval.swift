@@ -3,9 +3,13 @@
 import Cmlx
 import Foundation
 
-/// lock to be held while doing any eval or asyncEval.  This is
-/// a recursive lock to handle any cases where a closure might
-/// call back into eval.
+/// Lock to be held while doing any eval, asyncEval, or synchronization.
+///
+/// Cmlx creates Swift-owned streams with MLX's cross-thread stream API so a
+/// task may resume on a different executor thread. That API deliberately does
+/// not synchronize command-encoder access itself; this lock is the MLXSwift
+/// serialization boundary for every public evaluation path. It is recursive
+/// to handle closures that call back into eval.
 let evalLock = NSRecursiveLock()
 
 /// Evaluate one or more `MLXArray`
