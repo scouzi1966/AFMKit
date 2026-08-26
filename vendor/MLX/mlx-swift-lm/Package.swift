@@ -58,6 +58,7 @@ let package = Package(
             name: "MLXVLM",
             dependencies: [
                 "MLXLMCommon",
+                "MLXLLM",
                 .product(name: "MLX", package: mlxSwiftPackageIdentity),
                 .product(name: "MLXNN", package: mlxSwiftPackageIdentity),
                 .product(name: "MLXOptimizers", package: mlxSwiftPackageIdentity),

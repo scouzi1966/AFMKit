@@ -94,6 +94,7 @@ public enum AFMMLXRequestMediaPolicy {
         "qwen3_5_moe",
         "qwen3_6",
         "qwen3_6_moe",
+        "qwen4_exp",
         "smolvlm",
     ]
 

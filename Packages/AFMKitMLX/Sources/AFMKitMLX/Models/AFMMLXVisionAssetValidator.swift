@@ -140,13 +140,15 @@ public final class AFMMLXVisionAssetValidator: @unchecked Sendable {
                 .lowercased()
                 .replacingOccurrences(of: "_", with: "")
                 .replacingOccurrences(of: "-", with: "")
-            return normalized.hasPrefix("qwen35")
+            return (normalized.hasPrefix("qwen35") || normalized.hasPrefix("qwen4exp"))
                 && normalized.hasSuffix("forconditionalgeneration")
         }
     }
 
     private static func isQwenConditionalModelType(_ canonicalModelType: String) -> Bool {
-        canonicalModelType == "qwen3_5" || canonicalModelType == "qwen3_5_moe"
+        canonicalModelType == "qwen3_5"
+            || canonicalModelType == "qwen3_5_moe"
+            || canonicalModelType == "qwen4_exp"
     }
 
     private static func hasCoherentQwenVisionDimensions(
@@ -188,7 +190,7 @@ public final class AFMMLXVisionAssetValidator: @unchecked Sendable {
               !baseConfig.processorClass.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         else { return nil }
 
-        if canonicalModelType == "qwen3_5" || canonicalModelType == "qwen3_5_moe" {
+        if isQwenConditionalModelType(canonicalModelType) {
             guard let qwenProcessor = try? JSONDecoder().decode(
                 Qwen3VLProcessorConfiguration.self,
                 from: data

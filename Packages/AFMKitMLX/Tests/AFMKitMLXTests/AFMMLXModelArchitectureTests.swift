@@ -71,9 +71,10 @@ final class AFMMLXModelArchitectureTests: XCTestCase {
         XCTAssertFalse(AFMMLXModelArchitecture.isLanguageModelType("muse_glimmer"))
         XCTAssertFalse(AFMMLXModelArchitecture.isDualModeModelType("muse_glimmer"))
         XCTAssertFalse(AFMMLXModelArchitecture.isDualModeModelType("qwen3_vl"))
+        XCTAssertTrue(AFMMLXModelArchitecture.isDualModeModelType("qwen4_exp"))
     }
 
-    func testQwen4ExpUsesTextFactoryUntilVisionRuntimeIsImplemented() throws {
+    func testQwen4ExpSupportsTextAndVisionFactories() throws {
         let config: [String: Any] = [
             "architectures": ["Qwen4ExpForConditionalGeneration"],
             "model_type": "qwen4_exp",
@@ -90,13 +91,27 @@ final class AFMMLXModelArchitectureTests: XCTestCase {
         )
 
         XCTAssertEqual(preflight.canonicalModelType, "qwen4_exp")
-        XCTAssertFalse(preflight.isVisionConfiguration)
+        XCTAssertTrue(preflight.isVisionConfiguration)
         XCTAssertFalse(preflight.requiresVisionModelFactory)
         XCTAssertEqual(
             AFMMLXModelFactoryPolicy.initialFactory(forceVLM: false, architecture: preflight),
             .llm
         )
-        XCTAssertFalse(AFMMLXRequestMediaPolicy.supports(.image, architecture: preflight))
+        XCTAssertEqual(
+            AFMMLXModelFactoryPolicy.initialFactory(forceVLM: true, architecture: preflight),
+            .vlm
+        )
+        XCTAssertTrue(AFMMLXRequestMediaPolicy.supports(.image, architecture: preflight))
+        XCTAssertTrue(AFMMLXRequestMediaPolicy.supports(.video, architecture: preflight))
+        XCTAssertEqual(
+            AFMMLXLoadedModeSwitchPolicy.make(
+                loadedModelRepoID: "Vontra/Qwen3.8-Flash-Next-MLX-4bit",
+                loadedModelType: "qwen4_exp",
+                isLoadedModelVLM: false,
+                loadedModelDirectoryIsVision: true
+            ),
+            .currentLoadedModel(targetVLM: true)
+        )
     }
 
     func testMuseGlimmerConfigurationUsesVisionFactory() throws {
