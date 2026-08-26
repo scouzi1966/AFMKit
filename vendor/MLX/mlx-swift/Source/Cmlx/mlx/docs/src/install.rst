@@ -15,7 +15,7 @@ silicon computer is
 
 To install from PyPI your system must meet the following requirements:
 
-- Using an M series chip (Apple silicon)
+- Using `Apple silicon <https://support.apple.com/en-us/116943>`_
 - Using a native Python >= 3.10
 - macOS >= 14.0
 
@@ -121,13 +121,13 @@ Once the development dependencies are installed, you can build faster with:
 
 .. code-block:: shell
 
- python setup.py build_ext --inplace
+  python setup.py build_ext --inplace
 
 Run the tests with:
 
 .. code-block:: shell
 
-  python -m unittest discover python/tests
+  python python/tests/run.py
 
 C++ API
 ^^^^^^^

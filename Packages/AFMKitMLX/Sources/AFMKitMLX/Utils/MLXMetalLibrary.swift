@@ -1,5 +1,6 @@
 import Foundation
 import Darwin
+import MLX
 
 /// Error thrown while resolving/installing the MLX Metal shader library.
 /// (Plain Swift error so AFMKit stays free of the ArgumentParser dependency.)
@@ -20,51 +21,6 @@ public enum MLXMetalLibrary {
         "MacLocalAPI_AFMKitMLX.bundle",
         "MacLocalAPI_AFMKit.bundle",
     ]
-
-    private static func stablePathKey(_ path: String) -> String {
-        var hash: UInt64 = 14_695_981_039_346_656_037
-        for byte in path.utf8 {
-            hash ^= UInt64(byte)
-            hash &*= 1_099_511_628_211
-        }
-        return String(hash, radix: 16)
-    }
-
-    /// MLX's C++ runtime opens its metallib from the process working directory.
-    /// SwiftPM and AFM distributions ship it as `default.metallib`, while older
-    /// MLX layouts used `mlx.metallib`; expose both names from a stable cache
-    /// rather than trying to modify a resource bundle (which may be code signed).
-    private static func runtimeDirectory(
-        for source: URL,
-        fileManager: FileManager = .default
-    ) throws -> URL {
-        guard let caches = fileManager.urls(for: .cachesDirectory, in: .userDomainMask).first else {
-            throw MetalLibraryError("Unable to resolve the user cache directory for MLX")
-        }
-        let directory = caches
-            .appendingPathComponent("com.soprano.maclocal-api/MLXMetalLibrary", isDirectory: true)
-            .appendingPathComponent(stablePathKey(source.resolvingSymlinksInPath().path), isDirectory: true)
-        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
-
-        // MLX revisions have used both names for the process-CWD lookup.
-        for name in ["default.metallib", "mlx.metallib"] {
-            let alias = directory.appendingPathComponent(name)
-            if fileManager.fileExists(atPath: alias.path) {
-                let destination = try? fileManager.destinationOfSymbolicLink(atPath: alias.path)
-                if destination == source.path {
-                    continue
-                }
-                try fileManager.removeItem(at: alias)
-            }
-            do {
-                try fileManager.createSymbolicLink(at: alias, withDestinationURL: source)
-            } catch {
-                // Another process may have created the same deterministic alias.
-                guard fileManager.fileExists(atPath: alias.path) else { throw error }
-            }
-        }
-        return directory
-    }
 
     /// Resolve the absolute path to this binary.
     ///
@@ -270,12 +226,9 @@ public enum MLXMetalLibrary {
                 )
             }
 
-            let metalDir = try runtimeDirectory(for: source).path
-            // MLX resolves the default metallib relative to the process CWD, so this is
-            // intentionally a one-time process-global change during startup/test bootstrap.
-            guard FileManager.default.changeCurrentDirectoryPath(metalDir) else {
-                throw MetalLibraryError("Failed to switch to metallib directory: \(metalDir)")
-            }
+            // MLX 0.32.2 accepts the absolute library path before the first
+            // operation, so initialization no longer mutates process CWD.
+            GPU.setMetallibPath(source.path)
 
             if verbose {
                 print("Using MLX metallib: \(source.path)")

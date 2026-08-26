@@ -63,7 +63,7 @@ void single_block_sort(
   auto kernel = get_sort_kernel(d, kname.str(), in, out, bn, tn);
 
   // Prepare command encoder
-  auto& compute_encoder = d.get_command_encoder(s.index);
+  auto& compute_encoder = metal::get_command_encoder(s);
   compute_encoder.set_compute_pipeline_state(kernel);
 
   // Set inputs
@@ -160,7 +160,7 @@ void multi_block_sort(
       dev_vals_0, dev_vals_1, dev_idxs_0, dev_idxs_1, block_partitions};
 
   // Prepare command encoder
-  auto& compute_encoder = d.get_command_encoder(s.index);
+  auto& compute_encoder = metal::get_command_encoder(s);
 
   // Do blockwise sort
   {
@@ -268,7 +268,7 @@ void multi_block_sort(
       (axis == in.ndim() - 1) ? CopyType::Vector : CopyType::General,
       s);
 
-  d.add_temporaries(std::move(copies), s.index);
+  compute_encoder.add_temporaries(std::move(copies));
 }
 
 void gpu_merge_sort(
@@ -363,6 +363,53 @@ void Partition::eval_gpu(const std::vector<array>& inputs, array& out) {
   auto& in = inputs[0];
 
   gpu_merge_sort(s, d, in, out, axis_, false);
+}
+
+void SearchSorted::eval_gpu(const std::vector<array>& inputs, array& out) {
+  assert(inputs.size() == 2);
+  auto& a = inputs[0];
+  auto v = inputs[1];
+
+  out.set_data(allocator::malloc(out.nbytes()));
+  if (out.size() == 0) {
+    return;
+  }
+
+  auto& s = stream();
+  auto& d = metal::device(s.device);
+  auto& compute_encoder = metal::get_command_encoder(s);
+
+  if (a.size() == 0) {
+    array zero = array(0, out.dtype());
+    fill_gpu(zero, out, s);
+    compute_encoder.add_temporary(std::move(zero));
+    return;
+  }
+
+  if (!v.flags().row_contiguous) {
+    v = contiguous_copy_gpu(v, s);
+    compute_encoder.add_temporary(v);
+  }
+
+  int64_t a_stride = a.strides()[0]; // sequence is 1D
+  auto n = static_cast<uint32_t>(a.size());
+
+  std::string kernel_name = "searchsorted_";
+  concatenate(kernel_name, type_to_name(a), right_ ? "_right" : "_left");
+  auto kernel = get_searchsorted_kernel(d, kernel_name, a, right_);
+
+  compute_encoder.set_compute_pipeline_state(kernel);
+  compute_encoder.set_input_array(a, 0);
+  compute_encoder.set_input_array(v, 1);
+  compute_encoder.set_output_array(out, 2);
+  compute_encoder.set_bytes(n, 3);
+  compute_encoder.set_bytes(a_stride, 4);
+
+  size_t thread_group_size = kernel->maxTotalThreadsPerThreadgroup();
+  thread_group_size = std::min(thread_group_size, out.size());
+  MTL::Size group_dims = MTL::Size(thread_group_size, 1, 1);
+  MTL::Size grid_dims = get_2d_grid_dims(out.shape(), out.strides());
+  compute_encoder.dispatch_threads(grid_dims, group_dims);
 }
 
 } // namespace mlx::core

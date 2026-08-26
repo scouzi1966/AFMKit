@@ -24,6 +24,12 @@ namespace xgrammar {
 // Short alias for the error type.
 using ISTError = InvalidStructuralTagError;
 
+// Keep these constructors out of line because instantiating vector<Format>
+// while the Format variant alternatives are incomplete is ill-formed in C++20.
+SequenceFormat::SequenceFormat(std::vector<Format> elements) : elements(std::move(elements)) {}
+
+OrFormat::OrFormat(std::vector<Format> elements) : elements(std::move(elements)) {}
+
 /************** StructuralTag Parser **************/
 
 class StructuralTagParser {

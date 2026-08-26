@@ -6,6 +6,7 @@
 #include <variant>
 
 #include "mlx/api.h"
+#include "mlx/backend/common/metal_kernel.h"
 #include "mlx/utils.h"
 
 namespace mlx::core::fast {
@@ -22,6 +23,10 @@ MLX_API array layer_norm(
     const std::optional<array>& bias,
     float eps,
     StreamOrDevice s = {});
+
+/** Fused cross entropy with class indices as targets. */
+MLX_API array
+cross_entropy(const array& logits, const array& targets, StreamOrDevice s = {});
 
 MLX_API array rope(
     const array& x,
@@ -52,6 +57,7 @@ MLX_API array scaled_dot_product_attention(
     const std::string& mask_mode = "",
     std::optional<array> mask_arr = {},
     const std::optional<array>& sinks = {},
+    bool force_fused = false,
     StreamOrDevice s = {});
 
 using TemplateArg = std::variant<int, bool, Dtype>;
@@ -75,98 +81,49 @@ MLX_API CustomKernelFunction metal_kernel(
     const std::string& source,
     const std::string& header = "",
     bool ensure_row_contiguous = true,
-    bool atomic_outputs = false);
+    bool atomic_outputs = false,
+    const CompileOptions& compile_options = {});
 
 // Metadata-gated DeepSeek V4 decode primitive used by AFM. The caller must
 // validate the exact 4096/2048/256/top-6 MXFP4 group-32 contract before use.
 MLX_API array deepseek_v4_mxfp4_moe(
-    const array& x,
-    const array& gate_weight,
-    const array& gate_scales,
-    const array& up_weight,
-    const array& up_scales,
-    const array& down_weight,
-    const array& down_scales,
-    const array& indices,
-    const array& scores,
-    float activation_limit,
-    StreamOrDevice s = {});
+    const array& x, const array& gate_weight, const array& gate_scales,
+    const array& up_weight, const array& up_scales, const array& down_weight,
+    const array& down_scales, const array& indices, const array& scores,
+    float activation_limit, StreamOrDevice s = {});
 
-// Variant that keeps top-k selection and routed MoE execution inside one
-// primitive. `logits` remains the ordinary FP32 router GEMV output so this
-// experiment changes only the selector-to-MoE graph boundary.
 MLX_API array deepseek_v4_mxfp4_moe_select(
-    const array& x,
-    const array& gate_weight,
-    const array& gate_scales,
-    const array& up_weight,
-    const array& up_scales,
-    const array& down_weight,
-    const array& down_scales,
-    const array& logits,
-    const array& bias,
-    const array& route_scale,
-    float activation_limit,
-    StreamOrDevice s = {});
+    const array& x, const array& gate_weight, const array& gate_scales,
+    const array& up_weight, const array& up_scales, const array& down_weight,
+    const array& down_scales, const array& logits, const array& bias,
+    const array& route_scale, float activation_limit, StreamOrDevice s = {});
 
 MLX_API array deepseek_v4_mxfp4_moe_select_shared_q8(
-    const array& x,
-    const array& gate_weight,
-    const array& gate_scales,
-    const array& up_weight,
-    const array& up_scales,
-    const array& down_weight,
-    const array& down_scales,
-    const array& logits,
-    const array& bias,
-    const array& route_scale,
-    const array& shared_gate_weight,
-    const array& shared_gate_scales,
-    const array& shared_up_weight,
-    const array& shared_up_scales,
-    const array& shared_down_weight,
-    const array& shared_down_scales,
-    float activation_limit,
+    const array& x, const array& gate_weight, const array& gate_scales,
+    const array& up_weight, const array& up_scales, const array& down_weight,
+    const array& down_scales, const array& logits, const array& bias,
+    const array& route_scale, const array& shared_gate_weight,
+    const array& shared_gate_scales, const array& shared_up_weight,
+    const array& shared_up_scales, const array& shared_down_weight,
+    const array& shared_down_scales, float activation_limit,
     StreamOrDevice s = {});
 
-// Decode-only HC=4 FFN tail. This keeps HC collapse/normalization, routing,
-// routed MXFP4 experts, the symmetric-Q8 shared expert, and HC expansion in a
-// single typed primitive while preserving the ordinary path as a fallback.
 MLX_API array deepseek_v4_hc_mxfp4_moe_shared_q8(
-    const array& residual,
-    const array& hc_fn,
-    const array& hc_scale,
-    const array& hc_base,
-    const array& norm_weight,
-    const array& router_weight,
-    const array& router_bias,
-    const array& route_scale,
-    const array& gate_weight,
-    const array& gate_scales,
-    const array& up_weight,
-    const array& up_scales,
-    const array& down_weight,
-    const array& down_scales,
-    const array& shared_gate_weight,
-    const array& shared_gate_scales,
-    const array& shared_up_weight,
-    const array& shared_up_scales,
-    const array& shared_down_weight,
-    const array& shared_down_scales,
-    float activation_limit,
-    float hc_eps,
-    float norm_eps,
+    const array& residual, const array& hc_fn, const array& hc_scale,
+    const array& hc_base, const array& norm_weight,
+    const array& router_weight, const array& router_bias,
+    const array& route_scale, const array& gate_weight,
+    const array& gate_scales, const array& up_weight, const array& up_scales,
+    const array& down_weight, const array& down_scales,
+    const array& shared_gate_weight, const array& shared_gate_scales,
+    const array& shared_up_weight, const array& shared_up_scales,
+    const array& shared_down_weight, const array& shared_down_scales,
+    float activation_limit, float hc_eps, float norm_eps,
     StreamOrDevice s = {});
 
-// Signed symmetric Q8/group-32 matvec used by checkpoints that explicitly
-// advertise AFM's storage contract. output_groups=1 is an ordinary matvec;
-// larger values select one weight bank for each penultimate input dimension.
 MLX_API array deepseek_v4_symmetric_q8_matvec(
-    const array& x,
-    const array& weight,
-    const array& scales,
-    int output_groups = 1,
-    StreamOrDevice s = {});
+    const array& x, const array& weight, const array& scales,
+    int output_groups = 1, StreamOrDevice s = {});
 
 MLX_API CustomKernelFunction cuda_kernel(
     const std::string& name,

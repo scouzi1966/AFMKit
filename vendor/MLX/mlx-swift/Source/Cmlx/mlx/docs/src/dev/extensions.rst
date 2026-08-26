@@ -330,6 +330,32 @@ GPU kernels in MLX are written using Metal.
     * Documentation for metal shading language: `Metal Specification`_
     * Using metal from C++: `Metal-cpp`_
 
+.. note::
+
+    As of Metal 4.1, the implicit address space of ``this`` in a member function
+    is ``__metal_generic`` rather than ``thread``. Member functions in Metal
+    shading code should therefore carry an explicit address space qualifier,
+    written after the parameter list:
+
+    .. code-block:: C++
+
+        struct Accumulator {
+            float vals[4];
+            thread float& at(short i) thread {
+                return vals[i];
+            }
+        };
+
+    Without the trailing ``thread``, returning a ``thread``-qualified reference
+    to a member no longer compiles::
+
+        error: reference to type 'thread float' could not bind to an lvalue
+        of type '__metal_generic float'
+
+    Metal libraries built with ``mlx_build_metallib`` are compiled with
+    ``-Wmetal-addr-spaces``, which reports a missing qualifier as a warning on
+    toolchains where it is not yet an error.
+
 Let's keep the GPU kernel simple. We will launch exactly as many threads as
 there are elements in the output. Each thread will pick the element it needs
 from ``x`` and ``y``, do the point-wise operation, and update its assigned
@@ -404,7 +430,7 @@ below.
         auto kernel = d.get_kernel(kname, lib);
 
         // Prepare to encode kernel
-        auto& compute_encoder = d.get_command_encoder(s.index);
+        auto& compute_encoder = mx::metal::get_command_encoder(s);
         compute_encoder.set_compute_pipeline_state(kernel);
 
         // Kernel parameters are registered with buffer indices corresponding to
@@ -448,7 +474,7 @@ We can now call the :meth:`axpby` operation on both the CPU and the GPU!
 
 A few things to note about MLX and Metal before moving on. MLX keeps track of
 the active ``command_buffer`` and the ``MTLCommandBuffer`` to which it is
-associated. We rely on :meth:`d.get_command_encoder` to give us the active
+associated. We rely on :meth:`metal::get_command_encoder` to give us the active
 metal compute command encoder instead of building a new one and calling
 :meth:`compute_encoder->end_encoding` at the end. MLX adds kernels (compute
 pipelines) to the active command buffer until some specified limit is hit or

@@ -16,6 +16,11 @@ public enum GPU {
 
     public typealias Snapshot = Memory.Snapshot
 
+    /// Select the MLX metallib by absolute path before the first MLX operation.
+    public static func setMetallibPath(_ path: String) {
+        mlx_metal_set_metallib_path(path.cString(using: .utf8))
+    }
+
     /// Get the actively used memory in bytes.
     ///
     /// Note, this will not always match memory use reported by the system because
