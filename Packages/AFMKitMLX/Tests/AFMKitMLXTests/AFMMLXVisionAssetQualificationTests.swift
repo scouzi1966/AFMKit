@@ -30,6 +30,25 @@ final class AFMMLXVisionAssetQualificationTests: XCTestCase {
         XCTAssertTrue(qualification.isUsableQwenConditionalGeneration)
     }
 
+    func testQwen4ExpConditionalGenerationAssetsAreUsable() throws {
+        let directory = try makeModelDirectory()
+        var config = Self.fixtureConfiguration()
+        config["model_type"] = "qwen4_exp"
+        config["architectures"] = ["Qwen4ExpForConditionalGeneration"]
+        var text = try XCTUnwrap(config["text_config"] as? [String: Any])
+        text["model_type"] = "qwen4_exp_text"
+        config["text_config"] = text
+        try Self.writeJSON(config, to: directory.appendingPathComponent("config.json"))
+
+        let qualification = try qualify(directory)
+
+        XCTAssertEqual(qualification.canonicalModelType, "qwen4_exp")
+        XCTAssertTrue(qualification.isConditionalGeneration)
+        XCTAssertEqual(qualification.processorClass, "Qwen3VLProcessor")
+        XCTAssertTrue(qualification.missingAssets.isEmpty)
+        XCTAssertTrue(qualification.isUsableQwenConditionalGeneration)
+    }
+
     func testOptionalVisionFailuresDoNotChangeBaseCacheCompleteness() throws {
         let mutations: [(String, (inout [String: Any], URL) throws -> Void)] = [
             ("processor", { _, directory in

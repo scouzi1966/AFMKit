@@ -11,6 +11,27 @@ import XCTest
 
 class CmlxTests: XCTestCase {
 
+    func testSetDefaultStreamIsObservableThroughGet() {
+        let device = mlx_device_new_type(MLX_GPU, 0)
+        defer { mlx_device_free(device) }
+
+        var original = mlx_stream_new()
+        XCTAssertEqual(mlx_get_default_stream(&original, device), 0)
+        defer {
+            XCTAssertEqual(mlx_set_default_stream(original), 0)
+            mlx_stream_free(original)
+        }
+
+        let replacement = mlx_stream_new_device(device)
+        defer { mlx_stream_free(replacement) }
+        XCTAssertEqual(mlx_set_default_stream(replacement), 0)
+
+        var observed = mlx_stream_new()
+        defer { mlx_stream_free(observed) }
+        XCTAssertEqual(mlx_get_default_stream(&observed, device), 0)
+        XCTAssertTrue(mlx_stream_equal(replacement, observed))
+    }
+
     func testMinimal() throws {
         // smoke test making sure we can build, link & call C api
         //

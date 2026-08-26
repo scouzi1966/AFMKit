@@ -166,6 +166,7 @@ public enum AFMMLXModelArchitecture {
         "qwen3_5_moe",
         "qwen3_6",
         "qwen3_6_moe",
+        "qwen4_exp",
         "acereason",
         "starcoder2",
         "cohere",
@@ -214,6 +215,7 @@ public enum AFMMLXModelArchitecture {
         "qwen3_5_moe",
         "qwen3_6",
         "qwen3_6_moe",
+        "qwen4_exp",
         "idefics3",
         "gemma3",
         "gemma4",
@@ -304,16 +306,20 @@ public enum AFMMLXModelArchitecture {
         }
 
         let canonicalModelType = canonicalModelType(modelType)
-        let isVisionOnly = visionModelTypes.contains(canonicalModelType)
+        let supportsVisionFactory = visionModelTypes.contains(canonicalModelType)
+        let isVisionOnly = supportsVisionFactory
             && !languageModelTypes.contains(canonicalModelType)
+        let isSupportedVisionConfiguration = supportsVisionFactory
+            && AFMMLXModelDescriptor.isVisionModelConfiguration(config)
 
         return AFMMLXModelArchitecturePreflight(
             modelID: modelID,
             modelType: modelType,
             canonicalModelType: canonicalModelType,
-            isVisionConfiguration: AFMMLXModelDescriptor.isVisionModelConfiguration(config),
+            isVisionConfiguration: isSupportedVisionConfiguration,
             requiresVisionModelFactory: isVisionOnly
-                || AFMMLXModelDescriptor.requiresVisionModelFactory(config)
+                || (supportsVisionFactory
+                    && AFMMLXModelDescriptor.requiresVisionModelFactory(config))
         )
     }
 

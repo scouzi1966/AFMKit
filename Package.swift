@@ -270,7 +270,7 @@ var targets: [Target] = [
     .target(
         name: "MLXVLM",
         dependencies: [
-            "MLXLMCommon", "MLX", "MLXNN", "MLXOptimizers", "MLXFast",
+            "MLXLMCommon", "MLXLLM", "MLX", "MLXNN", "MLXOptimizers", "MLXFast",
             .product(name: "Transformers", package: "swift-transformers")
         ],
         path: "vendor/MLX/mlx-swift-lm/Libraries/MLXVLM",

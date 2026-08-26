@@ -125,7 +125,7 @@ public enum ToolCallFormat: String, Sendable, Codable, CaseIterable {
             return .gemma
         case "gemma4", "gemma4_text":
             return .gemma4
-        case "qwen3_next", "qwen3_coder", "qwen3_5_moe", "qwen3_5",
+        case "qwen3_next", "qwen3_coder", "qwen3_5_moe", "qwen3_5", "qwen4_exp",
              "qwen3_moe", "nemotron_h", "joyai_llm_flash":
             return .xmlFunction
         case "qwen3_vl", "granitemoehybrid", "bailing_moe",

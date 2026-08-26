@@ -61,5 +61,6 @@ public struct AFMMLXVisionAssetQualification: Hashable, Sendable {
     private static let qwenConditionalModelTypes: Set<String> = [
         "qwen3_5",
         "qwen3_5_moe",
+        "qwen4_exp",
     ]
 }
