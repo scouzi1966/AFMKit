@@ -102,7 +102,7 @@ final class AFMMLXModelArchitectureTests: XCTestCase {
             .vlm
         )
         XCTAssertTrue(AFMMLXRequestMediaPolicy.supports(.image, architecture: preflight))
-        XCTAssertTrue(AFMMLXRequestMediaPolicy.supports(.video, architecture: preflight))
+        XCTAssertFalse(AFMMLXRequestMediaPolicy.supports(.video, architecture: preflight))
         XCTAssertEqual(
             AFMMLXLoadedModeSwitchPolicy.make(
                 loadedModelRepoID: "Vontra/Qwen3.8-Flash-Next-MLX-4bit",
