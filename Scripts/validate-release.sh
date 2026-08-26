@@ -58,6 +58,7 @@ node "$ROOT/Scripts/test-release-local.js"
 "$ROOT/Scripts/test-workflow-security.sh"
 "$ROOT/Scripts/check-dwarfstar-resources.sh"
 "$ROOT/Scripts/check-unauthenticated-core-consumer.sh"
+"$ROOT/Scripts/check-ios-core-consumer.sh"
 
 clean_build_configuration "$BUILD_ROOT/public" debug
 "$ROOT/Scripts/check-api-baselines.sh"

@@ -451,7 +451,7 @@ targets.append(.testTarget(name: "AFMKitFoundationModelsDwarfStarTests", depende
 
 let package = Package(
     name: "AFMKit",
-    platforms: [.macOS("26.0")],
+    platforms: [.macOS("26.0"), .iOS("16.0")],
     products: products,
     dependencies: [
         .package(url: "https://github.com/huggingface/swift-transformers", exact: "1.3.3"),
