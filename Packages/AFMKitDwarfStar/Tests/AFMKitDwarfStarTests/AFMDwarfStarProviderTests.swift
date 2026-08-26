@@ -3,6 +3,161 @@ import AFMKitCore
 @testable import AFMKitDwarfStar
 
 final class AFMDwarfStarProviderTests: XCTestCase {
+    func testProviderStatePublicationPreservesMutationOrderWhenObserverBlocks() async throws {
+        let coordinator = AFMDwarfStarProviderStateCoordinator()
+        let observer = BlockingProviderStateObserver()
+        _ = coordinator.register(observer)
+        XCTAssertTrue(observer.waitForUpdateCount(1))
+        observer.blockNextUpdate()
+
+        let reservationID = UUID()
+        DispatchQueue.global().async {
+            coordinator.admissionStarted(reservationID)
+        }
+        XCTAssertTrue(observer.waitUntilBlocked())
+        coordinator.admissionFailed(reservationID)
+        observer.resumeBlockedUpdate()
+        XCTAssertTrue(observer.waitForUpdateCount(3))
+
+        XCTAssertEqual(Array(observer.waitingRequestHistory.suffix(2)), [1, 0])
+    }
+
+    func testLeaseKeepsAdmissionAliveUntilReservationIsReleased() async throws {
+        let coordinator = AFMDwarfStarProviderStateCoordinator()
+        let observer = ProviderStateObserver()
+        weak var weakAdmission: AFMDwarfStarGenerationAdmission?
+        var lease: AFMGenerationLease?
+
+        do {
+            let admission = AFMDwarfStarGenerationAdmission(
+                maximumConcurrentRequests: 1,
+                telemetryObserver: observer,
+                providerStateCoordinator: coordinator
+            )
+            weakAdmission = admission
+            lease = try await admission.admitGeneration(timeout: .seconds(1))
+        }
+
+        XCTAssertNotNil(weakAdmission)
+        lease?.release()
+        lease = nil
+        try await waitForProviderState(observer) {
+            $0.runningRequests == 0 && $0.waitingRequests == 0
+        }
+        XCTAssertNil(weakAdmission)
+    }
+
+    func testCombinedProviderStateBroadcastsAdmissionAndSchedulerTransitions() async throws {
+        let coordinator = AFMDwarfStarProviderStateCoordinator()
+        let firstObserver = ProviderStateObserver()
+        let secondObserver = ProviderStateObserver()
+        let firstAdmission = AFMDwarfStarGenerationAdmission(
+            maximumConcurrentRequests: 1,
+            telemetryObserver: firstObserver,
+            providerStateCoordinator: coordinator
+        )
+        let secondAdmission = AFMDwarfStarGenerationAdmission(
+            maximumConcurrentRequests: 1,
+            telemetryObserver: secondObserver,
+            providerStateCoordinator: coordinator
+        )
+
+        let firstLease = try await firstAdmission.admitGeneration(timeout: .seconds(1))
+        try await waitForProviderState(secondObserver) {
+            $0.runningRequests == 1 && $0.waitingRequests == 0
+        }
+
+        coordinator.schedulerChanged(
+            running: 1,
+            waiting: 0,
+            activeLogicalCachePositions: 12,
+            logicalCacheCapacity: 100
+        )
+        try await waitForProviderState(firstObserver) {
+            $0.runningRequests == 1 && $0.activeLogicalCachePositions == 12
+        }
+
+        let secondLease = try await secondAdmission.admitGeneration(timeout: .seconds(1))
+        try await waitForProviderState(firstObserver) {
+            $0.runningRequests == 2 && $0.waitingRequests == 0
+        }
+        try await waitForProviderState(secondObserver) {
+            $0.runningRequests == 2 && $0.waitingRequests == 0
+        }
+
+        coordinator.schedulerChanged(
+            running: 1,
+            waiting: 1,
+            activeLogicalCachePositions: 24,
+            logicalCacheCapacity: 100
+        )
+        try await waitForProviderState(firstObserver) {
+            $0.runningRequests == 1 && $0.waitingRequests == 1
+        }
+        try await waitForProviderState(secondObserver) {
+            $0.runningRequests == 1 && $0.waitingRequests == 1
+        }
+
+        firstLease.release()
+        secondLease.release()
+        coordinator.schedulerChanged(
+            running: 0,
+            waiting: 0,
+            activeLogicalCachePositions: 0,
+            logicalCacheCapacity: 100
+        )
+        try await waitForProviderState(firstObserver) {
+            $0.runningRequests == 0 && $0.waitingRequests == 0
+        }
+        try await waitForProviderState(secondObserver) {
+            $0.runningRequests == 0 && $0.waitingRequests == 0
+        }
+    }
+
+    func testAdmissionWaitersRemainVisibleInCombinedProviderState() async throws {
+        let observer = ProviderStateObserver()
+        let admission = AFMDwarfStarGenerationAdmission(
+            maximumConcurrentRequests: 1,
+            telemetryObserver: observer,
+            providerStateCoordinator: AFMDwarfStarProviderStateCoordinator()
+        )
+        let occupied = try await admission.admitGeneration(timeout: .seconds(1))
+        let waiter = Task {
+            try await admission.admitGeneration(timeout: .seconds(1))
+        }
+
+        try await waitForProviderState(observer) {
+            $0.runningRequests == 1 && $0.waitingRequests == 1
+        }
+        waiter.cancel()
+        do {
+            _ = try await waiter.value
+            XCTFail("cancelled waiter must not be admitted")
+        } catch let error as AFMGenerationAdmissionError {
+            XCTAssertEqual(error, .cancelled)
+        }
+        try await waitForProviderState(observer) {
+            $0.runningRequests == 1 && $0.waitingRequests == 0
+        }
+
+        occupied.release()
+        try await waitForProviderState(observer) {
+            $0.runningRequests == 0 && $0.waitingRequests == 0
+        }
+    }
+
+    private func waitForProviderState(
+        _ observer: ProviderStateObserver,
+        predicate: (AFMInferenceProviderState) -> Bool
+    ) async throws {
+        let deadline = ContinuousClock.now + .seconds(1)
+        while ContinuousClock.now < deadline {
+            if predicate(observer.latestState) { return }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        XCTFail("provider state did not reach expected value")
+    }
+
     func testLeaseOwnerReleasesWhenModelLifetimeEnds() async throws {
         let leaseID = UUID()
         let releases = LeaseReleaseProbe()
@@ -449,6 +604,108 @@ final class AFMDwarfStarProviderTests: XCTestCase {
         )
     }
 
+}
+
+private final class ProviderStateObserver: AFMInferenceTelemetryObserving, @unchecked Sendable {
+    private let lock = NSLock()
+    private var state = AFMInferenceProviderState(runningRequests: 0, waitingRequests: 0)
+
+    var latestState: AFMInferenceProviderState { lock.withLock { state } }
+
+    func requestAccepted(at timestamp: Double) -> AFMInferenceRequestToken {
+        AFMInferenceRequestToken()
+    }
+    func requestStarted(_ token: AFMInferenceRequestToken, at timestamp: Double) {}
+    func outputToken(_ token: AFMInferenceRequestToken, at timestamp: Double) {}
+    func prefixCacheObserved(queriedTokens: Int, hitTokens: Int) {}
+    func speculativeRound(draftTokens: Int, acceptedTokens: Int) {}
+    func preemptionObserved() {}
+    func updateProviderState(_ state: AFMInferenceProviderState) {
+        lock.withLock { self.state = state }
+    }
+    func requestFinished(
+        _ token: AFMInferenceRequestToken,
+        observation: AFMInferenceRequestFinishObservation
+    ) -> Bool { true }
+    func requestFailed(
+        _ token: AFMInferenceRequestToken,
+        reason: AFMInferenceFailureReason,
+        at timestamp: Double
+    ) -> Bool { true }
+}
+
+private final class BlockingProviderStateObserver:
+    AFMInferenceTelemetryObserving,
+    @unchecked Sendable
+{
+    private struct State {
+        var waitingRequestHistory: [Int] = []
+        var shouldBlockNext = false
+    }
+
+    private let lock = NSLock()
+    private var state = State()
+    private let blocked = DispatchSemaphore(value: 0)
+    private let resume = DispatchSemaphore(value: 0)
+
+    var waitingRequestHistory: [Int] {
+        lock.withLock { state.waitingRequestHistory }
+    }
+
+    func blockNextUpdate() {
+        lock.withLock { state.shouldBlockNext = true }
+    }
+
+    func waitUntilBlocked() -> Bool {
+        blocked.wait(timeout: .now() + 1) == .success
+    }
+
+    func resumeBlockedUpdate() {
+        resume.signal()
+    }
+
+    func waitForUpdateCount(_ count: Int) -> Bool {
+        let deadline = Date().addingTimeInterval(1)
+        while Date() < deadline {
+            if lock.withLock({ state.waitingRequestHistory.count >= count }) {
+                return true
+            }
+            Thread.sleep(forTimeInterval: 0.005)
+        }
+        return false
+    }
+
+    func requestAccepted(at timestamp: Double) -> AFMInferenceRequestToken {
+        AFMInferenceRequestToken()
+    }
+    func requestStarted(_ token: AFMInferenceRequestToken, at timestamp: Double) {}
+    func outputToken(_ token: AFMInferenceRequestToken, at timestamp: Double) {}
+    func prefixCacheObserved(queriedTokens: Int, hitTokens: Int) {}
+    func speculativeRound(draftTokens: Int, acceptedTokens: Int) {}
+    func preemptionObserved() {}
+    func updateProviderState(_ providerState: AFMInferenceProviderState) {
+        let shouldBlock = lock.withLock { () -> Bool in
+            let shouldBlock = state.shouldBlockNext
+            state.shouldBlockNext = false
+            return shouldBlock
+        }
+        if shouldBlock {
+            blocked.signal()
+            _ = resume.wait(timeout: .now() + 1)
+        }
+        lock.withLock {
+            state.waitingRequestHistory.append(providerState.waitingRequests)
+        }
+    }
+    func requestFinished(
+        _ token: AFMInferenceRequestToken,
+        observation: AFMInferenceRequestFinishObservation
+    ) -> Bool { true }
+    func requestFailed(
+        _ token: AFMInferenceRequestToken,
+        reason: AFMInferenceFailureReason,
+        at timestamp: Double
+    ) -> Bool { true }
 }
 
 private actor LeaseReleaseProbe {

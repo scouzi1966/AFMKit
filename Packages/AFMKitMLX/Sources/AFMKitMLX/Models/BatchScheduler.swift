@@ -43,6 +43,32 @@ extension Gemma4VLM: FixedDecodeCohortModel {
 /// are merged into `BatchKVCacheSimple` for batched decode. Dynamic slot
 /// add/remove uses `extend()` and `filter()` on the batch cache.
 actor BatchScheduler {
+    static let maximumConsecutiveSuppressedEndOfSequenceTokens = 64
+
+    enum TokenDisposition: Equatable {
+        case length
+        case stop
+        case suppress
+        case emit
+    }
+
+    static func tokenDisposition(
+        tokenCount: Int,
+        maxTokens: Int?,
+        tokenID: Int,
+        unknownTokenID: Int?,
+        ignoreEndOfSequence: Bool,
+        eosTokenIDs: Set<Int>,
+        consecutiveSuppressedEndOfSequenceTokens: Int
+    ) -> TokenDisposition {
+        if let maxTokens, tokenCount >= maxTokens { return .length }
+        if unknownTokenID == tokenID { return .stop }
+        guard eosTokenIDs.contains(tokenID) else { return .emit }
+        guard ignoreEndOfSequence else { return .stop }
+        return consecutiveSuppressedEndOfSequenceTokens + 1
+            >= maximumConsecutiveSuppressedEndOfSequenceTokens ? .stop : .suppress
+    }
+
     struct ConstraintRuntimeConfiguration: @unchecked Sendable {
         let mode: String
         let matcherHandle: GrammarMatcherHandle?
@@ -127,6 +153,8 @@ actor BatchScheduler {
         var processor: LogitProcessor?
         var detokenizer: NaiveStreamingDetokenizer
         let maxTokens: Int?
+        let ignoreEndOfSequence: Bool
+        var consecutiveSuppressedEndOfSequenceTokens = 0
         let toolRuntime: ToolCallStreamingRuntime?
         let constraintRuntime: ConstraintRuntimeConfiguration?
 
@@ -167,6 +195,7 @@ actor BatchScheduler {
             processor: LogitProcessor?,
             detokenizer: NaiveStreamingDetokenizer,
             maxTokens: Int?,
+            ignoreEndOfSequence: Bool,
             toolRuntime: ToolCallStreamingRuntime?,
             constraintRuntime: ConstraintRuntimeConfiguration?,
             activeStops: [String],
@@ -201,6 +230,7 @@ actor BatchScheduler {
             self.processor = processor
             self.detokenizer = detokenizer
             self.maxTokens = maxTokens
+            self.ignoreEndOfSequence = ignoreEndOfSequence
             self.toolRuntime = toolRuntime
             self.constraintRuntime = constraintRuntime
             self.activeStops = activeStops
@@ -407,6 +437,7 @@ actor BatchScheduler {
         let queuedAt: Date
         let input: LMInput
         let parameters: GenerateParameters
+        let ignoreEndOfSequence: Bool
         let promptTokens: Int
         let toolCallRuntimeConfig: ToolCallRuntimeConfiguration?
         let constraintRuntimeConfig: ConstraintRuntimeConfiguration?
@@ -650,6 +681,7 @@ actor BatchScheduler {
                 queuedAt: Date(),
                 input: input,
                 parameters: parameters,
+                ignoreEndOfSequence: parameters.ignoreEndOfSequence,
                 promptTokens: promptTokens,
                 toolCallRuntimeConfig: toolCallRuntimeConfig,
                 constraintRuntimeConfig: constraintRuntimeConfig,
@@ -988,17 +1020,28 @@ actor BatchScheduler {
                         slot.firstTokenAt = now
                     }
 
-                    if token == tokenizer.unknownTokenId || eosTokenIds.contains(token) {
-                        completedIndices.append(i)
-                        continue
-                    }
-
-                    if let max = slot.maxTokens, slot.tokenCount >= max {
+                    let disposition = Self.tokenDisposition(
+                        tokenCount: slot.tokenCount,
+                        maxTokens: slot.maxTokens,
+                        tokenID: token,
+                        unknownTokenID: tokenizer.unknownTokenId,
+                        ignoreEndOfSequence: slot.ignoreEndOfSequence,
+                        eosTokenIDs: eosTokenIds,
+                        consecutiveSuppressedEndOfSequenceTokens:
+                            slot.consecutiveSuppressedEndOfSequenceTokens
+                    )
+                    if disposition == .stop || disposition == .length {
                         completedIndices.append(i)
                         continue
                     }
 
                     slot.lastTokenId = token
+                    if disposition == .suppress {
+                        slot.consecutiveSuppressedEndOfSequenceTokens += 1
+                        slot.pendingLogprobData = nil
+                        continue
+                    }
+                    slot.consecutiveSuppressedEndOfSequenceTokens = 0
 
                     slot.tokenCount += 1
                     StatsAggregator.shared.addGenTokens(1)
@@ -1068,16 +1111,28 @@ actor BatchScheduler {
                     logprobsForToken = nil
                 }
 
-                if token == tokenizer.unknownTokenId || eosTokenIds.contains(token) {
-                    finishSlot(at: i)
-                    continue
-                }
-                if let max = slot.maxTokens, slot.tokenCount >= max {
+                let disposition = Self.tokenDisposition(
+                    tokenCount: slot.tokenCount,
+                    maxTokens: slot.maxTokens,
+                    tokenID: token,
+                    unknownTokenID: tokenizer.unknownTokenId,
+                    ignoreEndOfSequence: slot.ignoreEndOfSequence,
+                    eosTokenIDs: eosTokenIds,
+                    consecutiveSuppressedEndOfSequenceTokens:
+                        slot.consecutiveSuppressedEndOfSequenceTokens
+                )
+                if disposition == .stop || disposition == .length {
                     finishSlot(at: i)
                     continue
                 }
 
                 slot.lastTokenId = token
+                if disposition == .suppress {
+                    slot.consecutiveSuppressedEndOfSequenceTokens += 1
+                    slot.pendingLogprobData = nil
+                    continue
+                }
+                slot.consecutiveSuppressedEndOfSequenceTokens = 0
                 slot.tokenCount += 1
                 StatsAggregator.shared.addGenTokens(1)
                 slot.detokenizer.append(token: token)
@@ -1392,6 +1447,7 @@ actor BatchScheduler {
             processor: logitProcessor,
             detokenizer: NaiveStreamingDetokenizer(tokenizer: tokenizer),
             maxTokens: req.parameters.maxTokens,
+            ignoreEndOfSequence: req.ignoreEndOfSequence,
             toolRuntime: req.toolCallRuntimeConfig.map { config in
                 ToolCallStreamingRuntime(
                     toolCallStartTag: config.startTag,
@@ -1429,11 +1485,19 @@ actor BatchScheduler {
             )
         }
 
-        // Dispatch the first token (from prefill) to the detokenizer.
-        // The generationLoop dispatch starts from the SECOND token, so without this
-        // the first generated token would be lost (e.g., `{` in JSON output).
-        // Guard: don't dispatch EOS or unknown tokens as text.
-        if !eosTokenIds.contains(firstToken) && firstToken != tokenizer.unknownTokenId {
+        let firstTokenDisposition = Self.tokenDisposition(
+            tokenCount: slot.tokenCount,
+            maxTokens: slot.maxTokens,
+            tokenID: firstToken,
+            unknownTokenID: tokenizer.unknownTokenId,
+            ignoreEndOfSequence: slot.ignoreEndOfSequence,
+            eosTokenIDs: eosTokenIds,
+            consecutiveSuppressedEndOfSequenceTokens: 0
+        )
+        if firstTokenDisposition == .suppress {
+            slot.consecutiveSuppressedEndOfSequenceTokens = 1
+            slot.pendingLogprobData = nil
+        } else if firstTokenDisposition == .emit {
             slot.tokenCount += 1
             StatsAggregator.shared.addGenTokens(1)
             slot.detokenizer.append(token: firstToken)
@@ -1466,6 +1530,10 @@ actor BatchScheduler {
         print("[\(batchTs())] [ChunkStats] stage=preliminary | stream=true | cached_tokens=\(cachedTokens) | prompt_tokens=pending | completion_tokens=pending | prompt_time=pending | generate_time=pending")
 
         slots.append(slot)
+        if firstTokenDisposition == .stop || firstTokenDisposition == .length {
+            finishSlot(at: slots.count - 1)
+            return
+        }
         DebugLogger.log("[BatchScheduler] Prefilled slot req=\(slot.requestId) (B=\(slots.count), \(cachedTokens > 0 ? "cache hit \(cachedTokens) tokens" : "full prefill"), \(String(format: "%.0f", prefillTime * 1000))ms)")
     }
 
@@ -1503,18 +1571,34 @@ actor BatchScheduler {
         var currentToken = firstToken
         var state = modelState
         var tokenCount = 0
+        var consecutiveSuppressedEndOfSequenceTokens = 0
         let maxTokens = req.parameters.maxTokens ?? 4096
         var detokenizer = NaiveStreamingDetokenizer(tokenizer: tokenizer)
         let genStart = Date()
 
-        while tokenCount < maxTokens {
+        while true {
             let tokenId = currentToken.item(Int.self)
-            if eosTokenIds.contains(tokenId) { break }
+            let disposition = Self.tokenDisposition(
+                tokenCount: tokenCount,
+                maxTokens: maxTokens,
+                tokenID: tokenId,
+                unknownTokenID: tokenizer.unknownTokenId,
+                ignoreEndOfSequence: req.ignoreEndOfSequence,
+                eosTokenIDs: eosTokenIds,
+                consecutiveSuppressedEndOfSequenceTokens:
+                    consecutiveSuppressedEndOfSequenceTokens
+            )
+            if disposition == .stop || disposition == .length { break }
 
-            tokenCount += 1
-            detokenizer.append(token: tokenId)
-            if let chunk = detokenizer.next() {
-                req.continuation.yield(StreamChunk(text: chunk))
+            if disposition == .suppress {
+                consecutiveSuppressedEndOfSequenceTokens += 1
+            } else {
+                consecutiveSuppressedEndOfSequenceTokens = 0
+                tokenCount += 1
+                detokenizer.append(token: tokenId)
+                if let chunk = detokenizer.next() {
+                    req.continuation.yield(StreamChunk(text: chunk))
+                }
             }
 
             // Next token — shape [1, 1] (batch=1, seqLen=1)
@@ -1709,6 +1793,7 @@ actor BatchScheduler {
         }
 
         // Create SlotState for each request
+        var finishAfterPrefill: [UUID] = []
         for i in 0..<B {
             let req = requests[i]
             let firstToken = tokenArrays[i].item(Int.self)
@@ -1730,6 +1815,7 @@ actor BatchScheduler {
                 processor: logitProcessors[i],
                 detokenizer: NaiveStreamingDetokenizer(tokenizer: tokenizer),
                 maxTokens: req.parameters.maxTokens,
+                ignoreEndOfSequence: req.ignoreEndOfSequence,
                 toolRuntime: req.toolCallRuntimeConfig.map { config in
                     ToolCallStreamingRuntime(
                         toolCallStartTag: config.startTag,
@@ -1769,8 +1855,19 @@ actor BatchScheduler {
                 )
             }
 
-            // Dispatch prefill first token to detokenizer (same fix as prefillOne)
-            if !eosTokenIds.contains(firstToken) && firstToken != tokenizer.unknownTokenId {
+            let firstTokenDisposition = Self.tokenDisposition(
+                tokenCount: slot.tokenCount,
+                maxTokens: slot.maxTokens,
+                tokenID: firstToken,
+                unknownTokenID: tokenizer.unknownTokenId,
+                ignoreEndOfSequence: slot.ignoreEndOfSequence,
+                eosTokenIDs: eosTokenIds,
+                consecutiveSuppressedEndOfSequenceTokens: 0
+            )
+            if firstTokenDisposition == .suppress {
+                slot.consecutiveSuppressedEndOfSequenceTokens = 1
+                slot.pendingLogprobData = nil
+            } else if firstTokenDisposition == .emit {
                 slot.tokenCount += 1
                 StatsAggregator.shared.addGenTokens(1)
                 slot.detokenizer.append(token: firstToken)
@@ -1784,6 +1881,15 @@ actor BatchScheduler {
             }
 
             slots.append(slot)
+            if firstTokenDisposition == .stop || firstTokenDisposition == .length {
+                finishAfterPrefill.append(slot.id)
+            }
+        }
+
+        for id in finishAfterPrefill {
+            if let index = slots.firstIndex(where: { $0.id == id }) {
+                finishSlot(at: index)
+            }
         }
 
         let totalInputTokens = lengths.reduce(0, +)

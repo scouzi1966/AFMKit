@@ -98,8 +98,14 @@ final class AFMKitInferenceTests: XCTestCase {
             stop: ["END"],
             tools: [tool],
             responseFormat: .init(type: "json_schema", jsonSchema: schema),
+            ignoreEndOfSequence: true,
             metadata: ["trace": .string("abc")]
         )
+        let legacyConfig = GenerationConfig(
+            responseFormat: .init(type: "json_object"),
+            metadata: ["legacy": .bool(true)]
+        )
+        XCTAssertFalse(legacyConfig.ignoreEndOfSequence)
 
         _ = try await engine.respond(to: messages, config)
         let recordedRequest = await state.lastRequest
@@ -122,6 +128,7 @@ final class AFMKitInferenceTests: XCTestCase {
         XCTAssertEqual(request.options.logprobs, true)
         XCTAssertEqual(request.options.topLogprobs, 3)
         XCTAssertEqual(request.options.stopSequences, ["END"])
+        XCTAssertTrue(request.options.ignoreEndOfSequence)
         XCTAssertEqual(request.metadata["trace"], .string("abc"))
         guard case .jsonSchema(let name, _, let strict) = request.options.responseConstraint else {
             return XCTFail("Expected JSON schema constraint")

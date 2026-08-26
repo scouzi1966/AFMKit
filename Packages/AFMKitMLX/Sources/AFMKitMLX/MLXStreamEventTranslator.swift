@@ -117,7 +117,8 @@ public struct MLXStreamEventTranslator {
 
     private mutating func textEvents(from chunk: StreamChunk) -> [AFMGenerationEvent] {
         guard !chunk.text.isEmpty else { return [] }
-        let tokenCount = max(1, chunk.logprobs?.count ?? 1)
+        let tokenCount = chunk.generatedTokenCountOverride
+            ?? max(1, chunk.logprobs?.count ?? 1)
         guard let thinkStartTag, let thinkEndTag else {
             return [
                 .responseText(action: .append, text: chunk.text, tokenCount: tokenCount)

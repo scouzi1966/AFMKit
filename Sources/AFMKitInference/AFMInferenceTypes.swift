@@ -18,6 +18,7 @@ public struct GenerationConfig: Sendable {
     public var stop: [String]?
     public var tools: [RequestTool]?
     public var responseFormat: ResponseFormat?
+    public var ignoreEndOfSequence: Bool
     public var metadata: [String: AFMJSONValue]
 
     public init(
@@ -51,7 +52,46 @@ public struct GenerationConfig: Sendable {
         self.stop = stop
         self.tools = tools
         self.responseFormat = responseFormat
+        self.ignoreEndOfSequence = false
         self.metadata = metadata
+    }
+
+    public init(
+        temperature: Double? = nil,
+        maxTokens: Int? = nil,
+        reasoningEnabled: Bool? = nil,
+        topP: Double? = nil,
+        topK: Int? = nil,
+        minP: Double? = nil,
+        repetitionPenalty: Double? = nil,
+        presencePenalty: Double? = nil,
+        seed: Int? = nil,
+        logprobs: Bool? = nil,
+        topLogprobs: Int? = nil,
+        stop: [String]? = nil,
+        tools: [RequestTool]? = nil,
+        responseFormat: ResponseFormat? = nil,
+        ignoreEndOfSequence: Bool,
+        metadata: [String: AFMJSONValue] = [:]
+    ) {
+        self.init(
+            temperature: temperature,
+            maxTokens: maxTokens,
+            reasoningEnabled: reasoningEnabled,
+            topP: topP,
+            topK: topK,
+            minP: minP,
+            repetitionPenalty: repetitionPenalty,
+            presencePenalty: presencePenalty,
+            seed: seed,
+            logprobs: logprobs,
+            topLogprobs: topLogprobs,
+            stop: stop,
+            tools: tools,
+            responseFormat: responseFormat,
+            metadata: metadata
+        )
+        self.ignoreEndOfSequence = ignoreEndOfSequence
     }
 }
 

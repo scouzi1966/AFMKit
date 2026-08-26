@@ -21,6 +21,10 @@ private enum AFMMLXPreflightedMediaContext {
     @TaskLocal static var request: AFMMLXResolvedMediaRequest?
 }
 
+enum AFMMLXPromptContext {
+    @TaskLocal static var rawPrompt: String?
+}
+
 private extension Dictionary where Key == String, Value == AnyCodable {
     var afmIncludeSchemaInPrompt: Bool? {
         guard case .bool(let value)? = self["afm_include_schema_in_prompt"]?.value else {
@@ -119,6 +123,7 @@ public struct StreamChunk: Sendable {
     public let promptTime: Double?
     public let generateTime: Double?
     public let stoppedBySequence: Bool?
+    let generatedTokenCountOverride: Int?
 
     public init(text: String, logprobs: [ResolvedLogprob]? = nil, toolCalls: [ResponseToolCall]? = nil, toolCallDeltas: [StreamDeltaToolCall]? = nil, promptTokens: Int? = nil, completionTokens: Int? = nil, cachedTokens: Int? = nil, promptTime: Double? = nil, generateTime: Double? = nil, stoppedBySequence: Bool? = nil) {
         self.text = text
@@ -131,6 +136,21 @@ public struct StreamChunk: Sendable {
         self.promptTime = promptTime
         self.generateTime = generateTime
         self.stoppedBySequence = stoppedBySequence
+        self.generatedTokenCountOverride = nil
+    }
+
+    init(syntheticText text: String) {
+        self.text = text
+        self.logprobs = nil
+        self.toolCalls = nil
+        self.toolCallDeltas = nil
+        self.promptTokens = nil
+        self.completionTokens = nil
+        self.cachedTokens = nil
+        self.promptTime = nil
+        self.generateTime = nil
+        self.stoppedBySequence = nil
+        self.generatedTokenCountOverride = 0
     }
 }
 
@@ -298,7 +318,10 @@ private final class StreamingScratch: @unchecked Sendable {
     var streamStatStoppedBySequence = false
 }
 
-public final class MLXModelService: @unchecked Sendable {
+public final class MLXModelService:
+    AFMInferenceTelemetryConnecting,
+    @unchecked Sendable
+{
     /// Shared fallback for MLX callers that omit a per-request output limit.
     public static let defaultMaximumResponseTokens = 8_192
     private struct ConstrainedDecodingSetup {
@@ -313,6 +336,7 @@ public final class MLXModelService: @unchecked Sendable {
     }()
 
     private let resolver: MLXCacheResolver
+    let telemetryObserver: any AFMInferenceTelemetryObserving
     private let registry = MLXModelRegistry()
     private let visionAssetValidator = AFMMLXVisionAssetValidator()
     private let stateLock = NSLock()
@@ -608,6 +632,8 @@ public final class MLXModelService: @unchecked Sendable {
 
     /// Number of in-flight batch operations (for auto-teardown).
     private let _activeBatchCount = OSAllocatedUnfairLock(initialState: 0)
+    private let _serialAdmissionRunning = OSAllocatedUnfairLock(initialState: 0)
+    private let _serialAdmissionWaiting = OSAllocatedUnfairLock(initialState: 0)
 
     /// Whether a promotion is currently in progress (prevents races).
     private var promotionInProgress = false
@@ -615,15 +641,36 @@ public final class MLXModelService: @unchecked Sendable {
     /// Scheduled teardown work item (cancelled if new batch arrives).
     private var teardownWorkItem: DispatchWorkItem?
 
-    /// Atomically reserve a concurrent slot. Returns true if reserved (or serial mode).
-    public func tryReserveSlot() -> Bool { scheduler?.tryReserve() ?? true }
-    /// Wait for a concurrent slot with timeout. Returns true if reserved (or serial mode).
+    /// Atomically reserve an execution slot.
+    public func tryReserveSlot() -> Bool {
+        scheduler?.tryReserve() ?? tryReserveSerialSlot()
+    }
+    /// Wait for an execution slot with timeout.
     public func waitForSlot(timeout: TimeInterval = 30) async -> Bool {
-        guard let sched = scheduler else { return true }
+        guard let sched = scheduler else {
+            return await waitForSerialSlot(timeout: timeout)
+        }
         return await sched.waitForSlot(timeout: timeout)
     }
     /// Release a reserved slot (call if request fails before generation starts).
-    public func releaseSlot() { scheduler?.releaseReservation() }
+    public func releaseSlot() {
+        if let scheduler {
+            scheduler.releaseReservation()
+        } else {
+            releaseSerialSlot()
+        }
+    }
+
+    /// Transfers an admitted batch reservation only after scheduler submission
+    /// has completed successfully. Setup failures leave release ownership with
+    /// the caller's lease.
+    static func submittingAdmittedBatchRequest<Result>(
+        _ submission: () throws -> Result
+    ) rethrows -> Result {
+        let result = try submission()
+        AFMGenerationContext.admissionLease?.transferReleaseToProvider()
+        return result
+    }
 
     public func admissionSnapshot() async -> AFMAdmissionSnapshot {
         let scheduler = withStateLock { self.scheduler }
@@ -692,7 +739,122 @@ public final class MLXModelService: @unchecked Sendable {
     public init(resolver: MLXCacheResolver) {
         _ = Self.registerModelFactoriesOnce
         self.resolver = resolver
+        self.telemetryObserver = AFMInferenceTelemetryRelay()
         self.resolver.applyEnvironment()
+    }
+
+    public init(
+        resolver: MLXCacheResolver,
+        telemetryObserver: any AFMInferenceTelemetryObserving
+    ) {
+        _ = Self.registerModelFactoriesOnce
+        self.resolver = resolver
+        self.telemetryObserver = telemetryObserver
+        self.resolver.applyEnvironment()
+    }
+
+    public func connectInferenceTelemetry(
+        to observer: any AFMInferenceTelemetryObserving
+    ) {
+        (telemetryObserver as? AFMInferenceTelemetryRelay)?.connect(to: observer)
+    }
+
+    public func admitGeneration(timeout: Duration?) async throws -> AFMGenerationLease {
+        let acceptedAt = ProcessInfo.processInfo.systemUptime
+        let token = telemetryObserver.requestAccepted(at: acceptedAt)
+        _serialAdmissionWaiting.withLock { $0 += 1 }
+        publishAdmissionProviderState()
+
+        let timeoutSeconds = timeout.map(Self.timeInterval) ?? 30
+        let reserved = await waitForSlot(timeout: timeoutSeconds)
+        _serialAdmissionWaiting.withLock { $0 = max(0, $0 - 1) }
+
+        guard reserved else {
+            let failureReason: AFMInferenceFailureReason
+            let admissionError: AFMGenerationAdmissionError
+            if Task.isCancelled {
+                failureReason = .cancelled
+                admissionError = .cancelled
+            } else if withStateLock({ isShuttingDown }) {
+                failureReason = .internal
+                admissionError = .internalFailure
+            } else {
+                failureReason = .inference
+                admissionError = timeoutSeconds <= 0 ? .capacity : .timedOut
+            }
+            _ = telemetryObserver.requestFailed(
+                token,
+                reason: failureReason,
+                at: ProcessInfo.processInfo.systemUptime
+            )
+            publishAdmissionProviderState()
+            throw admissionError
+        }
+
+        telemetryObserver.requestStarted(token, at: ProcessInfo.processInfo.systemUptime)
+        publishAdmissionProviderState()
+        return AFMGenerationLease(telemetryToken: token) { [weak self] in
+            self?.releaseSlot()
+        } onAbandon: { [telemetryObserver] in
+            _ = telemetryObserver.requestFailed(
+                token,
+                reason: .internal,
+                at: ProcessInfo.processInfo.systemUptime
+            )
+        }
+    }
+
+    private func tryReserveSerialSlot() -> Bool {
+        _serialAdmissionRunning.withLock { running in
+            guard running == 0 else { return false }
+            running = 1
+            return true
+        }
+    }
+
+    private func waitForSerialSlot(timeout: TimeInterval) async -> Bool {
+        if Task.isCancelled || withStateLock({ isShuttingDown }) { return false }
+        if tryReserveSerialSlot() { return true }
+        guard timeout > 0 else { return false }
+
+        let deadline = ContinuousClock.now + .seconds(timeout)
+        var delay: UInt64 = 10_000_000
+        while ContinuousClock.now < deadline {
+            if Task.isCancelled || withStateLock({ isShuttingDown }) { return false }
+            try? await Task.sleep(nanoseconds: delay)
+            if Task.isCancelled || withStateLock({ isShuttingDown }) { return false }
+            if tryReserveSerialSlot() { return true }
+            delay = min(delay * 2, 500_000_000)
+        }
+        return false
+    }
+
+    private func releaseSerialSlot() {
+        _serialAdmissionRunning.withLock { $0 = max(0, $0 - 1) }
+        publishAdmissionProviderState()
+    }
+
+    private static func timeInterval(_ duration: Duration) -> TimeInterval {
+        let components = duration.components
+        return TimeInterval(components.seconds)
+            + TimeInterval(components.attoseconds) / 1_000_000_000_000_000_000
+    }
+
+    private func publishAdmissionProviderState() {
+        let admissionRunning = _serialAdmissionRunning.withLock { $0 }
+        let waiting = _serialAdmissionWaiting.withLock { $0 }
+        let maximumWorkingSet = GPU.deviceInfo().maxRecommendedWorkingSetSize
+        let memoryUsage: Double? = maximumWorkingSet > 0
+            ? min(1, Double(Memory.activeMemory) / Double(maximumWorkingSet))
+            : nil
+        telemetryObserver.updateProviderState(
+            AFMInferenceProviderState(
+                runningRequests: admissionRunning,
+                waitingRequests: waiting,
+                memoryCacheUsage: memoryUsage,
+                prefixCacheFill: radixCache?.usageFraction
+            )
+        )
     }
 
     /// Configure MLX GPU settings once, before first model load.
@@ -2381,20 +2543,28 @@ public final class MLXModelService: @unchecked Sendable {
         let container = runtime.container
         let mtpBinding = runtime.mtpBinding
 
-        let promptText = buildPrompt(from: messages)
+        let rawPrompt = AFMMLXPromptContext.rawPrompt
+        let promptText = rawPrompt ?? buildPrompt(from: messages)
         let toolSpecs = convertToToolSpecs(tools, includePythonJSON: shouldUseNativePythonToolJSONTemplate(for: tools))
-        let (userInput, mediaTempFiles) = try buildUserInput(
-            from: messages,
-            tools: toolSpecs,
-            responseFormat: responseFormat,
-            chatTemplateKwargs: chatTemplateKwargs,
-            includeSchemaInPrompt: chatTemplateKwargs?.afmIncludeSchemaInPrompt ?? true
-        )
+        let (userInput, mediaTempFiles): (UserInput, [URL])
+        if let rawPrompt {
+            userInput = UserInput(prompt: rawPrompt)
+            mediaTempFiles = []
+        } else {
+            (userInput, mediaTempFiles) = try buildUserInput(
+                from: messages,
+                tools: toolSpecs,
+                responseFormat: responseFormat,
+                chatTemplateKwargs: chatTemplateKwargs,
+                includeSchemaInPrompt: chatTemplateKwargs?.afmIncludeSchemaInPrompt ?? true
+            )
+        }
         defer { cleanupTempFiles(mediaTempFiles) }
         let wantLogprobs = logprobs == true
         let effectiveMaxTokens = capMaxTokensForCapture(
             maxTokens ?? Self.defaultMaximumResponseTokens
         )
+        let ignoreEndOfSequence = AFMGenerationContext.ignoreEndOfSequence
 
         // Mutable generation state lives in a scratch box so the @Sendable
         // `container.perform` closure (Swift 6) can capture-and-mutate it.
@@ -2555,6 +2725,7 @@ public final class MLXModelService: @unchecked Sendable {
                 seed: normalizedSeed(seed),
                 computeLogprobs: false,
                 topLogprobsCount: 0,
+                ignoreEndOfSequence: ignoreEndOfSequence,
                 prefillStepSize: self.prefillStepSize
             )
             params.extraProcessor = nil
@@ -2752,6 +2923,7 @@ public final class MLXModelService: @unchecked Sendable {
                 seed: normalizedSeed(seed),
                 computeLogprobs: wantLogprobs,
                 topLogprobsCount: wantLogprobs ? min(max(topLogprobs ?? 0, 0), 20) : 0,
+                ignoreEndOfSequence: ignoreEndOfSequence,
                 prefillStepSize: self.prefillStepSize
             )
             var collectedLogprobs = [TokenLogprobData]()
@@ -3353,7 +3525,8 @@ public final class MLXModelService: @unchecked Sendable {
         let container = runtime.container
         let mtpBinding = runtime.mtpBinding
 
-        let promptText = buildPrompt(from: messages)
+        let rawPrompt = AFMMLXPromptContext.rawPrompt
+        let promptText = rawPrompt ?? buildPrompt(from: messages)
         let toolSpecs = convertToToolSpecs(tools, includePythonJSON: shouldUseNativePythonToolJSONTemplate(for: tools))
         // -VV: Log tool schemas as sent to model's Jinja template
         if trace, let toolSpecs {
@@ -3365,13 +3538,19 @@ public final class MLXModelService: @unchecked Sendable {
             }
             fflush(stdout)
         }
-        let (userInput, mediaTempFiles) = try buildUserInput(
-            from: messages,
-            tools: toolSpecs,
-            responseFormat: responseFormat,
-            chatTemplateKwargs: chatTemplateKwargs,
-            includeSchemaInPrompt: chatTemplateKwargs?.afmIncludeSchemaInPrompt ?? true
-        )
+        let (userInput, mediaTempFiles): (UserInput, [URL])
+        if let rawPrompt {
+            userInput = UserInput(prompt: rawPrompt)
+            mediaTempFiles = []
+        } else {
+            (userInput, mediaTempFiles) = try buildUserInput(
+                from: messages,
+                tools: toolSpecs,
+                responseFormat: responseFormat,
+                chatTemplateKwargs: chatTemplateKwargs,
+                includeSchemaInPrompt: chatTemplateKwargs?.afmIncludeSchemaInPrompt ?? true
+            )
+        }
         var streamOwnsTempFiles = false
         defer {
             if !streamOwnsTempFiles {
@@ -3383,6 +3562,7 @@ public final class MLXModelService: @unchecked Sendable {
         let effectiveMaxTokens = capMaxTokensForCapture(
             maxTokens ?? Self.defaultMaximumResponseTokens
         )
+        let ignoreEndOfSequence = AFMGenerationContext.ignoreEndOfSequence
         // /metrics: streaming-path queue timestamp. The actual
         // requestStarted/observe calls happen ONLY in the serial-path
         // task below (the batch path's stats are owned by BatchScheduler).
@@ -3403,6 +3583,7 @@ public final class MLXModelService: @unchecked Sendable {
             seed: normalizedSeed(seed),
             computeLogprobs: wantLogprobs,
             topLogprobsCount: wantLogprobs ? min(max(topLogprobs ?? 0, 0), 20) : 0,
+            ignoreEndOfSequence: ignoreEndOfSequence,
             prefillStepSize: self.prefillStepSize
         )
 
@@ -3441,6 +3622,7 @@ public final class MLXModelService: @unchecked Sendable {
             // leading chunk so the controller's reasoning extractor latches
             // on. Mirrors the serial-streaming path at line ~2061. (#99)
             let templateOpenedThink: Bool = {
+                guard rawPrompt == nil else { return false }
                 guard let thinkStart = self.thinkStartTag else { return false }
                 let tokens = input.text.tokens
                 let ndim = tokens.ndim
@@ -3457,27 +3639,29 @@ public final class MLXModelService: @unchecked Sendable {
                 )
             }()
 
-            let schedulerStream = scheduler.submit(
-                input: input,
-                parameters: params,
-                promptTokens: preparedPromptTokens,
-                toolCallRuntimeConfig: toolRuntimeConfig,
-                constraintRuntimeConfig: constrainedDecoding.map {
-                    BatchScheduler.ConstraintRuntimeConfiguration(
-                        mode: $0.mode,
-                        matcherHandle: $0.matcherHandle
-                    )
-                },
-                stopSequences: (stop ?? []) + self.implicitStopSequences,
-                thinkStartTag: self.thinkStartTag,
-                thinkEndTag: self.thinkEndTag,
-                requestId: reqId
-            )
+            let schedulerStream = Self.submittingAdmittedBatchRequest {
+                scheduler.submit(
+                    input: input,
+                    parameters: params,
+                    promptTokens: preparedPromptTokens,
+                    toolCallRuntimeConfig: toolRuntimeConfig,
+                    constraintRuntimeConfig: constrainedDecoding.map {
+                        BatchScheduler.ConstraintRuntimeConfiguration(
+                            mode: $0.mode,
+                            matcherHandle: $0.matcherHandle
+                        )
+                    },
+                    stopSequences: (stop ?? []) + self.implicitStopSequences,
+                    thinkStartTag: rawPrompt == nil ? self.thinkStartTag : nil,
+                    thinkEndTag: rawPrompt == nil ? self.thinkEndTag : nil,
+                    requestId: reqId
+                )
+            }
             let effectiveStream: AsyncThrowingStream<StreamChunk, Error>
             if templateOpenedThink, let thinkStart = self.thinkStartTag {
                 effectiveStream = AsyncThrowingStream { continuation in
                     let task = Task {
-                        continuation.yield(StreamChunk(text: thinkStart))
+                        continuation.yield(StreamChunk(syntheticText: thinkStart))
                         do {
                             for try await chunk in schedulerStream {
                                 continuation.yield(chunk)
@@ -3569,7 +3753,7 @@ public final class MLXModelService: @unchecked Sendable {
                         defer { self.cleanupTempFiles(mediaTempFiles) }
                         StatsAggregator.shared.requestStarted()
                         if openedThink, let thinkStartTag {
-                            continuation.yield(StreamChunk(text: thinkStartTag))
+                            continuation.yield(StreamChunk(syntheticText: thinkStartTag))
                         }
                         let t0 = Date.timeIntervalSinceReferenceDate
                         do {
@@ -3678,6 +3862,7 @@ public final class MLXModelService: @unchecked Sendable {
                             seed: normalizedSeed(seed),
                             computeLogprobs: wantLogprobs,
                             topLogprobsCount: wantLogprobs ? min(max(topLogprobs ?? 0, 0), 20) : 0,
+                            ignoreEndOfSequence: ignoreEndOfSequence,
                             prefillStepSize: self.prefillStepSize
                         )
                         // Grammar constraint setup — see non-streaming path for details.
@@ -3706,7 +3891,8 @@ public final class MLXModelService: @unchecked Sendable {
 
                         // If the chat template appended a think tag, inject it
                         // into the stream so the reasoning extractor can detect it.
-                        let thinkStart = self.thinkStartTag
+                        let thinkStart = rawPrompt == nil ? self.thinkStartTag : nil
+                        let thinkEnd = rawPrompt == nil ? self.thinkEndTag : nil
                         var templateInjectedThink = false
                         let tokens = input.text.tokens
                         let ndim = tokens.ndim
@@ -3719,9 +3905,9 @@ public final class MLXModelService: @unchecked Sendable {
                             if Self.promptSuffixOpensThink(
                                 decoded,
                                 startTag: thinkStart,
-                                endTag: self.thinkEndTag
+                                endTag: thinkEnd
                             ) {
-                                continuation.yield(StreamChunk(text: thinkStart))
+                                continuation.yield(StreamChunk(syntheticText: thinkStart))
                                 templateInjectedThink = true
                             }
                         }
@@ -3909,7 +4095,8 @@ public final class MLXModelService: @unchecked Sendable {
                             modelConfiguration: context.configuration,
                             tokenizer: context.tokenizer,
                             iterator: generationIterator,
-                            stopAfterToolCall: params.stopAfterToolCall
+                            stopAfterToolCall: params.stopAfterToolCall,
+                            ignoreEndOfSequence: params.ignoreEndOfSequence
                         )
                         var generationWasCancelled = false
                         do {
@@ -3952,14 +4139,14 @@ public final class MLXModelService: @unchecked Sendable {
                                     // Track think boundaries for stop sequence scoping
                                     let wasInsideThink = insideThink
                                     if let ts = thinkStart, text.contains(ts) { insideThink = true }
-                                    if let te = self.thinkEndTag, text.contains(te) { insideThink = false }
+                                    if let te = thinkEnd, text.contains(te) { insideThink = false }
 
                                     if !activeStops.isEmpty && !insideThink {
                                         // If we just transitioned out of think, pass the reasoning tail +
                                         // end tag through (the controller needs the end tag to close the
                                         // think block — swallowing it left the stream inside reasoning
                                         // forever, #148); only the visible text after it is stop-scoped.
-                                        if wasInsideThink, let te = self.thinkEndTag, let thinkEndRange = text.range(of: te) {
+                                        if wasInsideThink, let te = thinkEnd, let thinkEndRange = text.range(of: te) {
                                             let throughEnd = String(text[..<thinkEndRange.upperBound])
                                             continuation.yield(StreamChunk(text: throughEnd, logprobs: resolved))
                                             resolved = nil

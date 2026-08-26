@@ -36,6 +36,18 @@
     {
       "kind": "conformsTo",
       "source": "s:9AFMKitMLX11AFMMLXModelC",
+      "target": "s:10AFMKitCore20AFMRawTextGeneratingP",
+      "targetFallback": "AFMKitCore.AFMRawTextGenerating"
+    },
+    {
+      "kind": "conformsTo",
+      "source": "s:9AFMKitMLX11AFMMLXModelC",
+      "target": "s:10AFMKitCore22AFMGenerationAdmittingP",
+      "targetFallback": "AFMKitCore.AFMGenerationAdmitting"
+    },
+    {
+      "kind": "conformsTo",
+      "source": "s:9AFMKitMLX11AFMMLXModelC",
       "target": "s:10AFMKitCore26AFMAdmissionReportingModelP",
       "targetFallback": "AFMKitCore.AFMAdmissionReportingModel"
     },
@@ -44,6 +56,12 @@
       "source": "s:9AFMKitMLX11AFMMLXModelC",
       "target": "s:10AFMKitCore26AFMTelemetryReportingModelP",
       "targetFallback": "AFMKitCore.AFMTelemetryReportingModel"
+    },
+    {
+      "kind": "conformsTo",
+      "source": "s:9AFMKitMLX11AFMMLXModelC",
+      "target": "s:10AFMKitCore31AFMInferenceTelemetryConnectingP",
+      "targetFallback": "AFMKitCore.AFMInferenceTelemetryConnecting"
     },
     {
       "kind": "conformsTo",
@@ -176,6 +194,15 @@
       "sourceOrigin": {
         "displayName": "AFMMLXRequestScheduling.tryReserveSlot()",
         "identifier": "s:9AFMKitMLX23AFMMLXRequestSchedulingP14tryReserveSlotSbyF"
+      },
+      "target": "s:9AFMKitMLX11AFMMLXModelC"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX11AFMMLXModelC15admitGeneration7timeout0A4Core18AFMGenerationLeaseCs8DurationVSg_tYaKF",
+      "sourceOrigin": {
+        "displayName": "AFMGenerationAdmitting.admitGeneration(timeout:)",
+        "identifier": "s:10AFMKitCore22AFMGenerationAdmittingP15admitGeneration7timeoutAA0C5LeaseCs8DurationVSg_tYaKF"
       },
       "target": "s:9AFMKitMLX11AFMMLXModelC"
     },
@@ -321,6 +348,24 @@
     },
     {
       "kind": "memberOf",
+      "source": "s:9AFMKitMLX11AFMMLXModelC23rawTextGenerationEvents3forScSy0A4Core06AFMRaweF5EventOGAF0jeF7RequestV_tF",
+      "sourceOrigin": {
+        "displayName": "AFMRawTextGenerating.rawTextGenerationEvents(for:)",
+        "identifier": "s:10AFMKitCore20AFMRawTextGeneratingP03rawD16GenerationEvents3forScSyAA0cdG5EventOGAA0cdG7RequestV_tF"
+      },
+      "target": "s:9AFMKitMLX11AFMMLXModelC"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX11AFMMLXModelC25connectInferenceTelemetry2toy0A4Core012AFMInferenceF9Observing_p_tF",
+      "sourceOrigin": {
+        "displayName": "AFMInferenceTelemetryConnecting.connectInferenceTelemetry(to:)",
+        "identifier": "s:10AFMKitCore31AFMInferenceTelemetryConnectingP016connectInferenceD02toyAA0cD9Observing_p_tF"
+      },
+      "target": "s:9AFMKitMLX11AFMMLXModelC"
+    },
+    {
+      "kind": "memberOf",
       "source": "s:9AFMKitMLX11AFMMLXModelC27currentRequestPeakMemoryGibSdSgyF",
       "sourceOrigin": {
         "displayName": "AFMMLXOpenAIChatServing.currentRequestPeakMemoryGib()",
@@ -371,12 +416,22 @@
     },
     {
       "kind": "memberOf",
+      "source": "s:9AFMKitMLX11AFMMLXModelC7modelID13configuration8resolver17telemetryObserver7serviceAC0A4Core08AFMModelE0V_AI24AFMProviderConfigurationVAA16MLXCacheResolverVAI30AFMInferenceTelemetryObserving_pAA15MLXModelServiceCSgtcfc",
+      "target": "s:9AFMKitMLX11AFMMLXModelC"
+    },
+    {
+      "kind": "memberOf",
       "source": "s:9AFMKitMLX11AFMMLXModelC7modelID13configuration8resolver7serviceAC0A4Core08AFMModelE0V_AH24AFMProviderConfigurationVAA16MLXCacheResolverVAA15MLXModelServiceCSgtcfc",
       "target": "s:9AFMKitMLX11AFMMLXModelC"
     },
     {
       "kind": "memberOf",
       "source": "s:9AFMKitMLX11AFMMLXModelC7modelID13configurationAC0A4Core08AFMModelE0V_AF24AFMProviderConfigurationVtcfc",
+      "target": "s:9AFMKitMLX11AFMMLXModelC"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX11AFMMLXModelC7modelID20runtimeConfiguration8resolver17telemetryObserverAC0A4Core08AFMModelE0V_AA013AFMMLXRuntimeG0VAA16MLXCacheResolverVAH30AFMInferenceTelemetryObserving_ptcfc",
       "target": "s:9AFMKitMLX11AFMMLXModelC"
     },
     {
@@ -588,7 +643,17 @@
     },
     {
       "kind": "memberOf",
+      "source": "s:9AFMKitMLX13AFMMLXRuntimeC7modelID13configuration8resolver17telemetryObserver7serviceACSS_AA0C13ConfigurationVAA16MLXCacheResolverV0A4Core30AFMInferenceTelemetryObserving_pAA15MLXModelServiceCSgtcfc",
+      "target": "s:9AFMKitMLX13AFMMLXRuntimeC"
+    },
+    {
+      "kind": "memberOf",
       "source": "s:9AFMKitMLX13AFMMLXRuntimeC7modelID13configuration8resolver7serviceACSS_AA0C13ConfigurationVAA16MLXCacheResolverVAA15MLXModelServiceCSgtcfc",
+      "target": "s:9AFMKitMLX13AFMMLXRuntimeC"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX13AFMMLXRuntimeC7modelID21providerConfiguration8resolver17telemetryObserver7serviceACSS_0A4Core011AFMProviderG0VAA16MLXCacheResolverVAI30AFMInferenceTelemetryObserving_pAA15MLXModelServiceCSgtcfc",
       "target": "s:9AFMKitMLX13AFMMLXRuntimeC"
     },
     {
@@ -620,6 +685,12 @@
       "kind": "memberOf",
       "source": "s:9AFMKitMLX15MLXMetalLibraryO15ensureAvailable7verboseySb_tKFZ",
       "target": "s:9AFMKitMLX15MLXMetalLibraryO"
+    },
+    {
+      "kind": "conformsTo",
+      "source": "s:9AFMKitMLX15MLXModelServiceC",
+      "target": "s:10AFMKitCore31AFMInferenceTelemetryConnectingP",
+      "targetFallback": "AFMKitCore.AFMInferenceTelemetryConnecting"
     },
     {
       "kind": "conformsTo",
@@ -895,6 +966,11 @@
     },
     {
       "kind": "memberOf",
+      "source": "s:9AFMKitMLX15MLXModelServiceC15admitGeneration7timeout0A4Core18AFMGenerationLeaseCs8DurationVSg_tYaKF",
+      "target": "s:9AFMKitMLX15MLXModelServiceC"
+    },
+    {
+      "kind": "memberOf",
       "source": "s:9AFMKitMLX15MLXModelServiceC15ensureBatchMode11concurrencyySi_tYaKF",
       "sourceOrigin": {
         "displayName": "AFMMLXBatchControlling.ensureBatchMode(concurrency:)",
@@ -1102,6 +1178,15 @@
     },
     {
       "kind": "memberOf",
+      "source": "s:9AFMKitMLX15MLXModelServiceC25connectInferenceTelemetry2toy0A4Core012AFMInferenceG9Observing_p_tF",
+      "sourceOrigin": {
+        "displayName": "AFMInferenceTelemetryConnecting.connectInferenceTelemetry(to:)",
+        "identifier": "s:10AFMKitCore31AFMInferenceTelemetryConnectingP016connectInferenceD02toyAA0cD9Observing_p_tF"
+      },
+      "target": "s:9AFMKitMLX15MLXModelServiceC"
+    },
+    {
+      "kind": "memberOf",
       "source": "s:9AFMKitMLX15MLXModelServiceC25defaultChatTemplateKwargsSDySSypGSgvp",
       "target": "s:9AFMKitMLX15MLXModelServiceC"
     },
@@ -1184,6 +1269,11 @@
     {
       "kind": "memberOf",
       "source": "s:9AFMKitMLX15MLXModelServiceC8mtpDepthSivp",
+      "target": "s:9AFMKitMLX15MLXModelServiceC"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX15MLXModelServiceC8resolver17telemetryObserverAcA16MLXCacheResolverV_0A4Core30AFMInferenceTelemetryObserving_ptcfc",
       "target": "s:9AFMKitMLX15MLXModelServiceC"
     },
     {
@@ -3105,6 +3195,11 @@
         "displayName": "AFMProviderFactory.modelDescriptors()",
         "identifier": "s:10AFMKitCore18AFMProviderFactoryP16modelDescriptorsSayAA18AFMModelDescriptorVGyYaKF"
       },
+      "target": "s:9AFMKitMLX21AFMMLXProviderFactoryV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX21AFMMLXProviderFactoryV8resolver17telemetryObserverAcA16MLXCacheResolverV_0A4Core30AFMInferenceTelemetryObserving_ptcfc",
       "target": "s:9AFMKitMLX21AFMMLXProviderFactoryV"
     },
     {
@@ -10029,6 +10124,169 @@
       "declarationFragments": [
         {
           "kind": "keyword",
+          "spelling": "func"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "admitGeneration"
+        },
+        {
+          "kind": "text",
+          "spelling": "("
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "timeout"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:s8DurationV",
+          "spelling": "Duration"
+        },
+        {
+          "kind": "text",
+          "spelling": "?) "
+        },
+        {
+          "kind": "keyword",
+          "spelling": "async"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "keyword",
+          "spelling": "throws"
+        },
+        {
+          "kind": "text",
+          "spelling": " -> "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:10AFMKitCore18AFMGenerationLeaseC",
+          "spelling": "AFMGenerationLease"
+        }
+      ],
+      "functionSignature": {
+        "parameters": [
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "timeout"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:s8DurationV",
+                "spelling": "Duration"
+              },
+              {
+                "kind": "text",
+                "spelling": "?"
+              }
+            ],
+            "name": "timeout"
+          }
+        ],
+        "returns": [
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:10AFMKitCore18AFMGenerationLeaseC",
+            "spelling": "AFMGenerationLease"
+          }
+        ]
+      },
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX11AFMMLXModelC15admitGeneration7timeout0A4Core18AFMGenerationLeaseCs8DurationVSg_tYaKF"
+      },
+      "kind": {
+        "displayName": "Instance Method",
+        "identifier": "swift.method"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "func"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "admitGeneration"
+          },
+          {
+            "kind": "text",
+            "spelling": "("
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "timeout"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:s8DurationV",
+            "spelling": "Duration"
+          },
+          {
+            "kind": "text",
+            "spelling": "?) "
+          },
+          {
+            "kind": "keyword",
+            "spelling": "async"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "keyword",
+            "spelling": "throws"
+          },
+          {
+            "kind": "text",
+            "spelling": " -> "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:10AFMKitCore18AFMGenerationLeaseC",
+            "spelling": "AFMGenerationLease"
+          }
+        ],
+        "title": "admitGeneration(timeout:)"
+      },
+      "pathComponents": [
+        "AFMMLXModel",
+        "admitGeneration(timeout:)"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
           "spelling": "static"
         },
         {
@@ -13247,6 +13505,306 @@
         },
         {
           "kind": "identifier",
+          "spelling": "rawTextGenerationEvents"
+        },
+        {
+          "kind": "text",
+          "spelling": "("
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "for"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "internalParam",
+          "spelling": "request"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:10AFMKitCore27AFMRawTextGenerationRequestV",
+          "spelling": "AFMRawTextGenerationRequest"
+        },
+        {
+          "kind": "text",
+          "spelling": ") -> "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:ScS",
+          "spelling": "AsyncStream"
+        },
+        {
+          "kind": "text",
+          "spelling": "<"
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:10AFMKitCore25AFMRawTextGenerationEventO",
+          "spelling": "AFMRawTextGenerationEvent"
+        },
+        {
+          "kind": "text",
+          "spelling": ">"
+        }
+      ],
+      "functionSignature": {
+        "parameters": [
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "request"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:10AFMKitCore27AFMRawTextGenerationRequestV",
+                "spelling": "AFMRawTextGenerationRequest"
+              }
+            ],
+            "internalName": "request",
+            "name": "for"
+          }
+        ],
+        "returns": [
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:ScS",
+            "spelling": "AsyncStream"
+          },
+          {
+            "kind": "text",
+            "spelling": "<"
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:10AFMKitCore25AFMRawTextGenerationEventO",
+            "spelling": "AFMRawTextGenerationEvent"
+          },
+          {
+            "kind": "text",
+            "spelling": ">"
+          }
+        ]
+      },
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX11AFMMLXModelC23rawTextGenerationEvents3forScSy0A4Core06AFMRaweF5EventOGAF0jeF7RequestV_tF"
+      },
+      "kind": {
+        "displayName": "Instance Method",
+        "identifier": "swift.method"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "func"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "rawTextGenerationEvents"
+          },
+          {
+            "kind": "text",
+            "spelling": "("
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "for"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:10AFMKitCore27AFMRawTextGenerationRequestV",
+            "spelling": "AFMRawTextGenerationRequest"
+          },
+          {
+            "kind": "text",
+            "spelling": ") -> "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:ScS",
+            "spelling": "AsyncStream"
+          },
+          {
+            "kind": "text",
+            "spelling": "<"
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:10AFMKitCore25AFMRawTextGenerationEventO",
+            "spelling": "AFMRawTextGenerationEvent"
+          },
+          {
+            "kind": "text",
+            "spelling": ">"
+          }
+        ],
+        "title": "rawTextGenerationEvents(for:)"
+      },
+      "pathComponents": [
+        "AFMMLXModel",
+        "rawTextGenerationEvents(for:)"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "func"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "connectInferenceTelemetry"
+        },
+        {
+          "kind": "text",
+          "spelling": "("
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "to"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "internalParam",
+          "spelling": "observer"
+        },
+        {
+          "kind": "text",
+          "spelling": ": any "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:10AFMKitCore30AFMInferenceTelemetryObservingP",
+          "spelling": "AFMInferenceTelemetryObserving"
+        },
+        {
+          "kind": "text",
+          "spelling": ")"
+        }
+      ],
+      "functionSignature": {
+        "parameters": [
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "observer"
+              },
+              {
+                "kind": "text",
+                "spelling": ": any "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:10AFMKitCore30AFMInferenceTelemetryObservingP",
+                "spelling": "AFMInferenceTelemetryObserving"
+              }
+            ],
+            "internalName": "observer",
+            "name": "to"
+          }
+        ],
+        "returns": [
+          {
+            "kind": "text",
+            "spelling": "()"
+          }
+        ]
+      },
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX11AFMMLXModelC25connectInferenceTelemetry2toy0A4Core012AFMInferenceF9Observing_p_tF"
+      },
+      "kind": {
+        "displayName": "Instance Method",
+        "identifier": "swift.method"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "func"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "connectInferenceTelemetry"
+          },
+          {
+            "kind": "text",
+            "spelling": "("
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "to"
+          },
+          {
+            "kind": "text",
+            "spelling": ": any "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:10AFMKitCore30AFMInferenceTelemetryObservingP",
+            "spelling": "AFMInferenceTelemetryObserving"
+          },
+          {
+            "kind": "text",
+            "spelling": ")"
+          }
+        ],
+        "title": "connectInferenceTelemetry(to:)"
+      },
+      "pathComponents": [
+        "AFMMLXModel",
+        "connectInferenceTelemetry(to:)"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "func"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
           "spelling": "currentRequestPeakMemoryGib"
         },
         {
@@ -14275,6 +14833,329 @@
         },
         {
           "kind": "externalParam",
+          "spelling": "telemetryObserver"
+        },
+        {
+          "kind": "text",
+          "spelling": ": any "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:10AFMKitCore30AFMInferenceTelemetryObservingP",
+          "spelling": "AFMInferenceTelemetryObserving"
+        },
+        {
+          "kind": "text",
+          "spelling": ", "
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "service"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "internalParam",
+          "spelling": "providedService"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:9AFMKitMLX15MLXModelServiceC",
+          "spelling": "MLXModelService"
+        },
+        {
+          "kind": "text",
+          "spelling": "? = nil)"
+        }
+      ],
+      "functionSignature": {
+        "parameters": [
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "modelID"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:10AFMKitCore10AFMModelIDV",
+                "spelling": "AFMModelID"
+              }
+            ],
+            "name": "modelID"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "configuration"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:10AFMKitCore24AFMProviderConfigurationV",
+                "spelling": "AFMProviderConfiguration"
+              }
+            ],
+            "name": "configuration"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "resolver"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:9AFMKitMLX16MLXCacheResolverV",
+                "spelling": "MLXCacheResolver"
+              }
+            ],
+            "name": "resolver"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "telemetryObserver"
+              },
+              {
+                "kind": "text",
+                "spelling": ": any "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:10AFMKitCore30AFMInferenceTelemetryObservingP",
+                "spelling": "AFMInferenceTelemetryObserving"
+              }
+            ],
+            "name": "telemetryObserver"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "providedService"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:9AFMKitMLX15MLXModelServiceC",
+                "spelling": "MLXModelService"
+              },
+              {
+                "kind": "text",
+                "spelling": "?"
+              }
+            ],
+            "internalName": "providedService",
+            "name": "service"
+          }
+        ]
+      },
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX11AFMMLXModelC7modelID13configuration8resolver17telemetryObserver7serviceAC0A4Core08AFMModelE0V_AI24AFMProviderConfigurationVAA16MLXCacheResolverVAI30AFMInferenceTelemetryObserving_pAA15MLXModelServiceCSgtcfc"
+      },
+      "kind": {
+        "displayName": "Initializer",
+        "identifier": "swift.init"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "init"
+          },
+          {
+            "kind": "text",
+            "spelling": "("
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "modelID"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:10AFMKitCore10AFMModelIDV",
+            "spelling": "AFMModelID"
+          },
+          {
+            "kind": "text",
+            "spelling": ", "
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "configuration"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:10AFMKitCore24AFMProviderConfigurationV",
+            "spelling": "AFMProviderConfiguration"
+          },
+          {
+            "kind": "text",
+            "spelling": ", "
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "resolver"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:9AFMKitMLX16MLXCacheResolverV",
+            "spelling": "MLXCacheResolver"
+          },
+          {
+            "kind": "text",
+            "spelling": ", "
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "telemetryObserver"
+          },
+          {
+            "kind": "text",
+            "spelling": ": any "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:10AFMKitCore30AFMInferenceTelemetryObservingP",
+            "spelling": "AFMInferenceTelemetryObserving"
+          },
+          {
+            "kind": "text",
+            "spelling": ", "
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "service"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:9AFMKitMLX15MLXModelServiceC",
+            "spelling": "MLXModelService"
+          },
+          {
+            "kind": "text",
+            "spelling": "?)"
+          }
+        ],
+        "title": "init(modelID:configuration:resolver:telemetryObserver:service:)"
+      },
+      "pathComponents": [
+        "AFMMLXModel",
+        "init(modelID:configuration:resolver:telemetryObserver:service:)"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "convenience"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "keyword",
+          "spelling": "init"
+        },
+        {
+          "kind": "text",
+          "spelling": "("
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "modelID"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:10AFMKitCore10AFMModelIDV",
+          "spelling": "AFMModelID"
+        },
+        {
+          "kind": "text",
+          "spelling": ", "
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "configuration"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:10AFMKitCore24AFMProviderConfigurationV",
+          "spelling": "AFMProviderConfiguration"
+        },
+        {
+          "kind": "text",
+          "spelling": ", "
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "resolver"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:9AFMKitMLX16MLXCacheResolverV",
+          "spelling": "MLXCacheResolver"
+        },
+        {
+          "kind": "text",
+          "spelling": ", "
+        },
+        {
+          "kind": "externalParam",
           "spelling": "service"
         },
         {
@@ -14390,6 +15271,14 @@
       },
       "names": {
         "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "convenience"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
           {
             "kind": "keyword",
             "spelling": "init"
@@ -14696,6 +15585,264 @@
         },
         {
           "kind": "text",
+          "spelling": " = .init(), "
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "telemetryObserver"
+        },
+        {
+          "kind": "text",
+          "spelling": ": any "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:10AFMKitCore30AFMInferenceTelemetryObservingP",
+          "spelling": "AFMInferenceTelemetryObserving"
+        },
+        {
+          "kind": "text",
+          "spelling": ")"
+        }
+      ],
+      "functionSignature": {
+        "parameters": [
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "modelID"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:10AFMKitCore10AFMModelIDV",
+                "spelling": "AFMModelID"
+              }
+            ],
+            "name": "modelID"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "runtimeConfiguration"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV",
+                "spelling": "AFMMLXRuntimeConfiguration"
+              }
+            ],
+            "name": "runtimeConfiguration"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "resolver"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:9AFMKitMLX16MLXCacheResolverV",
+                "spelling": "MLXCacheResolver"
+              }
+            ],
+            "name": "resolver"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "telemetryObserver"
+              },
+              {
+                "kind": "text",
+                "spelling": ": any "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:10AFMKitCore30AFMInferenceTelemetryObservingP",
+                "spelling": "AFMInferenceTelemetryObserving"
+              }
+            ],
+            "name": "telemetryObserver"
+          }
+        ]
+      },
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX11AFMMLXModelC7modelID20runtimeConfiguration8resolver17telemetryObserverAC0A4Core08AFMModelE0V_AA013AFMMLXRuntimeG0VAA16MLXCacheResolverVAH30AFMInferenceTelemetryObserving_ptcfc"
+      },
+      "kind": {
+        "displayName": "Initializer",
+        "identifier": "swift.init"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "init"
+          },
+          {
+            "kind": "text",
+            "spelling": "("
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "modelID"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:10AFMKitCore10AFMModelIDV",
+            "spelling": "AFMModelID"
+          },
+          {
+            "kind": "text",
+            "spelling": ", "
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "runtimeConfiguration"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV",
+            "spelling": "AFMMLXRuntimeConfiguration"
+          },
+          {
+            "kind": "text",
+            "spelling": ", "
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "resolver"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:9AFMKitMLX16MLXCacheResolverV",
+            "spelling": "MLXCacheResolver"
+          },
+          {
+            "kind": "text",
+            "spelling": ", "
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "telemetryObserver"
+          },
+          {
+            "kind": "text",
+            "spelling": ": any "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:10AFMKitCore30AFMInferenceTelemetryObservingP",
+            "spelling": "AFMInferenceTelemetryObserving"
+          },
+          {
+            "kind": "text",
+            "spelling": ")"
+          }
+        ],
+        "title": "init(modelID:runtimeConfiguration:resolver:telemetryObserver:)"
+      },
+      "pathComponents": [
+        "AFMMLXModel",
+        "init(modelID:runtimeConfiguration:resolver:telemetryObserver:)"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "convenience"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "keyword",
+          "spelling": "init"
+        },
+        {
+          "kind": "text",
+          "spelling": "("
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "modelID"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:10AFMKitCore10AFMModelIDV",
+          "spelling": "AFMModelID"
+        },
+        {
+          "kind": "text",
+          "spelling": ", "
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "runtimeConfiguration"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV",
+          "spelling": "AFMMLXRuntimeConfiguration"
+        },
+        {
+          "kind": "text",
+          "spelling": ", "
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "resolver"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:9AFMKitMLX16MLXCacheResolverV",
+          "spelling": "MLXCacheResolver"
+        },
+        {
+          "kind": "text",
           "spelling": " = .init())"
         }
       ],
@@ -14781,6 +15928,14 @@
       },
       "names": {
         "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "convenience"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
           {
             "kind": "keyword",
             "spelling": "init"
@@ -19495,6 +20650,329 @@
         },
         {
           "kind": "externalParam",
+          "spelling": "telemetryObserver"
+        },
+        {
+          "kind": "text",
+          "spelling": ": any "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:10AFMKitCore30AFMInferenceTelemetryObservingP",
+          "spelling": "AFMInferenceTelemetryObserving"
+        },
+        {
+          "kind": "text",
+          "spelling": ", "
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "service"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "internalParam",
+          "spelling": "providedService"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:9AFMKitMLX15MLXModelServiceC",
+          "spelling": "MLXModelService"
+        },
+        {
+          "kind": "text",
+          "spelling": "? = nil)"
+        }
+      ],
+      "functionSignature": {
+        "parameters": [
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "modelID"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:SS",
+                "spelling": "String"
+              }
+            ],
+            "name": "modelID"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "configuration"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV",
+                "spelling": "AFMMLXRuntimeConfiguration"
+              }
+            ],
+            "name": "configuration"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "resolver"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:9AFMKitMLX16MLXCacheResolverV",
+                "spelling": "MLXCacheResolver"
+              }
+            ],
+            "name": "resolver"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "telemetryObserver"
+              },
+              {
+                "kind": "text",
+                "spelling": ": any "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:10AFMKitCore30AFMInferenceTelemetryObservingP",
+                "spelling": "AFMInferenceTelemetryObserving"
+              }
+            ],
+            "name": "telemetryObserver"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "providedService"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:9AFMKitMLX15MLXModelServiceC",
+                "spelling": "MLXModelService"
+              },
+              {
+                "kind": "text",
+                "spelling": "?"
+              }
+            ],
+            "internalName": "providedService",
+            "name": "service"
+          }
+        ]
+      },
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX13AFMMLXRuntimeC7modelID13configuration8resolver17telemetryObserver7serviceACSS_AA0C13ConfigurationVAA16MLXCacheResolverV0A4Core30AFMInferenceTelemetryObserving_pAA15MLXModelServiceCSgtcfc"
+      },
+      "kind": {
+        "displayName": "Initializer",
+        "identifier": "swift.init"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "init"
+          },
+          {
+            "kind": "text",
+            "spelling": "("
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "modelID"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:SS",
+            "spelling": "String"
+          },
+          {
+            "kind": "text",
+            "spelling": ", "
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "configuration"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV",
+            "spelling": "AFMMLXRuntimeConfiguration"
+          },
+          {
+            "kind": "text",
+            "spelling": ", "
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "resolver"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:9AFMKitMLX16MLXCacheResolverV",
+            "spelling": "MLXCacheResolver"
+          },
+          {
+            "kind": "text",
+            "spelling": ", "
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "telemetryObserver"
+          },
+          {
+            "kind": "text",
+            "spelling": ": any "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:10AFMKitCore30AFMInferenceTelemetryObservingP",
+            "spelling": "AFMInferenceTelemetryObserving"
+          },
+          {
+            "kind": "text",
+            "spelling": ", "
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "service"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:9AFMKitMLX15MLXModelServiceC",
+            "spelling": "MLXModelService"
+          },
+          {
+            "kind": "text",
+            "spelling": "?)"
+          }
+        ],
+        "title": "init(modelID:configuration:resolver:telemetryObserver:service:)"
+      },
+      "pathComponents": [
+        "AFMMLXRuntime",
+        "init(modelID:configuration:resolver:telemetryObserver:service:)"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "convenience"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "keyword",
+          "spelling": "init"
+        },
+        {
+          "kind": "text",
+          "spelling": "("
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "modelID"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:SS",
+          "spelling": "String"
+        },
+        {
+          "kind": "text",
+          "spelling": ", "
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "configuration"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV",
+          "spelling": "AFMMLXRuntimeConfiguration"
+        },
+        {
+          "kind": "text",
+          "spelling": " = .init(), "
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "resolver"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:9AFMKitMLX16MLXCacheResolverV",
+          "spelling": "MLXCacheResolver"
+        },
+        {
+          "kind": "text",
+          "spelling": " = .init(), "
+        },
+        {
+          "kind": "externalParam",
           "spelling": "service"
         },
         {
@@ -19612,6 +21090,14 @@
         "subHeading": [
           {
             "kind": "keyword",
+            "spelling": "convenience"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "keyword",
             "spelling": "init"
           },
           {
@@ -19692,6 +21178,337 @@
       "pathComponents": [
         "AFMMLXRuntime",
         "init(modelID:configuration:resolver:service:)"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "convenience"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "keyword",
+          "spelling": "init"
+        },
+        {
+          "kind": "text",
+          "spelling": "("
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "modelID"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:SS",
+          "spelling": "String"
+        },
+        {
+          "kind": "text",
+          "spelling": ", "
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "providerConfiguration"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:10AFMKitCore24AFMProviderConfigurationV",
+          "spelling": "AFMProviderConfiguration"
+        },
+        {
+          "kind": "text",
+          "spelling": ", "
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "resolver"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:9AFMKitMLX16MLXCacheResolverV",
+          "spelling": "MLXCacheResolver"
+        },
+        {
+          "kind": "text",
+          "spelling": " = .init(), "
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "telemetryObserver"
+        },
+        {
+          "kind": "text",
+          "spelling": ": any "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:10AFMKitCore30AFMInferenceTelemetryObservingP",
+          "spelling": "AFMInferenceTelemetryObserving"
+        },
+        {
+          "kind": "text",
+          "spelling": ", "
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "service"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "internalParam",
+          "spelling": "providedService"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:9AFMKitMLX15MLXModelServiceC",
+          "spelling": "MLXModelService"
+        },
+        {
+          "kind": "text",
+          "spelling": "? = nil)"
+        }
+      ],
+      "functionSignature": {
+        "parameters": [
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "modelID"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:SS",
+                "spelling": "String"
+              }
+            ],
+            "name": "modelID"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "providerConfiguration"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:10AFMKitCore24AFMProviderConfigurationV",
+                "spelling": "AFMProviderConfiguration"
+              }
+            ],
+            "name": "providerConfiguration"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "resolver"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:9AFMKitMLX16MLXCacheResolverV",
+                "spelling": "MLXCacheResolver"
+              }
+            ],
+            "name": "resolver"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "telemetryObserver"
+              },
+              {
+                "kind": "text",
+                "spelling": ": any "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:10AFMKitCore30AFMInferenceTelemetryObservingP",
+                "spelling": "AFMInferenceTelemetryObserving"
+              }
+            ],
+            "name": "telemetryObserver"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "providedService"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:9AFMKitMLX15MLXModelServiceC",
+                "spelling": "MLXModelService"
+              },
+              {
+                "kind": "text",
+                "spelling": "?"
+              }
+            ],
+            "internalName": "providedService",
+            "name": "service"
+          }
+        ]
+      },
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX13AFMMLXRuntimeC7modelID21providerConfiguration8resolver17telemetryObserver7serviceACSS_0A4Core011AFMProviderG0VAA16MLXCacheResolverVAI30AFMInferenceTelemetryObserving_pAA15MLXModelServiceCSgtcfc"
+      },
+      "kind": {
+        "displayName": "Initializer",
+        "identifier": "swift.init"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "convenience"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "keyword",
+            "spelling": "init"
+          },
+          {
+            "kind": "text",
+            "spelling": "("
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "modelID"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:SS",
+            "spelling": "String"
+          },
+          {
+            "kind": "text",
+            "spelling": ", "
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "providerConfiguration"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:10AFMKitCore24AFMProviderConfigurationV",
+            "spelling": "AFMProviderConfiguration"
+          },
+          {
+            "kind": "text",
+            "spelling": ", "
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "resolver"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:9AFMKitMLX16MLXCacheResolverV",
+            "spelling": "MLXCacheResolver"
+          },
+          {
+            "kind": "text",
+            "spelling": ", "
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "telemetryObserver"
+          },
+          {
+            "kind": "text",
+            "spelling": ": any "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:10AFMKitCore30AFMInferenceTelemetryObservingP",
+            "spelling": "AFMInferenceTelemetryObserving"
+          },
+          {
+            "kind": "text",
+            "spelling": ", "
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "service"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:9AFMKitMLX15MLXModelServiceC",
+            "spelling": "MLXModelService"
+          },
+          {
+            "kind": "text",
+            "spelling": "?)"
+          }
+        ],
+        "title": "init(modelID:providerConfiguration:resolver:telemetryObserver:service:)"
+      },
+      "pathComponents": [
+        "AFMMLXRuntime",
+        "init(modelID:providerConfiguration:resolver:telemetryObserver:service:)"
       ]
     },
     {
@@ -21243,7 +23060,7 @@
       "docComment": {
         "lines": [
           {
-            "text": "Wait for a concurrent slot with timeout. Returns true if reserved (or serial mode)."
+            "text": "Wait for an execution slot with timeout."
           }
         ],
         "module": "AFMKitMLX"
@@ -22676,7 +24493,7 @@
       "docComment": {
         "lines": [
           {
-            "text": "Atomically reserve a concurrent slot. Returns true if reserved (or serial mode)."
+            "text": "Atomically reserve an execution slot."
           }
         ],
         "module": "AFMKitMLX"
@@ -22727,6 +24544,169 @@
       "pathComponents": [
         "MLXModelService",
         "tryReserveSlot()"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "func"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "admitGeneration"
+        },
+        {
+          "kind": "text",
+          "spelling": "("
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "timeout"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:s8DurationV",
+          "spelling": "Duration"
+        },
+        {
+          "kind": "text",
+          "spelling": "?) "
+        },
+        {
+          "kind": "keyword",
+          "spelling": "async"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "keyword",
+          "spelling": "throws"
+        },
+        {
+          "kind": "text",
+          "spelling": " -> "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:10AFMKitCore18AFMGenerationLeaseC",
+          "spelling": "AFMGenerationLease"
+        }
+      ],
+      "functionSignature": {
+        "parameters": [
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "timeout"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:s8DurationV",
+                "spelling": "Duration"
+              },
+              {
+                "kind": "text",
+                "spelling": "?"
+              }
+            ],
+            "name": "timeout"
+          }
+        ],
+        "returns": [
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:10AFMKitCore18AFMGenerationLeaseC",
+            "spelling": "AFMGenerationLease"
+          }
+        ]
+      },
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX15MLXModelServiceC15admitGeneration7timeout0A4Core18AFMGenerationLeaseCs8DurationVSg_tYaKF"
+      },
+      "kind": {
+        "displayName": "Instance Method",
+        "identifier": "swift.method"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "func"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "admitGeneration"
+          },
+          {
+            "kind": "text",
+            "spelling": "("
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "timeout"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:s8DurationV",
+            "spelling": "Duration"
+          },
+          {
+            "kind": "text",
+            "spelling": "?) "
+          },
+          {
+            "kind": "keyword",
+            "spelling": "async"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "keyword",
+            "spelling": "throws"
+          },
+          {
+            "kind": "text",
+            "spelling": " -> "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:10AFMKitCore18AFMGenerationLeaseC",
+            "spelling": "AFMGenerationLease"
+          }
+        ],
+        "title": "admitGeneration(timeout:)"
+      },
+      "pathComponents": [
+        "MLXModelService",
+        "admitGeneration(timeout:)"
       ]
     },
     {
@@ -28090,6 +30070,131 @@
       "declarationFragments": [
         {
           "kind": "keyword",
+          "spelling": "func"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "connectInferenceTelemetry"
+        },
+        {
+          "kind": "text",
+          "spelling": "("
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "to"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "internalParam",
+          "spelling": "observer"
+        },
+        {
+          "kind": "text",
+          "spelling": ": any "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:10AFMKitCore30AFMInferenceTelemetryObservingP",
+          "spelling": "AFMInferenceTelemetryObserving"
+        },
+        {
+          "kind": "text",
+          "spelling": ")"
+        }
+      ],
+      "functionSignature": {
+        "parameters": [
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "observer"
+              },
+              {
+                "kind": "text",
+                "spelling": ": any "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:10AFMKitCore30AFMInferenceTelemetryObservingP",
+                "spelling": "AFMInferenceTelemetryObserving"
+              }
+            ],
+            "internalName": "observer",
+            "name": "to"
+          }
+        ],
+        "returns": [
+          {
+            "kind": "text",
+            "spelling": "()"
+          }
+        ]
+      },
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX15MLXModelServiceC25connectInferenceTelemetry2toy0A4Core012AFMInferenceG9Observing_p_tF"
+      },
+      "kind": {
+        "displayName": "Instance Method",
+        "identifier": "swift.method"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "func"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "connectInferenceTelemetry"
+          },
+          {
+            "kind": "text",
+            "spelling": "("
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "to"
+          },
+          {
+            "kind": "text",
+            "spelling": ": any "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:10AFMKitCore30AFMInferenceTelemetryObservingP",
+            "spelling": "AFMInferenceTelemetryObserving"
+          },
+          {
+            "kind": "text",
+            "spelling": ")"
+          }
+        ],
+        "title": "connectInferenceTelemetry(to:)"
+      },
+      "pathComponents": [
+        "MLXModelService",
+        "connectInferenceTelemetry(to:)"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
           "spelling": "var"
         },
         {
@@ -31378,6 +33483,152 @@
       "pathComponents": [
         "MLXModelService",
         "mtpDepth"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "init"
+        },
+        {
+          "kind": "text",
+          "spelling": "("
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "resolver"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:9AFMKitMLX16MLXCacheResolverV",
+          "spelling": "MLXCacheResolver"
+        },
+        {
+          "kind": "text",
+          "spelling": ", "
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "telemetryObserver"
+        },
+        {
+          "kind": "text",
+          "spelling": ": any "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:10AFMKitCore30AFMInferenceTelemetryObservingP",
+          "spelling": "AFMInferenceTelemetryObserving"
+        },
+        {
+          "kind": "text",
+          "spelling": ")"
+        }
+      ],
+      "functionSignature": {
+        "parameters": [
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "resolver"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:9AFMKitMLX16MLXCacheResolverV",
+                "spelling": "MLXCacheResolver"
+              }
+            ],
+            "name": "resolver"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "telemetryObserver"
+              },
+              {
+                "kind": "text",
+                "spelling": ": any "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:10AFMKitCore30AFMInferenceTelemetryObservingP",
+                "spelling": "AFMInferenceTelemetryObserving"
+              }
+            ],
+            "name": "telemetryObserver"
+          }
+        ]
+      },
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX15MLXModelServiceC8resolver17telemetryObserverAcA16MLXCacheResolverV_0A4Core30AFMInferenceTelemetryObserving_ptcfc"
+      },
+      "kind": {
+        "displayName": "Initializer",
+        "identifier": "swift.init"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "init"
+          },
+          {
+            "kind": "text",
+            "spelling": "("
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "resolver"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:9AFMKitMLX16MLXCacheResolverV",
+            "spelling": "MLXCacheResolver"
+          },
+          {
+            "kind": "text",
+            "spelling": ", "
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "telemetryObserver"
+          },
+          {
+            "kind": "text",
+            "spelling": ": any "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:10AFMKitCore30AFMInferenceTelemetryObservingP",
+            "spelling": "AFMInferenceTelemetryObserving"
+          },
+          {
+            "kind": "text",
+            "spelling": ")"
+          }
+        ],
+        "title": "init(resolver:telemetryObserver:)"
+      },
+      "pathComponents": [
+        "MLXModelService",
+        "init(resolver:telemetryObserver:)"
       ]
     },
     {
@@ -65371,6 +67622,152 @@
       "pathComponents": [
         "AFMMLXProviderFactory",
         "modelDescriptors()"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "init"
+        },
+        {
+          "kind": "text",
+          "spelling": "("
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "resolver"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:9AFMKitMLX16MLXCacheResolverV",
+          "spelling": "MLXCacheResolver"
+        },
+        {
+          "kind": "text",
+          "spelling": " = .init(), "
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "telemetryObserver"
+        },
+        {
+          "kind": "text",
+          "spelling": ": any "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:10AFMKitCore30AFMInferenceTelemetryObservingP",
+          "spelling": "AFMInferenceTelemetryObserving"
+        },
+        {
+          "kind": "text",
+          "spelling": ")"
+        }
+      ],
+      "functionSignature": {
+        "parameters": [
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "resolver"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:9AFMKitMLX16MLXCacheResolverV",
+                "spelling": "MLXCacheResolver"
+              }
+            ],
+            "name": "resolver"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "telemetryObserver"
+              },
+              {
+                "kind": "text",
+                "spelling": ": any "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:10AFMKitCore30AFMInferenceTelemetryObservingP",
+                "spelling": "AFMInferenceTelemetryObserving"
+              }
+            ],
+            "name": "telemetryObserver"
+          }
+        ]
+      },
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX21AFMMLXProviderFactoryV8resolver17telemetryObserverAcA16MLXCacheResolverV_0A4Core30AFMInferenceTelemetryObserving_ptcfc"
+      },
+      "kind": {
+        "displayName": "Initializer",
+        "identifier": "swift.init"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "init"
+          },
+          {
+            "kind": "text",
+            "spelling": "("
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "resolver"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:9AFMKitMLX16MLXCacheResolverV",
+            "spelling": "MLXCacheResolver"
+          },
+          {
+            "kind": "text",
+            "spelling": ", "
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "telemetryObserver"
+          },
+          {
+            "kind": "text",
+            "spelling": ": any "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:10AFMKitCore30AFMInferenceTelemetryObservingP",
+            "spelling": "AFMInferenceTelemetryObserving"
+          },
+          {
+            "kind": "text",
+            "spelling": ")"
+          }
+        ],
+        "title": "init(resolver:telemetryObserver:)"
+      },
+      "pathComponents": [
+        "AFMMLXProviderFactory",
+        "init(resolver:telemetryObserver:)"
       ]
     },
     {

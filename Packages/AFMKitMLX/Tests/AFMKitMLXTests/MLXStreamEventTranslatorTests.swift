@@ -4,6 +4,30 @@ import AFMOpenAICompat
 import XCTest
 
 final class MLXStreamEventTranslatorTests: XCTestCase {
+    func testSyntheticThinkStartDoesNotCountAsGeneratedToken() {
+        var translator = MLXStreamEventTranslator(
+            thinkStartTag: "<think>",
+            thinkEndTag: "</think>",
+            maximumResponseTokens: 100
+        )
+
+        let events = [
+            translator.consume(.init(syntheticText: "<think>")),
+            translator.consume(.init(text: "private")),
+            translator.consume(.init(text: "</think>answer")),
+            translator.consume(.init(
+                text: "",
+                promptTokens: 4,
+                completionTokens: 2
+            )),
+            translator.finish()
+        ].flatMap { $0 }
+
+        XCTAssertEqual(reasoning(from: events), "private")
+        XCTAssertEqual(text(from: events), "answer")
+        XCTAssertEqual(tokenCount(from: events), 2)
+    }
+
     func testReasoningTagsSplitAcrossChunksProduceSeparateChannels() {
         var translator = MLXStreamEventTranslator(
             thinkStartTag: "<think>",
