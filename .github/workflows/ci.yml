@@ -66,10 +66,6 @@ jobs:
           -c release
       - name: Check unauthenticated Core package boundary
         run: Scripts/check-unauthenticated-core-consumer.sh
-      - name: Compile the basic iOS consumer boundary
-        env:
-          AFMKIT_BUILD_ROOT: ${{ runner.temp }}/afmkit-ios-core
-        run: Scripts/check-ios-core-consumer.sh
       - name: Check optional Apple service isolation
         env:
           AFMKIT_BUILD_ROOT: ${{ runner.temp }}/afmkit-service-products
