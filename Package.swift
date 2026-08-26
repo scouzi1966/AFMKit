@@ -303,7 +303,7 @@ var targets: [Target] = [
             .linkedFramework("Quartz")
         ]
     ),
-    .target(name: "AFMKitServices", dependencies: ["AFMKitEmbeddings", "AFMKitSpeech", "AFMKitSpeechSynthesis", "AFMKitVision"]),
+    .target(name: "AFMKitServices", dependencies: ["AFMKitCore", "AFMKitEmbeddings", "AFMKitSpeech", "AFMKitSpeechSynthesis", "AFMKitVision"]),
     .target(name: "AFMEvalKit", dependencies: ["AFMOpenAICompat"]),
     .target(
         name: "AFMXGrammar",
@@ -413,7 +413,10 @@ var targets: [Target] = [
     .testTarget(name: "AFMEvalKitTests", dependencies: ["AFMEvalKit"]),
     .testTarget(
         name: "AFMKitMLXTests",
-        dependencies: ["AFMKitMLX", "AFMKitCore", "AFMOpenAICompat", "MLXLMCommon"],
+        dependencies: [
+            "AFMKitMLX", "AFMKitCore", "AFMKitServices", "AFMOpenAICompat",
+            "MLXLMCommon"
+        ],
         path: "Packages/AFMKitMLX/Tests/AFMKitMLXTests"
     ),
     .testTarget(

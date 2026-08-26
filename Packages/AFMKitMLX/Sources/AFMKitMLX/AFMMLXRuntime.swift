@@ -218,9 +218,13 @@ public final class AFMMLXRuntime: @unchecked Sendable {
         modelID: String,
         configuration: AFMMLXRuntimeConfiguration = .init(),
         resolver: MLXCacheResolver = .init(),
+        telemetryObserver: any AFMInferenceTelemetryObserving,
         service providedService: MLXModelService? = nil
     ) {
-        let service = providedService ?? MLXModelService(resolver: resolver)
+        let service = providedService ?? MLXModelService(
+            resolver: resolver,
+            telemetryObserver: telemetryObserver
+        )
         configuration.apply(to: service)
 
         self.configuration = configuration
@@ -230,6 +234,21 @@ public final class AFMMLXRuntime: @unchecked Sendable {
         self.declaredDescriptor = AFMMLXModelDescriptor.describe(
             modelID: self.modelID,
             resolver: resolver
+        )
+    }
+
+    public convenience init(
+        modelID: String,
+        configuration: AFMMLXRuntimeConfiguration = .init(),
+        resolver: MLXCacheResolver = .init(),
+        service providedService: MLXModelService? = nil
+    ) {
+        self.init(
+            modelID: modelID,
+            configuration: configuration,
+            resolver: resolver,
+            telemetryObserver: AFMInferenceTelemetryRelay(),
+            service: providedService
         )
     }
 
@@ -263,6 +282,7 @@ public final class AFMMLXRuntime: @unchecked Sendable {
         modelID: String,
         providerConfiguration: AFMProviderConfiguration,
         resolver: MLXCacheResolver = .init(),
+        telemetryObserver: any AFMInferenceTelemetryObserving,
         service providedService: MLXModelService? = nil
     ) {
         self.init(
@@ -271,6 +291,22 @@ public final class AFMMLXRuntime: @unchecked Sendable {
                 providerConfiguration: providerConfiguration
             ),
             resolver: resolver,
+            telemetryObserver: telemetryObserver,
+            service: providedService
+        )
+    }
+
+    public convenience init(
+        modelID: String,
+        providerConfiguration: AFMProviderConfiguration,
+        resolver: MLXCacheResolver = .init(),
+        service providedService: MLXModelService? = nil
+    ) {
+        self.init(
+            modelID: modelID,
+            providerConfiguration: providerConfiguration,
+            resolver: resolver,
+            telemetryObserver: AFMInferenceTelemetryRelay(),
             service: providedService
         )
     }

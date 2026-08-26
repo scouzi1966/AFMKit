@@ -108,6 +108,11 @@
     },
     {
       "kind": "memberOf",
+      "source": "s:15AFMKitDwarfStar08AFMDwarfC15ProviderFactoryV17telemetryObserverAC0A4Core30AFMInferenceTelemetryObserving_p_tcfc",
+      "target": "s:15AFMKitDwarfStar08AFMDwarfC15ProviderFactoryV"
+    },
+    {
+      "kind": "memberOf",
       "source": "s:15AFMKitDwarfStar08AFMDwarfC15ProviderFactoryV9makeModel2id13configuration0A4Core11AnyAFMModelVAG0M2IDV_AG24AFMProviderConfigurationVtKF",
       "sourceOrigin": {
         "displayName": "AFMProviderFactory.makeModel(id:configuration:)",
@@ -282,6 +287,24 @@
     {
       "kind": "conformsTo",
       "source": "s:15AFMKitDwarfStar08AFMDwarfC5ModelC",
+      "target": "s:10AFMKitCore20AFMRawTextGeneratingP",
+      "targetFallback": "AFMKitCore.AFMRawTextGenerating"
+    },
+    {
+      "kind": "conformsTo",
+      "source": "s:15AFMKitDwarfStar08AFMDwarfC5ModelC",
+      "target": "s:10AFMKitCore22AFMGenerationAdmittingP",
+      "targetFallback": "AFMKitCore.AFMGenerationAdmitting"
+    },
+    {
+      "kind": "conformsTo",
+      "source": "s:15AFMKitDwarfStar08AFMDwarfC5ModelC",
+      "target": "s:10AFMKitCore31AFMInferenceTelemetryConnectingP",
+      "targetFallback": "AFMKitCore.AFMInferenceTelemetryConnecting"
+    },
+    {
+      "kind": "conformsTo",
+      "source": "s:15AFMKitDwarfStar08AFMDwarfC5ModelC",
       "target": "s:10AFMKitCore8AFMModelP",
       "targetFallback": "AFMKitCore.AFMModel"
     },
@@ -321,6 +344,33 @@
       "sourceOrigin": {
         "displayName": "AFMModel.streamResponse(to:)",
         "identifier": "s:10AFMKitCore8AFMModelP14streamResponse2toScsyAA18AFMGenerationEventOs5Error_pGAA10AFMRequestV_tF"
+      },
+      "target": "s:15AFMKitDwarfStar08AFMDwarfC5ModelC"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:15AFMKitDwarfStar08AFMDwarfC5ModelC15admitGeneration7timeout0A4Core18AFMGenerationLeaseCs8DurationVSg_tYaKF",
+      "sourceOrigin": {
+        "displayName": "AFMGenerationAdmitting.admitGeneration(timeout:)",
+        "identifier": "s:10AFMKitCore22AFMGenerationAdmittingP15admitGeneration7timeoutAA0C5LeaseCs8DurationVSg_tYaKF"
+      },
+      "target": "s:15AFMKitDwarfStar08AFMDwarfC5ModelC"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:15AFMKitDwarfStar08AFMDwarfC5ModelC23rawTextGenerationEvents3forScSy0A4Core06AFMRawgH5EventOGAF0lgH7RequestV_tF",
+      "sourceOrigin": {
+        "displayName": "AFMRawTextGenerating.rawTextGenerationEvents(for:)",
+        "identifier": "s:10AFMKitCore20AFMRawTextGeneratingP03rawD16GenerationEvents3forScSyAA0cdG5EventOGAA0cdG7RequestV_tF"
+      },
+      "target": "s:15AFMKitDwarfStar08AFMDwarfC5ModelC"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:15AFMKitDwarfStar08AFMDwarfC5ModelC25connectInferenceTelemetry2toy0A4Core012AFMInferenceH9Observing_p_tF",
+      "sourceOrigin": {
+        "displayName": "AFMInferenceTelemetryConnecting.connectInferenceTelemetry(to:)",
+        "identifier": "s:10AFMKitCore31AFMInferenceTelemetryConnectingP016connectInferenceD02toyAA0cD9Observing_p_tF"
       },
       "target": "s:15AFMKitDwarfStar08AFMDwarfC5ModelC"
     },
@@ -1521,6 +1571,100 @@
       "pathComponents": [
         "AFMDwarfStarProviderFactory",
         "modelDescriptors()"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "init"
+        },
+        {
+          "kind": "text",
+          "spelling": "("
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "telemetryObserver"
+        },
+        {
+          "kind": "text",
+          "spelling": ": any "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:10AFMKitCore30AFMInferenceTelemetryObservingP",
+          "spelling": "AFMInferenceTelemetryObserving"
+        },
+        {
+          "kind": "text",
+          "spelling": ")"
+        }
+      ],
+      "functionSignature": {
+        "parameters": [
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "telemetryObserver"
+              },
+              {
+                "kind": "text",
+                "spelling": ": any "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:10AFMKitCore30AFMInferenceTelemetryObservingP",
+                "spelling": "AFMInferenceTelemetryObserving"
+              }
+            ],
+            "name": "telemetryObserver"
+          }
+        ]
+      },
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:15AFMKitDwarfStar08AFMDwarfC15ProviderFactoryV17telemetryObserverAC0A4Core30AFMInferenceTelemetryObserving_p_tcfc"
+      },
+      "kind": {
+        "displayName": "Initializer",
+        "identifier": "swift.init"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "init"
+          },
+          {
+            "kind": "text",
+            "spelling": "("
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "telemetryObserver"
+          },
+          {
+            "kind": "text",
+            "spelling": ": any "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:10AFMKitCore30AFMInferenceTelemetryObservingP",
+            "spelling": "AFMInferenceTelemetryObserving"
+          },
+          {
+            "kind": "text",
+            "spelling": ")"
+          }
+        ],
+        "title": "init(telemetryObserver:)"
+      },
+      "pathComponents": [
+        "AFMDwarfStarProviderFactory",
+        "init(telemetryObserver:)"
       ]
     },
     {
@@ -4456,6 +4600,469 @@
       "pathComponents": [
         "AFMDwarfStarModel",
         "streamResponse(to:)"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "func"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "admitGeneration"
+        },
+        {
+          "kind": "text",
+          "spelling": "("
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "timeout"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:s8DurationV",
+          "spelling": "Duration"
+        },
+        {
+          "kind": "text",
+          "spelling": "?) "
+        },
+        {
+          "kind": "keyword",
+          "spelling": "async"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "keyword",
+          "spelling": "throws"
+        },
+        {
+          "kind": "text",
+          "spelling": " -> "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:10AFMKitCore18AFMGenerationLeaseC",
+          "spelling": "AFMGenerationLease"
+        }
+      ],
+      "functionSignature": {
+        "parameters": [
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "timeout"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:s8DurationV",
+                "spelling": "Duration"
+              },
+              {
+                "kind": "text",
+                "spelling": "?"
+              }
+            ],
+            "name": "timeout"
+          }
+        ],
+        "returns": [
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:10AFMKitCore18AFMGenerationLeaseC",
+            "spelling": "AFMGenerationLease"
+          }
+        ]
+      },
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:15AFMKitDwarfStar08AFMDwarfC5ModelC15admitGeneration7timeout0A4Core18AFMGenerationLeaseCs8DurationVSg_tYaKF"
+      },
+      "kind": {
+        "displayName": "Instance Method",
+        "identifier": "swift.method"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "func"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "admitGeneration"
+          },
+          {
+            "kind": "text",
+            "spelling": "("
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "timeout"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:s8DurationV",
+            "spelling": "Duration"
+          },
+          {
+            "kind": "text",
+            "spelling": "?) "
+          },
+          {
+            "kind": "keyword",
+            "spelling": "async"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "keyword",
+            "spelling": "throws"
+          },
+          {
+            "kind": "text",
+            "spelling": " -> "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:10AFMKitCore18AFMGenerationLeaseC",
+            "spelling": "AFMGenerationLease"
+          }
+        ],
+        "title": "admitGeneration(timeout:)"
+      },
+      "pathComponents": [
+        "AFMDwarfStarModel",
+        "admitGeneration(timeout:)"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "func"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "rawTextGenerationEvents"
+        },
+        {
+          "kind": "text",
+          "spelling": "("
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "for"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "internalParam",
+          "spelling": "request"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:10AFMKitCore27AFMRawTextGenerationRequestV",
+          "spelling": "AFMRawTextGenerationRequest"
+        },
+        {
+          "kind": "text",
+          "spelling": ") -> "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:ScS",
+          "spelling": "AsyncStream"
+        },
+        {
+          "kind": "text",
+          "spelling": "<"
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:10AFMKitCore25AFMRawTextGenerationEventO",
+          "spelling": "AFMRawTextGenerationEvent"
+        },
+        {
+          "kind": "text",
+          "spelling": ">"
+        }
+      ],
+      "functionSignature": {
+        "parameters": [
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "request"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:10AFMKitCore27AFMRawTextGenerationRequestV",
+                "spelling": "AFMRawTextGenerationRequest"
+              }
+            ],
+            "internalName": "request",
+            "name": "for"
+          }
+        ],
+        "returns": [
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:ScS",
+            "spelling": "AsyncStream"
+          },
+          {
+            "kind": "text",
+            "spelling": "<"
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:10AFMKitCore25AFMRawTextGenerationEventO",
+            "spelling": "AFMRawTextGenerationEvent"
+          },
+          {
+            "kind": "text",
+            "spelling": ">"
+          }
+        ]
+      },
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:15AFMKitDwarfStar08AFMDwarfC5ModelC23rawTextGenerationEvents3forScSy0A4Core06AFMRawgH5EventOGAF0lgH7RequestV_tF"
+      },
+      "kind": {
+        "displayName": "Instance Method",
+        "identifier": "swift.method"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "func"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "rawTextGenerationEvents"
+          },
+          {
+            "kind": "text",
+            "spelling": "("
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "for"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:10AFMKitCore27AFMRawTextGenerationRequestV",
+            "spelling": "AFMRawTextGenerationRequest"
+          },
+          {
+            "kind": "text",
+            "spelling": ") -> "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:ScS",
+            "spelling": "AsyncStream"
+          },
+          {
+            "kind": "text",
+            "spelling": "<"
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:10AFMKitCore25AFMRawTextGenerationEventO",
+            "spelling": "AFMRawTextGenerationEvent"
+          },
+          {
+            "kind": "text",
+            "spelling": ">"
+          }
+        ],
+        "title": "rawTextGenerationEvents(for:)"
+      },
+      "pathComponents": [
+        "AFMDwarfStarModel",
+        "rawTextGenerationEvents(for:)"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "func"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "connectInferenceTelemetry"
+        },
+        {
+          "kind": "text",
+          "spelling": "("
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "to"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "internalParam",
+          "spelling": "observer"
+        },
+        {
+          "kind": "text",
+          "spelling": ": any "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:10AFMKitCore30AFMInferenceTelemetryObservingP",
+          "spelling": "AFMInferenceTelemetryObserving"
+        },
+        {
+          "kind": "text",
+          "spelling": ")"
+        }
+      ],
+      "functionSignature": {
+        "parameters": [
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "observer"
+              },
+              {
+                "kind": "text",
+                "spelling": ": any "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:10AFMKitCore30AFMInferenceTelemetryObservingP",
+                "spelling": "AFMInferenceTelemetryObserving"
+              }
+            ],
+            "internalName": "observer",
+            "name": "to"
+          }
+        ],
+        "returns": [
+          {
+            "kind": "text",
+            "spelling": "()"
+          }
+        ]
+      },
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:15AFMKitDwarfStar08AFMDwarfC5ModelC25connectInferenceTelemetry2toy0A4Core012AFMInferenceH9Observing_p_tF"
+      },
+      "kind": {
+        "displayName": "Instance Method",
+        "identifier": "swift.method"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "func"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "connectInferenceTelemetry"
+          },
+          {
+            "kind": "text",
+            "spelling": "("
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "to"
+          },
+          {
+            "kind": "text",
+            "spelling": ": any "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:10AFMKitCore30AFMInferenceTelemetryObservingP",
+            "spelling": "AFMInferenceTelemetryObserving"
+          },
+          {
+            "kind": "text",
+            "spelling": ")"
+          }
+        ],
+        "title": "connectInferenceTelemetry(to:)"
+      },
+      "pathComponents": [
+        "AFMDwarfStarModel",
+        "connectInferenceTelemetry(to:)"
       ]
     },
     {

@@ -57,6 +57,9 @@ public extension AFMModel {
 }
 
 public struct AnyAFMModel: AFMModel, Sendable {
+    public let rawTextGenerator: AnyAFMRawTextGenerator?
+    public let generationAdmitter: AnyAFMGenerationAdmitter?
+
     private let descriptorOperation: @Sendable () -> AFMModelDescriptor
     private let availabilityOperation: @Sendable () async -> AFMModelAvailability
     private let loadOperation:
@@ -69,6 +72,8 @@ public struct AnyAFMModel: AFMModel, Sendable {
     private let prewarmOperation: (@Sendable () async throws -> Void)?
     private let admissionSnapshotOperation: (@Sendable () async -> AFMAdmissionSnapshot)?
     private let telemetrySnapshotOperation: (@Sendable () async -> AFMTelemetrySnapshot)?
+    private let connectInferenceTelemetryOperation:
+        @Sendable (any AFMInferenceTelemetryObserving) -> Void
 
     public init<Model: AFMModel>(_ model: Model) {
         if let erasedModel = model as? AnyAFMModel {
@@ -76,6 +81,18 @@ public struct AnyAFMModel: AFMModel, Sendable {
             return
         }
         descriptorOperation = { model.descriptor }
+        if let generator = model as? any AFMRawTextGenerating {
+            rawTextGenerator = AnyAFMRawTextGenerator(generator)
+        } else {
+            rawTextGenerator = nil
+        }
+        if let admitter = model as? any AFMGenerationAdmitting {
+            generationAdmitter = AnyAFMGenerationAdmitter { timeout in
+                try await admitter.admitGeneration(timeout: timeout)
+            }
+        } else {
+            generationAdmitter = nil
+        }
         availabilityOperation = { await model.availability() }
         loadOperation = { progress in try await model.load(progress: progress) }
         respondOperation = { request in try await model.respond(to: request) }
@@ -109,6 +126,13 @@ public struct AnyAFMModel: AFMModel, Sendable {
         } else {
             telemetrySnapshotOperation = nil
         }
+        if let connector = model as? any AFMInferenceTelemetryConnecting {
+            connectInferenceTelemetryOperation = { observer in
+                connector.connectInferenceTelemetry(to: observer)
+            }
+        } else {
+            connectInferenceTelemetryOperation = { _ in }
+        }
     }
 
     public var descriptor: AFMModelDescriptor { descriptorOperation() }
@@ -139,6 +163,12 @@ public struct AnyAFMModel: AFMModel, Sendable {
 
     public func unload() async {
         await unloadOperation()
+    }
+
+    public func connectInferenceTelemetry(
+        to observer: any AFMInferenceTelemetryObserving
+    ) {
+        connectInferenceTelemetryOperation(observer)
     }
 
     public func tokenize(text: String) async throws -> [Int] {

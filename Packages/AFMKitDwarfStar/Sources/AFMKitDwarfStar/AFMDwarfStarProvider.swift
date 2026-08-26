@@ -53,7 +53,15 @@ public struct AFMDwarfStarRuntimeConfiguration: Sendable, Equatable {
 public struct AFMDwarfStarProviderFactory: AFMProviderFactory {
     public static let providerID: AFMProviderID = "dwarfstar"
 
-    public init() {}
+    private let telemetryObserver: any AFMInferenceTelemetryObserving
+
+    public init() {
+        telemetryObserver = AFMInferenceTelemetryRelay()
+    }
+
+    public init(telemetryObserver: any AFMInferenceTelemetryObserving) {
+        self.telemetryObserver = telemetryObserver
+    }
 
     public var descriptor: AFMProviderDescriptor {
         AFMProviderDescriptor(
@@ -96,15 +104,28 @@ public struct AFMDwarfStarProviderFactory: AFMProviderFactory {
             AFMDwarfStarModel(
                 modelID: id,
                 modelPath: modelPath,
-                configuration: AFMDwarfStarRuntimeConfiguration(
-                    providerConfiguration: configuration
-                )
+                contextWindow: configuration.integer("contextWindow") ?? 32_768,
+                prefillChunk: configuration.integer("prefillChunk") ?? 0,
+                powerPercent: configuration.integer("powerPercent") ?? 100,
+                dsparkSupportPath: configuration.string("dsparkSupportPath"),
+                dsparkDraftTokens: configuration.integer("dsparkDraftTokens") ?? 5,
+                dsparkConfidenceThreshold: configuration.number("dsparkConfidenceThreshold") ?? 0.7,
+                dsparkStrict: configuration.boolean("dsparkStrict") ?? false,
+                enablePrefixCaching: configuration.boolean("enablePrefixCaching") ?? false,
+                maxConcurrent: configuration.integer("maxConcurrent") ?? 1,
+                telemetryObserver: telemetryObserver
             )
         )
     }
 }
 
-public final class AFMDwarfStarModel: AFMModel, @unchecked Sendable {
+public final class AFMDwarfStarModel:
+    AFMModel,
+    AFMRawTextGenerating,
+    AFMGenerationAdmitting,
+    AFMInferenceTelemetryConnecting,
+    @unchecked Sendable
+{
     public let descriptor: AFMModelDescriptor
 
     private let runtimeLease: AFMDwarfStarRuntimeLease
@@ -119,6 +140,8 @@ public final class AFMDwarfStarModel: AFMModel, @unchecked Sendable {
     private let enablePrefixCaching: Bool
     private let maxConcurrent: Int
     private let runtime: AFMDwarfStarRuntimeCoordinator
+    let telemetryObserver: any AFMInferenceTelemetryObserving
+    private let generationAdmission: AFMDwarfStarGenerationAdmission
 
     public convenience init(
         modelID: AFMModelID,
@@ -137,6 +160,7 @@ public final class AFMDwarfStarModel: AFMModel, @unchecked Sendable {
             dsparkStrict: configuration.dsparkStrict,
             enablePrefixCaching: configuration.enablePrefixCaching,
             maxConcurrent: configuration.maxConcurrent,
+            telemetryObserver: AFMInferenceTelemetryRelay(),
             runtime: .shared
         )
     }
@@ -153,6 +177,7 @@ public final class AFMDwarfStarModel: AFMModel, @unchecked Sendable {
         dsparkStrict: Bool = false,
         enablePrefixCaching: Bool = false,
         maxConcurrent: Int = 1,
+        telemetryObserver: any AFMInferenceTelemetryObserving = AFMInferenceTelemetryRelay(),
         runtime: AFMDwarfStarRuntimeCoordinator = .shared
     ) {
         self.modelPath = modelPath
@@ -166,6 +191,11 @@ public final class AFMDwarfStarModel: AFMModel, @unchecked Sendable {
         self.enablePrefixCaching = enablePrefixCaching
         self.maxConcurrent = max(1, maxConcurrent)
         self.runtime = runtime
+        self.telemetryObserver = telemetryObserver
+        self.generationAdmission = AFMDwarfStarGenerationAdmission(
+            maximumConcurrentRequests: maxConcurrent,
+            telemetryObserver: telemetryObserver
+        )
         self.runtimeLease = AFMDwarfStarRuntimeLease { leaseID in
             await runtime.unload(leaseID: leaseID)
         }
@@ -177,25 +207,55 @@ public final class AFMDwarfStarModel: AFMModel, @unchecked Sendable {
             contextWindow: contextWindow,
             privacyBoundary: .device,
             requiresNetwork: false,
-            metadata: [
-                "runtime": .string("dwarfstar"),
-                "backend": .string("metal"),
-                "modelPath": .string(modelPath),
-                "checkpointFormat": .string("native-gguf"),
-                "dsparkEnabled": .bool(dsparkSupportPath != nil),
-                "dsparkDraftTokens": .integer(max(1, min(16, dsparkDraftTokens))),
-                "dsparkConfidenceThreshold": .number(max(0, min(1, dsparkConfidenceThreshold))),
-                "dsparkStrict": .bool(dsparkStrict),
-                "enablePrefixCaching": .bool(enablePrefixCaching),
-                "maxConcurrent": .integer(max(1, maxConcurrent))
-            ]
+            metadata: Self.metadata(
+                modelPath: modelPath,
+                dsparkSupportPath: dsparkSupportPath,
+                dsparkDraftTokens: dsparkDraftTokens,
+                dsparkConfidenceThreshold: dsparkConfidenceThreshold,
+                dsparkStrict: dsparkStrict,
+                enablePrefixCaching: enablePrefixCaching,
+                maxConcurrent: maxConcurrent
+            )
         )
+    }
+
+    private static func metadata(
+        modelPath: String,
+        dsparkSupportPath: String?,
+        dsparkDraftTokens: Int,
+        dsparkConfidenceThreshold: Double,
+        dsparkStrict: Bool,
+        enablePrefixCaching: Bool,
+        maxConcurrent: Int
+    ) -> [String: AFMJSONValue] {
+        [
+            "runtime": .string("dwarfstar"),
+            "backend": .string("metal"),
+            "modelPath": .string(modelPath),
+            "checkpointFormat": .string("native-gguf"),
+            "dsparkEnabled": .bool(dsparkSupportPath != nil),
+            "dsparkDraftTokens": .integer(max(1, min(16, dsparkDraftTokens))),
+            "dsparkConfidenceThreshold": .number(max(0, min(1, dsparkConfidenceThreshold))),
+            "dsparkStrict": .bool(dsparkStrict),
+            "enablePrefixCaching": .bool(enablePrefixCaching),
+            "maxConcurrent": .integer(max(1, maxConcurrent))
+        ]
     }
 
     public func availability() async -> AFMModelAvailability {
         FileManager.default.fileExists(atPath: modelPath)
             ? .available
             : .unavailable(reason: "Model or checkpoint does not exist at \(modelPath)")
+    }
+
+    public func admitGeneration(timeout: Duration?) async throws -> AFMGenerationLease {
+        try await generationAdmission.admitGeneration(timeout: timeout)
+    }
+
+    public func connectInferenceTelemetry(
+        to observer: any AFMInferenceTelemetryObserving
+    ) {
+        (telemetryObserver as? AFMInferenceTelemetryRelay)?.connect(to: observer)
     }
 
     public func load(
@@ -221,7 +281,10 @@ public final class AFMDwarfStarModel: AFMModel, @unchecked Sendable {
 
     public func respond(to request: AFMRequest) async throws -> AFMModelResponse {
         _ = try await load(progress: nil)
-        let result = try await runtime.generate(request: request) { _ in }
+        let result = try await runtime.generate(
+            request: request,
+            telemetryObserver: telemetryObserver
+        ) { _ in }
         return result.response(modelID: descriptor.modelID.rawValue)
     }
 
@@ -232,7 +295,10 @@ public final class AFMDwarfStarModel: AFMModel, @unchecked Sendable {
             let task = Task {
                 do {
                     _ = try await load(progress: nil)
-                    let result = try await runtime.generate(request: request) { event in
+                    let result = try await runtime.generate(
+                        request: request,
+                        telemetryObserver: telemetryObserver
+                    ) { event in
                         continuation.yield(event)
                     }
                     continuation.yield(.usage(result.usage))
@@ -247,6 +313,82 @@ public final class AFMDwarfStarModel: AFMModel, @unchecked Sendable {
                 }
             }
             continuation.onTermination = { @Sendable _ in task.cancel() }
+        }
+    }
+
+    public func rawTextGenerationEvents(
+        for request: AFMRawTextGenerationRequest
+    ) -> AsyncStream<AFMRawTextGenerationEvent> {
+        AsyncStream { continuation in
+            let task = Task {
+                do {
+                    _ = try await load(progress: nil)
+                    let providerRequest = AFMRequest(
+                        messages: [],
+                        options: AFMGenerationOptions(
+                            temperature: request.temperature,
+                            maximumResponseTokens: request.maximumOutputTokens,
+                            topP: request.topP,
+                            topK: request.topK,
+                            minP: request.minP,
+                            repetitionPenalty: request.repetitionPenalty,
+                            presencePenalty: request.presencePenalty,
+                            seed: request.seed,
+                            stopSequences: request.stopSequences,
+                            ignoreEndOfSequence: request.ignoreEndOfSequence
+                        ),
+                        metadata: ["afm.rawPrompt": .string(request.prompt)]
+                    )
+                    let result = try await runtime.generate(
+                        request: providerRequest,
+                        telemetryObserver: telemetryObserver
+                    ) { event in
+                        guard case .responseText(_, let text, _) = event, !text.isEmpty else {
+                            return
+                        }
+                        continuation.yield(.textDelta(
+                            text: text,
+                            tokenID: nil,
+                            timestamp: ProcessInfo.processInfo.systemUptime
+                        ))
+                    }
+                    continuation.yield(.completed(AFMRawTextGenerationResult(
+                        finishReason: Self.telemetryFinishReason(result.finishReason),
+                        promptTokens: result.usage.inputTokens,
+                        completionTokens: result.usage.outputTokens,
+                        totalTokens: result.usage.inputTokens + result.usage.outputTokens
+                    )))
+                    continuation.finish()
+                } catch is CancellationError {
+                    continuation.yield(.failed(
+                        reason: .cancelled,
+                        message: "DwarfStar raw generation was cancelled"
+                    ))
+                    continuation.finish()
+                } catch {
+                    continuation.yield(.failed(
+                        reason: .inference,
+                        message: error.localizedDescription
+                    ))
+                    continuation.finish()
+                }
+            }
+            continuation.onTermination = { @Sendable _ in task.cancel() }
+        }
+    }
+
+    private static func telemetryFinishReason(
+        _ reason: AFMFinishReason
+    ) -> AFMInferenceFinishReason {
+        switch reason {
+        case .stop, .toolCalls, .contentFilter:
+            return .stop
+        case .length:
+            return .length
+        case .cancelled:
+            return .abort
+        case .error, .unknown:
+            return .error
         }
     }
 

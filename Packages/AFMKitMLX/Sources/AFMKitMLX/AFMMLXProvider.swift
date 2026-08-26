@@ -2,17 +2,118 @@ import Foundation
 import AFMKitCore
 import AFMOpenAICompat
 
+private final class AFMMLXProviderTelemetryRequest: @unchecked Sendable {
+    private let observer: any AFMInferenceTelemetryObserving
+    private let token: AFMInferenceRequestToken
+    private let maximumOutputTokens: Int?
+    private var usage = AFMUsage()
+    private var finishReason: AFMFinishReason = .stop
+    private var firstOutputRecorded = false
+    private var terminalRecorded = false
+
+    init(
+        observer: any AFMInferenceTelemetryObserving,
+        maximumOutputTokens: Int?
+    ) {
+        self.observer = observer
+        self.maximumOutputTokens = maximumOutputTokens
+        let now = ProcessInfo.processInfo.systemUptime
+        if let admittedToken = AFMGenerationContext.telemetryToken {
+            token = admittedToken
+            AFMGenerationContext.admissionLease?.transferTelemetryToProvider()
+        } else {
+            token = observer.requestAccepted(at: AFMGenerationContext.acceptedAt ?? now)
+            observer.requestStarted(token, at: now)
+        }
+    }
+
+    func observe(_ event: AFMGenerationEvent) {
+        switch event {
+        case .responseText(_, _, let tokenCount),
+             .reasoningText(_, _, let tokenCount):
+            if tokenCount > 0, !firstOutputRecorded {
+                firstOutputRecorded = true
+                observer.outputToken(token, at: ProcessInfo.processInfo.systemUptime)
+            }
+        case .usage(let usage):
+            self.usage = usage
+            observer.promptTokensProcessed(
+                token,
+                fullPromptTokens: usage.inputTokens,
+                computedPromptTokens: max(0, usage.inputTokens - usage.cachedInputTokens),
+                at: ProcessInfo.processInfo.systemUptime
+            )
+        case .completed(let reason):
+            finishReason = reason
+        default:
+            break
+        }
+    }
+
+    func finish() {
+        guard !terminalRecorded else { return }
+        terminalRecorded = true
+        _ = observer.requestFinished(
+            token,
+            observation: AFMInferenceRequestFinishObservation(
+                reason: Self.telemetryFinishReason(finishReason),
+                completedAt: ProcessInfo.processInfo.systemUptime,
+                fullPromptTokens: usage.inputTokens,
+                computedPromptTokens: max(0, usage.inputTokens - usage.cachedInputTokens),
+                generatedTokens: usage.outputTokens,
+                maximumOutputTokens: maximumOutputTokens
+            )
+        )
+    }
+
+    func fail(_ error: any Error) {
+        guard !terminalRecorded else { return }
+        terminalRecorded = true
+        _ = observer.requestFailed(
+            token,
+            reason: error is CancellationError ? .cancelled : .inference,
+            at: ProcessInfo.processInfo.systemUptime
+        )
+    }
+
+    private static func telemetryFinishReason(
+        _ reason: AFMFinishReason
+    ) -> AFMInferenceFinishReason {
+        switch reason {
+        case .stop, .toolCalls, .contentFilter:
+            return .stop
+        case .length:
+            return .length
+        case .cancelled:
+            return .abort
+        case .error, .unknown:
+            return .error
+        }
+    }
+}
+
 public struct AFMMLXProviderFactory: AFMProviderFactory {
     public static let providerID: AFMProviderID = "mlx"
 
     private let resolver: MLXCacheResolver
+    private let telemetryObserver: any AFMInferenceTelemetryObserving
 
     public init() {
         self.resolver = .init()
+        self.telemetryObserver = AFMInferenceTelemetryRelay()
     }
 
     public init(resolver: MLXCacheResolver) {
         self.resolver = resolver
+        self.telemetryObserver = AFMInferenceTelemetryRelay()
+    }
+
+    public init(
+        resolver: MLXCacheResolver = .init(),
+        telemetryObserver: any AFMInferenceTelemetryObserving
+    ) {
+        self.resolver = resolver
+        self.telemetryObserver = telemetryObserver
     }
 
     public var descriptor: AFMProviderDescriptor {
@@ -46,7 +147,10 @@ public struct AFMMLXProviderFactory: AFMProviderFactory {
     }
 
     public func modelDescriptors() async throws -> [AFMModelDescriptor] {
-        let service = MLXModelService(resolver: resolver)
+        let service = MLXModelService(
+            resolver: resolver,
+            telemetryObserver: telemetryObserver
+        )
         return try service.revalidateRegistry().map {
             AFMMLXModelDescriptor.describe(modelID: $0, resolver: resolver)
         }
@@ -60,7 +164,8 @@ public struct AFMMLXProviderFactory: AFMProviderFactory {
             AFMMLXModel(
                 modelID: id,
                 configuration: configuration,
-                resolver: resolver
+                resolver: resolver,
+                telemetryObserver: telemetryObserver
             )
         )
     }
@@ -142,7 +247,8 @@ public struct AFMMLXExecutionHarness: Sendable {
 
 public final class AFMMLXModel: AFMModel, AFMTextTokenizing, AFMPrewarmableModel,
     AFMAdmissionReportingModel, AFMTelemetryReportingModel, AFMMLXOpenAIChatServing,
-    AFMMLXMediaRequestServing,
+    AFMMLXMediaRequestServing, AFMRawTextGenerating, AFMGenerationAdmitting,
+    AFMInferenceTelemetryConnecting,
     @unchecked Sendable
 {
     private let declaredDescriptor: AFMModelDescriptor
@@ -154,6 +260,7 @@ public final class AFMMLXModel: AFMModel, AFMTextTokenizing, AFMPrewarmableModel
     public let service: MLXModelService?
     private let modelID: String
     private let harness: AFMMLXExecutionHarness?
+    private let telemetryObserver: any AFMInferenceTelemetryObserving
 
     public convenience init(
         modelID: AFMModelID,
@@ -163,6 +270,7 @@ public final class AFMMLXModel: AFMModel, AFMTextTokenizing, AFMPrewarmableModel
             modelID: modelID,
             configuration: configuration,
             resolver: .init(),
+            telemetryObserver: AFMInferenceTelemetryRelay(),
             service: nil
         )
     }
@@ -170,15 +278,30 @@ public final class AFMMLXModel: AFMModel, AFMTextTokenizing, AFMPrewarmableModel
     /// Creates a model with the complete MLX runtime configuration used by
     /// server and app hosts. The concrete engine service remains private to
     /// AFMKitMLX; callers interact through the neutral `AFMModel` contract.
-    public init(
+    public convenience init(
         modelID: AFMModelID,
         runtimeConfiguration: AFMMLXRuntimeConfiguration,
         resolver: MLXCacheResolver = .init()
     ) {
+        self.init(
+            modelID: modelID,
+            runtimeConfiguration: runtimeConfiguration,
+            resolver: resolver,
+            telemetryObserver: AFMInferenceTelemetryRelay()
+        )
+    }
+
+    public init(
+        modelID: AFMModelID,
+        runtimeConfiguration: AFMMLXRuntimeConfiguration,
+        resolver: MLXCacheResolver = .init(),
+        telemetryObserver: any AFMInferenceTelemetryObserving
+    ) {
         let runtime = AFMMLXRuntime(
             modelID: modelID.rawValue,
             configuration: runtimeConfiguration,
-            resolver: resolver
+            resolver: resolver,
+            telemetryObserver: telemetryObserver
         )
 
         self.runtime = runtime
@@ -186,18 +309,36 @@ public final class AFMMLXModel: AFMModel, AFMTextTokenizing, AFMPrewarmableModel
         self.modelID = runtime.modelID
         self.declaredDescriptor = runtime.descriptor
         self.harness = nil
+        self.telemetryObserver = runtime.service.telemetryObserver
+    }
+
+    public convenience init(
+        modelID: AFMModelID,
+        configuration: AFMProviderConfiguration,
+        resolver: MLXCacheResolver,
+        service providedService: MLXModelService? = nil
+    ) {
+        self.init(
+            modelID: modelID,
+            configuration: configuration,
+            resolver: resolver,
+            telemetryObserver: AFMInferenceTelemetryRelay(),
+            service: providedService
+        )
     }
 
     public init(
         modelID: AFMModelID,
         configuration: AFMProviderConfiguration,
         resolver: MLXCacheResolver,
+        telemetryObserver: any AFMInferenceTelemetryObserving,
         service providedService: MLXModelService? = nil
     ) {
         let runtime = AFMMLXRuntime(
             modelID: modelID.rawValue,
             providerConfiguration: configuration,
             resolver: resolver,
+            telemetryObserver: telemetryObserver,
             service: providedService
         )
 
@@ -206,6 +347,7 @@ public final class AFMMLXModel: AFMModel, AFMTextTokenizing, AFMPrewarmableModel
         self.modelID = runtime.modelID
         self.declaredDescriptor = runtime.descriptor
         self.harness = nil
+        self.telemetryObserver = runtime.service.telemetryObserver
     }
 
     /// Wrap a host-owned service without mutating its established runtime settings.
@@ -225,6 +367,7 @@ public final class AFMMLXModel: AFMModel, AFMTextTokenizing, AFMPrewarmableModel
         self.modelID = runtime.modelID
         self.declaredDescriptor = runtime.descriptor
         self.harness = nil
+        self.telemetryObserver = service.telemetryObserver
     }
 
     public init(harness: AFMMLXExecutionHarness) {
@@ -233,10 +376,32 @@ public final class AFMMLXModel: AFMModel, AFMTextTokenizing, AFMPrewarmableModel
         self.modelID = harness.descriptor.modelID.rawValue
         self.declaredDescriptor = harness.descriptor
         self.harness = harness
+        self.telemetryObserver = AFMInferenceTelemetryRelay()
     }
 
     public func availability() async -> AFMModelAvailability {
         .available
+    }
+
+    public func admitGeneration(timeout: Duration?) async throws -> AFMGenerationLease {
+        if let service {
+            return try await service.admitGeneration(timeout: timeout)
+        }
+        let token = telemetryObserver.requestAccepted(
+            at: ProcessInfo.processInfo.systemUptime
+        )
+        telemetryObserver.requestStarted(token, at: ProcessInfo.processInfo.systemUptime)
+        return AFMGenerationLease(telemetryToken: token) {}
+    }
+
+    public func connectInferenceTelemetry(
+        to observer: any AFMInferenceTelemetryObserving
+    ) {
+        if let service {
+            service.connectInferenceTelemetry(to: observer)
+        } else {
+            (telemetryObserver as? AFMInferenceTelemetryRelay)?.connect(to: observer)
+        }
     }
 
     public func load(
@@ -371,14 +536,20 @@ public final class AFMMLXModel: AFMModel, AFMTextTokenizing, AFMPrewarmableModel
     ) -> AsyncThrowingStream<AFMGenerationEvent, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
+                let telemetry = AFMMLXProviderTelemetryRequest(
+                    observer: telemetryObserver,
+                    maximumOutputTokens: request.options.maximumResponseTokens
+                )
                 do {
                     _ = try await load(progress: nil)
                     if let harness {
                         let stream = try await harness.stream(request, requestID)
                         for try await event in stream {
                             try Task.checkCancellation()
+                            telemetry.observe(event)
                             continuation.yield(event)
                         }
+                        telemetry.finish()
                         continuation.finish()
                         return
                     }
@@ -386,26 +557,33 @@ public final class AFMMLXModel: AFMModel, AFMTextTokenizing, AFMPrewarmableModel
                         throw AFMError.generationFailed("MLX service is unavailable.")
                     }
                     let tools = request.effectiveOpenAITools()
-                    let result = try await service.generateStreaming(
-                        model: providerModelID,
-                        messages: try request.openAIMessages(),
-                        temperature: request.options.temperature,
-                        maxTokens: request.options.maximumResponseTokens,
-                        topP: request.options.topP,
-                        repetitionPenalty: request.options.repetitionPenalty,
-                        topK: request.options.topK,
-                        minP: request.options.minP,
-                        presencePenalty: request.options.presencePenalty,
-                        seed: request.options.seed,
-                        logprobs: request.options.logprobs,
-                        topLogprobs: request.options.topLogprobs,
-                        tools: tools,
-                        parallelToolCalls: request.parallelToolCalls,
-                        stop: request.options.stopSequences,
-                        responseFormat: request.openAIResponseFormat(),
-                        chatTemplateKwargs: request.chatTemplateKwargs(),
-                        requestId: requestID
-                    )
+                    let result = try await AFMGenerationContext.$requestedMaximumOutputTokens
+                        .withValue(request.options.maximumResponseTokens) {
+                            try await AFMGenerationContext.$ignoreEndOfSequence.withValue(
+                                request.options.ignoreEndOfSequence
+                            ) {
+                                try await service.generateStreaming(
+                                    model: providerModelID,
+                                    messages: try request.openAIMessages(),
+                                    temperature: request.options.temperature,
+                                    maxTokens: request.options.maximumResponseTokens,
+                                    topP: request.options.topP,
+                                    repetitionPenalty: request.options.repetitionPenalty,
+                                    topK: request.options.topK,
+                                    minP: request.options.minP,
+                                    presencePenalty: request.options.presencePenalty,
+                                    seed: request.options.seed,
+                                    logprobs: request.options.logprobs,
+                                    topLogprobs: request.options.topLogprobs,
+                                    tools: tools,
+                                    parallelToolCalls: request.parallelToolCalls,
+                                    stop: request.options.stopSequences,
+                                    responseFormat: request.openAIResponseFormat(),
+                                    chatTemplateKwargs: request.chatTemplateKwargs(),
+                                    requestId: requestID
+                                )
+                            }
+                        }
                     var translator = MLXStreamEventTranslator(
                         thinkStartTag: result.thinkStartTag,
                         thinkEndTag: result.thinkEndTag,
@@ -443,6 +621,7 @@ public final class AFMMLXModel: AFMModel, AFMTextTokenizing, AFMPrewarmableModel
                                 if case .toolCall(let call, .completed) = event {
                                     completedToolCalls.append(call)
                                 }
+                                telemetry.observe(event)
                                 continuation.yield(event)
                             }
                         }
@@ -454,6 +633,7 @@ public final class AFMMLXModel: AFMModel, AFMTextTokenizing, AFMPrewarmableModel
                             if case .toolCall(let call, .completed) = event {
                                 completedToolCalls.append(call)
                             }
+                            telemetry.observe(event)
                             continuation.yield(event)
                         }
                     }
@@ -468,20 +648,159 @@ public final class AFMMLXModel: AFMModel, AFMTextTokenizing, AFMPrewarmableModel
                         for: request
                     )
                     for event in finalEvents {
+                        telemetry.observe(event)
                         continuation.yield(event)
                     }
+                    telemetry.finish()
                     continuation.finish()
                 } catch is CancellationError {
+                    telemetry.fail(CancellationError())
                     continuation.finish(throwing: CancellationError())
                 } catch let error as AFMError {
+                    telemetry.fail(error)
                     continuation.finish(throwing: error)
                 } catch {
+                    telemetry.fail(error)
                     continuation.finish(
                         throwing: AFMError.generationFailed(error.localizedDescription)
                     )
                 }
             }
             continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    public func rawTextGenerationEvents(
+        for request: AFMRawTextGenerationRequest
+    ) -> AsyncStream<AFMRawTextGenerationEvent> {
+        AsyncStream { continuation in
+            let task = Task {
+                let now = ProcessInfo.processInfo.systemUptime
+                let telemetryToken: AFMInferenceRequestToken
+                if let admittedToken = AFMGenerationContext.telemetryToken {
+                    telemetryToken = admittedToken
+                    AFMGenerationContext.admissionLease?.transferTelemetryToProvider()
+                } else {
+                    telemetryToken = telemetryObserver.requestAccepted(
+                        at: AFMGenerationContext.acceptedAt ?? now
+                    )
+                    telemetryObserver.requestStarted(telemetryToken, at: now)
+                }
+                do {
+                    _ = try await load(progress: nil)
+                    guard let service else {
+                        throw AFMError.unsupportedCapability("MLX raw text generation")
+                    }
+                    let result = try await AFMGenerationContext.$requestedMaximumOutputTokens
+                        .withValue(request.maximumOutputTokens) {
+                            try await AFMGenerationContext.$ignoreEndOfSequence.withValue(
+                                request.ignoreEndOfSequence
+                            ) {
+                                try await AFMMLXPromptContext.$rawPrompt.withValue(request.prompt) {
+                                    try await service.generateStreaming(
+                                        model: modelID,
+                                        messages: [],
+                                        temperature: request.temperature,
+                                        maxTokens: request.maximumOutputTokens,
+                                        topP: request.topP,
+                                        repetitionPenalty: request.repetitionPenalty,
+                                        topK: request.topK,
+                                        minP: request.minP,
+                                        presencePenalty: request.presencePenalty,
+                                        seed: request.seed,
+                                        stop: request.stopSequences,
+                                        preserveStructuralTags: true
+                                    )
+                                }
+                            }
+                        }
+
+                    var promptTokens: Int?
+                    var completionTokens: Int?
+                    var cachedTokens = 0
+                    var stoppedBySequence = false
+                    var firstOutputRecorded = false
+                    for try await chunk in result.stream {
+                        try Task.checkCancellation()
+                        if !chunk.text.isEmpty {
+                            if !firstOutputRecorded {
+                                firstOutputRecorded = true
+                                telemetryObserver.outputToken(
+                                    telemetryToken,
+                                    at: ProcessInfo.processInfo.systemUptime
+                                )
+                            }
+                            continuation.yield(.textDelta(
+                                text: chunk.text,
+                                tokenID: nil,
+                                timestamp: ProcessInfo.processInfo.systemUptime
+                            ))
+                        }
+                        promptTokens = chunk.promptTokens ?? promptTokens
+                        completionTokens = chunk.completionTokens ?? completionTokens
+                        cachedTokens = chunk.cachedTokens ?? cachedTokens
+                        stoppedBySequence = chunk.stoppedBySequence ?? stoppedBySequence
+                    }
+
+                    guard let promptTokens, let completionTokens else {
+                        throw AFMError.generationFailed(
+                            "MLX raw generation ended without exact usage"
+                        )
+                    }
+                    telemetryObserver.promptTokensProcessed(
+                        telemetryToken,
+                        fullPromptTokens: promptTokens,
+                        computedPromptTokens: max(0, promptTokens - cachedTokens),
+                        at: ProcessInfo.processInfo.systemUptime
+                    )
+                    let reachedLimit = request.maximumOutputTokens.map {
+                        completionTokens >= max(0, $0)
+                    } ?? false
+                    let finishReason: AFMInferenceFinishReason =
+                        reachedLimit && !stoppedBySequence ? .length : .stop
+                    _ = telemetryObserver.requestFinished(
+                        telemetryToken,
+                        observation: AFMInferenceRequestFinishObservation(
+                            reason: finishReason,
+                            completedAt: ProcessInfo.processInfo.systemUptime,
+                            fullPromptTokens: promptTokens,
+                            computedPromptTokens: max(0, promptTokens - cachedTokens),
+                            generatedTokens: completionTokens,
+                            maximumOutputTokens: request.maximumOutputTokens
+                        )
+                    )
+                    continuation.yield(.completed(AFMRawTextGenerationResult(
+                        finishReason: finishReason,
+                        promptTokens: promptTokens,
+                        completionTokens: completionTokens,
+                        totalTokens: promptTokens + completionTokens
+                    )))
+                    continuation.finish()
+                } catch is CancellationError {
+                    _ = telemetryObserver.requestFailed(
+                        telemetryToken,
+                        reason: .cancelled,
+                        at: ProcessInfo.processInfo.systemUptime
+                    )
+                    continuation.yield(.failed(
+                        reason: .cancelled,
+                        message: "MLX raw generation was cancelled"
+                    ))
+                    continuation.finish()
+                } catch {
+                    _ = telemetryObserver.requestFailed(
+                        telemetryToken,
+                        reason: .inference,
+                        at: ProcessInfo.processInfo.systemUptime
+                    )
+                    continuation.yield(.failed(
+                        reason: .inference,
+                        message: error.localizedDescription
+                    ))
+                    continuation.finish()
+                }
+            }
+            continuation.onTermination = { @Sendable _ in task.cancel() }
         }
     }
 
