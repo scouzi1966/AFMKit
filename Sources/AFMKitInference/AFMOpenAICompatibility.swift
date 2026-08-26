@@ -33,7 +33,8 @@ public extension AFMRequest {
                 logprobs: generationConfig.logprobs,
                 topLogprobs: generationConfig.topLogprobs,
                 stopSequences: generationConfig.stop ?? [],
-                responseConstraint: responseConstraint
+                responseConstraint: responseConstraint,
+                ignoreEndOfSequence: generationConfig.ignoreEndOfSequence
             ),
             metadata: generationConfig.metadata
         )

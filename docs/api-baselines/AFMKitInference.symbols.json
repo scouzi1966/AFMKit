@@ -234,7 +234,7 @@
     },
     {
       "kind": "memberOf",
-      "source": "s:15AFMKitInference16GenerationConfigV11temperature9maxTokens16reasoningEnabled4topP0J1K4minP17repetitionPenalty08presenceM04seed8logprobs0J8Logprobs4stop5tools14responseFormat8metadataACSdSg_SiSgSbSgAst3stuTSaySSGSgSay15AFMOpenAICompat11RequestToolVGSgAX08ResponseU0VSgSDySS0A4Core12AFMJSONValueOGtcfc",
+      "source": "s:15AFMKitInference16GenerationConfigV11temperature9maxTokens16reasoningEnabled4topP0J1K4minP17repetitionPenalty08presenceM04seed8logprobs0J8Logprobs4stop5tools14responseFormat19ignoreEndOfSequence8metadataACSdSg_SiSgSbSgAtu3tuvUSaySSGSgSay15AFMOpenAICompat11RequestToolVGSgAY08ResponseU0VSgSbSDySS0A4Core12AFMJSONValueOGtcfc",
       "target": "s:15AFMKitInference16GenerationConfigV"
     },
     {
@@ -265,6 +265,11 @@
     {
       "kind": "memberOf",
       "source": "s:15AFMKitInference16GenerationConfigV17repetitionPenaltySdSgvp",
+      "target": "s:15AFMKitInference16GenerationConfigV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:15AFMKitInference16GenerationConfigV19ignoreEndOfSequenceSbvp",
       "target": "s:15AFMKitInference16GenerationConfigV"
     },
     {
@@ -4284,6 +4289,23 @@
         },
         {
           "kind": "externalParam",
+          "spelling": "ignoreEndOfSequence"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Sb",
+          "spelling": "Bool"
+        },
+        {
+          "kind": "text",
+          "spelling": " = false, "
+        },
+        {
+          "kind": "externalParam",
           "spelling": "metadata"
         },
         {
@@ -4623,6 +4645,24 @@
             "declarationFragments": [
               {
                 "kind": "identifier",
+                "spelling": "ignoreEndOfSequence"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:Sb",
+                "spelling": "Bool"
+              }
+            ],
+            "name": "ignoreEndOfSequence"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
                 "spelling": "metadata"
               },
               {
@@ -4654,7 +4694,7 @@
       },
       "identifier": {
         "interfaceLanguage": "swift",
-        "precise": "s:15AFMKitInference16GenerationConfigV11temperature9maxTokens16reasoningEnabled4topP0J1K4minP17repetitionPenalty08presenceM04seed8logprobs0J8Logprobs4stop5tools14responseFormat8metadataACSdSg_SiSgSbSgAst3stuTSaySSGSgSay15AFMOpenAICompat11RequestToolVGSgAX08ResponseU0VSgSDySS0A4Core12AFMJSONValueOGtcfc"
+        "precise": "s:15AFMKitInference16GenerationConfigV11temperature9maxTokens16reasoningEnabled4topP0J1K4minP17repetitionPenalty08presenceM04seed8logprobs0J8Logprobs4stop5tools14responseFormat19ignoreEndOfSequence8metadataACSdSg_SiSgSbSgAtu3tuvUSaySSGSgSay15AFMOpenAICompat11RequestToolVGSgAY08ResponseU0VSgSbSDySS0A4Core12AFMJSONValueOGtcfc"
       },
       "kind": {
         "displayName": "Initializer",
@@ -4910,6 +4950,23 @@
           },
           {
             "kind": "externalParam",
+            "spelling": "ignoreEndOfSequence"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Sb",
+            "spelling": "Bool"
+          },
+          {
+            "kind": "text",
+            "spelling": ", "
+          },
+          {
+            "kind": "externalParam",
             "spelling": "metadata"
           },
           {
@@ -4935,11 +4992,11 @@
             "spelling": "])"
           }
         ],
-        "title": "init(temperature:maxTokens:reasoningEnabled:topP:topK:minP:repetitionPenalty:presencePenalty:seed:logprobs:topLogprobs:stop:tools:responseFormat:metadata:)"
+        "title": "init(temperature:maxTokens:reasoningEnabled:topP:topK:minP:repetitionPenalty:presencePenalty:seed:logprobs:topLogprobs:stop:tools:responseFormat:ignoreEndOfSequence:metadata:)"
       },
       "pathComponents": [
         "GenerationConfig",
-        "init(temperature:maxTokens:reasoningEnabled:topP:topK:minP:repetitionPenalty:presencePenalty:seed:logprobs:topLogprobs:stop:tools:responseFormat:metadata:)"
+        "init(temperature:maxTokens:reasoningEnabled:topP:topK:minP:repetitionPenalty:presencePenalty:seed:logprobs:topLogprobs:stop:tools:responseFormat:ignoreEndOfSequence:metadata:)"
       ]
     },
     {
@@ -5372,6 +5429,70 @@
       "pathComponents": [
         "GenerationConfig",
         "repetitionPenalty"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "var"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "ignoreEndOfSequence"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Sb",
+          "spelling": "Bool"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:15AFMKitInference16GenerationConfigV19ignoreEndOfSequenceSbvp"
+      },
+      "kind": {
+        "displayName": "Instance Property",
+        "identifier": "swift.property"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "var"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "ignoreEndOfSequence"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Sb",
+            "spelling": "Bool"
+          }
+        ],
+        "title": "ignoreEndOfSequence"
+      },
+      "pathComponents": [
+        "GenerationConfig",
+        "ignoreEndOfSequence"
       ]
     },
     {
