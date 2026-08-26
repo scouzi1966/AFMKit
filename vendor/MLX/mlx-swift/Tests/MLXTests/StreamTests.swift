@@ -45,6 +45,17 @@ class StreamTests: XCTestCase {
         XCTAssertTrue(StreamOrDevice.default.description.contains("gpu"))
     }
 
+    func testDefaultGPUStreamCarriesLazyGraphAcrossThreads() {
+        let value = DispatchQueue(label: "mlx.stream.create").sync {
+            MLXArray(1) + 1
+        }
+
+        DispatchQueue(label: "mlx.stream.evaluate").sync {
+            eval(value)
+            XCTAssertEqual(value.item(Int.self), 2)
+        }
+    }
+
     func testSetUnsetDefaultDevice() {
         // Issue #237 -- setting an unsetting the default device in a loop
         // exhausts many resources

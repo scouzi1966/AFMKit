@@ -22,6 +22,7 @@ KERNELS_DIR="${CMLX_MLX_DIR}/${KERNELS_INCLUDE_PATH}"
 KERNEL_LIST=" \
 arg_reduce.metal \
 conv.metal \
+dot.metal \
 gemv.metal \
 layer_norm.metal \
 random.metal \
