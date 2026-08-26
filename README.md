@@ -18,7 +18,8 @@ Fifteen public modules are published from one Swift package and one tag:
 | DwarfStar | `AFMKitDwarfStar`, `AFMKitFoundationModelsDwarfStar` | Exact-pinned Hub/Xet dependencies, the AFM-owned ds4 adapter/resources, and an Xcode 27-only `LanguageModel` bridge. |
 | MLX | `AFMKitMLX`, `AFMKitMLXAudio`, `AFMKitFoundationModelsMLX` | The exact AFM-compatible MLX graph, provider-neutral local audio synthesis, and the Xcode 27 bridge. |
 
-The root manifest uses Swift tools 6.1 and keeps a macOS 26 deployment floor.
+The root manifest uses Swift tools 6.1, keeps a macOS 26 deployment floor, and
+declares an iOS 16 deployment floor for the basic provider-neutral layer.
 With Xcode 26 (Swift 6.3), the root package exposes `AFMKitCore`,
 `AFMOpenAICompat`, `AFMKitInference`, `AFMEvalKit`, the five service products,
 `AFMKitMLX`, and `AFMKitMLXAudio`. Xcode 27 (Swift 6.4)
@@ -26,6 +27,15 @@ also exposes `AFMKitApple`, `AFMKitFoundationModelsMLX`, and
 `AFMKitFoundationModelsDwarfStar`; those products import
 macOS 27 Foundation Models APIs and remain runtime-gated to macOS 27. CI checks
 both product matrices with `Scripts/check-sdk-product-exposure.sh`.
+
+The supported iOS surface is intentionally narrow: `AFMKitCore`,
+`AFMOpenAICompat`, and `AFMKitInference`. An arm64 iOS Simulator consumer
+compiles these three products in CI without compiling any concrete provider or
+service module. Speech, Vision, MLXAudio, Services, DwarfStar, MLX, Apple
+Foundation Models, and their bridges have not completed independent iOS audits
+and must not yet be selected by iOS targets. Their macOS behavior is unchanged.
+Broader iOS work is tracked in
+[#23](https://github.com/scouzi1966/AFMKit/issues/23).
 
 Provider source remains organized under `Packages/`, but those directories are
 targets of the root manifest rather than independently versioned packages.
@@ -92,7 +102,9 @@ build `26A5388f`, and the compiler identity in
 from the root manifest. The current DwarfStar baseline contains 42 normalized
 public symbols.
 
-Public CI also proves that a fresh Core consumer builds without credentials.
+Public CI also proves that a fresh Core consumer builds without credentials and
+that a minimal arm64 iOS Simulator consumer compiles the three supported basic
+products at the iOS 16 deployment floor.
 Trusted PR qualification consumes only an immutable artifact
 from the exact successful workflow run. Candidate manifests and locks are inert
 inputs whose dependency graph must equal the trusted default-branch graph before

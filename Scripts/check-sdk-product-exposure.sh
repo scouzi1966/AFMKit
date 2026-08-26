@@ -55,6 +55,11 @@ if not any(
     for platform in platforms
 ):
     raise SystemExit("The root package does not preserve the macOS 26 deployment floor.")
+if not any(
+    platform.get("platformName") == "ios" and platform.get("version") == "16.0"
+    for platform in platforms
+):
+    raise SystemExit("The root package does not declare the iOS 16 deployment floor.")
 
 targets = {target["name"] for target in document.get("targets", [])}
 macos27_targets = {"AFMKitApple", "AFMKitAppleTests"}
@@ -72,7 +77,7 @@ else:
     if not fmmlx_targets.issubset(targets) or not fmdwarf_targets.issubset(targets):
         raise SystemExit("Xcode 27 root manifest omits provider Foundation Models bridge targets.")
 
-print(f"{mode} product exposure matches the macOS 26/27 compatibility contract.")
+print(f"{mode} product exposure matches the macOS and basic iOS compatibility contract.")
 PY
 
 if [[ "$MODE" == "xcode26" ]]; then
