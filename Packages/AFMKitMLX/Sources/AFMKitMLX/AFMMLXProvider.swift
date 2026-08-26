@@ -2,13 +2,12 @@ import Foundation
 import AFMKitCore
 import AFMOpenAICompat
 
-private final class AFMMLXProviderTelemetryRequest: @unchecked Sendable {
+final class AFMMLXProviderTelemetryRequest: @unchecked Sendable {
     private let observer: any AFMInferenceTelemetryObserving
     private let token: AFMInferenceRequestToken
     private let maximumOutputTokens: Int?
     private var usage = AFMUsage()
     private var finishReason: AFMFinishReason = .stop
-    private var firstOutputRecorded = false
     private var terminalRecorded = false
 
     init(
@@ -31,9 +30,9 @@ private final class AFMMLXProviderTelemetryRequest: @unchecked Sendable {
         switch event {
         case .responseText(_, _, let tokenCount),
              .reasoningText(_, _, let tokenCount):
-            if tokenCount > 0, !firstOutputRecorded {
-                firstOutputRecorded = true
-                observer.outputToken(token, at: ProcessInfo.processInfo.systemUptime)
+            let now = ProcessInfo.processInfo.systemUptime
+            for _ in 0..<max(0, tokenCount) {
+                observer.outputToken(token, at: now)
             }
         case .usage(let usage):
             self.usage = usage
@@ -96,16 +95,16 @@ public struct AFMMLXProviderFactory: AFMProviderFactory {
     public static let providerID: AFMProviderID = "mlx"
 
     private let resolver: MLXCacheResolver
-    private let telemetryObserver: any AFMInferenceTelemetryObserving
+    private let telemetryObserver: (any AFMInferenceTelemetryObserving)?
 
     public init() {
         self.resolver = .init()
-        self.telemetryObserver = AFMInferenceTelemetryRelay()
+        self.telemetryObserver = nil
     }
 
     public init(resolver: MLXCacheResolver) {
         self.resolver = resolver
-        self.telemetryObserver = AFMInferenceTelemetryRelay()
+        self.telemetryObserver = nil
     }
 
     public init(
@@ -149,7 +148,7 @@ public struct AFMMLXProviderFactory: AFMProviderFactory {
     public func modelDescriptors() async throws -> [AFMModelDescriptor] {
         let service = MLXModelService(
             resolver: resolver,
-            telemetryObserver: telemetryObserver
+            telemetryObserver: telemetryObserver ?? AFMInferenceTelemetryRelay()
         )
         return try service.revalidateRegistry().map {
             AFMMLXModelDescriptor.describe(modelID: $0, resolver: resolver)
@@ -165,7 +164,7 @@ public struct AFMMLXProviderFactory: AFMProviderFactory {
                 modelID: id,
                 configuration: configuration,
                 resolver: resolver,
-                telemetryObserver: telemetryObserver
+                telemetryObserver: telemetryObserver ?? AFMInferenceTelemetryRelay()
             )
         )
     }
@@ -719,17 +718,23 @@ public final class AFMMLXModel: AFMModel, AFMTextTokenizing, AFMPrewarmableModel
                     var completionTokens: Int?
                     var cachedTokens = 0
                     var stoppedBySequence = false
-                    var firstOutputRecorded = false
+                    var recordedOutputTokens = 0
                     for try await chunk in result.stream {
                         try Task.checkCancellation()
+                        let outputTokenDelta: Int
+                        if let cumulative = chunk.completionTokens {
+                            outputTokenDelta = max(0, cumulative - recordedOutputTokens)
+                        } else if !chunk.text.isEmpty {
+                            outputTokenDelta = max(1, chunk.logprobs?.count ?? 1)
+                        } else {
+                            outputTokenDelta = 0
+                        }
+                        let now = ProcessInfo.processInfo.systemUptime
+                        for _ in 0..<outputTokenDelta {
+                            telemetryObserver.outputToken(telemetryToken, at: now)
+                        }
+                        recordedOutputTokens += outputTokenDelta
                         if !chunk.text.isEmpty {
-                            if !firstOutputRecorded {
-                                firstOutputRecorded = true
-                                telemetryObserver.outputToken(
-                                    telemetryToken,
-                                    at: ProcessInfo.processInfo.systemUptime
-                                )
-                            }
                             continuation.yield(.textDelta(
                                 text: chunk.text,
                                 tokenID: nil,

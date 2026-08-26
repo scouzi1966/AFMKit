@@ -1,10 +1,62 @@
 import AFMKitCore
+import AFMKitServices
 import AFMOpenAICompat
 @testable import AFMKitMLX
 import MLXLMCommon
 import XCTest
 
 final class AFMMLXProviderTests: XCTestCase {
+    func testSyntheticReasoningBoundaryDoesNotInflateProviderTelemetryUsage() {
+        let collector = InferenceTelemetryCollector()
+        let telemetry = AFMMLXProviderTelemetryRequest(
+            observer: collector,
+            maximumOutputTokens: 8
+        )
+
+        telemetry.observe(.reasoningText(
+            action: .append,
+            text: "<think>",
+            tokenCount: 0
+        ))
+        telemetry.observe(.reasoningText(action: .append, text: "plan", tokenCount: 1))
+        telemetry.observe(.responseText(action: .append, text: "answer", tokenCount: 1))
+        telemetry.observe(.usage(AFMUsage(inputTokens: 4, outputTokens: 2)))
+        telemetry.observe(.completed(.stop))
+        telemetry.finish()
+
+        let snapshot = collector.metricsSnapshot()
+        XCTAssertEqual(snapshot.generatedTokensTotal, 2)
+        XCTAssertEqual(snapshot.interTokenLatency.count, 1)
+    }
+
+    func testProviderTelemetryRecordsEveryTranslatedOutputToken() async throws {
+        let descriptor = mlxStaticTestDescriptor()
+        let model = AFMMLXModel(harness: AFMMLXExecutionHarness(
+            descriptor: descriptor,
+            load: { _ in descriptor },
+            stream: { _, _ in
+                AsyncThrowingStream { continuation in
+                    continuation.yield(.responseText(action: .append, text: "ab", tokenCount: 2))
+                    continuation.yield(.reasoningText(action: .append, text: "c", tokenCount: 1))
+                    continuation.yield(.usage(AFMUsage(inputTokens: 4, outputTokens: 3)))
+                    continuation.yield(.completed(.stop))
+                    continuation.finish()
+                }
+            }
+        ))
+        let collector = InferenceTelemetryCollector()
+        model.connectInferenceTelemetry(to: collector)
+
+        for try await _ in model.streamResponse(
+            to: AFMRequest(messages: [.init(role: .user, text: "hello")])
+        ) {}
+
+        let snapshot = collector.metricsSnapshot()
+        XCTAssertEqual(snapshot.generatedTokensTotal, 3)
+        XCTAssertEqual(snapshot.interTokenLatency.count, 2)
+        XCTAssertEqual(snapshot.terminalRequestsTotal, 1)
+    }
+
     func testQualifiedDescriptorPropagatesThroughModelAndTypeErasure() async throws {
         let declared = AFMModelDescriptor(
             providerID: "mlx",

@@ -10,14 +10,23 @@ final class AFMDwarfStarGenerationAdmission: AFMGenerationAdmitting, @unchecked 
 
     private let maximumConcurrentRequests: Int
     private let telemetryObserver: any AFMInferenceTelemetryObserving
+    private let providerStateCoordinator: AFMDwarfStarProviderStateCoordinator
+    private let providerStateRegistration: UUID
     private let state = OSAllocatedUnfairLock(initialState: State())
 
     init(
         maximumConcurrentRequests: Int,
-        telemetryObserver: any AFMInferenceTelemetryObserving
+        telemetryObserver: any AFMInferenceTelemetryObserving,
+        providerStateCoordinator: AFMDwarfStarProviderStateCoordinator = .shared
     ) {
         self.maximumConcurrentRequests = max(1, maximumConcurrentRequests)
         self.telemetryObserver = telemetryObserver
+        self.providerStateCoordinator = providerStateCoordinator
+        self.providerStateRegistration = providerStateCoordinator.register(telemetryObserver)
+    }
+
+    deinit {
+        providerStateCoordinator.unregister(providerStateRegistration)
     }
 
     func admitGeneration(timeout: Duration?) async throws -> AFMGenerationLease {
@@ -25,7 +34,7 @@ final class AFMDwarfStarGenerationAdmission: AFMGenerationAdmitting, @unchecked 
         let telemetryToken = telemetryObserver.requestAccepted(at: acceptedAt)
         let reservationID = UUID()
         state.withLock { $0.waitingRequests += 1 }
-        publishProviderState()
+        providerStateCoordinator.admissionStarted(reservationID)
 
         let timeoutSeconds = timeout.map(Self.timeInterval) ?? 30
         let deadline = ContinuousClock.now + .seconds(max(0, timeoutSeconds))
@@ -33,15 +42,15 @@ final class AFMDwarfStarGenerationAdmission: AFMGenerationAdmitting, @unchecked 
 
         while !reserve(reservationID) {
             if Task.isCancelled {
-                failWaitingRequest(telemetryToken, reason: .cancelled)
+                failWaitingRequest(reservationID, telemetryToken, reason: .cancelled)
                 throw AFMGenerationAdmissionError.cancelled
             }
             guard timeoutSeconds > 0 else {
-                failWaitingRequest(telemetryToken, reason: .inference)
+                failWaitingRequest(reservationID, telemetryToken, reason: .inference)
                 throw AFMGenerationAdmissionError.capacity
             }
             guard ContinuousClock.now < deadline else {
-                failWaitingRequest(telemetryToken, reason: .inference)
+                failWaitingRequest(reservationID, telemetryToken, reason: .inference)
                 throw AFMGenerationAdmissionError.timedOut
             }
             try? await Task.sleep(nanoseconds: delay)
@@ -52,9 +61,11 @@ final class AFMDwarfStarGenerationAdmission: AFMGenerationAdmitting, @unchecked 
             telemetryToken,
             at: ProcessInfo.processInfo.systemUptime
         )
-        publishProviderState()
-        return AFMGenerationLease(telemetryToken: telemetryToken) { [weak self] in
-            self?.release(reservationID)
+        // The lease keeps admission alive until capacity is returned. Otherwise
+        // a model could deinitialize first and orphan this runtime-global
+        // reservation in the provider-state coordinator.
+        return AFMGenerationLease(telemetryToken: telemetryToken) { [self] in
+            release(reservationID)
         } onAbandon: { [telemetryObserver] in
             _ = telemetryObserver.requestFailed(
                 telemetryToken,
@@ -65,7 +76,7 @@ final class AFMDwarfStarGenerationAdmission: AFMGenerationAdmitting, @unchecked 
     }
 
     private func reserve(_ reservationID: UUID) -> Bool {
-        state.withLock { state in
+        let reserved = state.withLock { state in
             guard state.reservations.count < maximumConcurrentRequests else {
                 return false
             }
@@ -73,34 +84,31 @@ final class AFMDwarfStarGenerationAdmission: AFMGenerationAdmitting, @unchecked 
             state.waitingRequests = max(0, state.waitingRequests - 1)
             return true
         }
+        if reserved {
+            providerStateCoordinator.admissionReserved(reservationID)
+        }
+        return reserved
     }
 
     private func release(_ reservationID: UUID) {
         let removed = state.withLock { $0.reservations.remove(reservationID) != nil }
-        if removed { publishProviderState() }
+        if removed {
+            providerStateCoordinator.admissionReleased(reservationID)
+        }
     }
 
     private func failWaitingRequest(
+        _ reservationID: UUID,
         _ telemetryToken: AFMInferenceRequestToken,
         reason: AFMInferenceFailureReason
     ) {
         state.withLock { $0.waitingRequests = max(0, $0.waitingRequests - 1) }
+        providerStateCoordinator.admissionFailed(reservationID)
         _ = telemetryObserver.requestFailed(
             telemetryToken,
             reason: reason,
             at: ProcessInfo.processInfo.systemUptime
         )
-        publishProviderState()
-    }
-
-    private func publishProviderState() {
-        let snapshot = state.withLock { state in
-            AFMInferenceProviderState(
-                runningRequests: state.reservations.count,
-                waitingRequests: state.waitingRequests
-            )
-        }
-        telemetryObserver.updateProviderState(snapshot)
     }
 
     private static func timeInterval(_ duration: Duration) -> TimeInterval {

@@ -108,10 +108,12 @@ final class RawTextGenerationContractTests: XCTestCase {
 
         let extended = AFMGenerationOptions(
             temperature: 0.5,
+            reasoningEnabled: false,
             stopSequences: ["stop"],
             ignoreEndOfSequence: true
         )
         XCTAssertTrue(extended.ignoreEndOfSequence)
+        XCTAssertEqual(extended.reasoningEnabled, false)
     }
 
 }

@@ -123,6 +123,7 @@ public struct StreamChunk: Sendable {
     public let promptTime: Double?
     public let generateTime: Double?
     public let stoppedBySequence: Bool?
+    let generatedTokenCountOverride: Int?
 
     public init(text: String, logprobs: [ResolvedLogprob]? = nil, toolCalls: [ResponseToolCall]? = nil, toolCallDeltas: [StreamDeltaToolCall]? = nil, promptTokens: Int? = nil, completionTokens: Int? = nil, cachedTokens: Int? = nil, promptTime: Double? = nil, generateTime: Double? = nil, stoppedBySequence: Bool? = nil) {
         self.text = text
@@ -135,6 +136,21 @@ public struct StreamChunk: Sendable {
         self.promptTime = promptTime
         self.generateTime = generateTime
         self.stoppedBySequence = stoppedBySequence
+        self.generatedTokenCountOverride = nil
+    }
+
+    init(syntheticText text: String) {
+        self.text = text
+        self.logprobs = nil
+        self.toolCalls = nil
+        self.toolCallDeltas = nil
+        self.promptTokens = nil
+        self.completionTokens = nil
+        self.cachedTokens = nil
+        self.promptTime = nil
+        self.generateTime = nil
+        self.stoppedBySequence = nil
+        self.generatedTokenCountOverride = 0
     }
 }
 
@@ -643,6 +659,17 @@ public final class MLXModelService:
         } else {
             releaseSerialSlot()
         }
+    }
+
+    /// Transfers an admitted batch reservation only after scheduler submission
+    /// has completed successfully. Setup failures leave release ownership with
+    /// the caller's lease.
+    static func submittingAdmittedBatchRequest<Result>(
+        _ submission: () throws -> Result
+    ) rethrows -> Result {
+        let result = try submission()
+        AFMGenerationContext.admissionLease?.transferReleaseToProvider()
+        return result
     }
 
     public func admissionSnapshot() async -> AFMAdmissionSnapshot {
@@ -3612,27 +3639,29 @@ public final class MLXModelService:
                 )
             }()
 
-            let schedulerStream = scheduler.submit(
-                input: input,
-                parameters: params,
-                promptTokens: preparedPromptTokens,
-                toolCallRuntimeConfig: toolRuntimeConfig,
-                constraintRuntimeConfig: constrainedDecoding.map {
-                    BatchScheduler.ConstraintRuntimeConfiguration(
-                        mode: $0.mode,
-                        matcherHandle: $0.matcherHandle
-                    )
-                },
-                stopSequences: (stop ?? []) + self.implicitStopSequences,
-                thinkStartTag: rawPrompt == nil ? self.thinkStartTag : nil,
-                thinkEndTag: rawPrompt == nil ? self.thinkEndTag : nil,
-                requestId: reqId
-            )
+            let schedulerStream = Self.submittingAdmittedBatchRequest {
+                scheduler.submit(
+                    input: input,
+                    parameters: params,
+                    promptTokens: preparedPromptTokens,
+                    toolCallRuntimeConfig: toolRuntimeConfig,
+                    constraintRuntimeConfig: constrainedDecoding.map {
+                        BatchScheduler.ConstraintRuntimeConfiguration(
+                            mode: $0.mode,
+                            matcherHandle: $0.matcherHandle
+                        )
+                    },
+                    stopSequences: (stop ?? []) + self.implicitStopSequences,
+                    thinkStartTag: rawPrompt == nil ? self.thinkStartTag : nil,
+                    thinkEndTag: rawPrompt == nil ? self.thinkEndTag : nil,
+                    requestId: reqId
+                )
+            }
             let effectiveStream: AsyncThrowingStream<StreamChunk, Error>
             if templateOpenedThink, let thinkStart = self.thinkStartTag {
                 effectiveStream = AsyncThrowingStream { continuation in
                     let task = Task {
-                        continuation.yield(StreamChunk(text: thinkStart))
+                        continuation.yield(StreamChunk(syntheticText: thinkStart))
                         do {
                             for try await chunk in schedulerStream {
                                 continuation.yield(chunk)
@@ -3724,7 +3753,7 @@ public final class MLXModelService:
                         defer { self.cleanupTempFiles(mediaTempFiles) }
                         StatsAggregator.shared.requestStarted()
                         if openedThink, let thinkStartTag {
-                            continuation.yield(StreamChunk(text: thinkStartTag))
+                            continuation.yield(StreamChunk(syntheticText: thinkStartTag))
                         }
                         let t0 = Date.timeIntervalSinceReferenceDate
                         do {
@@ -3878,7 +3907,7 @@ public final class MLXModelService:
                                 startTag: thinkStart,
                                 endTag: thinkEnd
                             ) {
-                                continuation.yield(StreamChunk(text: thinkStart))
+                                continuation.yield(StreamChunk(syntheticText: thinkStart))
                                 templateInjectedThink = true
                             }
                         }

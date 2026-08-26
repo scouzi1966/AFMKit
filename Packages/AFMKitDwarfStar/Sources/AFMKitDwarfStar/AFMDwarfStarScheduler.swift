@@ -1119,7 +1119,7 @@ package actor AFMDwarfStarRuntimeCoordinator {
                 maximumOutputTokens: job.requestedMaximumTokens
             )
         )
-        publishProviderState(additionalObservers: [job.telemetryObserver])
+        publishProviderState()
         job.releasePrompt()
         job.continuation.resume(returning: result)
     }
@@ -1132,7 +1132,7 @@ package actor AFMDwarfStarRuntimeCoordinator {
             reason: error is CancellationError ? .cancelled : .inference,
             at: ProcessInfo.processInfo.systemUptime
         )
-        publishProviderState(additionalObservers: [job.telemetryObserver])
+        publishProviderState()
         job.releasePrompt()
         job.continuation.resume(throwing: error)
     }
@@ -1143,7 +1143,7 @@ package actor AFMDwarfStarRuntimeCoordinator {
             reason: error is CancellationError ? .cancelled : .inference,
             at: ProcessInfo.processInfo.systemUptime
         )
-        publishProviderState(additionalObservers: [job.telemetryObserver])
+        publishProviderState()
         job.releasePrompt()
         job.continuation.resume(throwing: error)
     }
@@ -1256,24 +1256,16 @@ package actor AFMDwarfStarRuntimeCoordinator {
         runtimeLeases.reset()
     }
 
-    private func publishProviderState(
-        additionalObservers: [any AFMInferenceTelemetryObserving] = []
-    ) {
+    private func publishProviderState() {
         let activeSlots = slots.indices.filter { slots[$0].job != nil }
-        let state = AFMInferenceProviderState(
-            runningRequests: activeSlots.count,
-            waitingRequests: pendingJobs.count,
+        AFMDwarfStarProviderStateCoordinator.shared.schedulerChanged(
+            running: activeSlots.count,
+            waiting: pendingJobs.count,
             activeLogicalCachePositions: activeSlots.reduce(into: 0) { total, index in
                 total += max(0, Int(ds4_session_pos(slots[index].session)))
             },
             logicalCacheCapacity: max(0, loadedContextWindow) * slots.count
         )
-        let observers = additionalObservers
-            + pendingJobs.map(\.telemetryObserver)
-            + activeSlots.compactMap { slots[$0].job?.telemetryObserver }
-        for observer in observers {
-            observer.updateProviderState(state)
-        }
     }
 
     private static func telemetryFinishReason(

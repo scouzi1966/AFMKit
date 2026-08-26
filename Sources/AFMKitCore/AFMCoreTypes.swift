@@ -304,6 +304,7 @@ public struct AFMGenerationOptions: Hashable, Sendable {
     public init(
         temperature: Double? = nil,
         maximumResponseTokens: Int? = nil,
+        reasoningEnabled: Bool?,
         topP: Double? = nil,
         topK: Int? = nil,
         minP: Double? = nil,
@@ -318,6 +319,7 @@ public struct AFMGenerationOptions: Hashable, Sendable {
     ) {
         self.temperature = temperature
         self.maximumResponseTokens = maximumResponseTokens
+        self.reasoningEnabled = reasoningEnabled
         self.topP = topP
         self.topK = topK
         self.minP = minP
@@ -329,6 +331,39 @@ public struct AFMGenerationOptions: Hashable, Sendable {
         self.stopSequences = stopSequences
         self.responseConstraint = responseConstraint
         self.ignoreEndOfSequence = ignoreEndOfSequence
+    }
+
+    public init(
+        temperature: Double? = nil,
+        maximumResponseTokens: Int? = nil,
+        topP: Double? = nil,
+        topK: Int? = nil,
+        minP: Double? = nil,
+        repetitionPenalty: Double? = nil,
+        presencePenalty: Double? = nil,
+        seed: Int? = nil,
+        logprobs: Bool? = nil,
+        topLogprobs: Int? = nil,
+        stopSequences: [String] = [],
+        responseConstraint: AFMResponseConstraint? = nil,
+        ignoreEndOfSequence: Bool
+    ) {
+        self.init(
+            temperature: temperature,
+            maximumResponseTokens: maximumResponseTokens,
+            reasoningEnabled: nil,
+            topP: topP,
+            topK: topK,
+            minP: minP,
+            repetitionPenalty: repetitionPenalty,
+            presencePenalty: presencePenalty,
+            seed: seed,
+            logprobs: logprobs,
+            topLogprobs: topLogprobs,
+            stopSequences: stopSequences,
+            responseConstraint: responseConstraint,
+            ignoreEndOfSequence: ignoreEndOfSequence
+        )
     }
 }
 

@@ -3,7 +3,6 @@ import Foundation
 public struct AFMInferenceRequestToken: Hashable, Sendable {
     public let rawValue: UUID
 
-    @_spi(AFMKitTelemetry)
     public init(rawValue: UUID = UUID()) {
         self.rawValue = rawValue
     }
@@ -158,29 +157,43 @@ public final class AFMInferenceTelemetryRelay:
     AFMInferenceTelemetryObserving,
     @unchecked Sendable
 {
+    private struct State {
+        var target: any AFMInferenceTelemetryObserving
+        var requestObservers: [AFMInferenceRequestToken: any AFMInferenceTelemetryObserving] = [:]
+    }
+
     private let lock = NSLock()
-    private var target: any AFMInferenceTelemetryObserving
+    private var state: State
 
     public init(
         target: any AFMInferenceTelemetryObserving = AFMNoopInferenceTelemetryObserver()
     ) {
-        self.target = target
+        self.state = State(target: target)
     }
 
     public func connect(to target: any AFMInferenceTelemetryObserving) {
-        lock.withLock { self.target = target }
+        lock.withLock { state.target = target }
     }
 
     private func observer() -> any AFMInferenceTelemetryObserving {
-        lock.withLock { target }
+        lock.withLock { state.target }
+    }
+
+    private func observer(
+        for token: AFMInferenceRequestToken
+    ) -> any AFMInferenceTelemetryObserving {
+        lock.withLock { state.requestObservers[token] ?? state.target }
     }
 
     public func requestAccepted(at timestamp: Double) -> AFMInferenceRequestToken {
-        observer().requestAccepted(at: timestamp)
+        let target = observer()
+        let token = target.requestAccepted(at: timestamp)
+        lock.withLock { state.requestObservers[token] = target }
+        return token
     }
 
     public func requestStarted(_ token: AFMInferenceRequestToken, at timestamp: Double) {
-        observer().requestStarted(token, at: timestamp)
+        observer(for: token).requestStarted(token, at: timestamp)
     }
 
     public func promptTokensProcessed(
@@ -189,7 +202,7 @@ public final class AFMInferenceTelemetryRelay:
         computedPromptTokens: Int,
         at timestamp: Double
     ) {
-        observer().promptTokensProcessed(
+        observer(for: token).promptTokensProcessed(
             token,
             fullPromptTokens: fullPromptTokens,
             computedPromptTokens: computedPromptTokens,
@@ -198,7 +211,7 @@ public final class AFMInferenceTelemetryRelay:
     }
 
     public func outputToken(_ token: AFMInferenceRequestToken, at timestamp: Double) {
-        observer().outputToken(token, at: timestamp)
+        observer(for: token).outputToken(token, at: timestamp)
     }
 
     public func prefixCacheObserved(queriedTokens: Int, hitTokens: Int) {
@@ -221,7 +234,10 @@ public final class AFMInferenceTelemetryRelay:
         _ token: AFMInferenceRequestToken,
         observation: AFMInferenceRequestFinishObservation
     ) -> Bool {
-        observer().requestFinished(token, observation: observation)
+        let target = observer(for: token)
+        let result = target.requestFinished(token, observation: observation)
+        _ = lock.withLock { state.requestObservers.removeValue(forKey: token) }
+        return result
     }
 
     public func requestFailed(
@@ -229,7 +245,10 @@ public final class AFMInferenceTelemetryRelay:
         reason: AFMInferenceFailureReason,
         at timestamp: Double
     ) -> Bool {
-        observer().requestFailed(token, reason: reason, at: timestamp)
+        let target = observer(for: token)
+        let result = target.requestFailed(token, reason: reason, at: timestamp)
+        _ = lock.withLock { state.requestObservers.removeValue(forKey: token) }
+        return result
     }
 }
 

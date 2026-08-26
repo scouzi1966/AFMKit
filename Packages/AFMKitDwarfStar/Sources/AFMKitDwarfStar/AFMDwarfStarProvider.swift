@@ -53,10 +53,10 @@ public struct AFMDwarfStarRuntimeConfiguration: Sendable, Equatable {
 public struct AFMDwarfStarProviderFactory: AFMProviderFactory {
     public static let providerID: AFMProviderID = "dwarfstar"
 
-    private let telemetryObserver: any AFMInferenceTelemetryObserving
+    private let telemetryObserver: (any AFMInferenceTelemetryObserving)?
 
     public init() {
-        telemetryObserver = AFMInferenceTelemetryRelay()
+        telemetryObserver = nil
     }
 
     public init(telemetryObserver: any AFMInferenceTelemetryObserving) {
@@ -113,7 +113,7 @@ public struct AFMDwarfStarProviderFactory: AFMProviderFactory {
                 dsparkStrict: configuration.boolean("dsparkStrict") ?? false,
                 enablePrefixCaching: configuration.boolean("enablePrefixCaching") ?? false,
                 maxConcurrent: configuration.integer("maxConcurrent") ?? 1,
-                telemetryObserver: telemetryObserver
+                telemetryObserver: telemetryObserver ?? AFMInferenceTelemetryRelay()
             )
         )
     }
