@@ -1,4 +1,5 @@
 import Foundation
+import AFMKitCore
 import AFMOpenAICompat
 import MLX
 
@@ -107,6 +108,23 @@ public protocol AFMMLXOpenAIChatServing:
 
     /// Resolve effective response format: per-request format wins, falls back to server default.
     func effectiveResponseFormat(requestFormat: ResponseFormat?) -> ResponseFormat?
+}
+
+/// Optional capability for MLX chat runtimes that validate and resolve media
+/// before generation. Hosts can discover this protocol through their existing
+/// `AFMMLXOpenAIChatServing` existential without reaching into the concrete
+/// provider service.
+public protocol AFMMLXMediaRequestServing: Sendable {
+    func loadedModelDescriptor(model: String) -> AFMModelDescriptor?
+    func validateMediaRequestCapabilities(model: String, messages: [Message]) throws
+    func preflightMediaRequest(
+        model: String,
+        messages: [Message]
+    ) async throws -> AFMMLXResolvedMediaRequest
+    func withPreflightedMediaRequest<Result: Sendable>(
+        _ request: AFMMLXResolvedMediaRequest,
+        operation: ([Message]) async throws -> Result
+    ) async throws -> Result
 }
 
 public extension AFMMLXOpenAIChatServing {
@@ -254,7 +272,7 @@ public extension AFMMLXOpenAIChatGenerating {
     }
 }
 
-extension MLXModelService: AFMMLXOpenAIChatServing {
+extension MLXModelService: AFMMLXOpenAIChatServing, AFMMLXMediaRequestServing {
     public func resetRequestPeakMemory() {
         guard hasInitializedGPU else { return }
         GPU.resetPeakMemory()
