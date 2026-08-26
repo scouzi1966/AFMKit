@@ -239,6 +239,11 @@
     },
     {
       "kind": "memberOf",
+      "source": "s:15AFMKitInference16GenerationConfigV11temperature9maxTokens16reasoningEnabled4topP0J1K4minP17repetitionPenalty08presenceM04seed8logprobs0J8Logprobs4stop5tools14responseFormat8metadataACSdSg_SiSgSbSgAst3stuTSaySSGSgSay15AFMOpenAICompat11RequestToolVGSgAX08ResponseU0VSgSDySS0A4Core12AFMJSONValueOGtcfc",
+      "target": "s:15AFMKitInference16GenerationConfigV"
+    },
+    {
+      "kind": "memberOf",
       "source": "s:15AFMKitInference16GenerationConfigV11temperatureSdSgvp",
       "target": "s:15AFMKitInference16GenerationConfigV"
     },
@@ -4302,7 +4307,7 @@
         },
         {
           "kind": "text",
-          "spelling": " = false, "
+          "spelling": ", "
         },
         {
           "kind": "externalParam",
@@ -4997,6 +5002,915 @@
       "pathComponents": [
         "GenerationConfig",
         "init(temperature:maxTokens:reasoningEnabled:topP:topK:minP:repetitionPenalty:presencePenalty:seed:logprobs:topLogprobs:stop:tools:responseFormat:ignoreEndOfSequence:metadata:)"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "init"
+        },
+        {
+          "kind": "text",
+          "spelling": "("
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "temperature"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Sd",
+          "spelling": "Double"
+        },
+        {
+          "kind": "text",
+          "spelling": "? = nil, "
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "maxTokens"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Si",
+          "spelling": "Int"
+        },
+        {
+          "kind": "text",
+          "spelling": "? = nil, "
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "reasoningEnabled"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Sb",
+          "spelling": "Bool"
+        },
+        {
+          "kind": "text",
+          "spelling": "? = nil, "
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "topP"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Sd",
+          "spelling": "Double"
+        },
+        {
+          "kind": "text",
+          "spelling": "? = nil, "
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "topK"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Si",
+          "spelling": "Int"
+        },
+        {
+          "kind": "text",
+          "spelling": "? = nil, "
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "minP"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Sd",
+          "spelling": "Double"
+        },
+        {
+          "kind": "text",
+          "spelling": "? = nil, "
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "repetitionPenalty"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Sd",
+          "spelling": "Double"
+        },
+        {
+          "kind": "text",
+          "spelling": "? = nil, "
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "presencePenalty"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Sd",
+          "spelling": "Double"
+        },
+        {
+          "kind": "text",
+          "spelling": "? = nil, "
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "seed"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Si",
+          "spelling": "Int"
+        },
+        {
+          "kind": "text",
+          "spelling": "? = nil, "
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "logprobs"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Sb",
+          "spelling": "Bool"
+        },
+        {
+          "kind": "text",
+          "spelling": "? = nil, "
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "topLogprobs"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Si",
+          "spelling": "Int"
+        },
+        {
+          "kind": "text",
+          "spelling": "? = nil, "
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "stop"
+        },
+        {
+          "kind": "text",
+          "spelling": ": ["
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:SS",
+          "spelling": "String"
+        },
+        {
+          "kind": "text",
+          "spelling": "]? = nil, "
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "tools"
+        },
+        {
+          "kind": "text",
+          "spelling": ": ["
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:15AFMOpenAICompat11RequestToolV",
+          "spelling": "RequestTool"
+        },
+        {
+          "kind": "text",
+          "spelling": "]? = nil, "
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "responseFormat"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:15AFMOpenAICompat14ResponseFormatV",
+          "spelling": "ResponseFormat"
+        },
+        {
+          "kind": "text",
+          "spelling": "? = nil, "
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "metadata"
+        },
+        {
+          "kind": "text",
+          "spelling": ": ["
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:SS",
+          "spelling": "String"
+        },
+        {
+          "kind": "text",
+          "spelling": " : "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:10AFMKitCore12AFMJSONValueO",
+          "spelling": "AFMJSONValue"
+        },
+        {
+          "kind": "text",
+          "spelling": "] = [:])"
+        }
+      ],
+      "functionSignature": {
+        "parameters": [
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "temperature"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:Sd",
+                "spelling": "Double"
+              },
+              {
+                "kind": "text",
+                "spelling": "?"
+              }
+            ],
+            "name": "temperature"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "maxTokens"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:Si",
+                "spelling": "Int"
+              },
+              {
+                "kind": "text",
+                "spelling": "?"
+              }
+            ],
+            "name": "maxTokens"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "reasoningEnabled"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:Sb",
+                "spelling": "Bool"
+              },
+              {
+                "kind": "text",
+                "spelling": "?"
+              }
+            ],
+            "name": "reasoningEnabled"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "topP"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:Sd",
+                "spelling": "Double"
+              },
+              {
+                "kind": "text",
+                "spelling": "?"
+              }
+            ],
+            "name": "topP"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "topK"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:Si",
+                "spelling": "Int"
+              },
+              {
+                "kind": "text",
+                "spelling": "?"
+              }
+            ],
+            "name": "topK"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "minP"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:Sd",
+                "spelling": "Double"
+              },
+              {
+                "kind": "text",
+                "spelling": "?"
+              }
+            ],
+            "name": "minP"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "repetitionPenalty"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:Sd",
+                "spelling": "Double"
+              },
+              {
+                "kind": "text",
+                "spelling": "?"
+              }
+            ],
+            "name": "repetitionPenalty"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "presencePenalty"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:Sd",
+                "spelling": "Double"
+              },
+              {
+                "kind": "text",
+                "spelling": "?"
+              }
+            ],
+            "name": "presencePenalty"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "seed"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:Si",
+                "spelling": "Int"
+              },
+              {
+                "kind": "text",
+                "spelling": "?"
+              }
+            ],
+            "name": "seed"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "logprobs"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:Sb",
+                "spelling": "Bool"
+              },
+              {
+                "kind": "text",
+                "spelling": "?"
+              }
+            ],
+            "name": "logprobs"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "topLogprobs"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:Si",
+                "spelling": "Int"
+              },
+              {
+                "kind": "text",
+                "spelling": "?"
+              }
+            ],
+            "name": "topLogprobs"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "stop"
+              },
+              {
+                "kind": "text",
+                "spelling": ": ["
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:SS",
+                "spelling": "String"
+              },
+              {
+                "kind": "text",
+                "spelling": "]?"
+              }
+            ],
+            "name": "stop"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "tools"
+              },
+              {
+                "kind": "text",
+                "spelling": ": ["
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:15AFMOpenAICompat11RequestToolV",
+                "spelling": "RequestTool"
+              },
+              {
+                "kind": "text",
+                "spelling": "]?"
+              }
+            ],
+            "name": "tools"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "responseFormat"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:15AFMOpenAICompat14ResponseFormatV",
+                "spelling": "ResponseFormat"
+              },
+              {
+                "kind": "text",
+                "spelling": "?"
+              }
+            ],
+            "name": "responseFormat"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "metadata"
+              },
+              {
+                "kind": "text",
+                "spelling": ": ["
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:SS",
+                "spelling": "String"
+              },
+              {
+                "kind": "text",
+                "spelling": " : "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:10AFMKitCore12AFMJSONValueO",
+                "spelling": "AFMJSONValue"
+              },
+              {
+                "kind": "text",
+                "spelling": "]"
+              }
+            ],
+            "name": "metadata"
+          }
+        ]
+      },
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:15AFMKitInference16GenerationConfigV11temperature9maxTokens16reasoningEnabled4topP0J1K4minP17repetitionPenalty08presenceM04seed8logprobs0J8Logprobs4stop5tools14responseFormat8metadataACSdSg_SiSgSbSgAst3stuTSaySSGSgSay15AFMOpenAICompat11RequestToolVGSgAX08ResponseU0VSgSDySS0A4Core12AFMJSONValueOGtcfc"
+      },
+      "kind": {
+        "displayName": "Initializer",
+        "identifier": "swift.init"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "init"
+          },
+          {
+            "kind": "text",
+            "spelling": "("
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "temperature"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Sd",
+            "spelling": "Double"
+          },
+          {
+            "kind": "text",
+            "spelling": "?, "
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "maxTokens"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Si",
+            "spelling": "Int"
+          },
+          {
+            "kind": "text",
+            "spelling": "?, "
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "reasoningEnabled"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Sb",
+            "spelling": "Bool"
+          },
+          {
+            "kind": "text",
+            "spelling": "?, "
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "topP"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Sd",
+            "spelling": "Double"
+          },
+          {
+            "kind": "text",
+            "spelling": "?, "
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "topK"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Si",
+            "spelling": "Int"
+          },
+          {
+            "kind": "text",
+            "spelling": "?, "
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "minP"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Sd",
+            "spelling": "Double"
+          },
+          {
+            "kind": "text",
+            "spelling": "?, "
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "repetitionPenalty"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Sd",
+            "spelling": "Double"
+          },
+          {
+            "kind": "text",
+            "spelling": "?, "
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "presencePenalty"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Sd",
+            "spelling": "Double"
+          },
+          {
+            "kind": "text",
+            "spelling": "?, "
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "seed"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Si",
+            "spelling": "Int"
+          },
+          {
+            "kind": "text",
+            "spelling": "?, "
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "logprobs"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Sb",
+            "spelling": "Bool"
+          },
+          {
+            "kind": "text",
+            "spelling": "?, "
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "topLogprobs"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Si",
+            "spelling": "Int"
+          },
+          {
+            "kind": "text",
+            "spelling": "?, "
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "stop"
+          },
+          {
+            "kind": "text",
+            "spelling": ": ["
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:SS",
+            "spelling": "String"
+          },
+          {
+            "kind": "text",
+            "spelling": "]?, "
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "tools"
+          },
+          {
+            "kind": "text",
+            "spelling": ": ["
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:15AFMOpenAICompat11RequestToolV",
+            "spelling": "RequestTool"
+          },
+          {
+            "kind": "text",
+            "spelling": "]?, "
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "responseFormat"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:15AFMOpenAICompat14ResponseFormatV",
+            "spelling": "ResponseFormat"
+          },
+          {
+            "kind": "text",
+            "spelling": "?, "
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "metadata"
+          },
+          {
+            "kind": "text",
+            "spelling": ": ["
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:SS",
+            "spelling": "String"
+          },
+          {
+            "kind": "text",
+            "spelling": " : "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:10AFMKitCore12AFMJSONValueO",
+            "spelling": "AFMJSONValue"
+          },
+          {
+            "kind": "text",
+            "spelling": "])"
+          }
+        ],
+        "title": "init(temperature:maxTokens:reasoningEnabled:topP:topK:minP:repetitionPenalty:presencePenalty:seed:logprobs:topLogprobs:stop:tools:responseFormat:metadata:)"
+      },
+      "pathComponents": [
+        "GenerationConfig",
+        "init(temperature:maxTokens:reasoningEnabled:topP:topK:minP:repetitionPenalty:presencePenalty:seed:logprobs:topLogprobs:stop:tools:responseFormat:metadata:)"
       ]
     },
     {

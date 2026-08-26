@@ -101,6 +101,11 @@ final class AFMKitInferenceTests: XCTestCase {
             ignoreEndOfSequence: true,
             metadata: ["trace": .string("abc")]
         )
+        let legacyConfig = GenerationConfig(
+            responseFormat: .init(type: "json_object"),
+            metadata: ["legacy": .bool(true)]
+        )
+        XCTAssertFalse(legacyConfig.ignoreEndOfSequence)
 
         _ = try await engine.respond(to: messages, config)
         let recordedRequest = await state.lastRequest
