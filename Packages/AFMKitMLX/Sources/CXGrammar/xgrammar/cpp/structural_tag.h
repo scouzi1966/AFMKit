@@ -91,7 +91,7 @@ struct AnyTextFormat {
 struct SequenceFormat {
   static constexpr const char* type = "sequence";
   std::vector<Format> elements;
-  SequenceFormat(std::vector<Format> elements) : elements(std::move(elements)) {}
+  SequenceFormat(std::vector<Format> elements);
 
  private:
   // Detected in StructuralTagAnalyzer
@@ -103,7 +103,7 @@ struct SequenceFormat {
 struct OrFormat {
   static constexpr const char* type = "or";
   std::vector<Format> elements;
-  OrFormat(std::vector<Format> elements) : elements(std::move(elements)) {}
+  OrFormat(std::vector<Format> elements);
 
  private:
   // Detected in StructuralTagAnalyzer

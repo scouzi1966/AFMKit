@@ -24,6 +24,28 @@ namespace mlx::core {
 
 static constexpr int MAX_ACTIVE_TASKS = 10;
 
+namespace {
+
+// Create a tracer copy of a primal for use in vjp/jvp. If the primal is a
+// stale Copy from a previous transform call (not an active tracer), peel it
+// off to prevent copy-chain accumulation when containers feed tracers back.
+array make_tracer(const array& p) {
+  auto s = p.has_primitive() ? p.primitive().stream()
+                             : default_stream(default_device());
+  auto source = p;
+  if (!p.is_tracer() && p.has_primitive() && !p.inputs().empty()) {
+    auto& prim = p.primitive();
+    if (typeid(prim) == typeid(Copy)) {
+      source = p.inputs()[0];
+    }
+  }
+  auto out = copy(source, s);
+  out.set_tracer(true);
+  return out;
+}
+
+} // namespace
+
 /* This class is only meant to be used in eval
  * for synchronizing with the main thread. */
 class Synchronizer : public Primitive {
@@ -41,13 +63,19 @@ class Synchronizer : public Primitive {
 // These are used to implement the in_tracing() function the returns true if we
 // are currently under a function transformation and the retain_graph()
 // function which returns true if we are forced to retain the graph during
-// evaluation.
+// evaluation. They are thread_local since a trace belongs to the thread that
+// runs it, so that concurrent transforms on different threads do not race on
+// shared tracing state.
 std::vector<std::pair<char, char>>& detail::InTracing::trace_stack() {
-  static std::vector<std::pair<char, char>> trace_stack_;
+  static thread_local std::vector<std::pair<char, char>> trace_stack_;
   return trace_stack_;
 }
-int detail::InTracing::grad_counter{0};
-int detail::RetainGraph::tracing_counter{0};
+thread_local int detail::InTracing::grad_counter{0};
+int& detail::InExportTracing::counter() {
+  static thread_local int counter_;
+  return counter_;
+}
+thread_local int detail::RetainGraph::tracing_counter{0};
 
 array eval_impl(std::vector<array> outputs, bool async) {
   std::deque<array> tape;
@@ -196,93 +224,119 @@ array eval_impl(std::vector<array> outputs, bool async) {
     }
   }
 
-  std::unordered_set<int> open_streams;
-  while (!tape.empty()) {
-    auto arr = std::move(tape.back());
-    tape.pop_back();
+  std::set<Stream> open_streams;
+  try {
+    while (!tape.empty()) {
+      auto arr = std::move(tape.back());
+      tape.pop_back();
 
-    auto stream = arr.primitive().stream();
-    open_streams.insert(stream.index);
+      auto stream = arr.primitive().stream();
+      open_streams.insert(stream);
 
-    if (async) {
-      // Lookup corresponding event
-      auto e = events.find(stream.index);
-      if (e == events.end()) {
-        e = events.emplace(stream.index, Event{stream}).first;
-      }
-      e->second.set_value(1);
-      arr.attach_event(e->second);
-      for (auto& s : arr.siblings()) {
-        s.attach_event(e->second);
-      }
-    }
-
-    for (auto& in : arr.inputs()) {
-      if (auto it = needs_fence.find(in.id()); it != needs_fence.end()) {
-        // Use fence to wait within a single eval
-        // Get the input array's stream fence and wait on the
-        // output arrays stream
-        fences[it->second.first].wait(stream, in);
-      } else if (in.event().valid()) {
-        if (in.event().is_signaled()) {
-          in.detach_event();
-        } else if (in.event().stream() != stream) {
-          // Use event to wait across async eval
-          in.event().wait(stream);
+      if (async) {
+        // Lookup corresponding event
+        auto e = events.find(stream.index);
+        if (e == events.end()) {
+          e = events.emplace(stream.index, Event{stream}).first;
+        }
+        e->second.set_value(1);
+        arr.attach_event(e->second);
+        for (auto& s : arr.siblings()) {
+          s.attach_event(e->second);
         }
       }
-    }
 
-    if (arr.primitive().device() == Device::gpu) {
-      gpu::eval(arr);
-    } else {
-      cpu::eval(arr);
-    }
-
-    if (scheduler::n_active_tasks() > MAX_ACTIVE_TASKS ||
-        (get_active_memory() > get_memory_limit() &&
-         scheduler::n_active_tasks() > 0)) {
-      // Commit any open streams
-      for (auto i : open_streams) {
-        auto s = get_stream(i);
-        if (s.device == Device::gpu) {
-          gpu::finalize(s);
+      for (auto& in : arr.inputs()) {
+        if (auto it = needs_fence.find(in.id()); it != needs_fence.end()) {
+          // Use fence to wait within a single eval
+          // Get the input array's stream fence and wait on the
+          // output arrays stream
+          fences[it->second.first].wait(stream, in);
+        } else if (in.event().valid()) {
+          if (in.event().is_signaled()) {
+            in.detach_event();
+          } else if (in.event().stream() != stream) {
+            // Use event to wait across async eval
+            in.event().wait(stream);
+          }
         }
       }
-      scheduler::wait_for_one();
-      while (get_active_memory() > get_memory_limit() &&
-             scheduler::n_active_tasks() > 0) {
+
+      if (arr.primitive().device() == Device::gpu) {
+        gpu::eval(arr);
+      } else {
+        cpu::eval(arr);
+      }
+
+      if (scheduler::n_active_tasks() > MAX_ACTIVE_TASKS ||
+          (get_active_memory() > get_memory_limit() &&
+           scheduler::n_active_tasks() > 0)) {
+        // Commit any open streams
+        for (auto& s : open_streams) {
+          if (s.device == Device::gpu) {
+            gpu::finalize(s);
+          }
+        }
         scheduler::wait_for_one();
-      }
-    }
-
-    auto maybe_update_fence = [&fences, &needs_fence, stream](const array& a) {
-      if (auto nf = needs_fence.find(a.id()); nf != needs_fence.end()) {
-        auto it = fences.find(stream.index);
-        if (it == fences.end()) {
-          it = fences.emplace(stream.index, Fence{stream}).first;
+        while (get_active_memory() > get_memory_limit() &&
+               scheduler::n_active_tasks() > 0) {
+          scheduler::wait_for_one();
         }
-        it->second.update(stream, a, nf->second.second);
       }
-    };
 
-    arr.set_status(array::Status::evaluated);
-    // TODO Maybe always want the fence coherent kernel in the same cbuf
-    // as the other kernels?
-    maybe_update_fence(arr);
-    for (auto& sib : arr.siblings()) {
-      sib.set_status(array::Status::evaluated);
-      maybe_update_fence(sib);
+      auto maybe_update_fence =
+          [&fences, &needs_fence, stream](const array& a) {
+            if (auto nf = needs_fence.find(a.id()); nf != needs_fence.end()) {
+              auto it = fences.find(stream.index);
+              if (it == fences.end()) {
+                it = fences.emplace(stream.index, Fence{stream}).first;
+              }
+              it->second.update(stream, a, nf->second.second);
+            }
+          };
+
+      arr.set_status(array::Status::evaluated);
+      // TODO Maybe always want the fence coherent kernel in the same cbuf
+      // as the other kernels?
+      maybe_update_fence(arr);
+      for (auto& sib : arr.siblings()) {
+        sib.set_status(array::Status::evaluated);
+        maybe_update_fence(sib);
+      }
+      if (!arr.is_tracer()) {
+        arr.detach();
+      }
     }
-    if (!arr.is_tracer()) {
-      arr.detach();
+  } catch (...) {
+    // A primitive threw from inside its eval (e.g. argument validation in
+    // eval_gpu, or a JIT compile failure). Arrays evaluated earlier in this
+    // tape are already marked evaluated, but their kernels sit in pending
+    // command buffers that only the epilogue below would commit, and events
+    // attached during this eval would never be signaled. Left that way, a
+    // later read of an affected array returns an unwritten buffer or blocks
+    // forever. Signal the events and flush the touched streams, then let the
+    // exception propagate.
+    for (auto& [idx, e] : events) {
+      try {
+        auto es = e.stream();
+        e.signal(es);
+        open_streams.insert(es);
+      } catch (...) {
+      }
     }
+    for (auto& s : open_streams) {
+      try {
+        synchronize(s);
+      } catch (...) {
+        // Preserve the original exception.
+      }
+    }
+    throw;
   }
 
   // Signal the event in its stream
-  for (auto i : open_streams) {
-    auto s = get_stream(i);
-    if (auto e = events.find(i); e != events.end()) {
+  for (auto& s : open_streams) {
+    if (auto e = events.find(s.index); e != events.end()) {
       e->second.signal(s);
     }
     if (s.device == Device::gpu) {
@@ -335,10 +389,7 @@ std::pair<std::vector<array>, std::vector<array>> vjp(
   // Make tracers from given primals
   std::vector<array> primals_;
   for (auto& p : primals) {
-    auto s = p.has_primitive() ? p.primitive().stream()
-                               : default_stream(default_device());
-    primals_.push_back(copy(p, s)); // Does not do a deep copy
-    primals_.back().set_tracer(true);
+    primals_.push_back(make_tracer(p));
   }
 
   // Pass tracer primals through the function
@@ -543,10 +594,7 @@ std::pair<std::vector<array>, std::vector<array>> jvp(
 
   std::vector<array> primals_;
   for (auto& p : primals) {
-    auto s = p.has_primitive() ? p.primitive().stream()
-                               : default_stream(default_device());
-    primals_.push_back(copy(p, s)); // Does not do a deep copy
-    primals_.back().set_tracer(true);
+    primals_.push_back(make_tracer(p));
   }
   auto outputs = fun(primals_);
 
@@ -620,6 +668,8 @@ std::pair<std::vector<array>, std::vector<array>> jvp(
 
     auto jvps = a.primitive().jvp(a.inputs(), tangents, argnums);
     auto outputs = a.outputs();
+    // A primitive's jvp returns one tangent per output
+    assert(jvps.size() <= outputs.size());
     for (int i = 0; i < jvps.size(); ++i) {
       tan_map.insert({outputs[i].id(), jvps[i]});
     }

@@ -1,22 +1,37 @@
 // swift-tools-version: 6.1
 import PackageDescription
 
+// Keep no_cuda.cpp so Apple-platform builds link MLX's CUDA capability stubs.
 let mlxNoCudaExcludes = [
-    "mlx/mlx/backend/cuda/allocator.cpp", "mlx/mlx/backend/cuda/compiled.cpp",
-    "mlx/mlx/backend/cuda/conv.cpp", "mlx/mlx/backend/cuda/cublas_utils.cpp",
-    "mlx/mlx/backend/cuda/cudnn_utils.cpp", "mlx/mlx/backend/cuda/custom_kernel.cpp",
-    "mlx/mlx/backend/cuda/delayload.cpp", "mlx/mlx/backend/cuda/device_info.cpp",
-    "mlx/mlx/backend/cuda/device.cpp", "mlx/mlx/backend/cuda/eval.cpp",
-    "mlx/mlx/backend/cuda/fence.cpp", "mlx/mlx/backend/cuda/indexing.cpp",
-    "mlx/mlx/backend/cuda/jit_module.cpp", "mlx/mlx/backend/cuda/load.cpp",
-    "mlx/mlx/backend/cuda/matmul.cpp", "mlx/mlx/backend/cuda/primitives.cpp",
+    "mlx/mlx/backend/cuda/allocator.cpp",
+    "mlx/mlx/backend/cuda/compiled.cpp",
+    "mlx/mlx/backend/cuda/conv.cpp",
+    "mlx/mlx/backend/cuda/cublas_utils.cpp",
+    "mlx/mlx/backend/cuda/cudnn_utils.cpp",
+    "mlx/mlx/backend/cuda/custom_kernel.cpp",
+    "mlx/mlx/backend/cuda/delayload.cpp",
+    "mlx/mlx/backend/cuda/device.cpp",
+    "mlx/mlx/backend/cuda/device_info.cpp",
+    "mlx/mlx/backend/cuda/eval.cpp",
+    "mlx/mlx/backend/cuda/fence.cpp",
+    "mlx/mlx/backend/cuda/indexing.cpp",
+    "mlx/mlx/backend/cuda/jit_module.cpp",
+    "mlx/mlx/backend/cuda/load.cpp",
+    "mlx/mlx/backend/cuda/matmul.cpp",
+    "mlx/mlx/backend/cuda/primitives.cpp",
     "mlx/mlx/backend/cuda/scaled_dot_product_attention.cpp",
-    "mlx/mlx/backend/cuda/slicing.cpp", "mlx/mlx/backend/cuda/utils.cpp",
-    "mlx/mlx/backend/cuda/worker.cpp", "mlx/mlx/backend/cuda/binary",
-    "mlx/mlx/backend/cuda/conv", "mlx/mlx/backend/cuda/copy",
-    "mlx/mlx/backend/cuda/device", "mlx/mlx/backend/cuda/gemms",
-    "mlx/mlx/backend/cuda/quantized", "mlx/mlx/backend/cuda/reduce",
-    "mlx/mlx/backend/cuda/steel", "mlx/mlx/backend/cuda/unary"
+    "mlx/mlx/backend/cuda/slicing.cpp",
+    "mlx/mlx/backend/cuda/utils.cpp",
+    "mlx/mlx/backend/cuda/worker.cpp",
+    "mlx/mlx/backend/cuda/binary",
+    "mlx/mlx/backend/cuda/conv",
+    "mlx/mlx/backend/cuda/copy",
+    "mlx/mlx/backend/cuda/device",
+    "mlx/mlx/backend/cuda/gemms",
+    "mlx/mlx/backend/cuda/quantized",
+    "mlx/mlx/backend/cuda/reduce",
+    "mlx/mlx/backend/cuda/steel",
+    "mlx/mlx/backend/cuda/unary"
 ]
 
 let mlxPlatformExcludes = [
@@ -42,9 +57,9 @@ let mlxCTarget = Target.target(
         "mlx/mlx/io/gguf_quants.cpp", "mlx/mlx/backend/metal/kernels",
         "mlx/mlx/backend/metal/nojit_kernels.cpp",
         "mlx/mlx/distributed/mpi/mpi.cpp", "mlx/mlx/distributed/ring/ring.cpp",
-        "mlx/mlx/distributed/nccl/nccl.cpp", "mlx/mlx/distributed/nccl/nccl_stub",
-        "mlx/mlx/distributed/jaccl/jaccl.cpp", "mlx/mlx/distributed/jaccl/mesh.cpp",
-        "mlx/mlx/distributed/jaccl/ring.cpp", "mlx/mlx/distributed/jaccl/utils.cpp"
+        "mlx/mlx/distributed/nccl/nccl.cpp",
+        "mlx/mlx/distributed/jaccl/jaccl.cpp", "mlx/mlx/distributed/jaccl/lib",
+        "mlx/mlx/distributed/jaccl/jaccl.h"
     ],
     cSettings: [
         .headerSearchPath("mlx"), .headerSearchPath("mlx-c"),
@@ -57,7 +72,7 @@ let mlxCTarget = Target.target(
         .define("ACCELERATE_NEW_LAPACK"), .define("_METAL_"),
         .define("SWIFTPM_BUNDLE", to: "\"AFMKitPrivateQualification_Cmlx\""),
         .define("METAL_PATH", to: "\"default.metallib\""),
-        .define("MLX_VERSION", to: "\"0.31.1\"")
+        .define("MLX_VERSION", to: "\"0.32.2\"")
     ],
     linkerSettings: [
         .linkedFramework("Foundation"), .linkedFramework("Metal"),
@@ -308,6 +323,7 @@ let package = Package(
                 .headerSearchPath("xgrammar/cpp"),
                 .headerSearchPath("xgrammar/3rdparty/dlpack/include"),
                 .headerSearchPath("xgrammar/3rdparty/picojson"),
+                .define("xgrammar", to: "afmkit_xgrammar"),
                 .define("XGRAMMAR_ENABLE_LOG_DEBUG", to: "0"),
                 .define("XGRAMMAR_ENABLE_CPPTRACE", to: "0")
             ]
@@ -454,5 +470,5 @@ let package = Package(
             path: "Candidate/Packages/AFMKitDwarfStar/Tests/AFMKitFoundationModelsDwarfStarTests"
         )
     ],
-    cxxLanguageStandard: .gnucxx17
+    cxxLanguageStandard: .gnucxx20
 )

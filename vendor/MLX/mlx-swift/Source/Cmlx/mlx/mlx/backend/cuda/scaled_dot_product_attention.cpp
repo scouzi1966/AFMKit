@@ -150,21 +150,17 @@ inline BytesKey<SDPACacheKey> build_sdpa_cache_key(
     bool decoding = false,
     bool output_logsumexp = false) {
   BytesKey<SDPACacheKey> cache_key;
-  cache_key.pod = {
-      encoder.device().cuda_device(),
-      dtype_to_cudnn_type(q.dtype()),
-      vector_key<QKV_NDIM>(q.shape()),
-      vector_key<QKV_NDIM>(k.shape()),
-      vector_key<QKV_NDIM>(v.shape()),
-      vector_key<QKV_NDIM>(q.strides()),
-      vector_key<QKV_NDIM>(k.strides()),
-      vector_key<QKV_NDIM>(v.strides()),
-      do_causal,
-      {},
-      {},
-      sinks.has_value(),
-      output_logsumexp,
-  };
+  cache_key.pod.device_id = encoder.device().cuda_device();
+  cache_key.pod.cudnn_dtype = dtype_to_cudnn_type(q.dtype());
+  cache_key.pod.q_shape = vector_key<QKV_NDIM>(q.shape());
+  cache_key.pod.k_shape = vector_key<QKV_NDIM>(k.shape());
+  cache_key.pod.v_shape = vector_key<QKV_NDIM>(v.shape());
+  cache_key.pod.q_strides = vector_key<QKV_NDIM>(q.strides());
+  cache_key.pod.k_strides = vector_key<QKV_NDIM>(k.strides());
+  cache_key.pod.v_strides = vector_key<QKV_NDIM>(v.strides());
+  cache_key.pod.do_causal = do_causal;
+  cache_key.pod.has_sinks = sinks.has_value();
+  cache_key.pod.output_logsumexp = output_logsumexp;
   if (mask_arr) {
     cache_key.pod.mask_shape = vector_key<QKV_NDIM>(mask_arr->shape());
     cache_key.pod.mask_strides = vector_key<QKV_NDIM>(mask_arr->strides());
@@ -180,13 +176,13 @@ inline BytesKey<SDPACacheKey> build_sdpa_cache_key(
 }
 
 auto& sdpa_cache() {
-  static LRUBytesKeyCache<SDPACacheKey, DnnGraph> cache(
+  static thread_local LRUBytesKeyCache<SDPACacheKey, DnnGraph> cache(
       "MLX_CUDA_SDPA_CACHE_SIZE", /* default_capacity */ 256);
   return cache;
 }
 
 auto& sdpa_backward_cache() {
-  static LRUBytesKeyCache<SDPACacheKey, DnnGraph> cache(
+  static thread_local LRUBytesKeyCache<SDPACacheKey, DnnGraph> cache(
       "MLX_CUDA_SDPA_BACKWARD_CACHE_SIZE", /* default_capacity */ 64);
   return cache;
 }
@@ -253,10 +249,10 @@ DnnGraph build_sdpa_graph(
     graph.tensor(stats_, STATS, *stats)->set_output(true);
   }
 
-  CHECK_CUDNN_FE_ERROR(graph.prepare());
+  CHECK_CUDNN_ERROR(graph.prepare());
   graph.select_behavior_notes(
       {fe::BehaviorNote_t::SUPPORTS_CUDA_GRAPH_NATIVE_API});
-  CHECK_CUDNN_FE_ERROR(graph.build());
+  CHECK_CUDNN_ERROR(graph.build());
   return graph;
 }
 
@@ -302,14 +298,19 @@ DnnGraph build_sdpa_backward_graph(
   graph.tensor(d_k_, D_K, d_k)->set_output(true);
   graph.tensor(d_v_, D_V, d_v)->set_output(true);
 
-  CHECK_CUDNN_FE_ERROR(graph.prepare());
+  CHECK_CUDNN_ERROR(graph.prepare());
   graph.select_behavior_notes(
       {fe::BehaviorNote_t::SUPPORTS_CUDA_GRAPH_NATIVE_API});
-  CHECK_CUDNN_FE_ERROR(graph.build());
+  CHECK_CUDNN_ERROR(graph.build());
   return graph;
 }
 
 } // namespace
+
+void init_cudnn_sdpa_cache() {
+  sdpa_cache();
+  sdpa_backward_cache();
+}
 
 bool supports_sdpa_cudnn(
     const array& q,
@@ -318,15 +319,7 @@ bool supports_sdpa_cudnn(
     bool has_arr_mask,
     bool do_causal,
     Stream s) {
-#ifdef _WIN32
-  // On Windows (WDDM), cuDNN SDPA has severe performance issues due to
-  // high per-kernel-launch overhead in the WDDM driver model. cuDNN's
-  // multi-kernel SDPA amplifies this, making it much slower than the
-  // single-kernel sdpa_vector path for both prefill and generation.
-  static bool enabled = env::get_var("MLX_CUDA_USE_CUDNN_SDPA", 0);
-#else
   static bool enabled = env::get_var("MLX_CUDA_USE_CUDNN_SDPA", 1);
-#endif
   if (!enabled) {
     return false;
   }
@@ -369,7 +362,7 @@ void sdpa_cudnn(
     bool output_logsumexp,
     Stream s) {
   auto& encoder = cu::get_command_encoder(s);
-  auto handle = encoder.device().get_cudnn_handle();
+  auto handle = get_cudnn_handle(encoder.device());
 
   malloc_with_same_layout(encoder, o, q);
 
@@ -452,7 +445,7 @@ void sdpa_cudnn(
     variant_pack[STATS] = gpu_ptr<void>(*stats);
   }
 
-  CHECK_CUDNN_FE_ERROR(graph.encode_graph(encoder, std::move(variant_pack)));
+  CHECK_CUDNN_ERROR(graph.encode_graph(encoder, std::move(variant_pack)));
 }
 
 void sdpa_backward_cudnn(
@@ -471,7 +464,7 @@ void sdpa_backward_cudnn(
     array& d_v,
     Stream s) {
   auto& encoder = cu::get_command_encoder(s);
-  auto handle = encoder.device().get_cudnn_handle();
+  auto handle = get_cudnn_handle(encoder.device());
 
   malloc_with_same_layout(encoder, d_q, q);
   malloc_with_same_layout(encoder, d_k, k);
@@ -534,7 +527,7 @@ void sdpa_backward_cudnn(
     variant_pack[SINKS] = gpu_ptr<void>(*sinks);
   }
 
-  CHECK_CUDNN_FE_ERROR(graph.encode_graph(encoder, std::move(variant_pack)));
+  CHECK_CUDNN_ERROR(graph.encode_graph(encoder, std::move(variant_pack)));
 }
 
 // Defined in scaled_dot_product_attention.cu file.
@@ -556,6 +549,33 @@ void sdpa_vector(
 
 namespace fast {
 
+namespace {
+
+std::tuple<bool, std::string> has_fused_kernel(
+    const array& q,
+    const array& k,
+    const array& v,
+    bool has_arr_mask,
+    bool do_causal,
+    bool output_logsumexp,
+    Stream s) {
+  if (s.device != Device::gpu) {
+    return {false, "the fused kernels require a GPU stream."};
+  }
+  if (!supports_sdpa_cudnn(q, k, v, has_arr_mask, do_causal, s) &&
+      !supports_sdpa_vector(q, k, v, has_arr_mask, output_logsumexp)) {
+    std::ostringstream msg;
+    msg << "neither the cuDNN attention nor the vector attention kernel "
+        << "supports this configuration; got query shape " << q.shape()
+        << ", key shape " << k.shape() << ", value shape " << v.shape()
+        << " with dtype " << q.dtype() << ".";
+    return {false, msg.str()};
+  }
+  return {true, ""};
+}
+
+} // namespace
+
 bool ScaledDotProductAttention::use_fallback(
     const array& q,
     const array& k,
@@ -565,13 +585,21 @@ bool ScaledDotProductAttention::use_fallback(
     bool do_causal,
     bool is_training,
     bool output_logsumexp,
+    bool force_fused,
     Stream s) {
-  if (s.device == Device::cpu) {
-    return true;
+  auto [has_fused, reason] =
+      has_fused_kernel(q, k, v, has_arr_mask, do_causal, output_logsumexp, s);
+  if (force_fused) {
+    if (!has_fused) {
+      std::ostringstream msg;
+      msg << "[scaled_dot_product_attention] force_fused=True but no fused "
+             "kernel is available: "
+          << reason;
+      throw std::invalid_argument(msg.str());
+    }
+    return false;
   }
-
-  return !supports_sdpa_cudnn(q, k, v, has_arr_mask, do_causal, s) &&
-      !supports_sdpa_vector(q, k, v, has_arr_mask, output_logsumexp);
+  return !has_fused;
 }
 
 bool ScaledDotProductAttention::supports_bool_mask() {

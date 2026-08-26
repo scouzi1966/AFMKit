@@ -4,11 +4,14 @@
 #include <cmath>
 
 #include "mlx/allocator.h"
-#include "mlx/primitives.h"
-
 #include "mlx/backend/common/utils.h"
+#include "mlx/backend/cpu/binary.h"
+#include "mlx/backend/cpu/binary_ops.h"
 #include "mlx/backend/cpu/copy.h"
 #include "mlx/backend/cpu/encoder.h"
+#include "mlx/backend/cpu/slicing.h"
+#include "mlx/dtype_utils.h"
+#include "mlx/primitives.h"
 
 namespace mlx::core {
 
@@ -63,43 +66,18 @@ void gather(
     array& out,
     const std::vector<int>& axes,
     const Shape& slice_sizes) {
-  // If the array is row contiguous then we can do a contiguous copy given
-  // two conditions on the slice size:
-  // - Any number of leading ones in the slice sizes are allowed
-  // - All other slice sizes match the corresponding dimension except the
-  //   first non-singleton slice size
-  // If the array is col contiguous then the reverse is the case:
-  // - Any number of trailing ones in the slice sizes are allowed
-  // - All other slice sizes match the corresponding dimension except the
-  //   first non-singleton slice size from the end
-
-  bool can_copy = false;
-  if (src.flags().row_contiguous) {
-    can_copy = true;
-
-    // Ignore leading 1s
-    int i = 0;
-    for (; i < slice_sizes.size() && slice_sizes[i] == 1; ++i)
-      ;
-
-    // Check the remaining
-    i++;
-    for (; i < src.ndim() && can_copy; ++i) {
-      can_copy = (src.shape(i) == slice_sizes[i]);
+  // Each gathered slice is written into the (row-contiguous) output as a
+  // sequential block. We can therefore replace the per-element strided read
+  // with a single contiguous copy only when the slice is itself laid out
+  // contiguously in row-major order within the source.
+  bool can_copy = true;
+  int64_t expected_stride = 1;
+  for (int i = src.ndim() - 1; i >= 0 && can_copy; --i) {
+    if (slice_sizes[i] == 1) {
+      continue;
     }
-  } else if (src.flags().col_contiguous) {
-    can_copy = true;
-
-    // Ignore trailing 1s
-    int i = slice_sizes.size() - 1;
-    for (; i >= 0 && slice_sizes[i] == 1; --i)
-      ;
-
-    // Skip the next slice size and check the remaining
-    i--;
-    for (; i >= 0 && can_copy; --i) {
-      can_copy = (src.shape(i) == slice_sizes[i]);
-    }
+    can_copy = (src.strides()[i] == expected_stride);
+    expected_stride *= slice_sizes[i];
   }
   size_t slice_size = 1;
   for (auto s : slice_sizes) {
@@ -150,50 +128,10 @@ void dispatch_gather(
     array& out,
     const std::vector<int>& axes,
     const Shape& size) {
-  switch (out.dtype()) {
-    case bool_:
-      gather<bool, IdxT>(src, inds, out, axes, size);
-      break;
-    case uint8:
-      gather<uint8_t, IdxT>(src, inds, out, axes, size);
-      break;
-    case uint16:
-      gather<uint16_t, IdxT>(src, inds, out, axes, size);
-      break;
-    case uint32:
-      gather<uint32_t, IdxT>(src, inds, out, axes, size);
-      break;
-    case uint64:
-      gather<uint64_t, IdxT>(src, inds, out, axes, size);
-      break;
-    case int8:
-      gather<int8_t, IdxT>(src, inds, out, axes, size);
-      break;
-    case int16:
-      gather<int16_t, IdxT>(src, inds, out, axes, size);
-      break;
-    case int32:
-      gather<int32_t, IdxT>(src, inds, out, axes, size);
-      break;
-    case int64:
-      gather<int64_t, IdxT>(src, inds, out, axes, size);
-      break;
-    case float16:
-      gather<float16_t, IdxT>(src, inds, out, axes, size);
-      break;
-    case float32:
-      gather<float, IdxT>(src, inds, out, axes, size);
-      break;
-    case float64:
-      gather<double, IdxT>(src, inds, out, axes, size);
-      break;
-    case bfloat16:
-      gather<bfloat16_t, IdxT>(src, inds, out, axes, size);
-      break;
-    case complex64:
-      gather<complex64_t, IdxT>(src, inds, out, axes, size);
-      break;
-  }
+  dispatch_all_types(out.dtype(), [&](auto type_tag) {
+    using T = MLX_GET_TYPE(type_tag);
+    gather<T, IdxT>(src, inds, out, axes, size);
+  });
 }
 
 void Gather::eval_cpu(const std::vector<array>& inputs, array& out) {
@@ -303,50 +241,10 @@ void dispatch_gather_axis(
     const array& inds,
     array& out,
     const int axis) {
-  switch (out.dtype()) {
-    case bool_:
-      gather_axis<bool, IdxT>(src, inds, out, axis);
-      break;
-    case uint8:
-      gather_axis<uint8_t, IdxT>(src, inds, out, axis);
-      break;
-    case uint16:
-      gather_axis<uint16_t, IdxT>(src, inds, out, axis);
-      break;
-    case uint32:
-      gather_axis<uint32_t, IdxT>(src, inds, out, axis);
-      break;
-    case uint64:
-      gather_axis<uint64_t, IdxT>(src, inds, out, axis);
-      break;
-    case int8:
-      gather_axis<int8_t, IdxT>(src, inds, out, axis);
-      break;
-    case int16:
-      gather_axis<int16_t, IdxT>(src, inds, out, axis);
-      break;
-    case int32:
-      gather_axis<int32_t, IdxT>(src, inds, out, axis);
-      break;
-    case int64:
-      gather_axis<int64_t, IdxT>(src, inds, out, axis);
-      break;
-    case float16:
-      gather_axis<float16_t, IdxT>(src, inds, out, axis);
-      break;
-    case float32:
-      gather_axis<float, IdxT>(src, inds, out, axis);
-      break;
-    case float64:
-      gather_axis<double, IdxT>(src, inds, out, axis);
-      break;
-    case bfloat16:
-      gather_axis<bfloat16_t, IdxT>(src, inds, out, axis);
-      break;
-    case complex64:
-      gather_axis<complex64_t, IdxT>(src, inds, out, axis);
-      break;
-  }
+  dispatch_all_types(out.dtype(), [&](auto type_tag) {
+    using T = MLX_GET_TYPE(type_tag);
+    gather_axis<T, IdxT>(src, inds, out, axis);
+  });
 }
 
 void GatherAxis::eval_cpu(const std::vector<array>& inputs, array& out) {
@@ -532,50 +430,10 @@ void Scatter::eval_cpu(const std::vector<array>& inputs, array& out) {
                     updates = array::unsafe_weak_copy(updates),
                     inds = std::move(inds),
                     out = array::unsafe_weak_copy(out)]() mutable {
-    switch (out.dtype()) {
-      case bool_:
-        dispatch_scatter<bool>(out, inds, updates, axes_, reduce_type_);
-        break;
-      case uint8:
-        dispatch_scatter<uint8_t>(out, inds, updates, axes_, reduce_type_);
-        break;
-      case uint16:
-        dispatch_scatter<uint16_t>(out, inds, updates, axes_, reduce_type_);
-        break;
-      case uint32:
-        dispatch_scatter<uint32_t>(out, inds, updates, axes_, reduce_type_);
-        break;
-      case uint64:
-        dispatch_scatter<uint64_t>(out, inds, updates, axes_, reduce_type_);
-        break;
-      case int8:
-        dispatch_scatter<int8_t>(out, inds, updates, axes_, reduce_type_);
-        break;
-      case int16:
-        dispatch_scatter<int16_t>(out, inds, updates, axes_, reduce_type_);
-        break;
-      case int32:
-        dispatch_scatter<int32_t>(out, inds, updates, axes_, reduce_type_);
-        break;
-      case int64:
-        dispatch_scatter<int64_t>(out, inds, updates, axes_, reduce_type_);
-        break;
-      case float16:
-        dispatch_scatter<float16_t>(out, inds, updates, axes_, reduce_type_);
-        break;
-      case float32:
-        dispatch_scatter<float>(out, inds, updates, axes_, reduce_type_);
-        break;
-      case float64:
-        dispatch_scatter<double>(out, inds, updates, axes_, reduce_type_);
-        break;
-      case bfloat16:
-        dispatch_scatter<bfloat16_t>(out, inds, updates, axes_, reduce_type_);
-        break;
-      case complex64:
-        dispatch_scatter<complex64_t>(out, inds, updates, axes_, reduce_type_);
-        break;
-    }
+    dispatch_all_types(out.dtype(), [&](auto type_tag) {
+      using T = MLX_GET_TYPE(type_tag);
+      dispatch_scatter<T>(out, inds, updates, axes_, reduce_type_);
+    });
   });
 }
 
@@ -697,53 +555,10 @@ void ScatterAxis::eval_cpu(const std::vector<array>& inputs, array& out) {
                     idx = array::unsafe_weak_copy(idx),
                     updates = array::unsafe_weak_copy(updates),
                     out = array::unsafe_weak_copy(out)]() mutable {
-    switch (out.dtype()) {
-      case bool_:
-        dispatch_scatter_axis<bool>(out, idx, updates, axis_, reduce_type_);
-        break;
-      case uint8:
-        dispatch_scatter_axis<uint8_t>(out, idx, updates, axis_, reduce_type_);
-        break;
-      case uint16:
-        dispatch_scatter_axis<uint16_t>(out, idx, updates, axis_, reduce_type_);
-        break;
-      case uint32:
-        dispatch_scatter_axis<uint32_t>(out, idx, updates, axis_, reduce_type_);
-        break;
-      case uint64:
-        dispatch_scatter_axis<uint64_t>(out, idx, updates, axis_, reduce_type_);
-        break;
-      case int8:
-        dispatch_scatter_axis<int8_t>(out, idx, updates, axis_, reduce_type_);
-        break;
-      case int16:
-        dispatch_scatter_axis<int16_t>(out, idx, updates, axis_, reduce_type_);
-        break;
-      case int32:
-        dispatch_scatter_axis<int32_t>(out, idx, updates, axis_, reduce_type_);
-        break;
-      case int64:
-        dispatch_scatter_axis<int64_t>(out, idx, updates, axis_, reduce_type_);
-        break;
-      case float16:
-        dispatch_scatter_axis<float16_t>(
-            out, idx, updates, axis_, reduce_type_);
-        break;
-      case float32:
-        dispatch_scatter_axis<float>(out, idx, updates, axis_, reduce_type_);
-        break;
-      case float64:
-        dispatch_scatter_axis<double>(out, idx, updates, axis_, reduce_type_);
-        break;
-      case bfloat16:
-        dispatch_scatter_axis<bfloat16_t>(
-            out, idx, updates, axis_, reduce_type_);
-        break;
-      case complex64:
-        dispatch_scatter_axis<complex64_t>(
-            out, idx, updates, axis_, reduce_type_);
-        break;
-    }
+    dispatch_all_types(out.dtype(), [&](auto type_tag) {
+      using T = MLX_GET_TYPE(type_tag);
+      dispatch_scatter_axis<T>(out, idx, updates, axis_, reduce_type_);
+    });
   });
 }
 
@@ -788,7 +603,7 @@ void MaskedScatter::eval_cpu(const std::vector<array>& inputs, array& out) {
   auto& mask = inputs[1];
   auto& src = inputs[2];
 
-  // Copy src into out (copy allocates memory for out)
+  // Copy dst into out (copy allocates memory for out)
   auto ctype =
       dst.flags().row_contiguous ? CopyType::Vector : CopyType::General;
   copy_cpu(dst, out, ctype, stream());
@@ -804,50 +619,134 @@ void MaskedScatter::eval_cpu(const std::vector<array>& inputs, array& out) {
   encoder.dispatch([mask = array::unsafe_weak_copy(mask),
                     src = array::unsafe_weak_copy(src),
                     out = array::unsafe_weak_copy(out)]() mutable {
-    switch (out.dtype()) {
-      case bool_:
-        masked_scatter_impl<bool>(mask, src, out);
-        break;
-      case uint8:
-        masked_scatter_impl<uint8_t>(mask, src, out);
-        break;
-      case uint16:
-        masked_scatter_impl<uint16_t>(mask, src, out);
-        break;
-      case uint32:
-        masked_scatter_impl<uint32_t>(mask, src, out);
-        break;
-      case uint64:
-        masked_scatter_impl<uint64_t>(mask, src, out);
-        break;
-      case int8:
-        masked_scatter_impl<int8_t>(mask, src, out);
-        break;
-      case int16:
-        masked_scatter_impl<int16_t>(mask, src, out);
-        break;
-      case int32:
-        masked_scatter_impl<int32_t>(mask, src, out);
-        break;
-      case int64:
-        masked_scatter_impl<int64_t>(mask, src, out);
-        break;
-      case float16:
-        masked_scatter_impl<float16_t>(mask, src, out);
-        break;
-      case float32:
-        masked_scatter_impl<float>(mask, src, out);
-        break;
-      case float64:
-        masked_scatter_impl<double>(mask, src, out);
-        break;
-      case bfloat16:
-        masked_scatter_impl<bfloat16_t>(mask, src, out);
-        break;
-      case complex64:
-        masked_scatter_impl<complex64_t>(mask, src, out);
-        break;
+    dispatch_all_types(out.dtype(), [&](auto type_tag) {
+      using T = MLX_GET_TYPE(type_tag);
+      masked_scatter_impl<T>(mask, src, out);
+    });
+  });
+}
+
+template <typename T, typename Op>
+void slice_update_impl(
+    array& out,
+    const array& upd,
+    int64_t data_offset,
+    const Strides& out_strides) {
+  ContiguousIterator out_it(upd.shape(), out_strides, upd.ndim());
+  ContiguousIterator upd_it(upd);
+  Op op;
+
+  constexpr int SIMD_START = 32;
+
+  T* out_ptr = out.data<T>() + data_offset;
+  const T* upd_ptr = upd.data<T>();
+  int64_t size = upd.size();
+  int64_t suffix = out_it.contiguous_suffix();
+
+  if (upd.data_size() == 1) {
+    if (suffix >= SIMD_START) {
+      for (int64_t i = 0; i < size; i += suffix) {
+        VectorScalar<Op>{}(
+            out_ptr + out_it.loc, upd_ptr, out_ptr + out_it.loc, suffix);
+        out_it.step(suffix);
+      }
+    } else {
+      T update = upd_ptr[0];
+      for (int64_t i = 0; i < size; i++) {
+        out_ptr[out_it.loc] = op(out_ptr[out_it.loc], update);
+        out_it.step();
+      }
     }
+  } else if (suffix == upd_it.contiguous_suffix() && suffix >= SIMD_START) {
+    for (int64_t i = 0; i < size; i += suffix) {
+      VectorVector<Op>{}(
+          out_ptr + out_it.loc,
+          upd_ptr + upd_it.loc,
+          out_ptr + out_it.loc,
+          suffix);
+      out_it.step(suffix);
+      upd_it.step(suffix);
+    }
+  } else {
+    for (int64_t i = 0; i < size; i++) {
+      out_ptr[out_it.loc] = op(out_ptr[out_it.loc], upd_ptr[upd_it.loc]);
+      out_it.step();
+      upd_it.step();
+    }
+  }
+}
+
+void SliceUpdate::eval_cpu(const std::vector<array>& inputs, array& out) {
+  assert(inputs.size() == 2);
+  if (out.size() == 0) {
+    out.set_data(allocator::malloc(0));
+    return;
+  }
+
+  auto& in = inputs[0];
+  auto& upd = inputs[1];
+
+  if (upd.size() == 0) {
+    out.copy_shared_buffer(in);
+    return;
+  }
+
+  // Check if materialization is needed
+  auto ctype = in.flags().contiguous && in.size() == in.data_size()
+      ? CopyType::Vector
+      : CopyType::General;
+  copy_cpu(in, out, in.data_size() == 1 ? CopyType::Scalar : ctype, stream());
+
+  // Calculate out strides, initial offset and if copy needs to be made
+  auto [data_offset, out_strides] =
+      prepare_slice(out, start_indices_, strides_);
+
+  // Do copy
+  if (reduce_type_ == SliceUpdate::None) {
+    copy_cpu_inplace(
+        /* const array& src = */ upd,
+        /* array& dst = */ out,
+        /* const std::vector<int>& data_shape = */ upd.shape(),
+        /* const std::vector<stride_t>& i_strides = */ upd.strides(),
+        /* const std::vector<stride_t>& o_strides = */ out_strides,
+        /* int64_t i_offset = */ 0,
+        /* int64_t o_offset = */ data_offset,
+        /* CopyType ctype = */ CopyType::GeneralGeneral,
+        stream());
+    return;
+  }
+
+  auto& encoder = cpu::get_command_encoder(stream());
+  encoder.set_input_array(upd);
+  encoder.set_output_array(out);
+  encoder.dispatch([upd = array::unsafe_weak_copy(upd),
+                    out = array::unsafe_weak_copy(out),
+                    data_offset = data_offset,
+                    out_strides = std::move(out_strides),
+                    reduce_type = reduce_type_]() mutable {
+    dispatch_all_types(out.dtype(), [&](auto type_tag) {
+      using T = MLX_GET_TYPE(type_tag);
+      switch (reduce_type) {
+        case SliceUpdate::Sum:
+          slice_update_impl<T, detail::Add>(out, upd, data_offset, out_strides);
+          break;
+        case SliceUpdate::Prod:
+          slice_update_impl<T, detail::Multiply>(
+              out, upd, data_offset, out_strides);
+          break;
+        case SliceUpdate::Max:
+          slice_update_impl<T, detail::Maximum>(
+              out, upd, data_offset, out_strides);
+          break;
+        case SliceUpdate::Min:
+          slice_update_impl<T, detail::Minimum>(
+              out, upd, data_offset, out_strides);
+          break;
+        case SliceUpdate::None:
+          // Should never be here
+          break;
+      }
+    });
   });
 }
 

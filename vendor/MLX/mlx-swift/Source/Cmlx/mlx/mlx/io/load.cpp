@@ -1,4 +1,4 @@
-// Copyright © 2023-2024 Apple Inc.
+// Copyright © 2023-2026 Apple Inc.
 #include <algorithm>
 #include <cstring>
 #include <fstream>
@@ -148,10 +148,6 @@ void save(std::shared_ptr<io::Writer> out_stream, array a) {
   a = contiguous(a, true);
   a.eval();
 
-  if (a.nbytes() == 0) {
-    throw std::invalid_argument("[save] cannot serialize an empty array");
-  }
-
   ////////////////////////////////////////////////////////
   // Check file
   if (!out_stream->good() || !out_stream->is_open()) {
@@ -212,7 +208,11 @@ void save(std::shared_ptr<io::Writer> out_stream, array a) {
 
   out_stream->write(magic_ver_len.str().c_str(), magic_ver_len.str().length());
   out_stream->write(header.str().c_str(), header.str().length());
-  out_stream->write(a.data<char>(), a.nbytes());
+  // An empty array has no data to write, and asking for its pointer is not
+  // meaningful, so stop after the header.
+  if (a.nbytes() > 0) {
+    out_stream->write(a.data<char>(), a.nbytes());
+  }
 }
 
 /** Save array to file in .npy format */
@@ -335,13 +335,15 @@ array load(std::string file, StreamOrDevice s) {
 namespace io {
 
 ThreadPool& thread_pool() {
-  static ThreadPool pool_{4};
-  return pool_;
+  // Leak - see Scheduler singleton comment in scheduler.cpp.
+  static ThreadPool* pool_ = new ThreadPool{4};
+  return *pool_;
 }
 
 ThreadPool& ParallelFileReader::thread_pool() {
-  static ThreadPool thread_pool{4};
-  return thread_pool;
+  // Leak - see Scheduler singleton comment in scheduler.cpp.
+  static ThreadPool* thread_pool = new ThreadPool{4};
+  return *thread_pool;
 }
 
 void ParallelFileReader::read(char* data, size_t n) {

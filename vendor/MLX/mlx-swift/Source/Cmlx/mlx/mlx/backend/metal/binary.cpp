@@ -106,7 +106,7 @@ void binary_op_gpu_inplace(
   auto kernel = outputs.size() == 2
       ? get_binary_two_kernel(d, kernel_name, a.dtype(), out.dtype(), op)
       : get_binary_kernel(d, kernel_name, a.dtype(), out.dtype(), op);
-  auto& compute_encoder = d.get_command_encoder(s.index);
+  auto& compute_encoder = metal::get_command_encoder(s);
   compute_encoder.set_compute_pipeline_state(kernel);
 
   int arg_idx = 0;
@@ -235,23 +235,7 @@ BINARY_GPU(Power)
 BINARY_GPU(Subtract)
 
 void BitwiseBinary::eval_gpu(const std::vector<array>& inputs, array& out) {
-  switch (op_) {
-    case BitwiseBinary::And:
-      binary_op_gpu(inputs, out, name());
-      break;
-    case BitwiseBinary::Or:
-      binary_op_gpu(inputs, out, name());
-      break;
-    case BitwiseBinary::Xor:
-      binary_op_gpu(inputs, out, name());
-      break;
-    case BitwiseBinary::LeftShift:
-      binary_op_gpu(inputs, out, name());
-      break;
-    case BitwiseBinary::RightShift:
-      binary_op_gpu(inputs, out, name());
-      break;
-  }
+  binary_op_gpu(inputs, out, name());
 }
 
 } // namespace mlx::core

@@ -210,7 +210,7 @@ AFM-compatible dependency checkpoint:
 
 | Vendored directory | Upstream base | AFM compatibility revision | Purpose |
 | --- | --- | --- | --- |
-| `vendor/MLX/mlx-swift/Source/Cmlx/mlx` | `ce45c52505c8158ea48d2a54e8caae05efd86bfe` | `b9af157b016a470be1ca609531693b822d40f95f` | AFM-compatible MLX C++/Metal source |
+| `vendor/MLX/mlx-swift/Source/Cmlx/mlx` | `v0.32.2` (`1f8e74e3f12f31365464a6867c6579f0e9b29d85`) | This AFMKit revision | AFM-compatible MLX C++/Metal source; C++20 runtime with AFM DeepSeek primitives and command-buffer telemetry |
 | `vendor/MLX/mlx-swift/Source/Cmlx/mlx-c` | `0726ca922fc902c4c61ef9c27d94132be418e945` | `1692252c78e634a90ae09bd77a9f68929982b8a0` | C bridge for the vendored MLX runtime |
 | `vendor/MLX/mlx-swift` | `0bb916c67f4b9e5c682cbe02a42c701c93ab5021` | `6000b7b26b70be2713c74e9ec2adeb89be07b9e5` | Swift MLX bindings and bundled Metal runtime |
 | `vendor/MLX/mlx-swift-lm` | recorded in its source provenance | `e0d7fa71bc5e422a416f191c297264f698391561` | AFM model architectures, parsers, generation behavior, and quantization-aware Qwen MTP loading |

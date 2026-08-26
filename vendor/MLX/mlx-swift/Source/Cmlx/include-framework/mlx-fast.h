@@ -7,6 +7,7 @@
 #include <variant>
 
 #include <Cmlx/mlx-api.h>
+#include <Cmlx/mlx-backend-common-metal_kernel.h>
 #include <Cmlx/mlx-utils.h>
 
 namespace mlx::core::fast {
@@ -23,6 +24,10 @@ MLX_API array layer_norm(
     const std::optional<array>& bias,
     float eps,
     StreamOrDevice s = {});
+
+/** Fused cross entropy with class indices as targets. */
+MLX_API array
+cross_entropy(const array& logits, const array& targets, StreamOrDevice s = {});
 
 MLX_API array rope(
     const array& x,
@@ -53,6 +58,7 @@ MLX_API array scaled_dot_product_attention(
     const std::string& mask_mode = "",
     std::optional<array> mask_arr = {},
     const std::optional<array>& sinks = {},
+    bool force_fused = false,
     StreamOrDevice s = {});
 
 using TemplateArg = std::variant<int, bool, Dtype>;
@@ -76,7 +82,49 @@ MLX_API CustomKernelFunction metal_kernel(
     const std::string& source,
     const std::string& header = "",
     bool ensure_row_contiguous = true,
-    bool atomic_outputs = false);
+    bool atomic_outputs = false,
+    const CompileOptions& compile_options = {});
+
+// Metadata-gated DeepSeek V4 decode primitive used by AFM. The caller must
+// validate the exact 4096/2048/256/top-6 MXFP4 group-32 contract before use.
+MLX_API array deepseek_v4_mxfp4_moe(
+    const array& x, const array& gate_weight, const array& gate_scales,
+    const array& up_weight, const array& up_scales, const array& down_weight,
+    const array& down_scales, const array& indices, const array& scores,
+    float activation_limit, StreamOrDevice s = {});
+
+MLX_API array deepseek_v4_mxfp4_moe_select(
+    const array& x, const array& gate_weight, const array& gate_scales,
+    const array& up_weight, const array& up_scales, const array& down_weight,
+    const array& down_scales, const array& logits, const array& bias,
+    const array& route_scale, float activation_limit, StreamOrDevice s = {});
+
+MLX_API array deepseek_v4_mxfp4_moe_select_shared_q8(
+    const array& x, const array& gate_weight, const array& gate_scales,
+    const array& up_weight, const array& up_scales, const array& down_weight,
+    const array& down_scales, const array& logits, const array& bias,
+    const array& route_scale, const array& shared_gate_weight,
+    const array& shared_gate_scales, const array& shared_up_weight,
+    const array& shared_up_scales, const array& shared_down_weight,
+    const array& shared_down_scales, float activation_limit,
+    StreamOrDevice s = {});
+
+MLX_API array deepseek_v4_hc_mxfp4_moe_shared_q8(
+    const array& residual, const array& hc_fn, const array& hc_scale,
+    const array& hc_base, const array& norm_weight,
+    const array& router_weight, const array& router_bias,
+    const array& route_scale, const array& gate_weight,
+    const array& gate_scales, const array& up_weight, const array& up_scales,
+    const array& down_weight, const array& down_scales,
+    const array& shared_gate_weight, const array& shared_gate_scales,
+    const array& shared_up_weight, const array& shared_up_scales,
+    const array& shared_down_weight, const array& shared_down_scales,
+    float activation_limit, float hc_eps, float norm_eps,
+    StreamOrDevice s = {});
+
+MLX_API array deepseek_v4_symmetric_q8_matvec(
+    const array& x, const array& weight, const array& scales,
+    int output_groups = 1, StreamOrDevice s = {});
 
 MLX_API CustomKernelFunction cuda_kernel(
     const std::string& name,
