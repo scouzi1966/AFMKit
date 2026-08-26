@@ -48,6 +48,7 @@ final class AFMMLXModelArchitectureTests: XCTestCase {
 
     func testSupportedAndBlockedModelTypes() {
         XCTAssertTrue(AFMMLXModelArchitecture.isSupported("qwen3.5"))
+        XCTAssertTrue(AFMMLXModelArchitecture.isSupported("qwen4_exp"))
         XCTAssertTrue(AFMMLXModelArchitecture.isSupported("qwen3_vl"))
         XCTAssertTrue(AFMMLXModelArchitecture.isSupported("deepseek_v4"))
         XCTAssertTrue(AFMMLXModelArchitecture.isSupported("afmoe"))
@@ -70,6 +71,32 @@ final class AFMMLXModelArchitectureTests: XCTestCase {
         XCTAssertFalse(AFMMLXModelArchitecture.isLanguageModelType("muse_glimmer"))
         XCTAssertFalse(AFMMLXModelArchitecture.isDualModeModelType("muse_glimmer"))
         XCTAssertFalse(AFMMLXModelArchitecture.isDualModeModelType("qwen3_vl"))
+    }
+
+    func testQwen4ExpUsesTextFactoryUntilVisionRuntimeIsImplemented() throws {
+        let config: [String: Any] = [
+            "architectures": ["Qwen4ExpForConditionalGeneration"],
+            "model_type": "qwen4_exp",
+            "text_config": [
+                "model_type": "qwen4_exp_text",
+                "num_attention_heads": 20,
+            ],
+            "vision_config": ["model_type": "qwen4_exp_vision"],
+        ]
+
+        let preflight = try AFMMLXModelArchitecture.preflightConfiguration(
+            config,
+            modelID: "Vontra/Qwen3.8-Flash-Next-MLX-4bit"
+        )
+
+        XCTAssertEqual(preflight.canonicalModelType, "qwen4_exp")
+        XCTAssertFalse(preflight.isVisionConfiguration)
+        XCTAssertFalse(preflight.requiresVisionModelFactory)
+        XCTAssertEqual(
+            AFMMLXModelFactoryPolicy.initialFactory(forceVLM: false, architecture: preflight),
+            .llm
+        )
+        XCTAssertFalse(AFMMLXRequestMediaPolicy.supports(.image, architecture: preflight))
     }
 
     func testMuseGlimmerConfigurationUsesVisionFactory() throws {

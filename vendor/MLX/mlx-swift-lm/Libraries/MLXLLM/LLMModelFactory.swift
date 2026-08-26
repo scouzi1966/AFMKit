@@ -7,7 +7,7 @@ import MLXLMCommon
 import Tokenizers
 
 /// Creates a function that decodes configuration data and instantiates a model with the proper configuration
-private func create<C: Codable, M>(
+private func create<C: Decodable, M>(
     _ configurationType: C.Type, _ modelInit: @escaping (C) -> M
 ) -> (Data) throws -> M {
     { data in
@@ -41,6 +41,7 @@ public enum LLMTypeRegistry {
         "qwen3_next": create(Qwen3NextConfiguration.self, Qwen3NextModel.init),
         "qwen3_5": create(Qwen3_5MoEConfiguration.self, Qwen3_5MoEModel.init),
         "qwen3_5_moe": create(Qwen3_5MoEConfiguration.self, Qwen3_5MoEModel.init),
+        "qwen4_exp": create(Qwen4ExpConfiguration.self, Qwen4ExpModel.init),
         "starcoder2": create(Starcoder2Configuration.self, Starcoder2Model.init),
         "cohere": create(CohereConfiguration.self, CohereModel.init),
         "cohere2_moe": create(Cohere2MoeConfiguration.self, Cohere2MoeModel.init),
