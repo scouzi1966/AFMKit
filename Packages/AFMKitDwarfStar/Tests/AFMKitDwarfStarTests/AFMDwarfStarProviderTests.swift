@@ -38,6 +38,75 @@ final class AFMDwarfStarProviderTests: XCTestCase {
         XCTAssertEqual(buffer, "")
     }
 
+    func testParsedOutputStopPolicySuppressesToolCallAfterSplitStop() throws {
+        var parser = AFMDwarfStarToolCodec.StreamParser()
+        var responseBuffer = ""
+        let toolBlock = "<｜DSML｜tool_calls><｜DSML｜invoke name=\"weather\"></｜DSML｜invoke></｜DSML｜tool_calls>"
+
+        let first = AFMDwarfStarParsedOutputStopPolicy.consume(
+            buffer: &responseBuffer,
+            outputs: try parser.consume("AFM_PREFIXST"),
+            stopSequences: ["STOP"]
+        )
+        let second = AFMDwarfStarParsedOutputStopPolicy.consume(
+            buffer: &responseBuffer,
+            outputs: try parser.consume("OP" + toolBlock),
+            stopSequences: ["STOP"]
+        )
+
+        XCTAssertEqual(first, .init(outputs: [.text("AFM_PREFIX")], stopped: false))
+        XCTAssertEqual(second, .init(outputs: [], stopped: true))
+        XCTAssertEqual(responseBuffer, "")
+    }
+
+    func testParsedOutputStopPolicyFlushesPartialPrefixBeforeToolBoundary() throws {
+        var parser = AFMDwarfStarToolCodec.StreamParser()
+        var responseBuffer = ""
+        let toolBlock = "<｜DSML｜tool_calls><｜DSML｜invoke name=\"weather\"></｜DSML｜invoke></｜DSML｜tool_calls>"
+
+        let first = AFMDwarfStarParsedOutputStopPolicy.consume(
+            buffer: &responseBuffer,
+            outputs: try parser.consume("AFM_PREFIXST"),
+            stopSequences: ["START"]
+        )
+        let second = AFMDwarfStarParsedOutputStopPolicy.consume(
+            buffer: &responseBuffer,
+            outputs: try parser.consume(toolBlock),
+            stopSequences: ["START"]
+        )
+
+        XCTAssertEqual(first.outputs, [.text("AFM_PREFIX")])
+        XCTAssertEqual(
+            second.outputs,
+            [
+                .text("ST"),
+                .toolCalls([AFMToolCall(id: "call_1", name: "weather", arguments: "{}")]),
+            ]
+        )
+        XCTAssertFalse(second.stopped)
+        XCTAssertEqual(responseBuffer, "")
+    }
+
+    func testParsedOutputStopPolicyFlushesPartialPrefixBeforeReasoningBoundary() throws {
+        var parser = AFMDwarfStarToolCodec.StreamParser()
+        var responseBuffer = ""
+
+        _ = AFMDwarfStarParsedOutputStopPolicy.consume(
+            buffer: &responseBuffer,
+            outputs: try parser.consume("AFM_PREFIXST"),
+            stopSequences: ["START"]
+        )
+        let result = AFMDwarfStarParsedOutputStopPolicy.consume(
+            buffer: &responseBuffer,
+            outputs: try parser.consume("<think>private"),
+            stopSequences: ["START"]
+        )
+
+        XCTAssertEqual(result.outputs, [.text("ST"), .reasoning("private")])
+        XCTAssertFalse(result.stopped)
+        XCTAssertEqual(responseBuffer, "")
+    }
+
     func testProviderStatePublicationPreservesMutationOrderWhenObserverBlocks() async throws {
         let coordinator = AFMDwarfStarProviderStateCoordinator()
         let observer = BlockingProviderStateObserver()

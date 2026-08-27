@@ -236,6 +236,51 @@ enum AFMDwarfStarTextStopPolicy {
     }
 }
 
+enum AFMDwarfStarParsedOutputStopPolicy {
+    struct Result: Equatable {
+        var outputs: [AFMDwarfStarToolCodec.StreamOutput]
+        var stopped: Bool
+    }
+
+    /// Apply response-text stop sequences before later parser channels are
+    /// observable. A buffered partial delimiter belongs to response text, so it
+    /// must be emitted before a reasoning or tool-call boundary when it cannot
+    /// be completed by another response-text fragment.
+    static func consume(
+        buffer: inout String,
+        outputs: [AFMDwarfStarToolCodec.StreamOutput],
+        stopSequences: [String]
+    ) -> Result {
+        var visibleOutputs: [AFMDwarfStarToolCodec.StreamOutput] = []
+
+        for output in outputs {
+            switch output {
+            case .text(let text):
+                let result = AFMDwarfStarTextStopPolicy.consume(
+                    buffer: &buffer,
+                    piece: text,
+                    stopSequences: stopSequences
+                )
+                if !result.visibleText.isEmpty {
+                    visibleOutputs.append(.text(result.visibleText))
+                }
+                if result.stopped {
+                    return Result(outputs: visibleOutputs, stopped: true)
+                }
+
+            case .reasoning, .toolCalls:
+                let pendingText = AFMDwarfStarTextStopPolicy.drain(buffer: &buffer)
+                if !pendingText.isEmpty {
+                    visibleOutputs.append(.text(pendingText))
+                }
+                visibleOutputs.append(output)
+            }
+        }
+
+        return Result(outputs: visibleOutputs, stopped: false)
+    }
+}
+
 enum AFMDwarfStarPrefixCachePolicy {
     static let defaultBudgetMB: UInt64 = 4_096
 
@@ -1079,7 +1124,9 @@ package actor AFMDwarfStarRuntimeCoordinator {
         flushPendingUTF8(job)
         flushRawEmissionBuffer(job)
         if !job.isRawPrompt {
-            _ = process(job.toolParser.finish(), for: job, tokenCount: 0)
+            if !job.stopSequenceMatched {
+                _ = process(job.toolParser.finish(), for: job, tokenCount: 0)
+            }
             flushResponseEmissionBuffer(job)
         }
         let effectiveReason: AFMFinishReason = job.stopSequenceMatched ? .stop : reason
@@ -1185,18 +1232,17 @@ package actor AFMDwarfStarRuntimeCoordinator {
         emitRawText(text, for: job, tokenCount: tokenCount)
     }
 
-    private func processResponseText(
-        _ piece: String,
-        for job: GenerationJob,
-        tokenCount: Int
-    ) {
-        let result = AFMDwarfStarTextStopPolicy.consume(
+    private func filteredParsedOutputs(
+        _ outputs: [AFMDwarfStarToolCodec.StreamOutput],
+        for job: GenerationJob
+    ) -> [AFMDwarfStarToolCodec.StreamOutput] {
+        let result = AFMDwarfStarParsedOutputStopPolicy.consume(
             buffer: &job.responseEmissionBuffer,
-            piece: piece,
+            outputs: outputs,
             stopSequences: job.request.options.stopSequences
         )
-        emitResponseText(result.visibleText, for: job, tokenCount: tokenCount)
         job.stopSequenceMatched = job.stopSequenceMatched || result.stopped
+        return result.outputs
     }
 
     private func flushResponseEmissionBuffer(_ job: GenerationJob, tokenCount: Int = 0) {
@@ -1222,10 +1268,10 @@ package actor AFMDwarfStarRuntimeCoordinator {
         for job: GenerationJob,
         tokenCount: Int
     ) -> Bool {
-        for output in outputs {
+        for output in filteredParsedOutputs(outputs, for: job) {
             switch output {
             case .text(let text):
-                processResponseText(text, for: job, tokenCount: tokenCount)
+                emitResponseText(text, for: job, tokenCount: tokenCount)
             case .reasoning(let text):
                 job.generatedReasoning += text
                 job.onEvent(.reasoningText(action: .append, text: text, tokenCount: tokenCount))
