@@ -6795,7 +6795,10 @@ public final class MLXModelService:
         canonicalModelType: String?,
         forceDisableThinking: Bool
     ) -> (kwargs: [String: any Sendable], note: String?) {
-        guard canonicalModelType == "muse_glimmer" else {
+        guard canonicalModelType == "muse_glimmer"
+            || canonicalModelType == "glm5_next"
+            || canonicalModelType == "glm5_next_text"
+        else {
             return (kwargs, nil)
         }
 
@@ -6805,6 +6808,23 @@ public final class MLXModelService:
         let effort = (normalized["reasoning_effort"] as? String)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
+
+        if canonicalModelType == "glm5_next" || canonicalModelType == "glm5_next_text" {
+            normalized.removeValue(forKey: "enable_thinking")
+            if explicitNoThinking {
+                normalized["reasoning_effort"] = "low"
+                return (
+                    normalized,
+                    "GLM-5.3 does not expose an off switch in its template; using reasoning_effort=low"
+                )
+            }
+            if let effort, ["low", "high", "max"].contains(effort) {
+                normalized["reasoning_effort"] = effort
+            } else if effort != nil {
+                normalized.removeValue(forKey: "reasoning_effort")
+            }
+            return (normalized, nil)
+        }
 
         if explicitNoThinking {
             normalized["reasoning_strength"] = "low"

@@ -88,6 +88,18 @@ Scripts/test-api-gate.sh
 Scripts/check-api-baselines.sh
 ```
 
+### GLM-5.3-Flash checkpoint note
+
+The vendored MLX Swift runtime includes text-generation support for
+`model_type: glm5_next`, the architecture published as
+[`zai-org/GLM-5.3-Flash`](https://huggingface.co/zai-org/GLM-5.3-Flash). The
+upstream repository currently publishes FP8 Transformers shards rather than an
+MLX-quantized checkpoint. AFMKit therefore expects an MLX-converted checkpoint;
+it does not claim that the original FP8 distribution can be loaded directly on
+Apple Silicon. This first implementation covers the language decoder and tool
+format. Image and video execution require a future `MLXVLM` model and processor
+port.
+
 The AFM-compatible MLX, MLX C, Swift bindings, and language-model sources live
 under `vendor/MLX`. They are ordinary source snapshots with their upstream
 licenses and provenance, not submodules or separately authenticated packages.
