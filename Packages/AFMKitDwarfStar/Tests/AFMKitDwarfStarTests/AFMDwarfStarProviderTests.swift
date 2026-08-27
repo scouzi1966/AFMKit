@@ -3,6 +3,41 @@ import AFMKitCore
 @testable import AFMKitDwarfStar
 
 final class AFMDwarfStarProviderTests: XCTestCase {
+    func testTextStopPolicySuppressesDelimiterSplitAcrossChunks() {
+        var buffer = ""
+
+        let first = AFMDwarfStarTextStopPolicy.consume(
+            buffer: &buffer,
+            piece: "AFM_STREAM_PREFIX<AFM_STREAM_",
+            stopSequences: ["<AFM_STREAM_STOP>"]
+        )
+        let second = AFMDwarfStarTextStopPolicy.consume(
+            buffer: &buffer,
+            piece: "STOP>trailing text",
+            stopSequences: ["<AFM_STREAM_STOP>"]
+        )
+
+        XCTAssertEqual(first.visibleText, "AFM_STREAM_PREFIX")
+        XCTAssertFalse(first.stopped)
+        XCTAssertEqual(second.visibleText, "")
+        XCTAssertTrue(second.stopped)
+        XCTAssertEqual(buffer, "")
+    }
+
+    func testTextStopPolicyEmitsTextThatCannotBecomeStopPrefix() {
+        var buffer = ""
+
+        let result = AFMDwarfStarTextStopPolicy.consume(
+            buffer: &buffer,
+            piece: "ordinary output",
+            stopSequences: ["<AFM_STOP>"]
+        )
+
+        XCTAssertEqual(result.visibleText, "ordinary output")
+        XCTAssertFalse(result.stopped)
+        XCTAssertEqual(buffer, "")
+    }
+
     func testProviderStatePublicationPreservesMutationOrderWhenObserverBlocks() async throws {
         let coordinator = AFMDwarfStarProviderStateCoordinator()
         let observer = BlockingProviderStateObserver()

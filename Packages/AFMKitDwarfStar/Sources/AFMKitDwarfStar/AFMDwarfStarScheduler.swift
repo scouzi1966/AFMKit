@@ -185,7 +185,7 @@ struct AFMDwarfStarOutputAccounting {
     }
 }
 
-enum AFMDwarfStarRawStopPolicy {
+enum AFMDwarfStarTextStopPolicy {
     struct Result: Equatable {
         var visibleText: String
         var stopped: Bool
@@ -354,6 +354,8 @@ package actor AFMDwarfStarRuntimeCoordinator {
         var generationStart: ContinuousClock.Instant?
         var generatedText = ""
         var rawEmissionBuffer = ""
+        var responseEmissionBuffer = ""
+        var stopSequenceMatched = false
         var generatedReasoning = ""
         var toolCalls: [AFMToolCall] = []
         var toolParser: AFMDwarfStarToolCodec.StreamParser
@@ -1043,6 +1045,10 @@ package actor AFMDwarfStarRuntimeCoordinator {
                         for: job,
                         tokenCount: 1
                     )
+                    if job.stopSequenceMatched {
+                        finish(slotIndex: slotIndex, reason: .stop)
+                        return
+                    }
                     if completedToolCall {
                         finish(slotIndex: slotIndex, reason: .toolCalls)
                         return
@@ -1051,11 +1057,6 @@ package actor AFMDwarfStarRuntimeCoordinator {
                     finish(slotIndex: slotIndex, throwing: error)
                     return
                 }
-            }
-            if !job.isRawPrompt,
-               job.request.options.stopSequences.contains(where: job.generatedText.hasSuffix) {
-                finish(slotIndex: slotIndex, reason: .stop)
-                return
             }
         }
 
@@ -1079,7 +1080,9 @@ package actor AFMDwarfStarRuntimeCoordinator {
         flushRawEmissionBuffer(job)
         if !job.isRawPrompt {
             _ = process(job.toolParser.finish(), for: job, tokenCount: 0)
+            flushResponseEmissionBuffer(job)
         }
+        let effectiveReason: AFMFinishReason = job.stopSequenceMatched ? .stop : reason
         persistPrefixIfIdle(slotIndex: slotIndex, job: job, reason: "continued")
         let generationSeconds = job.generationStart.map(Self.seconds(since:)) ?? 0
         let result = AFMDwarfStarGenerationResult(
@@ -1090,7 +1093,7 @@ package actor AFMDwarfStarRuntimeCoordinator {
                 cachedInputTokens: job.cachedInputTokens,
                 outputTokens: job.outputTokens),
             toolCalls: job.toolCalls,
-            finishReason: job.toolCalls.isEmpty ? reason : .toolCalls,
+            finishReason: job.toolCalls.isEmpty ? effectiveReason : .toolCalls,
             metadata: [
                 "runtime": .string("dwarfstar"),
                 "backend": .string("metal"),
@@ -1111,7 +1114,7 @@ package actor AFMDwarfStarRuntimeCoordinator {
         _ = job.telemetryObserver.requestFinished(
             job.telemetryToken,
             observation: AFMInferenceRequestFinishObservation(
-                reason: Self.telemetryFinishReason(reason),
+                reason: Self.telemetryFinishReason(effectiveReason),
                 completedAt: ProcessInfo.processInfo.systemUptime,
                 fullPromptTokens: Int(job.prompt.len),
                 computedPromptTokens: max(0, Int(job.prompt.len) - job.cachedInputTokens),
@@ -1167,18 +1170,44 @@ package actor AFMDwarfStarRuntimeCoordinator {
         for job: GenerationJob,
         tokenCount: Int
     ) -> Bool {
-        let result = AFMDwarfStarRawStopPolicy.consume(
+        let result = AFMDwarfStarTextStopPolicy.consume(
             buffer: &job.rawEmissionBuffer,
             piece: piece,
             stopSequences: job.request.options.stopSequences
         )
         emitRawText(result.visibleText, for: job, tokenCount: tokenCount)
+        job.stopSequenceMatched = job.stopSequenceMatched || result.stopped
         return result.stopped
     }
 
     private func flushRawEmissionBuffer(_ job: GenerationJob, tokenCount: Int = 0) {
-        let text = AFMDwarfStarRawStopPolicy.drain(buffer: &job.rawEmissionBuffer)
+        let text = AFMDwarfStarTextStopPolicy.drain(buffer: &job.rawEmissionBuffer)
         emitRawText(text, for: job, tokenCount: tokenCount)
+    }
+
+    private func processResponseText(
+        _ piece: String,
+        for job: GenerationJob,
+        tokenCount: Int
+    ) {
+        let result = AFMDwarfStarTextStopPolicy.consume(
+            buffer: &job.responseEmissionBuffer,
+            piece: piece,
+            stopSequences: job.request.options.stopSequences
+        )
+        emitResponseText(result.visibleText, for: job, tokenCount: tokenCount)
+        job.stopSequenceMatched = job.stopSequenceMatched || result.stopped
+    }
+
+    private func flushResponseEmissionBuffer(_ job: GenerationJob, tokenCount: Int = 0) {
+        let text = AFMDwarfStarTextStopPolicy.drain(buffer: &job.responseEmissionBuffer)
+        emitResponseText(text, for: job, tokenCount: tokenCount)
+    }
+
+    private func emitResponseText(_ text: String, for job: GenerationJob, tokenCount: Int) {
+        guard !text.isEmpty else { return }
+        job.generatedText += text
+        job.onEvent(.responseText(action: .append, text: text, tokenCount: tokenCount))
     }
 
     private func emitRawText(_ text: String, for job: GenerationJob, tokenCount: Int) {
@@ -1196,8 +1225,7 @@ package actor AFMDwarfStarRuntimeCoordinator {
         for output in outputs {
             switch output {
             case .text(let text):
-                job.generatedText += text
-                job.onEvent(.responseText(action: .append, text: text, tokenCount: tokenCount))
+                processResponseText(text, for: job, tokenCount: tokenCount)
             case .reasoning(let text):
                 job.generatedReasoning += text
                 job.onEvent(.reasoningText(action: .append, text: text, tokenCount: tokenCount))
