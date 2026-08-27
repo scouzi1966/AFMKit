@@ -3040,7 +3040,11 @@ public final class MLXModelService:
 
             if useCache, let radix = self.radixCache {
                 let tLookup0 = Date.timeIntervalSinceReferenceDate
-                let match = radix.findPrefixMatch(inputTokens)
+                let requiresExactBoundary = MLXPrefixReplayPolicy
+                    .requiresExactBoundaryRestore(generationCache)
+                let match = requiresExactBoundary
+                    ? radix.findExactBoundaryMatch(inputTokens)
+                    : radix.findPrefixMatch(inputTokens)
                 let prefixLen = match.prefixLen
                 let layerStates = match.layerStates
                 let layerMetaStates = match.layerMetaStates
@@ -3049,7 +3053,7 @@ public final class MLXModelService:
                 let effectivePrefix = self.effectiveCachedPrefix(
                     prefixLen: prefixLen,
                     inputTokenCount: inputTokens.count,
-                    cache: generationCache,
+                    requiresExactBoundary: requiresExactBoundary,
                     sourceTokenCount: match.sourceTokenCount
                 )
                 let bypassExactReplay = prefixLen == inputTokens.count && effectivePrefix == 0 && prefixLen > 0
@@ -3935,7 +3939,11 @@ public final class MLXModelService:
 
                         if useCache, let radix = self.radixCache {
                             let tLookup0 = Date.timeIntervalSinceReferenceDate
-                            let match = radix.findPrefixMatch(inputTokens)
+                            let requiresExactBoundary = MLXPrefixReplayPolicy
+                                .requiresExactBoundaryRestore(generationCache)
+                            let match = requiresExactBoundary
+                                ? radix.findExactBoundaryMatch(inputTokens)
+                                : radix.findPrefixMatch(inputTokens)
                             let prefixLen = match.prefixLen
                             let layerStates = match.layerStates
                             let layerMetaStates = match.layerMetaStates
@@ -3944,7 +3952,7 @@ public final class MLXModelService:
                             let effectivePrefix = self.effectiveCachedPrefix(
                                 prefixLen: prefixLen,
                                 inputTokenCount: inputTokens.count,
-                                cache: generationCache,
+                                requiresExactBoundary: requiresExactBoundary,
                                 sourceTokenCount: match.sourceTokenCount
                             )
                             let bypassExactReplay = prefixLen == inputTokens.count && effectivePrefix == 0 && prefixLen > 0
@@ -7445,10 +7453,6 @@ public final class MLXModelService:
         )
     }
 
-    private func hasRecurrentLayers(_ cache: [KVCache]) -> Bool {
-        cache.contains { $0 is ArraysCache || $0 is CacheList }
-    }
-
     private func unsafeExactReplaySuffix() -> Int? {
         let env = ProcessInfo.processInfo.environment
         guard let rawValue = env["AFM_PREFIX_CACHE_ALLOW_UNSAFE_EXACT_REPLAY"]?
@@ -7492,29 +7496,16 @@ public final class MLXModelService:
     private func effectiveCachedPrefix(
         prefixLen: Int,
         inputTokenCount: Int,
-        cache: [KVCache],
+        requiresExactBoundary: Bool,
         sourceTokenCount: Int?
     ) -> Int {
-        // Hybrid recurrent layers (for example Mamba/GatedDeltaNet state in ArraysCache)
-        // are not replay-safe for exact full-prefix restores on Qwen3.5-35B-A3B. Falling
-        // back to a cold prefill preserves correctness for deterministic replays.
-        let forcedSuffix = unsafeExactReplaySuffix()
-
-        if prefixLen == inputTokenCount && hasRecurrentLayers(cache) && forcedSuffix == nil {
-            return 0
-        }
-
-        if prefixLen == inputTokenCount, let forcedSuffix {
-            return max(0, inputTokenCount - forcedSuffix)
-        }
-
-        let minSuffix = 16
-        let effectivePrefix = min(prefixLen, max(0, inputTokenCount - minSuffix))
-        if hasRecurrentLayers(cache) && forcedSuffix == nil,
-           let sourceTokenCount, sourceTokenCount != effectivePrefix {
-            return 0
-        }
-        return effectivePrefix
+        MLXPrefixReplayPolicy.effectivePrefixLength(
+            matchedPrefix: prefixLen,
+            inputTokenCount: inputTokenCount,
+            requiresExactBoundary: requiresExactBoundary,
+            forcedSuffix: unsafeExactReplaySuffix(),
+            sourceTokenCount: sourceTokenCount
+        )
     }
 
     // MARK: - Prompt cache helpers
