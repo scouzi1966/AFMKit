@@ -262,9 +262,7 @@ actor BatchScheduler {
     /// Capture it one token before the prompt boundary, then replay that token
     /// after restore to recover the same next-token logits.
     nonisolated static func requiresReplayBoundarySnapshot(_ cache: [KVCache]) -> Bool {
-        cache.contains {
-            $0 is ArraysCache || $0 is CacheList || $0 is DeepseekV4Cache
-        }
+        MLXPrefixReplayPolicy.requiresExactBoundaryRestore(cache)
     }
 
     /// Whether a per-request cache can be promoted into the scheduler's dense
@@ -1167,21 +1165,13 @@ actor BatchScheduler {
         forcedSuffix: Int?,
         sourceTokenCount: Int? = nil
     ) -> Int {
-        if matchedPrefix == inputTokenCount, let forcedSuffix {
-            return max(0, inputTokenCount - forcedSuffix)
-        }
-        if hasRecurrentLayers && forcedSuffix == nil {
-            // A recurrent state is reusable only at the exact token boundary
-            // where it was captured, with at least one suffix token left to
-            // recover logits. Never trim a longer descendant recurrent state.
-            guard matchedPrefix < inputTokenCount,
-                  sourceTokenCount == matchedPrefix
-            else { return 0 }
-            return matchedPrefix
-        }
-        let minSuffix = 16
-        let effectivePrefix = min(matchedPrefix, max(0, inputTokenCount - minSuffix))
-        return effectivePrefix
+        MLXPrefixReplayPolicy.effectivePrefixLength(
+            matchedPrefix: matchedPrefix,
+            inputTokenCount: inputTokenCount,
+            requiresExactBoundary: hasRecurrentLayers,
+            forcedSuffix: forcedSuffix,
+            sourceTokenCount: sourceTokenCount
+        )
     }
 
     static func shouldDeferStaggeredAdmissions(
