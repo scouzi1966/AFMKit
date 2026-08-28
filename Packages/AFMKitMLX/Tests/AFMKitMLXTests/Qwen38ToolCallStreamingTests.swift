@@ -292,6 +292,49 @@ struct Qwen38ToolCallStreamingTests {
         #expect(processor.drainToolCalls().map(\.function.name) == ["get_time"])
     }
 
+    @Test("Incomplete wrapped and bare XML reach provider salvage")
+    func incompleteXMLReachesProviderSalvage() throws {
+        let cases = [
+            "<tool_call><function=get_weather><parameter=location>Paris",
+            "<function=get_weather><parameter=location>Paris",
+        ]
+
+        for output in cases {
+            let processor = ToolCallProcessor(format: .xmlFunction)
+            #expect(processor.processChunk(output) == nil)
+            let pending = try #require(processor.finishPendingText())
+            #expect(pending == output)
+
+            var fallback = AFMMLXRawToolStreamFallback(
+                toolCallStartTag: "<tool_call>",
+                toolCallEndTag: "</tool_call>",
+                toolCallParser: "qwen3_xml",
+                tools: [weatherTool],
+                applyFixToolArgs: { $0 },
+                remapSingleKey: { key, _ in key }
+            )
+            var chunks = fallback.consume(StreamChunk(text: pending))
+            chunks += fallback.finish()
+
+            var translator = MLXStreamEventTranslator(
+                thinkStartTag: nil,
+                thinkEndTag: nil,
+                maximumResponseTokens: 100,
+                tools: [weatherTool]
+            )
+            var events = chunks.flatMap { translator.consume($0) }
+            events += translator.finish()
+            let completed = events.compactMap { event -> AFMToolCall? in
+                guard case .toolCall(let call, .completed) = event else { return nil }
+                return call
+            }
+
+            let call = try #require(completed.first)
+            #expect(completed.map(\.name) == ["get_weather"])
+            #expect(try decodeArguments(call.arguments)["location"] as? String == "Paris")
+        }
+    }
+
     @Test("Native Qwen coercion does not fabricate omitted required arguments")
     func nativeCoercionDoesNotFabricateRequiredArguments() throws {
         let tool = makeTool(

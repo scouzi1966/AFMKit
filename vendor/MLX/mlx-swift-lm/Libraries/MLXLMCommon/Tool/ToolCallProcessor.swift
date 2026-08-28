@@ -101,6 +101,26 @@ public class ToolCallProcessor {
         return drained
     }
 
+    /// Return raw tagged content that remained incomplete when generation ended.
+    ///
+    /// Tagged parsers must not silently consume a partial call. AFM's provider
+    /// fallback owns incomplete-call salvage, so normal EOS/token-limit
+    /// completion forwards this text downstream. Inline parsers already return
+    /// every chunk as passthrough while incomplete and therefore have nothing
+    /// additional to flush.
+    public func finishPendingText() -> String? {
+        guard !isInlineFormat else {
+            toolCallBuffer = ""
+            return nil
+        }
+
+        let pending = toolCallBuffer
+        state = .normal
+        activeEndTag = nil
+        toolCallBuffer = ""
+        return pending.isEmpty ? nil : pending
+    }
+
     // MARK: - Private Methods
 
     /// Process chunk for inline formats (no wrapper tags).

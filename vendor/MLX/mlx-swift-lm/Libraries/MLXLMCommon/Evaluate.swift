@@ -1443,6 +1443,7 @@ public func generateTask(
                         pendingLogprobs = []
                     }
                     if case .terminated = continuation.yield(.chunk(textToYield)) {
+                        continuationTerminated = true
                         break
                     }
                 }
@@ -1470,6 +1471,19 @@ public func generateTask(
                 perfDetokNs += (tDetok1 - tDetok0)
                 perfLoopOverheadNs += (tAfterNext - tLoopTop)
             }
+        }
+
+        // On normal EOS or token-limit completion, preserve an unfinished
+        // tagged call for AFM's provider-level salvage. Do not emit buffered
+        // content after consumer cancellation or an intentional tool stop.
+        if !Task.isCancelled && !stoppedAfterToolCall && !continuationTerminated,
+            let pendingToolText = toolCallProcessor.finishPendingText()
+        {
+            if !pendingLogprobs.isEmpty {
+                continuation.yield(.tokenLogprobs(pendingLogprobs))
+                pendingLogprobs = []
+            }
+            continuation.yield(.chunk(pendingToolText))
         }
 
         // Print performance breakdown if AFM_PERF=1

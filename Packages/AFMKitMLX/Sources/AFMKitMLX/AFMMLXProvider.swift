@@ -887,8 +887,11 @@ public final class AFMMLXModel: AFMModel, AFMTextTokenizing, AFMPrewarmableModel
 struct AFMMLXRawToolStreamFallback {
     private static let defaultDeepseekToolCallStartTag = "<｜DSML｜tool_calls>"
     private static let defaultDeepseekToolCallEndTag = "</｜DSML｜tool_calls>"
+    private static let defaultQwenToolCallStartTag = "<tool_call>"
+    private static let defaultQwenToolCallEndTag = "</tool_call>"
 
-    private let toolCallStartTag: String?
+    private let toolCallStartTag: String
+    private let isQwenNativeXML: Bool
     private let runtime: ToolCallStreamingRuntime?
 
     init(
@@ -900,9 +903,15 @@ struct AFMMLXRawToolStreamFallback {
         applyFixToolArgs: @escaping @Sendable (ResponseToolCall) -> ResponseToolCall,
         remapSingleKey: @escaping @Sendable (String, String) -> String
     ) {
-        let startTag = toolCallStartTag ?? Self.defaultDeepseekToolCallStartTag
-        let endTag = toolCallEndTag ?? Self.defaultDeepseekToolCallEndTag
+        let isQwenNativeXML = toolCallParser == "qwen3_xml"
+        let startTag = toolCallStartTag ?? (isQwenNativeXML
+            ? Self.defaultQwenToolCallStartTag
+            : Self.defaultDeepseekToolCallStartTag)
+        let endTag = toolCallEndTag ?? (isQwenNativeXML
+            ? Self.defaultQwenToolCallEndTag
+            : Self.defaultDeepseekToolCallEndTag)
         self.toolCallStartTag = startTag
+        self.isQwenNativeXML = isQwenNativeXML
         if isEnabled, tools?.isEmpty == false {
             self.runtime = ToolCallStreamingRuntime(
                 toolCallStartTag: startTag,
@@ -928,7 +937,19 @@ struct AFMMLXRawToolStreamFallback {
         var chunks: [StreamChunk] = []
         var toolPiece = chunk.text
         if !runtime.inToolCall,
-           let toolCallStartTag,
+           isQwenNativeXML,
+           !toolPiece.contains(toolCallStartTag),
+           let bareRange = toolPiece.range(of: "<function=") {
+            let prefix = String(toolPiece[..<bareRange.lowerBound])
+            if !prefix.isEmpty {
+                chunks.append(StreamChunk(text: prefix))
+            }
+            // Native XML also permits the legacy bare function form. Route an
+            // incomplete bare call through the existing Qwen salvage runtime
+            // by supplying only the missing outer envelope start.
+            toolPiece = toolCallStartTag + String(toolPiece[bareRange.lowerBound...])
+        }
+        if !runtime.inToolCall,
            let range = toolPiece.range(of: toolCallStartTag),
            range.lowerBound != toolPiece.startIndex {
             chunks.append(StreamChunk(text: String(toolPiece[..<range.lowerBound])))
