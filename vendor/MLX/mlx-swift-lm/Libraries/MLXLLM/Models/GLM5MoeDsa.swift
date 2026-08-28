@@ -40,6 +40,24 @@ class GLM5MoeDsaMultiLinear: Module {
         super.init()
     }
 
+    /// Replaces scalar shape-agnostic placeholders with already-qualified
+    /// checkpoint tensors so a subsequent `.all` update can enforce the full
+    /// module key and shape contract. This module cannot derive packed shapes
+    /// at initialization because quantization metadata belongs to the loaded
+    /// checkpoint rather than the architecture configuration.
+    func prepareForVerifiedUpdate(
+        newWeight: MLXArray,
+        newScales: MLXArray?,
+        newBiases: MLXArray?
+    ) throws {
+        var replacements = ["weight": newWeight]
+        replacements["scales"] = newScales
+        replacements["biases"] = newBiases
+        try self.update(
+            parameters: ModuleParameters.unflattened(replacements),
+            verify: [.noUnusedKeys])
+    }
+
     func callAsFunction(_ x: MLXArray, transpose: Bool = true) -> MLXArray {
         if let scales, let biases, scales.size > 1 {
             // Quantization is always along the last weight dim (= inputDims)

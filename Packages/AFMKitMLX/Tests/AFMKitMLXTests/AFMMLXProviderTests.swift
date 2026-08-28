@@ -725,6 +725,7 @@ final class AFMMLXProviderTests: XCTestCase {
     func testDescriptorInfersCapabilitiesFromModelAssets() throws {
         let root = try makeModelCache(
             config: [
+                "model_type": "qwen3_5",
                 "max_position_embeddings": 65_536,
                 "vision_config": ["model_type": "vision"]
             ],

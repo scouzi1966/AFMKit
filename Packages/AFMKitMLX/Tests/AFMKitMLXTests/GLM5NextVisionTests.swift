@@ -42,6 +42,21 @@ final class GLM5NextVisionTests: XCTestCase {
         XCTAssertEqual(glm.kvHeads, [0, 1])
     }
 
+    func testVLMRetainsTextTrunkMTPWithoutLoadingItForOrdinaryUse() throws {
+        let config = try JSONDecoder().decode(
+            GLM5NextVLConfiguration.self, from: try modelConfigurationData())
+        let model = GLM5NextVLModel(config)
+
+        XCTAssertFalse(model.supportsEmbeddedMTP)
+        XCTAssertNil(model.makeEmbeddedMTPGenerator())
+        XCTAssertFalse(model.shouldLoad(
+            weightKey: "model.language_model.layers.2.input_layernorm.weight"))
+        XCTAssertTrue(model.shouldLoad(
+            weightKey: "model.language_model.layers.1.input_layernorm.weight"))
+        XCTAssertTrue(model.shouldLoad(
+            weightKey: "model.visual.patch_embed.proj.weight"))
+    }
+
     func testVisionTowerRunsTinyImageAndMergesToTextWidth() throws {
         let config = try JSONDecoder().decode(
             GLM5NextVLConfiguration.self, from: try modelConfigurationData())

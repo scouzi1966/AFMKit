@@ -1056,9 +1056,8 @@ public enum AFMMLXModelDescriptor {
             capabilities.insert(.toolCalling)
         }
         if let directory,
-           FileManager.default.fileExists(
-               atPath: directory.appendingPathComponent("mtp.safetensors").path
-           ) {
+           AFMMLXSpeculativeModelCompatibility.evaluate(
+               modelDirectory: directory).mtpCompatible {
             capabilities.insert(.speculativeDecoding)
         }
 

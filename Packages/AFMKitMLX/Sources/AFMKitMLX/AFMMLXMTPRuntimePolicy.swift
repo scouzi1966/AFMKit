@@ -3,21 +3,44 @@ import Foundation
 enum AFMMLXMTPRuntimeModelKind: Equatable, Sendable {
     case qwenText
     case qwenVision
+    case glmEmbedded
 }
 
 /// Pure lifecycle decisions shared by model loading and request dispatch.
 /// Keeping these rules independent of MLX objects makes failure/retry and
 /// model-switch behavior deterministic and directly testable.
 enum AFMMLXMTPRuntimePolicy {
+    static func loadingFactory(
+        selected: AFMMLXModelFactoryKind,
+        mtpEnabled: Bool,
+        usesEmbeddedGLMHead: Bool
+    ) -> AFMMLXModelFactoryKind {
+        // MTP must never change the selected model container. A qualified
+        // multimodal GLM remains a VLM and exposes MTP through its text trunk.
+        _ = mtpEnabled
+        _ = usesEmbeddedGLMHead
+        return selected
+    }
+
     static func compatibleModelKind(
         mtpEnabled: Bool,
         factory: AFMMLXModelFactoryKind,
         canonicalModelType: String
     ) -> AFMMLXMTPRuntimeModelKind? {
-        guard mtpEnabled,
-              canonicalModelType == "qwen3_5" || canonicalModelType == "qwen3_5_moe"
+        guard mtpEnabled else { return nil }
+        if canonicalModelType == "glm5_next" {
+            return .glmEmbedded
+        }
+        guard canonicalModelType == "qwen3_5" || canonicalModelType == "qwen3_5_moe"
         else { return nil }
         return factory == .vlm ? .qwenVision : .qwenText
+    }
+
+    static func usesEmbeddedHead(
+        canonicalModelType: String,
+        embeddedAssetsPresent: Bool
+    ) -> Bool {
+        canonicalModelType == "glm5_next" && embeddedAssetsPresent
     }
 
     static func canReuseLoadedModel(
@@ -50,6 +73,22 @@ enum AFMMLXMTPRuntimePolicy {
             for: requestedModelID,
             mtpEnabled: mtpEnabled,
             bindingModelID: bindingModelID
+        )
+    }
+
+    static func shouldUseSpeculativeBinding(
+        requestedModelID: String,
+        mtpEnabled: Bool,
+        bindingModelID: String?,
+        mediaKinds: [AFMMLXRequestMediaKind],
+        isCancelled: Bool
+    ) -> Bool {
+        shouldUseSpeculativeBinding(
+            requestedModelID: requestedModelID,
+            mtpEnabled: mtpEnabled,
+            bindingModelID: bindingModelID,
+            isMultimodal: !mediaKinds.isEmpty,
+            isCancelled: isCancelled
         )
     }
 

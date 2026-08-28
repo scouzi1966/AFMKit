@@ -2,6 +2,25 @@ import XCTest
 @testable import AFMKitMLX
 
 final class AFMMLXStartupFactoryPolicyTests: XCTestCase {
+    func testEmbeddedGLMMTPNeverDowngradesVisionFactory() {
+        XCTAssertEqual(
+            AFMMLXMTPRuntimePolicy.loadingFactory(
+                selected: .vlm,
+                mtpEnabled: true,
+                usesEmbeddedGLMHead: true),
+            .vlm)
+        XCTAssertEqual(
+            AFMMLXMTPRuntimePolicy.loadingFactory(
+                selected: .vlm,
+                mtpEnabled: false,
+                usesEmbeddedGLMHead: true),
+            .vlm)
+
+        let architecture = glmArchitecture()
+        XCTAssertTrue(AFMMLXRequestMediaPolicy.supports(.image, architecture: architecture))
+        XCTAssertTrue(AFMMLXRequestMediaPolicy.supports(.video, architecture: architecture))
+    }
+
     func testAutomaticQualifiedQwenVisionSelectionSupportsMTPRuntime() throws {
         let architecture = try qwenArchitecture()
         let qualification = qualification(
@@ -60,6 +79,30 @@ final class AFMMLXStartupFactoryPolicyTests: XCTestCase {
                 bindingModelID: "qwen",
                 isMultimodal: false,
                 isCancelled: true
+            )
+        )
+    }
+
+    func testGLMMTPMediaRequestsUseVLMFallbackForImagesAndVideos() {
+        for mediaKind in [AFMMLXRequestMediaKind.image, .video] {
+            XCTAssertFalse(
+                AFMMLXMTPRuntimePolicy.shouldUseSpeculativeBinding(
+                    requestedModelID: "glm",
+                    mtpEnabled: true,
+                    bindingModelID: "glm",
+                    mediaKinds: [mediaKind],
+                    isCancelled: false
+                ),
+                "\(mediaKind) must stay on the multimodal VLM path"
+            )
+        }
+        XCTAssertTrue(
+            AFMMLXMTPRuntimePolicy.shouldUseSpeculativeBinding(
+                requestedModelID: "glm",
+                mtpEnabled: true,
+                bindingModelID: "glm",
+                mediaKinds: [],
+                isCancelled: false
             )
         )
     }
