@@ -6,6 +6,10 @@ import XCTest
 @testable import AFMKitMLX
 
 final class GLM5NextArchitectureTests: XCTestCase {
+    override func setUpWithError() throws {
+        try MLXMetalLibrary.ensureAvailable(verbose: false)
+    }
+
     func testDefaultMultiLinearAcceptsGenericQuantizedParameterUpdate() throws {
         let denseWeight = MLXArray(Array(repeating: Float(0.25), count: 32), [1, 1, 32])
         let quantizedWeight = quantized(denseWeight, groupSize: 32, bits: 4)
@@ -82,6 +86,14 @@ final class GLM5NextArchitectureTests: XCTestCase {
         XCTAssertEqual(config.textConfig.linearGateLowerBound, -5)
         XCTAssertEqual(config.textConfig.hcMultiplier, 4)
         XCTAssertEqual(config.textConfig.qkRopeHeadDim, 0)
+    }
+
+    func testChatTemplateNumericDotIndexesUseEquivalentBracketSyntax() {
+        let template = "m.content.0.type tr.output.0.type entry.output.0.type"
+
+        XCTAssertEqual(
+            MLXModelService.patchNumericDotIndexesForSwiftJinja(template),
+            "m.content[0].type tr.output[0].type entry.output[0].type")
     }
 
     func testFlatTextConfigurationAlsoDecodes() throws {
@@ -187,6 +199,24 @@ final class GLM5NextArchitectureTests: XCTestCase {
         XCTAssertEqual((caches[1] as? CacheList)?[1].offset, 3)
     }
 
+    func testHybridAttentionUsesOneCheckpointModulePerSelfAttentionKey() throws {
+        let data = try XCTUnwrap(tinyConfigurationData())
+        let config = try JSONDecoder().decode(GLM5NextConfiguration.self, from: data)
+        let model = GLM5NextModel(config)
+        let flattened = Dictionary(uniqueKeysWithValues: model.parameters().flattened())
+        let linearKey = "model.layers.0.self_attn.q_proj.weight"
+        let sparseKey = "model.layers.1.self_attn.q_a_proj.weight"
+
+        XCTAssertNotNil(flattened[linearKey])
+        XCTAssertNotNil(flattened[sparseKey])
+        try model.update(
+            parameters: ModuleParameters.unflattened([
+                linearKey: try XCTUnwrap(flattened[linearKey]),
+                sparseKey: try XCTUnwrap(flattened[sparseKey]),
+            ]),
+            verify: [.noUnusedKeys])
+    }
+
     func testKDAKeepsRecurrentStateInFloat32ForHalfPrecisionModel() throws {
         let data = try XCTUnwrap(tinyConfigurationData())
         let config = try JSONDecoder().decode(GLM5NextConfiguration.self, from: data)
@@ -245,6 +275,10 @@ final class GLM5NextArchitectureTests: XCTestCase {
         let sanitized = model.sanitize(weights: [
             "model.language_model.layers.0.hc_attn_fn": scalar,
             "model.language_model.layers.0.self_attn.A_log": scalar,
+            "model.language_model.layers.0.self_attn.f_a_proj.scales": scalar,
+            "model.language_model.layers.0.self_attn.f_a_proj.biases": scalar,
+            "model.language_model.layers.0.self_attn.f_b_proj.scales": scalar,
+            "model.language_model.layers.0.self_attn.f_b_proj.biases": scalar,
             "model.language_model.layers.0.self_attn.q_conv1d.weight": convolution,
             "model.language_model.layers.0.self_attn.k_conv1d.weight": convolution,
             "model.language_model.layers.0.self_attn.v_conv1d.weight": convolution,
@@ -263,6 +297,14 @@ final class GLM5NextArchitectureTests: XCTestCase {
 
         XCTAssertNotNil(sanitized["model.layers.0.attn_hc.fn"])
         XCTAssertNotNil(sanitized["model.layers.0.self_attn.forget_gate.A_log"])
+        XCTAssertNotNil(
+            sanitized["model.layers.0.self_attn.forget_gate.f_a_proj.scales"])
+        XCTAssertNotNil(
+            sanitized["model.layers.0.self_attn.forget_gate.f_a_proj.biases"])
+        XCTAssertNotNil(
+            sanitized["model.layers.0.self_attn.forget_gate.f_b_proj.scales"])
+        XCTAssertNotNil(
+            sanitized["model.layers.0.self_attn.forget_gate.f_b_proj.biases"])
         XCTAssertEqual(
             sanitized["model.layers.0.self_attn.conv1d.weight"]?.shape,
             [24, 2, 1])

@@ -932,8 +932,7 @@ private final class GLM5NextMoE: Module, UnaryLayer {
 private final class GLM5NextDecoderLayer: Module {
     let isLinear: Bool
     let mlp: UnaryLayer
-    @ModuleInfo(key: "self_attn") var linearAttention: GLM5NextLinearAttention?
-    @ModuleInfo(key: "self_attn") var sparseAttention: GLM5NextSparseAttention?
+    @ModuleInfo(key: "self_attn") var attention: Module
     @ModuleInfo(key: "input_layernorm") var inputNorm: RMSNorm
     @ModuleInfo(key: "post_attention_layernorm") var postAttentionNorm: RMSNorm
     @ModuleInfo(key: "attn_hc") var attentionHyperConnection: GLM5NextHyperConnection
@@ -942,9 +941,9 @@ private final class GLM5NextDecoderLayer: Module {
     init(_ config: GLM5NextTextConfiguration, layerIndex: Int) {
         isLinear = config.layerTypes[layerIndex] == "linear_attention"
         if isLinear {
-            _linearAttention.wrappedValue = GLM5NextLinearAttention(config)
+            _attention.wrappedValue = GLM5NextLinearAttention(config)
         } else {
-            _sparseAttention.wrappedValue = GLM5NextSparseAttention(config)
+            _attention.wrappedValue = GLM5NextSparseAttention(config)
         }
         let sparseMLP = config.routedExperts > 0
             && layerIndex >= config.firstDenseLayers
@@ -970,9 +969,19 @@ private final class GLM5NextDecoderLayer: Module {
     ) -> MLXArray {
         var residual = input
         var (collapsed, post, combination) = attentionHyperConnection.collapse(input)
-        let attended = isLinear
-            ? linearAttention!(inputNorm(collapsed), mask: validMask, cache: cache as? ArraysCache)
-            : sparseAttention!(inputNorm(collapsed), validMask: validMask, cache: cache)
+        let attended: MLXArray
+        if isLinear {
+            guard let attention = attention as? GLM5NextLinearAttention else {
+                preconditionFailure("GLM5Next linear layer has incompatible attention module")
+            }
+            attended = attention(
+                inputNorm(collapsed), mask: validMask, cache: cache as? ArraysCache)
+        } else {
+            guard let attention = attention as? GLM5NextSparseAttention else {
+                preconditionFailure("GLM5Next sparse layer has incompatible attention module")
+            }
+            attended = attention(inputNorm(collapsed), validMask: validMask, cache: cache)
+        }
         var hidden = attentionHyperConnection.expand(
             attended, residual: residual, post: post, combination: combination)
 
@@ -1534,7 +1543,11 @@ public final class GLM5NextModel: Module, LLMModel, KVCacheDimensionProvider, Lo
             key = key
                 .replacingOccurrences(of: ".hc_attn_", with: ".attn_hc.")
                 .replacingOccurrences(of: ".hc_ffn_", with: ".ffn_hc.")
-            for name in ["A_log", "dt_bias", "f_a_proj.weight", "f_b_proj.weight"] {
+            for name in [
+                "A_log", "dt_bias",
+                "f_a_proj.weight", "f_a_proj.scales", "f_a_proj.biases",
+                "f_b_proj.weight", "f_b_proj.scales", "f_b_proj.biases",
+            ] {
                 let suffix = ".self_attn.\(name)"
                 if key.hasSuffix(suffix) {
                     key = String(key.dropLast(name.count)) + "forget_gate." + name
