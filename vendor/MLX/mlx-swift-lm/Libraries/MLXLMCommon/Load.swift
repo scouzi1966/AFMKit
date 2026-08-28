@@ -88,6 +88,11 @@ public func loadWeights(
         if url.pathExtension == "safetensors" {
             let w = try loadArrays(url: url)
             for (key, value) in w {
+                if let filter = model as? LanguageModelWeightFilter,
+                    !filter.shouldLoad(weightKey: key)
+                {
+                    continue
+                }
                 if !hasVisionParams && key.hasPrefix("vision_tower") {
                     continue
                 }
