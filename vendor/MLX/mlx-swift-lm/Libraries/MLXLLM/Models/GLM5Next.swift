@@ -61,6 +61,7 @@ public struct GLM5NextTextConfiguration: Decodable, Sendable {
     var indexHeads: Int
     var indexKPool: Int
     var indexKPoolAlwaysSelectTail: Bool
+    var indexerTypes: [String]
     var layerTypes: [String]
     var mlpLayerTypes: [String]
     var linearHeads: Int
@@ -103,6 +104,7 @@ public struct GLM5NextTextConfiguration: Decodable, Sendable {
         case indexHeads = "index_n_heads"
         case indexKPool = "index_kpool"
         case indexKPoolAlwaysSelectTail = "index_kpool_always_select_tail"
+        case indexerTypes = "indexer_types"
         case layerTypes = "layer_types"
         case mlpLayerTypes = "mlp_layer_types"
         case linearAttention = "linear_attn_config"
@@ -161,6 +163,8 @@ public struct GLM5NextTextConfiguration: Decodable, Sendable {
         indexKPoolAlwaysSelectTail = try c.decodeIfPresent(
             Bool.self, forKey: .indexKPoolAlwaysSelectTail) ?? true
         layerTypes = try c.decode([String].self, forKey: .layerTypes)
+        indexerTypes = try c.decodeIfPresent([String].self, forKey: .indexerTypes)
+            ?? Array(repeating: "full", count: hiddenLayers)
         if let decodedMLPLayerTypes = try c.decodeIfPresent(
             [String].self, forKey: .mlpLayerTypes)
         {
@@ -190,11 +194,20 @@ public struct GLM5NextTextConfiguration: Decodable, Sendable {
         numNextNPredictLayers = try c.decodeIfPresent(
             Int.self, forKey: .numNextNPredictLayers) ?? 0
 
-        guard layerTypes.count == hiddenLayers, mlpLayerTypes.count == hiddenLayers else {
+        guard layerTypes.count == hiddenLayers,
+              mlpLayerTypes.count == hiddenLayers,
+              indexerTypes.count == hiddenLayers else {
             throw DecodingError.dataCorruptedError(
                 forKey: .layerTypes,
                 in: c,
                 debugDescription: "GLM-5.3 layer type arrays must match num_hidden_layers")
+        }
+        guard indexerTypes.allSatisfy({ $0 == "full" }) else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .indexerTypes,
+                in: c,
+                debugDescription:
+                    "GLM-5.3 Swift support currently requires full per-layer indexers")
         }
         guard qkRopeHeadDim == 0 else {
             throw DecodingError.dataCorruptedError(

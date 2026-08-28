@@ -46,12 +46,22 @@ public struct AFMMLXVisionAssetQualification: Hashable, Sendable {
         isQwenFamilyConfiguration && isAssetUsable
     }
 
+    var isUsableStrictConditionalGeneration: Bool {
+        requiresQualifiedConditionalVisionAssets && isAssetUsable
+    }
+
     public var isQwenConditionalGeneration: Bool {
         isQwenFamilyConfiguration && isConditionalGeneration
     }
 
     public var isQwenFamilyConfiguration: Bool {
         Self.qwenConditionalModelTypes.contains(canonicalModelType)
+    }
+
+    /// Conditional VLM families whose text fallback must never imply that an
+    /// initialized-but-unloaded vision tower is usable.
+    var requiresQualifiedConditionalVisionAssets: Bool {
+        Self.strictConditionalVisionModelTypes.contains(canonicalModelType)
     }
 
     public var missingAssetNames: [String] {
@@ -63,4 +73,7 @@ public struct AFMMLXVisionAssetQualification: Hashable, Sendable {
         "qwen3_5_moe",
         "qwen4_exp",
     ]
+
+    private static let strictConditionalVisionModelTypes: Set<String> =
+        qwenConditionalModelTypes.union(["glm5_next"])
 }

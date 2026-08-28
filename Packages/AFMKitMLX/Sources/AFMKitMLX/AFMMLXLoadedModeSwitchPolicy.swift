@@ -41,6 +41,18 @@ public enum AFMMLXModelFactoryKind: Equatable, Sendable {
 }
 
 public enum AFMMLXModelFactoryPolicy {
+    static func allowsVLMFallback(
+        architecture: AFMMLXModelArchitecturePreflight,
+        visionQualification: AFMMLXVisionAssetQualification
+    ) -> Bool {
+        guard architecture.canonicalModelType
+                == visionQualification.canonicalModelType else { return false }
+        if visionQualification.requiresQualifiedConditionalVisionAssets {
+            return visionQualification.isAssetUsable
+        }
+        return true
+    }
+
     public static func initialFactory(
         forceVLM: Bool,
         architecture: AFMMLXModelArchitecturePreflight
@@ -57,14 +69,14 @@ public enum AFMMLXModelFactoryPolicy {
         architecture: AFMMLXModelArchitecturePreflight,
         visionQualification: AFMMLXVisionAssetQualification?
     ) -> AFMMLXModelFactoryKind {
-        if visionQualification?.isQwenFamilyConfiguration == true,
+        if visionQualification?.requiresQualifiedConditionalVisionAssets == true,
            visionQualification?.isAssetUsable != true {
             return .llm
         }
         if forceVLM || architecture.requiresVisionModelFactory {
             return .vlm
         }
-        if visionQualification?.isUsableQwenConditionalGeneration == true {
+        if visionQualification?.isUsableStrictConditionalGeneration == true {
             return .vlm
         }
         return .llm
@@ -94,6 +106,7 @@ public enum AFMMLXRequestMediaPolicy {
         "qwen3_5_moe",
         "qwen3_6",
         "qwen3_6_moe",
+        "glm5_next",
         "smolvlm",
     ]
 

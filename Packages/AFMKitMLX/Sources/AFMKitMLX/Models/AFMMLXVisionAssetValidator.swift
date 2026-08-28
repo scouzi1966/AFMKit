@@ -3,6 +3,9 @@ import MLXVLM
 
 public final class AFMMLXVisionAssetValidator: @unchecked Sendable {
     private static let maximumQualificationMetadataBytes = 64 * 1_024 * 1_024
+    // Matches the published GLM processor's max_frames and the MLXVLM runtime
+    // ceiling. Qualification rejects larger values before the model is admitted.
+    private static let maximumGLMSampledVideoFrames = 2_048
     private struct SafetensorEvidence {
         struct TensorMetadata {
             let dtype: String
@@ -82,12 +85,24 @@ public final class AFMMLXVisionAssetValidator: @unchecked Sendable {
             hasVisionConfiguration = configData.flatMap {
                 try? JSONDecoder().decode(Qwen3_5MoEVLConfiguration.self, from: $0)
             } != nil && hasCoherentQwenVisionDimensions(in: config)
+        } else if architecture.canonicalModelType == "glm5_next" {
+            hasVisionConfiguration = hasCoherentGLM5NextVisionDimensions(in: config)
         } else {
             hasVisionConfiguration = config["vision_config"] is [String: Any]
         }
-        let hasImageTokenIdentifiers = integer(config["image_token_id"]) != nil
-            && integer(config["vision_start_token_id"]) != nil
-            && integer(config["vision_end_token_id"]) != nil
+        let hasImageTokenIdentifiers: Bool
+        if architecture.canonicalModelType == "glm5_next" {
+            hasImageTokenIdentifiers = positiveInteger(config["image_token_id"]) != nil
+                && positiveInteger(config["video_token_id"]) != nil
+                && positiveInteger(config["image_start_token_id"]) != nil
+                && positiveInteger(config["image_end_token_id"]) != nil
+                && positiveInteger(config["video_start_token_id"]) != nil
+                && positiveInteger(config["video_end_token_id"]) != nil
+        } else {
+            hasImageTokenIdentifiers = integer(config["image_token_id"]) != nil
+                && integer(config["vision_start_token_id"]) != nil
+                && integer(config["vision_end_token_id"]) != nil
+        }
         let processorClass = selectedProcessorClass(
             modelDirectory: modelDirectory,
             canonicalModelType: architecture.canonicalModelType,
@@ -96,7 +111,8 @@ public final class AFMMLXVisionAssetValidator: @unchecked Sendable {
         let visionTensorNames = visionTensorNames(
             in: modelDirectory,
             config: config,
-            requiresCompleteQwenTower: isQwenConditional
+            requiresCompleteQwenTower: isQwenConditional,
+            requiresCompleteGLMTower: architecture.canonicalModelType == "glm5_next"
         )
         let visionTensorCount = visionTensorNames.count
 
@@ -140,7 +156,9 @@ public final class AFMMLXVisionAssetValidator: @unchecked Sendable {
                 .lowercased()
                 .replacingOccurrences(of: "_", with: "")
                 .replacingOccurrences(of: "-", with: "")
-            return (normalized.hasPrefix("qwen35") || normalized.hasPrefix("qwen4exp"))
+            return (normalized.hasPrefix("qwen35")
+                || normalized.hasPrefix("qwen4exp")
+                || normalized.hasPrefix("glm5next"))
                 && normalized.hasSuffix("forconditionalgeneration")
         }
     }
@@ -168,6 +186,38 @@ public final class AFMMLXVisionAssetValidator: @unchecked Sendable {
 
         let headWidth = visionHidden / visionHeads
         return headWidth.isMultiple(of: 4)
+    }
+
+    private static func hasCoherentGLM5NextVisionDimensions(
+        in config: [String: Any]
+    ) -> Bool {
+        guard let text = config["text_config"] as? [String: Any],
+              let vision = config["vision_config"] as? [String: Any],
+              let textHidden = positiveInteger(text["hidden_size"]),
+              let visionHidden = positiveInteger(vision["hidden_size"]),
+              let outHidden = positiveInteger(vision["out_hidden_size"]),
+              let heads = positiveInteger(vision["num_heads"]),
+              let depth = positiveInteger(vision["depth"]),
+              let intermediate = positiveInteger(vision["intermediate_size"]),
+              let projectionIntermediate = positiveInteger(
+                vision["projection_intermediate_size"]),
+              let patchSize = positiveInteger(vision["patch_size"]),
+              let temporalPatchSize = positiveInteger(vision["temporal_patch_size"]),
+              let mergeSize = positiveInteger(vision["spatial_merge_size"]),
+              let inChannels = positiveInteger(vision["in_channels"] ?? 3),
+              let rmsNormEps = (vision["rms_norm_eps"] as? NSNumber)?.doubleValue,
+              rmsNormEps.isFinite, rmsNormEps > 0,
+              let swigluLimit = (vision["swiglu_limit"] as? NSNumber)?.doubleValue,
+              swigluLimit.isFinite, swigluLimit > 0,
+              (vision["attention_bias"] as? Bool) == true,
+              (vision["hidden_act"] as? String)?.lowercased() == "silu",
+              depth > 0, intermediate > 0, projectionIntermediate > 0,
+              patchSize > 0, temporalPatchSize > 0, mergeSize > 0,
+              inChannels == 3,
+              outHidden == textHidden,
+              visionHidden.isMultiple(of: heads)
+        else { return false }
+        return (visionHidden / heads).isMultiple(of: 4)
     }
 
     private static func selectedProcessorClass(
@@ -198,7 +248,60 @@ public final class AFMMLXVisionAssetValidator: @unchecked Sendable {
             else { return nil }
             return "Qwen3VLProcessor"
         }
+        if canonicalModelType == "glm5_next" {
+            guard let glmProcessor = try? JSONDecoder().decode(
+                GLM5NextProcessorConfiguration.self,
+                from: data
+            ), let rawObject = try? JSONSerialization.jsonObject(with: data),
+               let rawProcessor = rawObject as? [String: Any],
+               isRuntimeCompatibleGLMProcessor(
+                glmProcessor, rawProcessor: rawProcessor, config: config)
+            else { return nil }
+            return "Glm5NextProcessor"
+        }
         return baseConfig.processorClass
+    }
+
+    private static func isRuntimeCompatibleGLMProcessor(
+        _ processor: GLM5NextProcessorConfiguration,
+        rawProcessor: [String: Any],
+        config: [String: Any]
+    ) -> Bool {
+        guard let vision = config["vision_config"] as? [String: Any],
+              let inChannels = positiveInteger(vision["in_channels"] ?? 3),
+              let patchSize = positiveInteger(vision["patch_size"]),
+              let temporalPatchSize = positiveInteger(vision["temporal_patch_size"]),
+              let spatialMergeSize = positiveInteger(vision["spatial_merge_size"]),
+              inChannels == 3,
+              processor.imageProcessor.imageMean.count == inChannels,
+              processor.imageProcessor.imageStd.count == inChannels,
+              processor.imageProcessor.imageMean.allSatisfy(\.isFinite),
+              processor.imageProcessor.imageStd.allSatisfy({ $0.isFinite && $0 > 0 }),
+              processor.imageProcessor.patchSize == patchSize,
+              processor.imageProcessor.temporalPatchSize == temporalPatchSize,
+              processor.imageProcessor.mergeSize == spatialMergeSize,
+              processor.imageProcessor.minPixels > 0,
+              processor.imageProcessor.maxPixels >= processor.imageProcessor.minPixels,
+              multiplied(patchSize, by: spatialMergeSize) != nil,
+              processor.processorClass == "Glm5NextProcessor",
+              processor.videoProcessor != nil,
+              let rawImage = rawProcessor["image_processor"] as? [String: Any],
+              let rawVideo = rawProcessor["video_processor"] as? [String: Any],
+              integer(rawImage["patch_expand_factor"] ?? 1) == 1,
+              integer(rawVideo["patch_expand_factor"] ?? 1) == 1,
+              isSafeGLMMaximumFrames(rawVideo["max_frames"] ?? 2_048)
+        else { return false }
+        guard let video = processor.videoProcessor else { return false }
+        return video.imageMean.count == inChannels
+            && video.imageStd.count == inChannels
+            && video.imageMean.allSatisfy(\.isFinite)
+            && video.imageStd.allSatisfy({ $0.isFinite && $0 > 0 })
+            && video.patchSize == patchSize
+            && video.temporalPatchSize == temporalPatchSize
+            && video.mergeSize == spatialMergeSize
+            && video.minPixels > 0
+            && video.maxPixels >= video.minPixels
+            && isSafeGLMFrameRate(video.fps ?? 2)
     }
 
     private static func isRuntimeCompatibleQwenProcessor(
@@ -228,7 +331,8 @@ public final class AFMMLXVisionAssetValidator: @unchecked Sendable {
     private static func visionTensorNames(
         in modelDirectory: URL,
         config: [String: Any],
-        requiresCompleteQwenTower: Bool
+        requiresCompleteQwenTower: Bool,
+        requiresCompleteGLMTower: Bool
     ) -> Set<String> {
         let indexURL = modelDirectory.appendingPathComponent(
             "model.safetensors.index.json"
@@ -262,8 +366,14 @@ public final class AFMMLXVisionAssetValidator: @unchecked Sendable {
             guard weightMap.allSatisfy({ tensorName, shardName in
                 shardEvidence[shardName]?.tensors[tensorName] != nil
             }) else { return [] }
+            guard !requiresCompleteGLMTower
+                    || !weightMap.keys.contains(where: isUnsupportedGLMVisionTensorName)
+            else { return [] }
             var discovered: [String: SafetensorEvidence.TensorMetadata] = [:]
-            for (tensorName, shardName) in weightMap where isVisionTensorName(tensorName) {
+            for (tensorName, shardName) in weightMap
+            where isVisionTensorName(
+                tensorName, requiresCompleteGLMTower: requiresCompleteGLMTower)
+            {
                 guard let metadata = shardEvidence[shardName]?.tensors[tensorName] else {
                     return []
                 }
@@ -285,7 +395,14 @@ public final class AFMMLXVisionAssetValidator: @unchecked Sendable {
             var discovered: [String: SafetensorEvidence.TensorMetadata] = [:]
             for file in weightFiles {
                 guard let evidence = safetensorEvidence(in: file) else { return [] }
-                for (name, metadata) in evidence.tensors where isVisionTensorName(name) {
+                guard !requiresCompleteGLMTower
+                        || !evidence.tensorNames.contains(
+                            where: isUnsupportedGLMVisionTensorName)
+                else { return [] }
+                for (name, metadata) in evidence.tensors
+                where isVisionTensorName(
+                    name, requiresCompleteGLMTower: requiresCompleteGLMTower)
+                {
                     let normalizedName = normalizedVisionTensorName(name)
                     guard discovered[normalizedName] == nil else { return [] }
                     discovered[normalizedName] = metadata
@@ -304,18 +421,153 @@ public final class AFMMLXVisionAssetValidator: @unchecked Sendable {
                   )
             else { return [] }
         }
+        if requiresCompleteGLMTower {
+            guard let required = requiredGLM5NextVisionTensorNames(config: config),
+                  required.isSubset(of: Set(tensors.keys)),
+                  hasValidGLM5NextVisionTensorMetadata(
+                    required: required,
+                    tensors: tensors,
+                    config: config)
+            else { return [] }
+        }
         return Set(tensors.keys)
     }
 
-    private static func isVisionTensorName(_ name: String) -> Bool {
-        name.hasPrefix("vision_tower.") || name.hasPrefix("model.visual")
+    private static func requiredGLM5NextVisionTensorNames(
+        config: [String: Any]
+    ) -> Set<String>? {
+        guard let vision = config["vision_config"] as? [String: Any],
+              let depth = positiveInteger(vision["depth"])
+        else { return nil }
+        let blockLeaves = [
+            "attn.k_norm.weight", "attn.proj.bias", "attn.proj.weight",
+            "attn.q_norm.weight", "attn.qkv.bias", "attn.qkv.weight",
+            "mlp.down_proj.bias", "mlp.down_proj.weight", "mlp.gate_proj.bias",
+            "mlp.gate_proj.weight", "mlp.up_proj.bias", "mlp.up_proj.weight",
+            "norm1.weight", "norm2.weight",
+        ]
+        var required = Set((0..<depth).flatMap { block in
+            blockLeaves.map { "vision_tower.blocks.\(block).\($0)" }
+        })
+        required.formUnion([
+            "vision_tower.downsample.bias", "vision_tower.downsample.weight",
+            "vision_tower.merger.down_proj.weight",
+            "vision_tower.merger.gate_proj.weight",
+            "vision_tower.merger.post_projection_norm.bias",
+            "vision_tower.merger.post_projection_norm.weight",
+            "vision_tower.merger.proj.weight", "vision_tower.merger.up_proj.weight",
+            "vision_tower.patch_embed.proj.bias",
+            "vision_tower.patch_embed.proj.weight",
+            "vision_tower.post_layernorm.weight",
+        ])
+        return required
+    }
+
+    private static func isVisionTensorName(
+        _ name: String,
+        requiresCompleteGLMTower: Bool
+    ) -> Bool {
+        if requiresCompleteGLMTower {
+            return name.hasPrefix("vision_model.") || name.hasPrefix("model.visual.")
+        }
+        return name.hasPrefix("vision_tower.") || name.hasPrefix("vision_model.")
+            || name.hasPrefix("model.visual.")
+    }
+
+    private static func isUnsupportedGLMVisionTensorName(_ name: String) -> Bool {
+        name.hasPrefix("vision_tower.") || name.hasPrefix("visual.")
     }
 
     private static func normalizedVisionTensorName(_ name: String) -> String {
         if name.hasPrefix("model.visual.") {
             return "vision_tower." + name.dropFirst("model.visual.".count)
         }
+        if name.hasPrefix("vision_model.") {
+            return "vision_tower." + name.dropFirst("vision_model.".count)
+        }
         return name
+    }
+
+    private static func hasValidGLM5NextVisionTensorMetadata(
+        required: Set<String>,
+        tensors: [String: SafetensorEvidence.TensorMetadata],
+        config: [String: Any]
+    ) -> Bool {
+        guard let shapes = expectedGLM5NextVisionTensorShapes(config: config),
+              Set(shapes.keys) == required else { return false }
+        let floatDTypes: Set<String> = ["BF16", "F16", "F32"]
+        for name in required {
+            guard let metadata = tensors[name],
+                  floatDTypes.contains(metadata.dtype.uppercased()),
+                  let alternatives = shapes[name],
+                  alternatives.contains(metadata.shape)
+            else { return false }
+        }
+        return true
+    }
+
+    private static func expectedGLM5NextVisionTensorShapes(
+        config: [String: Any]
+    ) -> [String: [[Int]]]? {
+        guard let vision = config["vision_config"] as? [String: Any],
+              let depth = positiveInteger(vision["depth"]),
+              let hidden = positiveInteger(vision["hidden_size"]),
+              let intermediate = positiveInteger(vision["intermediate_size"]),
+              let outHidden = positiveInteger(vision["out_hidden_size"]),
+              let heads = positiveInteger(vision["num_heads"]),
+              hidden.isMultiple(of: heads),
+              let projectionIntermediate = positiveInteger(
+                vision["projection_intermediate_size"]),
+              let inChannels = positiveInteger(vision["in_channels"] ?? 3),
+              let patch = positiveInteger(vision["patch_size"]),
+              let temporal = positiveInteger(vision["temporal_patch_size"]),
+              let merge = positiveInteger(vision["spatial_merge_size"]),
+              let tripleHidden = multiplied(hidden, by: 3)
+        else { return nil }
+        let headWidth = hidden / heads
+        var shapes: [String: [[Int]]] = [
+            "vision_tower.patch_embed.proj.weight": [
+                [hidden, temporal, patch, patch, inChannels],
+                [hidden, inChannels, temporal, patch, patch],
+            ],
+            "vision_tower.patch_embed.proj.bias": [[hidden]],
+            "vision_tower.downsample.weight": [
+                [outHidden, merge, merge, hidden],
+                [outHidden, hidden, merge, merge],
+            ],
+            "vision_tower.downsample.bias": [[outHidden]],
+            "vision_tower.post_layernorm.weight": [[hidden]],
+            "vision_tower.merger.proj.weight": [[outHidden, outHidden]],
+            "vision_tower.merger.post_projection_norm.weight": [[outHidden]],
+            "vision_tower.merger.post_projection_norm.bias": [[outHidden]],
+            "vision_tower.merger.gate_proj.weight": [
+                [projectionIntermediate, outHidden],
+            ],
+            "vision_tower.merger.up_proj.weight": [
+                [projectionIntermediate, outHidden],
+            ],
+            "vision_tower.merger.down_proj.weight": [
+                [outHidden, projectionIntermediate],
+            ],
+        ]
+        for block in 0..<depth {
+            let prefix = "vision_tower.blocks.\(block)"
+            shapes["\(prefix).attn.q_norm.weight"] = [[headWidth]]
+            shapes["\(prefix).attn.k_norm.weight"] = [[headWidth]]
+            shapes["\(prefix).attn.qkv.weight"] = [[tripleHidden, hidden]]
+            shapes["\(prefix).attn.qkv.bias"] = [[tripleHidden]]
+            shapes["\(prefix).attn.proj.weight"] = [[hidden, hidden]]
+            shapes["\(prefix).attn.proj.bias"] = [[hidden]]
+            shapes["\(prefix).mlp.gate_proj.weight"] = [[intermediate, hidden]]
+            shapes["\(prefix).mlp.gate_proj.bias"] = [[intermediate]]
+            shapes["\(prefix).mlp.up_proj.weight"] = [[intermediate, hidden]]
+            shapes["\(prefix).mlp.up_proj.bias"] = [[intermediate]]
+            shapes["\(prefix).mlp.down_proj.weight"] = [[hidden, intermediate]]
+            shapes["\(prefix).mlp.down_proj.bias"] = [[hidden]]
+            shapes["\(prefix).norm1.weight"] = [[hidden]]
+            shapes["\(prefix).norm2.weight"] = [[hidden]]
+        }
+        return shapes
     }
 
     private static func requiredQwenVisionTensorNames(
@@ -573,6 +825,15 @@ public final class AFMMLXVisionAssetValidator: @unchecked Sendable {
     private static func multiplied(_ lhs: Int, by rhs: Int) -> Int? {
         let (result, overflow) = lhs.multipliedReportingOverflow(by: rhs)
         return overflow ? nil : result
+    }
+
+    private static func isSafeGLMFrameRate(_ value: Double) -> Bool {
+        value.isFinite && value > 0 && value < Double(Int.max)
+    }
+
+    private static func isSafeGLMMaximumFrames(_ value: Any?) -> Bool {
+        guard let frames = positiveInteger(value) else { return false }
+        return frames <= maximumGLMSampledVideoFrames
     }
 
     private static func safetensorEvidence(in url: URL) -> SafetensorEvidence? {

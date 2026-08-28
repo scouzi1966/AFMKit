@@ -125,4 +125,22 @@ public class MediaProcesingTests: XCTestCase {
         XCTAssert(frames.frames.count == 10)
         XCTAssert(frames.frames[0].shape == [1, 3, 224, 224])
     }
+
+    func testInMemoryVideoHonorsMaximumFrameCount() async throws {
+        let image = CIImage(color: .red).cropped(
+            to: CGRect(x: 0, y: 0, width: 2, height: 2))
+        let rawFrames = (0..<30).map { index in
+            VideoFrame(
+                frame: image,
+                timeStamp: CMTime(value: Int64(index), timescale: 30))
+        }
+
+        let frames = try await MediaProcessing.asProcessedSequence(
+            .frames(rawFrames),
+            targetFPS: { _ in 30 },
+            maxFrames: 4)
+
+        XCTAssertEqual(frames.frames.count, 4)
+        XCTAssertEqual(frames.timestamps.count, 4)
+    }
 }

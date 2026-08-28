@@ -12,9 +12,9 @@ The port was checked on 2026-08-27 against:
 - Hugging Face checkpoint/config revision
   `04c4e9e95c5da8862dced7e5056455116f83a7e0`.
 - Hugging Face Transformers `glm5_next` at main revision
-  `83d024e1bfed0d425d20bcde2b46a56b2333906e`.
+  `805a9e939fa8c1bff8d8ffdf041c051b71a914aa`.
 - Blaizzy `mlx-vlm`'s MLX reference at revision
-  `1f507f19276843fc9a8a230712c995ed9ebef016`.
+  `3fd38f4c2d01ef6f8b58f7c1ebcc2859937c1b04`.
 - `ml-explore/mlx-lm` main revision
   `ff8289c67a4661b232e30466b231b34dbac3428b` and
   `ml-explore/mlx-swift-lm` main revision
@@ -43,11 +43,22 @@ construction, serial and left-padded batched prefill/decode, and tool-format
 selection with a tiny model. Full-weight qualification is recorded separately
 from these architecture tests.
 
-This is language-only support. The LLM sanitizer deliberately excludes the
-checkpoint's image/video tower and its extra next-token prediction layer. The
-corresponding self-contained `MLXVLM` work is tracked by AFMKit
-[#43](https://github.com/scouzi1966/AFMKit/issues/43), and GLM-specific MTP
-speculative decoding by
+The self-contained `MLXVLM` implementation supports the published image/video
+tower and GLM processor contract. It uses the official aspect-preserving resize
+and right/bottom zero-padding path, temporal patch grouping, timestamped video
+frame expansion, and video-boundary-aware feature placement. Runtime admission
+requires all six multimodal token IDs, compatible image and video processor
+metadata, and a complete shape/dtype-validated `model.visual.*` or converted
+`vision_model.*` tower. A checkpoint missing any of those assets loads through
+the language-only path and cannot advertise or accept media.
+
+The published processor's `max_frames=2048` is also a hard qualification and
+runtime ceiling. Checkpoints requesting a larger video sampling budget are not
+admitted, and direct sampler overrides above 2,048 frames fail before index or
+frame extraction allocation.
+
+The LLM sanitizer still deliberately excludes the checkpoint's extra
+next-token prediction layer. GLM-specific MTP speculative decoding is tracked by
 [#44](https://github.com/scouzi1966/AFMKit/issues/44). The original FP8
 Transformers shards are not claimed as directly loadable on Apple Silicon;
 their raw `weight_scale_inv` keys remain visible so the strict loader rejects

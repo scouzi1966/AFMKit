@@ -60,7 +60,7 @@ final class AFMMLXModelArchitectureTests: XCTestCase {
         XCTAssertFalse(AFMMLXModelArchitecture.crashesMetal("qwen3"))
     }
 
-    func testGLM53FlashUsesTextFactoryForConvertedCheckpoint() throws {
+    func testGLM53FlashIsDualModeAndDefaultsToTextFactory() throws {
         let config: [String: Any] = [
             "model_type": "glm5_next",
             "architectures": ["Glm5NextForConditionalGeneration"],
@@ -75,7 +75,7 @@ final class AFMMLXModelArchitectureTests: XCTestCase {
             config, modelID: "converted/GLM-5.3-Flash-MLX")
 
         XCTAssertEqual(preflight.canonicalModelType, "glm5_next")
-        XCTAssertFalse(preflight.isVisionConfiguration)
+        XCTAssertTrue(preflight.isVisionConfiguration)
         XCTAssertFalse(preflight.requiresVisionModelFactory)
         XCTAssertEqual(
             AFMMLXModelFactoryPolicy.initialFactory(forceVLM: false, architecture: preflight),
