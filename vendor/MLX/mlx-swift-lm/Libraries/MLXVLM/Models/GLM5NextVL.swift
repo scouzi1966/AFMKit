@@ -20,6 +20,17 @@ import Tokenizers
 
 // MARK: - Processor
 
+private func glmCheckedProduct(_ factors: Int...) -> Int? {
+    var product = 1
+    for factor in factors {
+        guard factor > 0 else { return nil }
+        let (next, overflow) = product.multipliedReportingOverflow(by: factor)
+        guard !overflow else { return nil }
+        product = next
+    }
+    return product
+}
+
 public struct GLM5NextProcessorConfiguration: Codable, Sendable {
     public struct MediaConfiguration: Codable, Sendable {
         public let imageMean: [CGFloat]
@@ -55,11 +66,13 @@ public struct GLM5NextProcessorConfiguration: Codable, Sendable {
         }
 
         public var minPixels: Int {
-            minImageTokens * patchSize * patchSize * mergeSize * mergeSize
+            glmCheckedProduct(
+                minImageTokens, patchSize, patchSize, mergeSize, mergeSize) ?? 0
         }
 
         public var maxPixels: Int {
-            maxImageTokens * patchSize * patchSize * mergeSize * mergeSize
+            glmCheckedProduct(
+                maxImageTokens, patchSize, patchSize, mergeSize, mergeSize) ?? 0
         }
 
         var effectivePatchExpandFactor: Int { patchExpandFactor ?? 1 }
@@ -103,39 +116,82 @@ public struct GLM5NextProcessor: UserInputProcessor {
         configuration: GLM5NextProcessorConfiguration.MediaConfiguration
     ) throws -> ResizePlan {
         let temporal = configuration.temporalPatchSize
-        let factor = configuration.patchSize * configuration.mergeSize
-            * configuration.effectivePatchExpandFactor
-        guard numFrames > 0, height > 0, width > 0, temporal > 0, factor > 0,
+        guard numFrames > 0, height > 0, width > 0, temporal > 0,
               configuration.minImageTokens > 0,
               configuration.maxImageTokens >= configuration.minImageTokens
         else {
             throw VLMError.imageProcessingFailure("Invalid GLM media geometry")
         }
 
-        func align(_ value: Int) -> Int {
-            ((value + factor - 1) / factor) * factor
+        guard let factor = glmCheckedProduct(
+            configuration.patchSize,
+            configuration.mergeSize,
+            configuration.effectivePatchExpandFactor),
+            let pixelsPerToken = glmCheckedProduct(temporal, factor, factor),
+            let minimumPixels = glmCheckedProduct(
+                configuration.minImageTokens, pixelsPerToken),
+            let maximumPixels = glmCheckedProduct(
+                configuration.maxImageTokens, pixelsPerToken)
+        else {
+            throw VLMError.imageProcessingFailure("GLM media geometry overflow")
         }
 
-        let pixelsPerToken = temporal * factor * factor
-        let minimumPixels = configuration.minImageTokens * pixelsPerToken
-        let maximumPixels = configuration.maxImageTokens * pixelsPerToken
-        let roundedFrameGroups = Int(
-            (Double(numFrames) / Double(temporal)).rounded(.toNearestOrEven))
-        let alignedFrames = max(temporal, roundedFrameGroups * temporal)
-        guard maximumPixels >= alignedFrames * factor * factor else {
+        func align(_ value: Int) throws -> Int {
+            let quotient = value / factor
+            guard !value.isMultiple(of: factor) else { return value }
+            guard let aligned = glmCheckedProduct(quotient + 1, factor) else {
+                throw VLMError.imageProcessingFailure("GLM aligned geometry overflow")
+            }
+            return aligned
+        }
+
+        let frameGroups = numFrames / temporal
+        let remainder = numFrames % temporal
+        let distanceToNextGroup = temporal - remainder
+        let roundUp = remainder > distanceToNextGroup
+            || (remainder == distanceToNextGroup && !frameGroups.isMultiple(of: 2))
+        let (roundedFrameGroups, groupOverflow) = frameGroups.addingReportingOverflow(
+            roundUp ? 1 : 0)
+        guard !groupOverflow,
+              let roundedFrames = glmCheckedProduct(
+                max(1, roundedFrameGroups), temporal),
+              let minimumPatchPixels = glmCheckedProduct(
+                roundedFrames, factor, factor),
+              maximumPixels >= minimumPatchPixels
+        else {
             throw VLMError.imageProcessingFailure(
                 "GLM max_image_tokens is too small for one aligned patch")
         }
+        let alignedFrames = max(temporal, roundedFrames)
 
-        var targetHeight = align(height)
-        var targetWidth = align(width)
-        var budget = alignedFrames * targetHeight * targetWidth
+        var targetHeight = try align(height)
+        var targetWidth = try align(width)
+        guard var budget = glmCheckedProduct(
+            alignedFrames, targetHeight, targetWidth)
+        else {
+            throw VLMError.imageProcessingFailure("GLM media pixel budget overflow")
+        }
         if budget < minimumPixels {
-            let scale = sqrt(
-                Double(minimumPixels) / Double(numFrames * height * width))
-            targetHeight = align(max(1, Int(ceil(Double(height) * scale))))
-            targetWidth = align(max(1, Int(ceil(Double(width) * scale))))
-            budget = alignedFrames * targetHeight * targetWidth
+            let sourcePixels = Double(numFrames) * Double(height) * Double(width)
+            guard sourcePixels.isFinite, sourcePixels > 0 else {
+                throw VLMError.imageProcessingFailure("GLM source geometry overflow")
+            }
+            let scale = sqrt(Double(minimumPixels) / sourcePixels)
+            let scaledHeight = ceil(Double(height) * scale)
+            let scaledWidth = ceil(Double(width) * scale)
+            guard scaledHeight.isFinite, scaledHeight < Double(Int.max),
+                  scaledWidth.isFinite, scaledWidth < Double(Int.max)
+            else {
+                throw VLMError.imageProcessingFailure("GLM resized geometry overflow")
+            }
+            targetHeight = try align(max(1, Int(scaledHeight)))
+            targetWidth = try align(max(1, Int(scaledWidth)))
+            guard let scaledBudget = glmCheckedProduct(
+                alignedFrames, targetHeight, targetWidth)
+            else {
+                throw VLMError.imageProcessingFailure("GLM media pixel budget overflow")
+            }
+            budget = scaledBudget
         }
         if budget > maximumPixels {
             var low = 1
@@ -144,11 +200,19 @@ public struct GLM5NextProcessor: UserInputProcessor {
             var bestWidth = factor
             while low <= high {
                 let contentHeight = (low + high) / 2
-                let contentWidth = max(
-                    1, Int(floor(Double(width * contentHeight) / Double(height))))
-                let candidateHeight = align(contentHeight)
-                let candidateWidth = align(contentWidth)
-                if alignedFrames * candidateHeight * candidateWidth <= maximumPixels {
+                let proportionalWidth = floor(
+                    Double(width) * Double(contentHeight) / Double(height))
+                guard proportionalWidth.isFinite, proportionalWidth < Double(Int.max)
+                else {
+                    throw VLMError.imageProcessingFailure("GLM aspect ratio overflow")
+                }
+                let contentWidth = max(1, Int(proportionalWidth))
+                let candidateHeight = try align(contentHeight)
+                let candidateWidth = try align(contentWidth)
+                if let candidateBudget = glmCheckedProduct(
+                    alignedFrames, candidateHeight, candidateWidth),
+                    candidateBudget <= maximumPixels
+                {
                     bestHeight = candidateHeight
                     bestWidth = candidateWidth
                     low = contentHeight + 1
@@ -163,7 +227,8 @@ public struct GLM5NextProcessor: UserInputProcessor {
         var scale = min(
             Double(targetHeight) / Double(height),
             Double(targetWidth) / Double(width))
-        if numFrames * height * width >= minimumPixels {
+        let sourcePixels = Double(numFrames) * Double(height) * Double(width)
+        if sourcePixels >= Double(minimumPixels) {
             scale = min(1, scale)
         }
         let contentHeight = max(
@@ -200,6 +265,16 @@ public struct GLM5NextProcessor: UserInputProcessor {
     /// Current Transformers GLM5 Next sampling: compute a floored target count,
     /// sample source-frame thresholds, stabilize duplicate indices, then make
     /// the temporal sequence even by repeating its final real frame.
+    static func checkedFrameCount(duration: Double, fps: Double) throws -> Int {
+        let count = floor(duration * fps)
+        guard duration.isFinite, duration > 0, fps.isFinite, fps > 0,
+              count.isFinite, count > 0, count < Double(Int.max)
+        else {
+            throw VLMError.imageProcessingFailure("GLM video sampling count overflow")
+        }
+        return Int(count)
+    }
+
     static func videoSampleIndices(
         totalFrames: Int,
         sourceFPS: Double,
@@ -213,8 +288,10 @@ public struct GLM5NextProcessor: UserInputProcessor {
 
         let maximumFrameIndex = totalFrames - 1
         let resolvedDuration = duration
-            ?? (Double(maximumFrameIndex) / sourceFPS).rounded() + 1
-        let targetCount = min(Int(resolvedDuration * targetFPS), maximumFrames)
+            ?? (Double(maximumFrameIndex) / sourceFPS).rounded(.toNearestOrEven) + 1
+        let targetCount = min(
+            try checkedFrameCount(duration: resolvedDuration, fps: targetFPS),
+            maximumFrames)
         guard targetCount > 0 else {
             throw VLMError.imageProcessingFailure("GLM video duration produced no frames")
         }
@@ -232,7 +309,7 @@ public struct GLM5NextProcessor: UserInputProcessor {
         if totalFrames < targetCount {
             indices = linspace(0, maximumFrameIndex, count: targetCount)
         } else {
-            let maximumSeconds = Int(resolvedDuration)
+            let maximumSeconds = floor(resolvedDuration)
             var currentSecond = 0.0
             indices = []
             for frameIndex in 0..<totalFrames {
@@ -240,7 +317,7 @@ public struct GLM5NextProcessor: UserInputProcessor {
                 if timestamp >= currentSecond {
                     currentSecond += 1 / targetFPS
                     indices.append(frameIndex)
-                    if currentSecond >= Double(maximumSeconds) { break }
+                    if currentSecond >= maximumSeconds { break }
                 }
             }
         }
@@ -322,7 +399,8 @@ public struct GLM5NextProcessor: UserInputProcessor {
             throw VLMError.imageProcessingFailure("Invalid GLM AVAsset metadata")
         }
         // A media duration is the exclusive end of its last source frame.
-        let totalFrames = max(1, Int(floor(duration.seconds * sourceFPS)))
+        let totalFrames = try checkedFrameCount(
+            duration: duration.seconds, fps: sourceFPS)
         let indices = try videoSampleIndices(
             totalFrames: totalFrames,
             sourceFPS: sourceFPS,

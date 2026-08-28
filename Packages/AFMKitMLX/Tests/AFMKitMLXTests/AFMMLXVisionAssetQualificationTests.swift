@@ -123,6 +123,36 @@ final class AFMMLXVisionAssetQualificationTests: XCTestCase {
                 .processorConfiguration))
     }
 
+    func testGLM5NextRejectsOverflowingProcessorMetadata() throws {
+        for mutation in ["pixelBudget", "frameRate"] {
+            let directory = try makeGLMModelDirectory()
+            let processorURL = directory.appendingPathComponent(
+                "preprocessor_config.json")
+            var processor = try XCTUnwrap(
+                JSONSerialization.jsonObject(with: Data(contentsOf: processorURL))
+                    as? [String: Any])
+            if mutation == "pixelBudget" {
+                var image = try XCTUnwrap(
+                    processor["image_processor"] as? [String: Any])
+                image["max_image_tokens"] = Int.max
+                processor["image_processor"] = image
+            } else {
+                var video = try XCTUnwrap(
+                    processor["video_processor"] as? [String: Any])
+                video["fps"] = Double.greatestFiniteMagnitude
+                processor["video_processor"] = video
+            }
+            try Self.writeJSON(processor, to: processorURL)
+
+            let qualification = try qualify(directory)
+            XCTAssertNil(qualification.processorClass, mutation)
+            XCTAssertTrue(
+                qualification.missingAssets.contains(.processorConfiguration),
+                mutation)
+            XCTAssertFalse(qualification.isAssetUsable, mutation)
+        }
+    }
+
     func testGLM5NextRejectsMalformedVisionShapeAndDType() throws {
         for metadata in [
             ("F16", [1]),

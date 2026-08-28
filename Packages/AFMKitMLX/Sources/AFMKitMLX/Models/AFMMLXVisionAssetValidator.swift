@@ -298,8 +298,7 @@ public final class AFMMLXVisionAssetValidator: @unchecked Sendable {
             && video.mergeSize == spatialMergeSize
             && video.minPixels > 0
             && video.maxPixels >= video.minPixels
-            && (video.fps ?? 2).isFinite
-            && (video.fps ?? 2) > 0
+            && isSafeGLMFrameRate(video.fps ?? 2)
     }
 
     private static func isRuntimeCompatibleQwenProcessor(
@@ -823,6 +822,10 @@ public final class AFMMLXVisionAssetValidator: @unchecked Sendable {
     private static func multiplied(_ lhs: Int, by rhs: Int) -> Int? {
         let (result, overflow) = lhs.multipliedReportingOverflow(by: rhs)
         return overflow ? nil : result
+    }
+
+    private static func isSafeGLMFrameRate(_ value: Double) -> Bool {
+        value.isFinite && value > 0 && value < Double(Int.max)
     }
 
     private static func safetensorEvidence(in url: URL) -> SafetensorEvidence? {

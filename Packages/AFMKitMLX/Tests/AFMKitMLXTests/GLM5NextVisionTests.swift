@@ -143,6 +143,14 @@ final class GLM5NextVisionTests: XCTestCase {
                 targetFPS: 2,
                 maximumFrames: 5),
             [0, 1, 2, 2])
+        XCTAssertEqual(
+            try GLM5NextProcessor.videoSampleIndices(
+                totalFrames: 6,
+                sourceFPS: 2,
+                targetFPS: 1,
+                maximumFrames: 5),
+            [0, 2, 4, 4],
+            "The missing-duration fallback must use Python ties-to-even rounding")
 
         let image = CIImage(color: .red).cropped(
             to: CGRect(x: 0, y: 0, width: 1, height: 1))
@@ -159,6 +167,34 @@ final class GLM5NextVisionTests: XCTestCase {
         let single = try await GLM5NextProcessor.sampleVideo(
             .frames([source[0]]), targetFPS: 2, maximumFrames: 5)
         XCTAssertEqual(single.map { $0.timeStamp.seconds }, [0, 0])
+    }
+
+    func testHostileProcessorNumbersFailClosedWithoutIntegerConversion() throws {
+        let data = try JSONSerialization.data(withJSONObject: [
+            "processor_class": "Glm5NextProcessor",
+            "image_processor": [
+                "image_mean": [0, 0, 0], "image_std": [1, 1, 1],
+                "merge_size": 2, "patch_size": 2, "temporal_patch_size": 2,
+                "min_image_tokens": 1, "max_image_tokens": Int.max,
+            ],
+        ])
+        let configuration = try JSONDecoder().decode(
+            GLM5NextProcessorConfiguration.self, from: data).imageProcessor
+
+        XCTAssertEqual(configuration.maxPixels, 0)
+        XCTAssertThrowsError(try GLM5NextProcessor.resizePlan(
+            numFrames: 2,
+            height: 1,
+            width: 1,
+            configuration: configuration))
+        XCTAssertThrowsError(try GLM5NextProcessor.videoSampleIndices(
+            totalFrames: 1,
+            sourceFPS: 24,
+            targetFPS: Double.greatestFiniteMagnitude,
+            maximumFrames: 2_048))
+        XCTAssertThrowsError(try GLM5NextProcessor.checkedFrameCount(
+            duration: 1,
+            fps: Double.greatestFiniteMagnitude))
     }
 
     func testAVAssetSamplingReconstructsEvenSequenceFromRealFrames() async throws {
