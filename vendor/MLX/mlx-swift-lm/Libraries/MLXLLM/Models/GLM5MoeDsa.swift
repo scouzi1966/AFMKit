@@ -29,14 +29,15 @@ class GLM5MoeDsaMultiLinear: Module {
         self.outputDims = outputDims
         self.numHeads = numHeads
 
-        // Use a scalar placeholder only for the required weight. Optional
-        // quantization parameters must remain absent until a qualified packed
-        // checkpoint supplies them; their presence selects the quantized path.
+        // Use scalar placeholders for generic checkpoint updates. MLXNN cannot
+        // update an optional parameter whose wrapped value is nil, so ordinary
+        // quantized GLM loading needs all three keys represented here. Packed
+        // weight dtype plus companion presence selects the quantized runtime path.
         // Quantized models store packed weights with different shapes than logical
         // dims, so verify: [.all] shape checks would fail with full-sized init values.
         self._weight.wrappedValue = MLXArray(Float(0))
-        self._scales.wrappedValue = nil
-        self._biases.wrappedValue = nil
+        self._scales.wrappedValue = MLXArray(Float(0))
+        self._biases.wrappedValue = MLXArray(Float(0))
 
         super.init()
     }
@@ -62,7 +63,7 @@ class GLM5MoeDsaMultiLinear: Module {
     }
 
     func callAsFunction(_ x: MLXArray, transpose: Bool = true) -> MLXArray {
-        if let scales, let biases {
+        if weight.dtype == .uint32, let scales, let biases {
             // Quantization is always along the last weight dim (= inputDims)
             let dims = inputDims
             let bits = (weight.dim(-1) * 32) / dims

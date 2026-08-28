@@ -6,6 +6,36 @@ import XCTest
 @testable import AFMKitMLX
 
 final class GLM5NextArchitectureTests: XCTestCase {
+    func testDefaultMultiLinearAcceptsGenericQuantizedParameterUpdate() throws {
+        let denseWeight = MLXArray(Array(repeating: Float(0.25), count: 32), [1, 1, 32])
+        let quantizedWeight = quantized(denseWeight, groupSize: 32, bits: 4)
+        let biases = try XCTUnwrap(quantizedWeight.biases)
+        let module = GLM5MoeDsaMultiLinear(inputDims: 32, outputDims: 1, numHeads: 1)
+
+        module.update(parameters: ModuleParameters.unflattened([
+            "weight": quantizedWeight.wq,
+            "scales": quantizedWeight.scales,
+            "biases": biases,
+        ]))
+
+        XCTAssertEqual(module.weight.dtype, .uint32)
+        XCTAssertEqual(module.scales?.shape, quantizedWeight.scales.shape)
+        XCTAssertEqual(module.biases?.shape, biases.shape)
+
+        let input = MLXArray(Array(repeating: Float(1), count: 32), [1, 1, 32])
+        let output = module(input)
+        let oracle = quantizedMatmul(
+            input,
+            quantizedWeight.wq,
+            scales: quantizedWeight.scales,
+            biases: biases,
+            groupSize: 32,
+            bits: 4)
+        MLX.eval(output, oracle)
+
+        XCTAssertTrue(allClose(output, oracle, rtol: 0, atol: 0).item())
+    }
+
     func testMultiLinearUsesValidSingleScaleQuantization() throws {
         let denseWeight = MLXArray(Array(repeating: Float(0.25), count: 32), [1, 1, 32])
         let quantizedWeight = quantized(denseWeight, groupSize: 32, bits: 4)
