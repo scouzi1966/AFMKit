@@ -201,27 +201,22 @@ struct Qwen38ToolCallStreamingTests {
     @Test("Serial Qwen XML emits each adjacent call once with a stable index")
     func serialXMLPreservesAdjacentCallsThroughProviderFallback() throws {
         let processor = ToolCallProcessor(format: .xmlFunction)
-        let pieces = [
-            "<tool_call><function=get_weather><parameter=location>Lon",
-            "don</parameter><parameter=days>1</parameter></function></tool_call>",
-            "<tool_call><function=get_time><parameter=timezone>Asia/",
-            "Tokyo</parameter></function></tool_call>",
-        ]
+        let output = "<tool_call><function=get_weather><parameter=location>London</parameter><parameter=days>1</parameter></function></tool_call><tool_call><function=get_time><parameter=timezone>Asia/Tokyo</parameter></function></tool_call>"
         var nextIndex = 0
         var serviceChunks: [StreamChunk] = []
 
-        for piece in pieces {
-            if let text = processor.processChunk(piece), !text.isEmpty {
-                serviceChunks.append(StreamChunk(text: text))
-            }
-            while let call = processor.toolCalls.popLast() {
-                serviceChunks.append(
-                    MLXModelService.serialToolCallChunk(
-                        call,
-                        nextIndex: &nextIndex
-                    )
+        if let text = processor.processChunk(output), !text.isEmpty {
+            serviceChunks.append(StreamChunk(text: text))
+        }
+        let drainedCalls = processor.drainToolCalls()
+        #expect(drainedCalls.map(\.function.name) == ["get_weather", "get_time"])
+        for call in drainedCalls {
+            serviceChunks.append(
+                MLXModelService.serialToolCallChunk(
+                    call,
+                    nextIndex: &nextIndex
                 )
-            }
+            )
         }
 
         var fallback = AFMMLXRawToolStreamFallback(
@@ -262,6 +257,39 @@ struct Qwen38ToolCallStreamingTests {
             guard case .responseText(_, let text, _) = event else { return false }
             return text.contains("<tool_call>") || text.contains("<function=")
         })
+    }
+
+    @Test("Shared XML processor accepts wrapped Qwen and bare compatible calls")
+    func xmlProcessorAcceptsWrappedAndBareForms() {
+        #expect(ToolCallFormat.infer(from: "qwen3_next") == .xmlFunction)
+        #expect(ToolCallFormat.infer(from: "nemotron_h") == .xmlFunction)
+
+        let wrapped = ToolCallProcessor(format: .xmlFunction)
+        let bare = ToolCallProcessor(format: .xmlFunction)
+        #expect(wrapped.processChunk("<tool_call><function=get_weather><parameter=location>Paris</parameter></function></tool_call>") == nil)
+        #expect(bare.processChunk("<function=get_time><parameter=timezone>UTC</parameter></function>") == nil)
+        #expect(wrapped.drainToolCalls().map(\.function.name) == ["get_weather"])
+        #expect(bare.drainToolCalls().map(\.function.name) == ["get_time"])
+    }
+
+    @Test("Malformed wrapped XML remains available to the AFM fallback")
+    func malformedWrappedXMLPassesThrough() {
+        let processor = ToolCallProcessor(format: .xmlFunction)
+        let malformed = "<tool_call><function=bad-name><parameter=location>Paris</parameter></function></tool_call>"
+
+        #expect(processor.processChunk(malformed) == malformed)
+        #expect(processor.drainToolCalls().isEmpty)
+    }
+
+    @Test("Production drain preserves FIFO order and stop-after-first semantics")
+    func productionDrainPreservesOrderAndStopBehavior() {
+        let processor = ToolCallProcessor(format: .xmlFunction)
+        let output = "<tool_call><function=get_weather><parameter=location>London</parameter></function></tool_call><tool_call><function=get_time><parameter=timezone>Asia/Tokyo</parameter></function></tool_call>"
+
+        #expect(processor.processChunk(output) == nil)
+        #expect(processor.toolCalls.count == 2)
+        #expect(processor.drainToolCalls(stopAfterFirst: true).map(\.function.name) == ["get_weather"])
+        #expect(processor.drainToolCalls().map(\.function.name) == ["get_time"])
     }
 
     @Test("Native Qwen coercion does not fabricate omitted required arguments")

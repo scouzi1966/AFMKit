@@ -5,11 +5,13 @@ import Foundation
 /// Parser for XML function format: <function=name><parameter=key>value</parameter></function>
 /// Reference: https://github.com/ml-explore/mlx-lm/blob/main/mlx_lm/tool_parsers/qwen3_coder.py
 public struct XMLFunctionParser: ToolCallParser, Sendable {
-    // Qwen's chat template wraps every XML function in <tool_call> tags. Treat
-    // that wrapper as part of the streaming protocol so ToolCallProcessor
-    // buffers the complete call instead of forwarding partial XML as text.
+    // Current Qwen templates wrap XML functions in <tool_call>, while older
+    // templates and several compatible model families emit the bare function.
+    // The streaming processor accepts both without leaking the outer wrapper.
     public let startTag: String? = "<tool_call>"
     public let endTag: String? = "</tool_call>"
+    public let alternateStartTag: String? = "<function="
+    public let alternateEndTag: String? = "</function>"
 
     public init() {}
 

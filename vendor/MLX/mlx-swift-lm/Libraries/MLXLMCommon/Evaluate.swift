@@ -1432,7 +1432,6 @@ public func generateTask(
 
             let tDetok0: UInt64 = perfEnabled ? DispatchTime.now().uptimeNanoseconds : 0
             detokenizer.append(token: token)
-            var didYield = false
             if let chunk = detokenizer.next() {
                 tokenCount += 1
 
@@ -1446,12 +1445,13 @@ public func generateTask(
                     if case .terminated = continuation.yield(.chunk(textToYield)) {
                         break
                     }
-                    didYield = true
                 }
 
                 // Check if we have a complete tool call
-                while !toolCallProcessor.toolCalls.isEmpty {
-                    let toolCall = toolCallProcessor.toolCalls.removeFirst()
+                let completedToolCalls = toolCallProcessor.drainToolCalls(
+                    stopAfterFirst: stopAfterToolCall
+                )
+                for toolCall in completedToolCalls {
                     if case .terminated = continuation.yield(.toolCall(toolCall)) {
                         continuationTerminated = true
                         break
