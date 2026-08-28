@@ -1,6 +1,7 @@
 import AFMKitCore
 import AFMOpenAICompat
 import Foundation
+import MLXLMCommon
 @testable import AFMKitMLX
 import Testing
 
@@ -195,6 +196,72 @@ struct Qwen38ToolCallStreamingTests {
         #expect(completed.map(\.index) == [0, 1])
         #expect(try decodeArguments(completed[0].function.arguments)["location"] as? String == "London")
         #expect(try decodeArguments(completed[1].function.arguments)["timezone"] as? String == "Asia/Tokyo")
+    }
+
+    @Test("Serial Qwen XML emits each adjacent call once with a stable index")
+    func serialXMLPreservesAdjacentCallsThroughProviderFallback() throws {
+        let processor = ToolCallProcessor(format: .xmlFunction)
+        let pieces = [
+            "<tool_call><function=get_weather><parameter=location>Lon",
+            "don</parameter><parameter=days>1</parameter></function></tool_call>",
+            "<tool_call><function=get_time><parameter=timezone>Asia/",
+            "Tokyo</parameter></function></tool_call>",
+        ]
+        var nextIndex = 0
+        var serviceChunks: [StreamChunk] = []
+
+        for piece in pieces {
+            if let text = processor.processChunk(piece), !text.isEmpty {
+                serviceChunks.append(StreamChunk(text: text))
+            }
+            while let call = processor.toolCalls.popLast() {
+                serviceChunks.append(
+                    MLXModelService.serialToolCallChunk(
+                        call,
+                        nextIndex: &nextIndex
+                    )
+                )
+            }
+        }
+
+        var fallback = AFMMLXRawToolStreamFallback(
+            toolCallStartTag: "<tool_call>",
+            toolCallEndTag: "</tool_call>",
+            toolCallParser: "qwen3_xml",
+            tools: [weatherTool, timeTool],
+            applyFixToolArgs: { $0 },
+            remapSingleKey: { key, _ in key }
+        )
+        var translator = MLXStreamEventTranslator(
+            thinkStartTag: nil,
+            thinkEndTag: nil,
+            maximumResponseTokens: 100,
+            tools: [weatherTool, timeTool]
+        )
+        var events: [AFMGenerationEvent] = []
+        for chunk in serviceChunks {
+            for normalizedChunk in fallback.consume(chunk) {
+                events += translator.consume(normalizedChunk)
+            }
+        }
+        for normalizedChunk in fallback.finish() {
+            events += translator.consume(normalizedChunk)
+        }
+        events += translator.finish()
+
+        let completed = events.compactMap { event -> AFMToolCall? in
+            guard case .toolCall(let call, .completed) = event else { return nil }
+            return call
+        }
+        #expect(nextIndex == 2)
+        #expect(completed.map(\.name) == ["get_weather", "get_time"])
+        #expect(Set(completed.map(\.id)).count == 2)
+        #expect(try decodeArguments(completed[0].arguments)["location"] as? String == "London")
+        #expect(try decodeArguments(completed[1].arguments)["timezone"] as? String == "Asia/Tokyo")
+        #expect(!events.contains { event in
+            guard case .responseText(_, let text, _) = event else { return false }
+            return text.contains("<tool_call>") || text.contains("<function=")
+        })
     }
 
     @Test("Native Qwen coercion does not fabricate omitted required arguments")

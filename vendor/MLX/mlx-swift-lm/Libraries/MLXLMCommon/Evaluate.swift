@@ -1393,6 +1393,7 @@ public func generateTask(
         var perfDetokNs: UInt64 = 0
         var perfLoopOverheadNs: UInt64 = 0
         var stoppedAfterToolCall = false
+        var continuationTerminated = false
 
         while true {
             let tLoopTop: UInt64 = perfEnabled ? DispatchTime.now().uptimeNanoseconds : 0
@@ -1449,14 +1450,19 @@ public func generateTask(
                 }
 
                 // Check if we have a complete tool call
-                if let toolCall = toolCallProcessor.toolCalls.popLast() {
+                while !toolCallProcessor.toolCalls.isEmpty {
+                    let toolCall = toolCallProcessor.toolCalls.removeFirst()
                     if case .terminated = continuation.yield(.toolCall(toolCall)) {
+                        continuationTerminated = true
                         break
                     }
                     if stopAfterToolCall {
                         stoppedAfterToolCall = true
                         break
                     }
+                }
+                if stoppedAfterToolCall || continuationTerminated {
+                    break
                 }
             }
             if perfEnabled {

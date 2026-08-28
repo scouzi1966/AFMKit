@@ -4071,6 +4071,7 @@ public final class MLXModelService:
                         streamScratch.streamStatPromptTokens = fullPromptTokenCount
 
                         var pendingLogprobs: [TokenLogprobData]? = nil
+                        var nextToolCallIndex = 0
                         // INSTRUMENT: Dump cache state right before generation starts (streaming)
                         if debugLogging || self.trace {
                             print("[\(ts())] [PREFLIGHT-STREAM] About to generate. Cache layers: \(generationCache.count), input shape: \(generateInput.text.tokens.shape)")
@@ -4194,8 +4195,12 @@ public final class MLXModelService:
                                     pendingLogprobs = nil
                                 } else if case .toolCall(let tc) = piece {
                                     // Emit tool call as a stream chunk with empty text
-                                    let responseTC = Self.convertToolCall(tc, index: 0)
-                                    continuation.yield(StreamChunk(text: "", toolCalls: [responseTC]))
+                                    continuation.yield(
+                                        Self.serialToolCallChunk(
+                                            tc,
+                                            nextIndex: &nextToolCallIndex
+                                        )
+                                    )
                                 } else if case .info(let info) = piece {
                                     receivedCompletionInfo = true
                                     // Emit real token counts and timing as a final info chunk
@@ -4612,6 +4617,19 @@ public final class MLXModelService:
         let data = try? JSONSerialization.data(withJSONObject: [value])
         let encoded = data.flatMap { String(data: $0, encoding: .utf8) } ?? "[\"\"]"
         return String(encoded.dropFirst().dropLast())
+    }
+
+    /// Convert a serial vendor event into a uniquely indexed stream chunk.
+    static func serialToolCallChunk(
+        _ toolCall: ToolCall,
+        nextIndex: inout Int
+    ) -> StreamChunk {
+        let chunk = StreamChunk(
+            text: "",
+            toolCalls: [convertToolCall(toolCall, index: nextIndex)]
+        )
+        nextIndex += 1
+        return chunk
     }
 
     /// Convert a vendor ToolCall to an OpenAI-compatible ResponseToolCall.
