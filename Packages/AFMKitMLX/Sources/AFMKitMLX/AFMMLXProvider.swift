@@ -1030,6 +1030,8 @@ public enum AFMMLXModelDescriptor {
             tokenizerConfig: tokenizer
         )
         let lowerID = modelID.lowercased()
+        let canonicalModelType = (config?["model_type"] as? String)
+            .map(AFMMLXModelArchitecture.canonicalModelType)
 
         var capabilities: AFMModelCapabilities = [
             .text, .streaming, .structuredOutput, .prefixCaching
@@ -1046,7 +1048,11 @@ public enum AFMMLXModelDescriptor {
             || reasoningPatterns.contains(where: lowerID.contains) {
             capabilities.insert(.reasoning)
         }
-        if templates.contains(where: { $0.contains("tools") || $0.contains("tool_call") }) {
+        // DeepSeek V4 uses AFMKit's native chat encoder, so converted checkpoints
+        // remain tool-capable even when they do not ship a Jinja chat template.
+        let usesNativeToolEncoder = canonicalModelType == "deepseek_v4"
+        if usesNativeToolEncoder
+            || templates.contains(where: { $0.contains("tools") || $0.contains("tool_call") }) {
             capabilities.insert(.toolCalling)
         }
         if let directory,
