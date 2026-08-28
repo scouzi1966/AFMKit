@@ -52,6 +52,11 @@ metadata, and a complete shape/dtype-validated `model.visual.*` or converted
 `vision_model.*` tower. A checkpoint missing any of those assets loads through
 the language-only path and cannot advertise or accept media.
 
+The published processor's `max_frames=2048` is also a hard qualification and
+runtime ceiling. Checkpoints requesting a larger video sampling budget are not
+admitted, and direct sampler overrides above 2,048 frames fail before index or
+frame extraction allocation.
+
 The LLM sanitizer still deliberately excludes the checkpoint's extra
 next-token prediction layer. GLM-specific MTP speculative decoding is tracked by
 [#44](https://github.com/scouzi1966/AFMKit/issues/44). The original FP8

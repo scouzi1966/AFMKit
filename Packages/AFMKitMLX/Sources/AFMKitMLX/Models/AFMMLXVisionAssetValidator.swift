@@ -3,6 +3,9 @@ import MLXVLM
 
 public final class AFMMLXVisionAssetValidator: @unchecked Sendable {
     private static let maximumQualificationMetadataBytes = 64 * 1_024 * 1_024
+    // Matches the published GLM processor's max_frames and the MLXVLM runtime
+    // ceiling. Qualification rejects larger values before the model is admitted.
+    private static let maximumGLMSampledVideoFrames = 2_048
     private struct SafetensorEvidence {
         struct TensorMetadata {
             let dtype: String
@@ -286,7 +289,7 @@ public final class AFMMLXVisionAssetValidator: @unchecked Sendable {
               let rawVideo = rawProcessor["video_processor"] as? [String: Any],
               integer(rawImage["patch_expand_factor"] ?? 1) == 1,
               integer(rawVideo["patch_expand_factor"] ?? 1) == 1,
-              positiveInteger(rawVideo["max_frames"] ?? 2_048) != nil
+              isSafeGLMMaximumFrames(rawVideo["max_frames"] ?? 2_048)
         else { return false }
         guard let video = processor.videoProcessor else { return false }
         return video.imageMean.count == inChannels
@@ -826,6 +829,11 @@ public final class AFMMLXVisionAssetValidator: @unchecked Sendable {
 
     private static func isSafeGLMFrameRate(_ value: Double) -> Bool {
         value.isFinite && value > 0 && value < Double(Int.max)
+    }
+
+    private static func isSafeGLMMaximumFrames(_ value: Any?) -> Bool {
+        guard let frames = positiveInteger(value) else { return false }
+        return frames <= maximumGLMSampledVideoFrames
     }
 
     private static func safetensorEvidence(in url: URL) -> SafetensorEvidence? {

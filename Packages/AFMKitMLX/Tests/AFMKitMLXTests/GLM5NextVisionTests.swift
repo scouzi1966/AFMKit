@@ -197,6 +197,32 @@ final class GLM5NextVisionTests: XCTestCase {
             fps: Double.greatestFiniteMagnitude))
     }
 
+    func testVideoSamplingRejectsOversizedCallTimeAllocationBudget() async throws {
+        XCTAssertThrowsError(try GLM5NextProcessor.videoSampleIndices(
+            totalFrames: 1,
+            sourceFPS: 24,
+            targetFPS: 1_000_000_000,
+            maximumFrames: Int.max))
+        XCTAssertThrowsError(try GLM5NextProcessor.videoSampleIndices(
+            totalFrames: 1,
+            sourceFPS: 24,
+            targetFPS: 2,
+            maximumFrames: GLM5NextProcessor.maximumSampledVideoFrames + 1))
+
+        let image = CIImage(color: .red).cropped(
+            to: CGRect(x: 0, y: 0, width: 1, height: 1))
+        let frame = VideoFrame(frame: image, timeStamp: .zero)
+        do {
+            _ = try await GLM5NextProcessor.sampleVideo(
+                .frames([frame]),
+                targetFPS: 1_000_000_000,
+                maximumFrames: Int.max)
+            XCTFail("Oversized call-time allocation budget should be rejected")
+        } catch {
+            // Expected before frame-rate inference or index allocation.
+        }
+    }
+
     func testAVAssetSamplingReconstructsEvenSequenceFromRealFrames() async throws {
         var repository = URL(fileURLWithPath: #filePath)
         for _ in 0..<5 { repository.deleteLastPathComponent() }

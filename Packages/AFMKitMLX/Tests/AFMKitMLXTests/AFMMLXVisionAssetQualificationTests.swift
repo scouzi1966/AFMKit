@@ -153,6 +153,27 @@ final class AFMMLXVisionAssetQualificationTests: XCTestCase {
         }
     }
 
+    func testGLM5NextRejectsOversizedVideoAllocationBudget() throws {
+        let directory = try makeGLMModelDirectory()
+        let processorURL = directory.appendingPathComponent(
+            "preprocessor_config.json")
+        var processor = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(contentsOf: processorURL))
+                as? [String: Any])
+        var video = try XCTUnwrap(
+            processor["video_processor"] as? [String: Any])
+        video["fps"] = 1_000_000_000.0
+        video["max_frames"] = Int.max
+        processor["video_processor"] = video
+        try Self.writeJSON(processor, to: processorURL)
+
+        let qualification = try qualify(directory)
+        XCTAssertNil(qualification.processorClass)
+        XCTAssertTrue(
+            qualification.missingAssets.contains(.processorConfiguration))
+        XCTAssertFalse(qualification.isAssetUsable)
+    }
+
     func testGLM5NextRejectsMalformedVisionShapeAndDType() throws {
         for metadata in [
             ("F16", [1]),

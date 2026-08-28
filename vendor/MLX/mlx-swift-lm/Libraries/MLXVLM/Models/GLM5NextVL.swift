@@ -91,6 +91,12 @@ public struct GLM5NextProcessorConfiguration: Codable, Sendable {
 }
 
 public struct GLM5NextProcessor: UserInputProcessor {
+    /// The current published GLM processor contract caps sampled video input at
+    /// 2,048 frames. Treat this as a runtime safety ceiling as well so malformed
+    /// configuration or direct call-time overrides cannot request an unbounded
+    /// `linspace` allocation.
+    static let maximumSampledVideoFrames = 2_048
+
     struct ResizePlan: Equatable {
         let targetHeight: Int
         let targetWidth: Int
@@ -282,7 +288,9 @@ public struct GLM5NextProcessor: UserInputProcessor {
         targetFPS: Double,
         maximumFrames: Int
     ) throws -> [Int] {
-        guard totalFrames > 0, sourceFPS > 0, targetFPS > 0, maximumFrames > 0 else {
+        try validateSamplingRequest(
+            targetFPS: targetFPS, maximumFrames: maximumFrames)
+        guard totalFrames > 0, sourceFPS.isFinite, sourceFPS > 0 else {
             throw VLMError.imageProcessingFailure("Invalid GLM video sampling metadata")
         }
 
@@ -357,6 +365,10 @@ public struct GLM5NextProcessor: UserInputProcessor {
         targetFPS: Double,
         maximumFrames: Int
     ) async throws -> [VideoFrame] {
+        // Validate call-time overrides before frame-rate inference or index
+        // construction allocates work proportional to the request.
+        try validateSamplingRequest(
+            targetFPS: targetFPS, maximumFrames: maximumFrames)
         switch video {
         case .frames(let frames):
             guard !frames.isEmpty else {
@@ -379,6 +391,19 @@ public struct GLM5NextProcessor: UserInputProcessor {
         case .avAsset(let asset):
             return try await sampleVideo(
                 asset, targetFPS: targetFPS, maximumFrames: maximumFrames)
+        }
+    }
+
+    private static func validateSamplingRequest(
+        targetFPS: Double,
+        maximumFrames: Int
+    ) throws {
+        guard targetFPS.isFinite, targetFPS > 0,
+              maximumFrames > 0,
+              maximumFrames <= maximumSampledVideoFrames
+        else {
+            throw VLMError.imageProcessingFailure(
+                "GLM video sampling exceeds the 2,048-frame runtime limit")
         }
     }
 
