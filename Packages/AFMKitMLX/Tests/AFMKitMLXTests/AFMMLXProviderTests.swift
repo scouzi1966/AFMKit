@@ -766,6 +766,55 @@ final class AFMMLXProviderTests: XCTestCase {
         XCTAssertTrue(descriptor.capabilities.contains(.toolCalling))
     }
 
+    func testDescriptorInfersToolCallingFromDeepseekV4NativeEncoder() throws {
+        let root = try makeModelCache(
+            config: ["model_type": "deepseek_v4"]
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let descriptor = AFMMLXModelDescriptor.describe(
+            modelID: "test/model",
+            resolver: MLXCacheResolver(cacheRoot: root)
+        )
+
+        XCTAssertTrue(descriptor.capabilities.contains(.toolCalling))
+    }
+
+    func testDescriptorDoesNotInferNativeToolCallingForDeepseekV3() throws {
+        let root = try makeModelCache(
+            config: ["model_type": "deepseek_v3"]
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let descriptor = AFMMLXModelDescriptor.describe(
+            modelID: "test/model",
+            resolver: MLXCacheResolver(cacheRoot: root)
+        )
+
+        XCTAssertFalse(descriptor.capabilities.contains(.toolCalling))
+    }
+
+    func testDeepseekV4NativeEncoderRendersProvidedToolSchema() throws {
+        let tools: [[String: any Sendable]] = [[
+            "type": "function",
+            "function": [
+                "name": "get_weather",
+                "description": "Get weather for a city",
+            ] as [String: any Sendable],
+        ]]
+
+        let prompt = try DeepseekV4ChatEncoder.renderOpenAIChat(
+            messages: [["role": "user", "content": "What is the weather?"]],
+            tools: tools,
+            additionalContext: ["enable_thinking": false],
+            addGenerationPrompt: true
+        )
+
+        XCTAssertTrue(prompt.contains("## Tools"))
+        XCTAssertTrue(prompt.contains("get_weather"))
+        XCTAssertTrue(prompt.contains("DSML｜tool_calls"))
+    }
+
     func testDescriptorInfersToolCallingFromEmbeddedTemplateCollection() throws {
         let root = try makeModelCache(
             config: ["model_type": "test"],
