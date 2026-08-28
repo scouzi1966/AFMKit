@@ -93,12 +93,14 @@ Scripts/check-api-baselines.sh
 The vendored MLX Swift runtime includes text-generation support for
 `model_type: glm5_next`, the architecture published as
 [`zai-org/GLM-5.3-Flash`](https://huggingface.co/zai-org/GLM-5.3-Flash). The
-upstream repository currently publishes FP8 Transformers shards rather than an
-MLX-quantized checkpoint. AFMKit therefore expects an MLX-converted checkpoint;
+official upstream repository publishes FP8 Transformers shards rather than an
+MLX-quantized checkpoint. AFMKit therefore expects an MLX conversion such as
+[`Vontra/GLM-5.3-Flash-MLX-4bit-MTP`](https://huggingface.co/Vontra/GLM-5.3-Flash-MLX-4bit-MTP);
 it does not claim that the original FP8 distribution can be loaded directly on
 Apple Silicon. This first implementation covers the language decoder and tool
-format. Image and video execution require a future `MLXVLM` model and processor
-port.
+format. Image/video execution and the checkpoint's embedded MTP layer are
+tracked separately in [#43](https://github.com/scouzi1966/AFMKit/issues/43) and
+[#44](https://github.com/scouzi1966/AFMKit/issues/44).
 
 The AFM-compatible MLX, MLX C, Swift bindings, and language-model sources live
 under `vendor/MLX`. They are ordinary source snapshots with their upstream

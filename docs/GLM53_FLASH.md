@@ -33,17 +33,22 @@ the unrelated `enable_thinking` flag.
 
 ## Checkpoint scope
 
-The upstream repository publishes FP8 Transformers shards, not a converted MLX
-checkpoint. The runtime implementation is intended for an MLX conversion whose
-weights retain the published architecture and names. Focused tests validate
-configuration decoding, weight sanitation, cache construction, serial and
-left-padded batched prefill/decode, and tool-format selection with a tiny model.
-There is no public converted checkpoint against which to claim full-weight
-numerical parity yet.
+The official upstream repository publishes FP8 Transformers shards, not a
+converted MLX checkpoint. The runtime implementation is intended for an MLX
+conversion whose weights retain the published architecture and names. A public
+candidate is
+[`Vontra/GLM-5.3-Flash-MLX-4bit-MTP`](https://huggingface.co/Vontra/GLM-5.3-Flash-MLX-4bit-MTP).
+Focused tests validate configuration decoding, weight sanitation, cache
+construction, serial and left-padded batched prefill/decode, and tool-format
+selection with a tiny model. Full-weight qualification is recorded separately
+from these architecture tests.
 
-This is language-only support. The checkpoint's image/video tower and processor
-still require a separate `MLXVLM` port, and the original FP8 Transformers shards
-are not claimed as directly loadable on Apple Silicon. Their raw
-`weight_scale_inv` keys are deliberately preserved by sanitation so the strict
-loader rejects them instead of silently interpreting FP8 byte payloads as
-ordinary integers.
+This is language-only support. The LLM sanitizer deliberately excludes the
+checkpoint's image/video tower and its extra next-token prediction layer. The
+corresponding self-contained `MLXVLM` work is tracked by AFMKit
+[#43](https://github.com/scouzi1966/AFMKit/issues/43), and GLM-specific MTP
+speculative decoding by
+[#44](https://github.com/scouzi1966/AFMKit/issues/44). The original FP8
+Transformers shards are not claimed as directly loadable on Apple Silicon;
+their raw `weight_scale_inv` keys remain visible so the strict loader rejects
+them instead of silently interpreting FP8 byte payloads as ordinary integers.
