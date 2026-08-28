@@ -1543,7 +1543,11 @@ public final class GLM5NextModel: Module, LLMModel, KVCacheDimensionProvider, Lo
             key = key
                 .replacingOccurrences(of: ".hc_attn_", with: ".attn_hc.")
                 .replacingOccurrences(of: ".hc_ffn_", with: ".ffn_hc.")
-            for name in ["A_log", "dt_bias", "f_a_proj.weight", "f_b_proj.weight"] {
+            for name in [
+                "A_log", "dt_bias",
+                "f_a_proj.weight", "f_a_proj.scales", "f_a_proj.biases",
+                "f_b_proj.weight", "f_b_proj.scales", "f_b_proj.biases",
+            ] {
                 let suffix = ".self_attn.\(name)"
                 if key.hasSuffix(suffix) {
                     key = String(key.dropLast(name.count)) + "forget_gate." + name

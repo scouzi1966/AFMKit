@@ -267,6 +267,10 @@ final class GLM5NextArchitectureTests: XCTestCase {
         let sanitized = model.sanitize(weights: [
             "model.language_model.layers.0.hc_attn_fn": scalar,
             "model.language_model.layers.0.self_attn.A_log": scalar,
+            "model.language_model.layers.0.self_attn.f_a_proj.scales": scalar,
+            "model.language_model.layers.0.self_attn.f_a_proj.biases": scalar,
+            "model.language_model.layers.0.self_attn.f_b_proj.scales": scalar,
+            "model.language_model.layers.0.self_attn.f_b_proj.biases": scalar,
             "model.language_model.layers.0.self_attn.q_conv1d.weight": convolution,
             "model.language_model.layers.0.self_attn.k_conv1d.weight": convolution,
             "model.language_model.layers.0.self_attn.v_conv1d.weight": convolution,
@@ -285,6 +289,14 @@ final class GLM5NextArchitectureTests: XCTestCase {
 
         XCTAssertNotNil(sanitized["model.layers.0.attn_hc.fn"])
         XCTAssertNotNil(sanitized["model.layers.0.self_attn.forget_gate.A_log"])
+        XCTAssertNotNil(
+            sanitized["model.layers.0.self_attn.forget_gate.f_a_proj.scales"])
+        XCTAssertNotNil(
+            sanitized["model.layers.0.self_attn.forget_gate.f_a_proj.biases"])
+        XCTAssertNotNil(
+            sanitized["model.layers.0.self_attn.forget_gate.f_b_proj.scales"])
+        XCTAssertNotNil(
+            sanitized["model.layers.0.self_attn.forget_gate.f_b_proj.biases"])
         XCTAssertEqual(
             sanitized["model.layers.0.self_attn.conv1d.weight"]?.shape,
             [24, 2, 1])
