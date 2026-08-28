@@ -96,6 +96,40 @@ final class GLM5NextCheckpointConverterTests: XCTestCase {
             "vision_model.blocks.0.attn.qkv.weight")
     }
 
+    func testOfficialVisionConvolutionLayoutsTransposeToMLX() throws {
+        XCTAssertEqual(
+            try GLM5NextCheckpointConverter.visionWeightPermutation(
+                sourceName: "model.visual.patch_embed.proj.weight",
+                sourceShape: [1024, 3, 2, 14, 14]),
+            [0, 2, 3, 4, 1])
+        XCTAssertEqual(
+            try GLM5NextCheckpointConverter.visionWeightPermutation(
+                sourceName: "model.visual.downsample.weight",
+                sourceShape: [4096, 1024, 2, 2]),
+            [0, 2, 3, 1])
+
+        let source = MLXArray((0..<(1024 * 3 * 2 * 14 * 14)).map(Float.init))
+            .reshaped(1024, 3, 2, 14, 14)
+        let converted = try GLM5NextCheckpointConverter.convertedVisionWeight(
+            source,
+            sourceName: "model.visual.patch_embed.proj.weight",
+            sourceShape: source.shape)
+        MLX.eval(converted)
+
+        XCTAssertEqual(converted.shape, [1024, 2, 14, 14, 3])
+        XCTAssertEqual(
+            converted[7, 1, 13, 12, 2].item(Float.self),
+            source[7, 2, 1, 13, 12].item(Float.self))
+    }
+
+    func testUnexpectedOfficialVisionConvolutionShapeFailsClosed() {
+        XCTAssertThrowsError(try GLM5NextCheckpointConverter.visionWeightPermutation(
+            sourceName: "model.visual.downsample.weight",
+            sourceShape: [4, 4])) { error in
+                XCTAssertTrue(error.localizedDescription.contains("downsample shape"))
+            }
+    }
+
     func testAllPublishedVisionTensorNamesMapWithoutLoss() {
         let blockLeaves = [
             "attn.k_norm.weight", "attn.proj.bias", "attn.proj.weight",
@@ -205,6 +239,12 @@ final class GLM5NextCheckpointConverterTests: XCTestCase {
                 "language_model.model.layers.1.mlp.switch_mlp.\(projection).weight"])
         }
         XCTAssertNotNil(weightMap["vision_model.patch_embed.proj.weight"])
+        let visionFile = try XCTUnwrap(
+            weightMap["vision_model.patch_embed.proj.weight"])
+        let visionArrays = try loadArrays(url: output.appendingPathComponent(visionFile))
+        XCTAssertEqual(
+            try XCTUnwrap(visionArrays["vision_model.patch_embed.proj.weight"]).shape,
+            [1024, 2, 14, 14, 3])
         XCTAssertNotNil(weightMap[
             "language_model.model.layers.0.self_attn.conv1d.weight"])
         XCTAssertNotNil(weightMap[
@@ -327,6 +367,132 @@ final class GLM5NextCheckpointConverterTests: XCTestCase {
         assertSourceMismatch(source: source, output: output, revision: revision)
     }
 
+    func testOutputAncestorOfSourceIsRejectedBeforeOverwrite() throws {
+        let container = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let fixture = try makeFixture()
+        let source = container.appendingPathComponent("models/source", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: source.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.moveItem(at: fixture, to: source)
+        defer { try? FileManager.default.removeItem(at: container) }
+
+        XCTAssertThrowsError(try GLM5NextCheckpointConverter(
+            source: source,
+            output: container,
+            overwrite: true,
+            sourceRevision: String(repeating: "a", count: 40)).run()) { error in
+                XCTAssertTrue(error.localizedDescription.contains("neither may contain"))
+            }
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: source.appendingPathComponent("config.json").path))
+    }
+
+    func testSymlinkedOutputAncestorOfSourceIsRejectedBeforeOverwrite() throws {
+        let container = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let fixture = try makeFixture()
+        let real = container.appendingPathComponent("real", isDirectory: true)
+        let source = real.appendingPathComponent("source", isDirectory: true)
+        let alias = container.appendingPathComponent("alias", isDirectory: true)
+        try FileManager.default.createDirectory(at: real, withIntermediateDirectories: true)
+        try FileManager.default.moveItem(at: fixture, to: source)
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: real)
+        defer { try? FileManager.default.removeItem(at: container) }
+
+        XCTAssertThrowsError(try GLM5NextCheckpointConverter(
+            source: source,
+            output: alias,
+            overwrite: true,
+            sourceRevision: String(repeating: "a", count: 40)).run()) { error in
+                XCTAssertTrue(error.localizedDescription.contains("neither may contain"))
+            }
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: source.appendingPathComponent("config.json").path))
+    }
+
+    func testInspectRejectsMissingRequiredAssetBeforeCreatingOutput() throws {
+        let source = try makeFixture()
+        let output = source.deletingLastPathComponent()
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer {
+            try? FileManager.default.removeItem(at: source)
+            try? FileManager.default.removeItem(at: output)
+        }
+        try FileManager.default.removeItem(
+            at: source.appendingPathComponent("processor_config.json"))
+
+        XCTAssertThrowsError(try GLM5NextCheckpointConverter.inspect(
+            source: source,
+            sourceRevision: String(repeating: "a", count: 40))) { error in
+                XCTAssertTrue(error.localizedDescription.contains("processor_config.json"))
+            }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: output.path))
+    }
+
+    func testExplicitRevisionCannotContradictSnapshotPath() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let snapshotRevision = String(repeating: "a", count: 40)
+        let snapshot = root.appendingPathComponent("snapshots/\(snapshotRevision)")
+        let fixture = try makeFixture()
+        try FileManager.default.createDirectory(
+            at: snapshot.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.moveItem(at: fixture, to: snapshot)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        XCTAssertThrowsError(try GLM5NextCheckpointConverter.inspect(
+            source: snapshot,
+            sourceRevision: String(repeating: "b", count: 40))) { error in
+                XCTAssertTrue(error.localizedDescription.contains("conflicts"))
+            }
+    }
+
+    func testExplicitRevisionCannotContradictLocalMetadata() throws {
+        let source = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: source) }
+        let metadata = source.appendingPathComponent(
+            ".cache/huggingface/download/config.json.metadata")
+        try FileManager.default.createDirectory(
+            at: metadata.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("\(String(repeating: "a", count: 40))\n".utf8).write(to: metadata)
+
+        XCTAssertThrowsError(try GLM5NextCheckpointConverter.inspect(
+            source: source,
+            sourceRevision: String(repeating: "b", count: 40))) { error in
+                XCTAssertTrue(error.localizedDescription.contains("conflicts"))
+            }
+    }
+
+    func testResumeRejectsSameSizeShardMutationWithPreservedModificationTime() throws {
+        let source = try makeFixture()
+        let output = source.deletingLastPathComponent()
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer {
+            try? FileManager.default.removeItem(at: source)
+            try? FileManager.default.removeItem(at: output)
+        }
+        let revision = String(repeating: "a", count: 40)
+        let converter = GLM5NextCheckpointConverter(
+            source: source, output: output, sourceRevision: revision)
+        try converter.run()
+
+        let shard = source.appendingPathComponent("model-00001-of-00002.safetensors")
+        let modificationDate = try shard.resourceValues(
+            forKeys: [.contentModificationDateKey]).contentModificationDate
+        var bytes = try Data(contentsOf: shard)
+        bytes[bytes.index(before: bytes.endIndex)] ^= 0xff
+        try bytes.write(to: shard)
+        if let modificationDate {
+            try FileManager.default.setAttributes(
+                [.modificationDate: modificationDate], ofItemAtPath: shard.path)
+        }
+
+        XCTAssertThrowsError(try converter.run()) { error in
+            XCTAssertTrue(error.localizedDescription.contains("shard contents"))
+        }
+    }
+
     func testDispatcherPreservesDeepSeekProfilesAndDetectsGLM() throws {
         let source = try makeFixture()
         defer { try? FileManager.default.removeItem(at: source) }
@@ -337,6 +503,18 @@ final class GLM5NextCheckpointConverterTests: XCTestCase {
         XCTAssertEqual(inspection.modelKind, .glm5Next)
         XCTAssertEqual(inspection.defaultProfile, "mlx-affine-4")
         XCTAssertEqual(inspection.sourceRevision, String(repeating: "a", count: 40))
+
+        let deepSeek = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: deepSeek, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: deepSeek) }
+        try Data("{\"model_type\":\"deepseek_v4\"}".utf8).write(
+            to: deepSeek.appendingPathComponent("config.json"))
+        let deepSeekInspection = try AFMMLXCheckpointConverter.inspect(source: deepSeek)
+        XCTAssertEqual(deepSeekInspection.modelKind, .deepseekV4)
+        XCTAssertEqual(
+            deepSeekInspection.supportedProfiles,
+            DeepseekV4CheckpointConverter.Profile.allCases.map(\.rawValue))
     }
 
     private func makeFixture(
@@ -415,8 +593,8 @@ final class GLM5NextCheckpointConverterTests: XCTestCase {
                 data: Data(repeating: 0, count: kvShape.reduce(1, *) * 2))
         shardTwo["model.visual.patch_embed.proj.weight"] = FixtureTensor(
             dtype: "BF16",
-            shape: [4, 4],
-            data: Data(repeating: 0, count: 4 * 4 * 2))
+            shape: [1024, 3, 2, 14, 14],
+            data: Data(repeating: 0, count: 1024 * 3 * 2 * 14 * 14 * 2))
         shardTwo["model.language_model.layers.2.mtp_projection.weight"] = FixtureTensor(
             dtype: "BF16",
             shape: [4, 4],
@@ -491,7 +669,7 @@ final class GLM5NextCheckpointConverterTests: XCTestCase {
             output: output,
             sourceRevision: revision).run()) { error in
                 XCTAssertTrue(error.localizedDescription.contains(
-                    "Source config, index, or shard fingerprints changed"))
+                    "Source config, index, shard contents, or support assets changed"))
             }
     }
 }

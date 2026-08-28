@@ -13,11 +13,15 @@ public struct GLM5NextCheckpointConverter {
 
     public static let officialModelID = "zai-org/GLM-5.3-Flash"
     public static let minimumDestinationFreeBytes: Int64 = 600_000_000_000
-    private static let currentFormatVersion = 1
+    private static let currentFormatVersion = 2
     private static let fp8BlockRows = 128
     private static let fp8BlockColumns = 128
     private static let affineGroupSize = 64
     private static let affineBits = 4
+    private static let requiredSupportFiles = [
+        "chat_template.jinja", "processor_config.json", "tokenizer.json",
+        "tokenizer_config.json",
+    ]
 
     public enum Profile: String, Codable, CaseIterable, Sendable {
         case mlxAffine4 = "mlx-affine-4"
@@ -68,6 +72,7 @@ public struct GLM5NextCheckpointConverter {
     private struct SourceShardFingerprint: Codable, Equatable {
         let size: Int64
         let modificationTime: TimeInterval
+        let contentSHA256: String?
     }
 
     private struct CompletedUnit: Codable {
@@ -85,6 +90,7 @@ public struct GLM5NextCheckpointConverter {
         var configSHA256: String
         var indexSHA256: String
         var sourceShards: [String: SourceShardFingerprint]
+        var sourceAssets: [String: String]
         var completed: [String: CompletedUnit] = [:]
         var weightMap: [String: String] = [:]
         var quantization: [String: Quantization] = [:]
@@ -122,6 +128,7 @@ public struct GLM5NextCheckpointConverter {
         let tensors: [String: TensorReference]
         let shardURLs: [String: URL]
         let shardFingerprints: [String: SourceShardFingerprint]
+        let assetSHA256: [String: String]
         let sourceBytes: Int64
     }
 
@@ -214,7 +221,8 @@ public struct GLM5NextCheckpointConverter {
         source: URL,
         sourceRevision: String? = nil
     ) throws -> Inspection {
-        let checkpoint = try loadSource(source, explicitRevision: sourceRevision)
+        let checkpoint = try loadSource(
+            source, explicitRevision: sourceRevision, fingerprintContents: false)
         return inspection(for: checkpoint)
     }
 
@@ -222,20 +230,21 @@ public struct GLM5NextCheckpointConverter {
         let fm = FileManager.default
         let sourceURL = source.standardizedFileURL
         let outputURL = output.standardizedFileURL
-        guard sourceURL != outputURL else {
+        let resolvedSource = sourceURL.resolvingSymlinksInPath()
+        let resolvedOutput = outputURL.resolvingSymlinksInPath()
+        guard !Self.contains(resolvedSource, resolvedOutput),
+              !Self.contains(resolvedOutput, resolvedSource)
+        else {
             throw ConversionError.unsafeOutput(
-                "Conversion output must differ from the source directory.")
-        }
-        guard !outputURL.path.hasPrefix(sourceURL.path + "/") else {
-            throw ConversionError.unsafeOutput(
-                "Conversion output cannot be inside the source checkpoint.")
+                "Conversion source and output must be separate directories; neither may contain the other, including through symlinks.")
         }
         guard sourceURL.isFileURL, outputURL.isFileURL else {
             throw ConversionError.invalidSource(
                 "GLM-5.3 conversion requires local filesystem paths; remote download is not supported.")
         }
 
-        let checkpoint = try Self.loadSource(sourceURL, explicitRevision: sourceRevision)
+        let checkpoint = try Self.loadSource(
+            sourceURL, explicitRevision: sourceRevision, fingerprintContents: true)
         let inspection = Self.inspection(for: checkpoint)
         report("Converting \(Self.officialModelID) at \(inspection.sourceRevision)")
         report("  source: \(sourceURL.path)")
@@ -273,7 +282,8 @@ public struct GLM5NextCheckpointConverter {
                 sourceRevision: checkpoint.revision,
                 configSHA256: configHash,
                 indexSHA256: indexHash,
-                sourceShards: checkpoint.shardFingerprints)
+                sourceShards: checkpoint.shardFingerprints,
+                sourceAssets: checkpoint.assetSHA256)
             try saveState(state)
         }
 
@@ -451,9 +461,47 @@ public struct GLM5NextCheckpointConverter {
         return key
     }
 
+    static func visionWeightPermutation(
+        sourceName: String,
+        sourceShape: [Int]
+    ) throws -> [Int]? {
+        switch sourceName {
+        case "model.visual.patch_embed.proj.weight":
+            guard sourceShape == [1024, 3, 2, 14, 14] else {
+                throw ConversionError.unsupportedTensor(
+                    "Unexpected GLM-5.3 patch embedding shape \(sourceShape).")
+            }
+            return [0, 2, 3, 4, 1]
+        case "model.visual.downsample.weight":
+            guard sourceShape == [4096, 1024, 2, 2] else {
+                throw ConversionError.unsupportedTensor(
+                    "Unexpected GLM-5.3 vision downsample shape \(sourceShape).")
+            }
+            return [0, 2, 3, 1]
+        default:
+            return nil
+        }
+    }
+
+    static func convertedVisionWeight(
+        _ value: MLXArray,
+        sourceName: String,
+        sourceShape: [Int]
+    ) throws -> MLXArray {
+        guard let permutation = try visionWeightPermutation(
+            sourceName: sourceName, sourceShape: sourceShape)
+        else { return value }
+        return contiguous(value.transposed(axes: permutation))
+    }
+
+    private static func contains(_ directory: URL, _ candidate: URL) -> Bool {
+        directory == candidate || candidate.path.hasPrefix(directory.path + "/")
+    }
+
     private static func loadSource(
         _ source: URL,
-        explicitRevision: String?
+        explicitRevision: String?,
+        fingerprintContents: Bool
     ) throws -> SourceCheckpoint {
         let fm = FileManager.default
         let root = source.standardizedFileURL
@@ -475,6 +523,15 @@ public struct GLM5NextCheckpointConverter {
         let indexData = try Data(contentsOf: indexURL)
         let config = try parseConfiguration(configData)
         let revision = try resolveRevision(root: root, explicit: explicitRevision)
+        var assetSHA256 = [String: String]()
+        for name in requiredSupportFiles {
+            let url = root.appendingPathComponent(name)
+            guard fm.fileExists(atPath: url.path) else {
+                throw ConversionError.invalidSource(
+                    "Required multimodal/tokenizer asset \(name) is missing.")
+            }
+            assetSHA256[name] = try sha256File(url)
+        }
 
         guard let index = try JSONSerialization.jsonObject(with: indexData) as? [String: Any],
               let rawWeightMap = index["weight_map"] as? [String: Any]
@@ -511,7 +568,8 @@ public struct GLM5NextCheckpointConverter {
             let size = Int64(values.fileSize ?? 0)
             fingerprints[shard] = SourceShardFingerprint(
                 size: size,
-                modificationTime: values.contentModificationDate?.timeIntervalSince1970 ?? 0)
+                modificationTime: values.contentModificationDate?.timeIntervalSince1970 ?? 0,
+                contentSHA256: fingerprintContents ? try sha256File(url) : nil)
             sourceBytes += size
             shardURLs[shard] = url
             let header = try AFMSafetensorHeader(url: url)
@@ -545,6 +603,7 @@ public struct GLM5NextCheckpointConverter {
             tensors: tensors,
             shardURLs: shardURLs,
             shardFingerprints: fingerprints,
+            assetSHA256: assetSHA256,
             sourceBytes: sourceBytes)
     }
 
@@ -776,7 +835,11 @@ public struct GLM5NextCheckpointConverter {
                 let base = String(mapped.dropLast(".weight".count))
                 try addQuantized(value, base: base, to: &converted)
             } else {
-                let value = try loader.load(reference)
+                let loaded = try loader.load(reference)
+                let value = try Self.convertedVisionWeight(
+                    loaded,
+                    sourceName: reference.name,
+                    sourceShape: reference.shape)
                 converted.arrays[mapped] = value
                 if mapped.hasSuffix(".weight") {
                     converted.skippedQuantization.insert(
@@ -940,26 +1003,40 @@ public struct GLM5NextCheckpointConverter {
                 "Source revision changed from \(state.sourceRevision) to \(checkpoint.revision).")
         }
         guard state.configSHA256 == configHash, state.indexSHA256 == indexHash,
-              state.sourceShards == checkpoint.shardFingerprints
+              state.sourceShards == checkpoint.shardFingerprints,
+              state.sourceAssets == checkpoint.assetSHA256
         else {
             throw ConversionError.sourceMismatch(
-                "Source config, index, or shard fingerprints changed; use --overwrite after verifying the checkpoint.")
+                "Source config, index, shard contents, or support assets changed; use --overwrite after verifying the checkpoint.")
         }
     }
 
     private static func resolveRevision(root: URL, explicit: String?) throws -> String {
+        let inferred = try inferredRevision(root: root)
         if let explicit {
             guard isCommitRevision(explicit) else {
                 throw ConversionError.invalidSource(
                     "--source-revision must be a full 40-character hexadecimal commit revision.")
             }
-            return explicit.lowercased()
+            let normalized = explicit.lowercased()
+            if let inferred, inferred != normalized {
+                throw ConversionError.invalidSource(
+                    "--source-revision \(normalized) conflicts with locally provable checkpoint revision \(inferred).")
+            }
+            return normalized
         }
+        if let inferred { return inferred }
+        throw ConversionError.invalidSource(
+            "Cannot prove the local checkpoint revision. Pass --source-revision with the official 40-character Hugging Face commit.")
+    }
+
+    private static func inferredRevision(root: URL) throws -> String? {
+        var revisions = Set<String>()
         let components = root.pathComponents
         if let snapshots = components.lastIndex(of: "snapshots"), snapshots + 1 < components.count,
            isCommitRevision(components[snapshots + 1])
         {
-            return components[snapshots + 1].lowercased()
+            revisions.insert(components[snapshots + 1].lowercased())
         }
         let metadataCandidates = [
             ".cache/huggingface/download/config.json.metadata",
@@ -971,11 +1048,14 @@ public struct GLM5NextCheckpointConverter {
             if let revision = text.split(whereSeparator: \.isWhitespace)
                 .map(String.init).first(where: isCommitRevision)
             {
-                return revision.lowercased()
+                revisions.insert(revision.lowercased())
             }
         }
-        throw ConversionError.invalidSource(
-            "Cannot prove the local checkpoint revision. Pass --source-revision with the official 40-character Hugging Face commit.")
+        guard revisions.count <= 1 else {
+            throw ConversionError.invalidSource(
+                "Local Hugging Face metadata contains conflicting checkpoint revisions.")
+        }
+        return revisions.first
     }
 
     private static func isCommitRevision(_ value: String) -> Bool {
@@ -1057,16 +1137,13 @@ public struct GLM5NextCheckpointConverter {
             let from = source.appendingPathComponent(name)
             let to = output.appendingPathComponent(name)
             guard fm.fileExists(atPath: from.path) else {
-                if ["processor_config.json", "tokenizer.json", "tokenizer_config.json",
-                    "chat_template.jinja"].contains(name)
-                {
+                if Self.requiredSupportFiles.contains(name) {
                     throw ConversionError.invalidSource(
                         "Required multimodal/tokenizer asset \(name) is missing.")
                 }
                 continue
             }
-            if fm.fileExists(atPath: to.path) { try fm.removeItem(at: to) }
-            try fm.copyItem(at: from, to: to)
+            try writeAtomically(try Data(contentsOf: from), to: to)
         }
     }
 
