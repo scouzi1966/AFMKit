@@ -29,37 +29,40 @@ class GLM5MoeDsaMultiLinear: Module {
         self.outputDims = outputDims
         self.numHeads = numHeads
 
-        // Use scalar placeholders for all parameters. The actual tensors come from
-        // the checkpoint via update(parameters:). Quantized models store packed
-        // weights with different shapes than logical dims, so verify: [.all] shape
-        // checks would fail with full-sized init values.
+        // Use a scalar placeholder only for the required weight. Optional
+        // quantization parameters must remain absent until a qualified packed
+        // checkpoint supplies them; their presence selects the quantized path.
+        // Quantized models store packed weights with different shapes than logical
+        // dims, so verify: [.all] shape checks would fail with full-sized init values.
         self._weight.wrappedValue = MLXArray(Float(0))
-        self._scales.wrappedValue = MLXArray(Float(0))
-        self._biases.wrappedValue = MLXArray(Float(0))
+        self._scales.wrappedValue = nil
+        self._biases.wrappedValue = nil
 
         super.init()
     }
 
-    /// Replaces scalar shape-agnostic placeholders with already-qualified
-    /// checkpoint tensors so a subsequent `.all` update can enforce the full
-    /// module key and shape contract. This module cannot derive packed shapes
-    /// at initialization because quantization metadata belongs to the loaded
-    /// checkpoint rather than the architecture configuration.
-    func prepareForVerifiedUpdate(
-        newWeight: MLXArray,
-        newScales: MLXArray?,
-        newBiases: MLXArray?
-    ) throws {
-        var replacements = ["weight": newWeight]
-        replacements["scales"] = newScales
-        replacements["biases"] = newBiases
-        try self.update(
-            parameters: ModuleParameters.unflattened(replacements),
-            verify: [.noUnusedKeys])
+    /// Creates a shape-qualified replacement whose optional parameter tree
+    /// exactly matches the checkpoint. The parent installs this replacement
+    /// through `Module.update(modules:)` before strict parameter verification.
+    init(
+        inputDims: Int,
+        outputDims: Int,
+        numHeads: Int,
+        checkpointWeight: MLXArray,
+        checkpointScales: MLXArray?,
+        checkpointBiases: MLXArray?
+    ) {
+        self.inputDims = inputDims
+        self.outputDims = outputDims
+        self.numHeads = numHeads
+        self._weight.wrappedValue = checkpointWeight
+        self._scales.wrappedValue = checkpointScales
+        self._biases.wrappedValue = checkpointBiases
+        super.init()
     }
 
     func callAsFunction(_ x: MLXArray, transpose: Bool = true) -> MLXArray {
-        if let scales, let biases, scales.size > 1 {
+        if let scales, let biases {
             // Quantization is always along the last weight dim (= inputDims)
             let dims = inputDims
             let bits = (weight.dim(-1) * 32) / dims

@@ -1042,15 +1042,24 @@ final class GLM5NextMTPHead: Module {
     func prepareMultiLinearParametersForVerifiedUpdate(
         _ parameters: [String: MLXArray]
     ) throws {
-        for (module, prefix) in [
-            (decoder.attention.embedQuery, "decoder.self_attn.embed_q"),
-            (decoder.attention.unembedOutput, "decoder.self_attn.unembed_out"),
+        var replacements = [String: Module]()
+        for (key, module, prefix) in [
+            ("embed_q", decoder.attention.embedQuery, "decoder.self_attn.embed_q"),
+            ("unembed_out", decoder.attention.unembedOutput, "decoder.self_attn.unembed_out"),
         ] {
             guard let weight = parameters[prefix + ".weight"] else { continue }
-            try module.prepareForVerifiedUpdate(
-                newWeight: weight,
-                newScales: parameters[prefix + ".scales"],
-                newBiases: parameters[prefix + ".biases"])
+            replacements[key] = GLM5MoeDsaMultiLinear(
+                inputDims: module.inputDims,
+                outputDims: module.outputDims,
+                numHeads: module.numHeads,
+                checkpointWeight: weight,
+                checkpointScales: parameters[prefix + ".scales"],
+                checkpointBiases: parameters[prefix + ".biases"])
+        }
+        if !replacements.isEmpty {
+            try decoder.attention.update(
+                modules: ModuleChildren.unflattened(replacements),
+                verify: [.noUnusedKeys])
         }
     }
 

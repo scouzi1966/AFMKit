@@ -130,8 +130,18 @@ public struct AFMMLXSpeculativeModelCompatibility: Equatable, Sendable {
 
     public static func evaluate(
         config: [String: Any],
+        hasMTPSidecar: Bool
+    ) -> AFMMLXSpeculativeModelCompatibility {
+        evaluate(
+            config: config,
+            hasMTPSidecar: hasMTPSidecar,
+            embeddedAssetsPresent: false)
+    }
+
+    static func evaluate(
+        config: [String: Any],
         hasMTPSidecar: Bool,
-        embeddedAssetsPresent: Bool = false
+        embeddedAssetsPresent: Bool
     ) -> AFMMLXSpeculativeModelCompatibility {
         AFMMLXSpeculativeModelCompatibility(
             mtpCompatible: (hasMTPSidecar && isMTPCompatibleConfiguration(config))

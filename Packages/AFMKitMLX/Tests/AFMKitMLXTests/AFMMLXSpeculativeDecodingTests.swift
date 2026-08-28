@@ -335,6 +335,22 @@ final class AFMMLXSpeculativeDecodingTests: XCTestCase {
                 .mtpCompatible)
     }
 
+    func testEmbeddedGLMMTPLoaderConsumesQualifiedUnquantizedManifest() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try Self.writeEmbeddedGLMConfig(to: directory)
+        try Self.writeEmbeddedGLMSafetensor(to: directory)
+        let data = try Data(contentsOf: directory.appendingPathComponent("config.json"))
+        let config = try JSONDecoder().decode(GLM5NextConfiguration.self, from: data)
+        let model = GLM5NextModel(config)
+
+        try model.loadEmbeddedMTP(modelDirectory: directory)
+
+        XCTAssertTrue(model.supportsEmbeddedMTP)
+    }
+
     func testEmbeddedGLMMTPDirectoryRejectsWrongShapeHeader() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -508,14 +524,18 @@ final class AFMMLXSpeculativeDecodingTests: XCTestCase {
         let config: [String: Any] = [
             "model_type": "glm5_next",
             "text_config": [
-                "model_type": "glm5_next",
+                "model_type": "glm5_next_text",
+                "vocab_size": 32,
                 "num_hidden_layers": 2,
                 "num_nextn_predict_layers": 1,
                 "hidden_size": 8,
+                "intermediate_size": 16,
                 "q_lora_rank": 4,
                 "kv_lora_rank": 4,
                 "num_attention_heads": 2,
+                "num_key_value_heads": 2,
                 "qk_nope_head_dim": 2,
+                "qk_rope_head_dim": 0,
                 "v_head_dim": 2,
                 "index_n_heads": 2,
                 "index_head_dim": 2,
@@ -523,6 +543,14 @@ final class AFMMLXSpeculativeDecodingTests: XCTestCase {
                 "n_routed_experts": 2,
                 "n_shared_experts": 1,
                 "moe_intermediate_size": 4,
+                "num_experts_per_tok": 1,
+                "layer_types": ["linear_attention", "deepseek_sparse_attention"],
+                "mlp_layer_types": ["dense", "sparse"],
+                "linear_attn_config": [
+                    "num_heads": 2,
+                    "head_dim": 4,
+                    "short_conv_kernel_size": 2,
+                ],
                 "attention_bias": false,
             ],
         ]

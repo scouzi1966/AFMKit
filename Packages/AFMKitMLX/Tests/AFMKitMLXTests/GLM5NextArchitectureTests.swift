@@ -6,6 +6,35 @@ import XCTest
 @testable import AFMKitMLX
 
 final class GLM5NextArchitectureTests: XCTestCase {
+    func testMultiLinearUsesValidSingleScaleQuantization() throws {
+        let denseWeight = MLXArray(Array(repeating: Float(0.25), count: 32), [1, 1, 32])
+        let quantizedWeight = quantized(denseWeight, groupSize: 32, bits: 4)
+        let biases = try XCTUnwrap(quantizedWeight.biases)
+        XCTAssertEqual(quantizedWeight.scales.size, 1)
+        XCTAssertEqual(biases.size, 1)
+        let module = GLM5MoeDsaMultiLinear(
+            inputDims: 32,
+            outputDims: 1,
+            numHeads: 1,
+            checkpointWeight: quantizedWeight.wq,
+            checkpointScales: quantizedWeight.scales,
+            checkpointBiases: biases)
+        let input = MLXArray(Array(repeating: Float(1), count: 32), [1, 1, 32])
+
+        let output = module(input)
+        let oracle = quantizedMatmul(
+            input,
+            quantizedWeight.wq,
+            scales: quantizedWeight.scales,
+            biases: biases,
+            groupSize: 32,
+            bits: 4)
+        MLX.eval(output, oracle)
+
+        XCTAssertEqual(output.shape, [1, 1, 1])
+        XCTAssertTrue(allClose(output, oracle, rtol: 0, atol: 0).item())
+    }
+
     func testPublishedTextConfigurationDecodesHybridArchitecture() throws {
         let config = try JSONDecoder().decode(
             GLM5NextConfiguration.self,

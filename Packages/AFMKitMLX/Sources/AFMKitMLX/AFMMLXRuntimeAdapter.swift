@@ -445,7 +445,22 @@ public struct AFMMLXRuntimeAdapter: Sendable {
 
     @MainActor public func makeMTPRuntime(
         container: ModelContainer,
-        sidecarPath: String? = nil
+        sidecarPath: String
+    ) async throws -> AFMMLXSpeculativeRuntime? {
+        try await makeMTPRuntime(container: container, optionalSidecarPath: sidecarPath)
+    }
+
+    /// Creates a self-speculative runtime from a qualified head embedded in
+    /// the already-loaded model container.
+    @MainActor public func makeEmbeddedMTPRuntime(
+        container: ModelContainer
+    ) async throws -> AFMMLXSpeculativeRuntime? {
+        try await makeMTPRuntime(container: container, optionalSidecarPath: nil)
+    }
+
+    @MainActor private func makeMTPRuntime(
+        container: ModelContainer,
+        optionalSidecarPath sidecarPath: String?
     ) async throws -> AFMMLXSpeculativeRuntime? {
         try await container.perform { context -> AFMMLXSpeculativeRuntime? in
             if let qwen = context.model as? Qwen3_5MoEModel {

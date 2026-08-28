@@ -2832,6 +2832,11 @@
     },
     {
       "kind": "memberOf",
+      "source": "s:9AFMKitMLX20AFMMLXRuntimeAdapterV22makeEmbeddedMTPRuntime9containerAA24AFMMLXSpeculativeRuntimeOSg11MLXLMCommon14ModelContainerC_tYaKF",
+      "target": "s:9AFMKitMLX20AFMMLXRuntimeAdapterV"
+    },
+    {
+      "kind": "memberOf",
       "source": "s:9AFMKitMLX20AFMMLXRuntimeAdapterV23pathSuggestsVisionModelySbSSFZ",
       "target": "s:9AFMKitMLX20AFMMLXRuntimeAdapterV"
     },
@@ -4919,6 +4924,11 @@
     {
       "kind": "memberOf",
       "source": "s:9AFMKitMLX24AFMMLXSpeculativeRuntimeO6eagle3yAC6MLXLLM19Gemma4Eagle3DrafterCcACmF",
+      "target": "s:9AFMKitMLX24AFMMLXSpeculativeRuntimeO"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX24AFMMLXSpeculativeRuntimeO6glmMTPyAC6MLXLLM20GLM5NextMTPGeneratorCcACmF",
       "target": "s:9AFMKitMLX24AFMMLXSpeculativeRuntimeO"
     },
     {
@@ -61744,6 +61754,201 @@
       "declarationFragments": [
         {
           "kind": "attribute",
+          "spelling": "@"
+        },
+        {
+          "kind": "attribute",
+          "preciseIdentifier": "s:ScM",
+          "spelling": "MainActor"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "keyword",
+          "spelling": "func"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "makeEmbeddedMTPRuntime"
+        },
+        {
+          "kind": "text",
+          "spelling": "("
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "container"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:11MLXLMCommon14ModelContainerC",
+          "spelling": "ModelContainer"
+        },
+        {
+          "kind": "text",
+          "spelling": ") "
+        },
+        {
+          "kind": "keyword",
+          "spelling": "async"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "keyword",
+          "spelling": "throws"
+        },
+        {
+          "kind": "text",
+          "spelling": " -> "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:9AFMKitMLX24AFMMLXSpeculativeRuntimeO",
+          "spelling": "AFMMLXSpeculativeRuntime"
+        },
+        {
+          "kind": "text",
+          "spelling": "?"
+        }
+      ],
+      "docComment": {
+        "lines": [
+          {
+            "text": "Creates a self-speculative runtime from a qualified head embedded in"
+          },
+          {
+            "text": "the already-loaded model container."
+          }
+        ],
+        "module": "AFMKitMLX"
+      },
+      "functionSignature": {
+        "parameters": [
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "container"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:11MLXLMCommon14ModelContainerC",
+                "spelling": "ModelContainer"
+              }
+            ],
+            "name": "container"
+          }
+        ],
+        "returns": [
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:9AFMKitMLX24AFMMLXSpeculativeRuntimeO",
+            "spelling": "AFMMLXSpeculativeRuntime"
+          },
+          {
+            "kind": "text",
+            "spelling": "?"
+          }
+        ]
+      },
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX20AFMMLXRuntimeAdapterV22makeEmbeddedMTPRuntime9containerAA24AFMMLXSpeculativeRuntimeOSg11MLXLMCommon14ModelContainerC_tYaKF"
+      },
+      "kind": {
+        "displayName": "Instance Method",
+        "identifier": "swift.method"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "func"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "makeEmbeddedMTPRuntime"
+          },
+          {
+            "kind": "text",
+            "spelling": "("
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "container"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:11MLXLMCommon14ModelContainerC",
+            "spelling": "ModelContainer"
+          },
+          {
+            "kind": "text",
+            "spelling": ") "
+          },
+          {
+            "kind": "keyword",
+            "spelling": "async"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "keyword",
+            "spelling": "throws"
+          },
+          {
+            "kind": "text",
+            "spelling": " -> "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:9AFMKitMLX24AFMMLXSpeculativeRuntimeO",
+            "spelling": "AFMMLXSpeculativeRuntime"
+          },
+          {
+            "kind": "text",
+            "spelling": "?"
+          }
+        ],
+        "title": "makeEmbeddedMTPRuntime(container:)"
+      },
+      "pathComponents": [
+        "AFMMLXRuntimeAdapter",
+        "makeEmbeddedMTPRuntime(container:)"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "attribute",
           "spelling": "nonisolated"
         },
         {
@@ -97651,6 +97856,78 @@
       "pathComponents": [
         "AFMMLXSpeculativeRuntime",
         "eagle3(_:)"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "case"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "glmMTP"
+        },
+        {
+          "kind": "text",
+          "spelling": "("
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:6MLXLLM20GLM5NextMTPGeneratorC",
+          "spelling": "GLM5NextMTPGenerator"
+        },
+        {
+          "kind": "text",
+          "spelling": ")"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX24AFMMLXSpeculativeRuntimeO6glmMTPyAC6MLXLLM20GLM5NextMTPGeneratorCcACmF"
+      },
+      "kind": {
+        "displayName": "Case",
+        "identifier": "swift.enum.case"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "case"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "glmMTP"
+          },
+          {
+            "kind": "text",
+            "spelling": "("
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:6MLXLLM20GLM5NextMTPGeneratorC",
+            "spelling": "GLM5NextMTPGenerator"
+          },
+          {
+            "kind": "text",
+            "spelling": ")"
+          }
+        ],
+        "title": "AFMMLXSpeculativeRuntime.glmMTP(_:)"
+      },
+      "pathComponents": [
+        "AFMMLXSpeculativeRuntime",
+        "glmMTP(_:)"
       ]
     },
     {
