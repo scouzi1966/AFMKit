@@ -2666,7 +2666,7 @@ public final class MLXModelService:
                 if self.isMultimodalInput(lmInput) { return nil }
                 let promptIds = self.extractTokenArray(lmInput)
                 guard !promptIds.isEmpty else { return nil }
-                let eos = Set((context.tokenizer.eosTokenId).map { [$0] } ?? [])
+                let eos = context.resolvedEOSTokenIds
                 let limit = ProcessInfo.processInfo.environment["AFM_DSPARK_DRAFT"]
                     .flatMap(Int.init)
                 let t0 = Date.timeIntervalSinceReferenceDate
@@ -2714,7 +2714,7 @@ public final class MLXModelService:
                 ) else { return nil }
                 let promptIds = self.extractTokenArray(lmInput)
                 guard !promptIds.isEmpty else { return nil }
-                let eos = Set((context.tokenizer.eosTokenId).map { [$0] } ?? [])
+                let eos = context.resolvedEOSTokenIds
                 let t0 = Date.timeIntervalSinceReferenceDate
                 let outIds = gen.generate(promptIds: promptIds, maxTokens: effectiveMaxTokens, eosIds: eos)
                 let gt = Date.timeIntervalSinceReferenceDate - t0
@@ -2750,7 +2750,7 @@ public final class MLXModelService:
                 if self.isMultimodalInput(lmInput) { return nil }   // EAGLE3 is text-only
                 let promptIds = self.extractTokenArray(lmInput)
                 guard !promptIds.isEmpty else { return nil }
-                let eos = Set((context.tokenizer.eosTokenId).map { [$0] } ?? [])
+                let eos = context.resolvedEOSTokenIds
                 let t0 = Date.timeIntervalSinceReferenceDate
                 let gen = Gemma4Eagle3Generator(drafter: drafter)
                 // blockSize 2 is the sweet spot on the dense 31B (each round drafts only the carried
@@ -3837,7 +3837,7 @@ public final class MLXModelService:
                         let t0 = Date.timeIntervalSinceReferenceDate
                         do {
                             let outCount = try await container.perform { context -> Int in
-                                let eos = Set((context.tokenizer.eosTokenId).map { [$0] } ?? [])
+                                let eos = context.resolvedEOSTokenIds
                                 var allTokens: [Int] = []
                                 var prevText = ""
                                 let emit: (Int) -> Bool = { tok in

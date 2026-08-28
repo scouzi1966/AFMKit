@@ -506,7 +506,7 @@ public struct AFMMLXRuntimeAdapter: Sendable {
             let promptIds = Self.extractTokenArray(input)
             guard !promptIds.isEmpty else { return 0 }
 
-            let eos = Set((context.tokenizer.eosTokenId).map { [$0] } ?? [])
+            let eos = context.resolvedEOSTokenIds
             var allTokens: [Int] = []
             var previousText = ""
 
