@@ -80,6 +80,13 @@ public struct ModelContext {
     }
 }
 
+public extension ModelContext {
+    /// The complete EOS set used by the standard generation pipeline.
+    var resolvedEOSTokenIds: Set<Int> {
+        configuration.resolvedEOSTokenIds(tokenizer: tokenizer)
+    }
+}
+
 /// Protocol for code that can load models.
 ///
 /// ## See Also

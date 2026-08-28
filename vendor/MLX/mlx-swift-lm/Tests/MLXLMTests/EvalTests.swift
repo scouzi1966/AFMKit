@@ -10,6 +10,20 @@ import XCTest
 
 public class EvalTests: XCTestCase {
 
+    func testResolvedEOSTokenIdsCombinesModelTokenizerAndRegistrySources() {
+        let configuration = ModelConfiguration(
+            directory: URL(fileURLWithPath: "/model"),
+            extraEOSTokens: ["<end_of_turn>", "<missing>"],
+            eosTokenIds: [154_820, 154_827, 154_829])
+        let tokenizer = TestTokenizer(
+            eosTokenId: 2,
+            explicitTokenIds: ["<end_of_turn>": 3])
+
+        XCTAssertEqual(
+            configuration.resolvedEOSTokenIds(tokenizer: tokenizer),
+            [2, 3, 154_820, 154_827, 154_829])
+    }
+
     func testLlamaEval() throws {
         let config = LlamaConfiguration(
             hiddenSize: 64, hiddenLayers: 16, intermediateSize: 512, attentionHeads: 32,

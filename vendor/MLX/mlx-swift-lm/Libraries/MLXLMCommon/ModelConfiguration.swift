@@ -2,6 +2,7 @@
 
 import Foundation
 import Hub
+import Tokenizers
 
 /// Configuration for a given model name with overrides for prompts and tokens.
 ///
@@ -85,6 +86,27 @@ public struct ModelConfiguration: Sendable {
         case .directory(let directory):
             return directory
         }
+    }
+}
+
+public extension ModelConfiguration {
+    /// Resolves every end-of-sequence token recognized by generation.
+    ///
+    /// Model metadata may declare multiple EOS token IDs in `config.json` or
+    /// `generation_config.json`.  The tokenizer and registry can contribute
+    /// additional terminators.  Custom decoding paths must use this complete
+    /// set to remain termination-equivalent to the standard generator.
+    func resolvedEOSTokenIds(tokenizer: Tokenizer) -> Set<Int> {
+        var result = eosTokenIds
+        if let tokenizerEOS = tokenizer.eosTokenId {
+            result.insert(tokenizerEOS)
+        }
+        for token in extraEOSTokens {
+            if let id = tokenizer.convertTokenToId(token) {
+                result.insert(id)
+            }
+        }
+        return result
     }
 }
 

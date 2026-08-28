@@ -11,8 +11,13 @@ struct TestTokenizer: Tokenizer {
     let length = 8
 
     var vocabulary: [Int: String]
+    let explicitTokenIds: [String: Int]
 
-    init(vocabularySize: Int = 100) {
+    init(
+        vocabularySize: Int = 100,
+        eosTokenId: Int? = 0,
+        explicitTokenIds: [String: Int] = [:]
+    ) {
         let letters = "abcdefghijklmnopqrstuvwxyz"
         self.vocabulary = Dictionary(
             uniqueKeysWithValues: (0 ..< vocabularySize)
@@ -26,6 +31,8 @@ struct TestTokenizer: Tokenizer {
                     )
                 }
         )
+        self.eosTokenId = eosTokenId
+        self.explicitTokenIds = explicitTokenIds
     }
 
     func tokenize(text: String) -> [String] {
@@ -51,7 +58,8 @@ struct TestTokenizer: Tokenizer {
     }
 
     func convertTokenToId(_ token: String) -> Int? {
-        Int.random(in: 0 ..< 100)
+        if !explicitTokenIds.isEmpty { return explicitTokenIds[token] }
+        return Int.random(in: 0 ..< 100)
     }
 
     func convertIdToToken(_ id: Int) -> String? {
@@ -67,7 +75,7 @@ struct TestTokenizer: Tokenizer {
 
     var eosToken: String? = nil
 
-    var eosTokenId: Int? = 0
+    var eosTokenId: Int?
 
     var unknownToken: String? = nil
 

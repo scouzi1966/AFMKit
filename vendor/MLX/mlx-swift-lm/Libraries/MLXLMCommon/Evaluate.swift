@@ -1092,16 +1092,7 @@ public func generate(
     var start = Date.timeIntervalSinceReferenceDate
     var promptTime: TimeInterval = 0
 
-    // Build complete EOS token set from all sources
-    var eosTokenIds = context.configuration.eosTokenIds
-    if let tokenizerEos = context.tokenizer.eosTokenId {
-        eosTokenIds.insert(tokenizerEos)
-    }
-    for token in context.configuration.extraEOSTokens {
-        if let id = context.tokenizer.convertTokenToId(token) {
-            eosTokenIds.insert(id)
-        }
-    }
+    let eosTokenIds = context.resolvedEOSTokenIds
 
     var tokens = [Int]()
     var iterator = iterator
@@ -1203,16 +1194,7 @@ public func generate(
     var start = Date.timeIntervalSinceReferenceDate
     var promptTime: TimeInterval = 0
 
-    // Build complete EOS token set from all sources
-    var eosTokenIds = context.configuration.eosTokenIds
-    if let tokenizerEos = context.tokenizer.eosTokenId {
-        eosTokenIds.insert(tokenizerEos)
-    }
-    for token in context.configuration.extraEOSTokens {
-        if let id = context.tokenizer.convertTokenToId(token) {
-            eosTokenIds.insert(id)
-        }
-    }
+    let eosTokenIds = context.resolvedEOSTokenIds
 
     var tokenCount = 0
     var iterator = iterator
@@ -1371,16 +1353,7 @@ public func generateTask(
         var start = Date.timeIntervalSinceReferenceDate
         var promptTime: TimeInterval = 0
 
-        // Build complete EOS token set from all sources
-        var eosTokenIds = modelConfiguration.eosTokenIds
-        if let tokenizerEos = tokenizer.eosTokenId {
-            eosTokenIds.insert(tokenizerEos)
-        }
-        for token in modelConfiguration.extraEOSTokens {
-            if let id = tokenizer.convertTokenToId(token) {
-                eosTokenIds.insert(id)
-            }
-        }
+        let eosTokenIds = modelConfiguration.resolvedEOSTokenIds(tokenizer: tokenizer)
 
         var tokenCount = 0
         var detokenizer = NaiveStreamingDetokenizer(tokenizer: tokenizer)
