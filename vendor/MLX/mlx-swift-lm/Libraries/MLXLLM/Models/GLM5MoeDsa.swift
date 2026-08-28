@@ -29,10 +29,12 @@ class GLM5MoeDsaMultiLinear: Module {
         self.outputDims = outputDims
         self.numHeads = numHeads
 
-        // Use scalar placeholders for all parameters. The actual tensors come from
-        // the checkpoint via update(parameters:). Quantized models store packed
-        // weights with different shapes than logical dims, so verify: [.all] shape
-        // checks would fail with full-sized init values.
+        // Use scalar placeholders for generic checkpoint updates. MLXNN cannot
+        // update an optional parameter whose wrapped value is nil, so ordinary
+        // quantized GLM loading needs all three keys represented here. Packed
+        // weight dtype plus companion presence selects the quantized runtime path.
+        // Quantized models store packed weights with different shapes than logical
+        // dims, so verify: [.all] shape checks would fail with full-sized init values.
         self._weight.wrappedValue = MLXArray(Float(0))
         self._scales.wrappedValue = MLXArray(Float(0))
         self._biases.wrappedValue = MLXArray(Float(0))
@@ -40,8 +42,28 @@ class GLM5MoeDsaMultiLinear: Module {
         super.init()
     }
 
+    /// Creates a shape-qualified replacement whose optional parameter tree
+    /// exactly matches the checkpoint. The parent installs this replacement
+    /// through `Module.update(modules:)` before strict parameter verification.
+    init(
+        inputDims: Int,
+        outputDims: Int,
+        numHeads: Int,
+        checkpointWeight: MLXArray,
+        checkpointScales: MLXArray?,
+        checkpointBiases: MLXArray?
+    ) {
+        self.inputDims = inputDims
+        self.outputDims = outputDims
+        self.numHeads = numHeads
+        self._weight.wrappedValue = checkpointWeight
+        self._scales.wrappedValue = checkpointScales
+        self._biases.wrappedValue = checkpointBiases
+        super.init()
+    }
+
     func callAsFunction(_ x: MLXArray, transpose: Bool = true) -> MLXArray {
-        if let scales, let biases, scales.size > 1 {
+        if weight.dtype == .uint32, let scales, let biases {
             // Quantization is always along the last weight dim (= inputDims)
             let dims = inputDims
             let bits = (weight.dim(-1) * 32) / dims

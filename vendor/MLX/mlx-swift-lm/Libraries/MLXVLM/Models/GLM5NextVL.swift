@@ -1089,6 +1089,23 @@ public final class GLM5NextVLModel: Module, VLMModel, KVCacheDimensionProvider,
     public var kvHeads: [Int] { languageModel.kvHeads }
     public var loraLayers: [Module] { languageModel.loraLayers }
 
+    /// Whether the text trunk has a fully loaded embedded NextN predictor.
+    /// The wrapper remains the active model so media inputs continue through
+    /// the vision tower; callers may use the predictor for text-only requests.
+    public var supportsEmbeddedMTP: Bool { languageModel.supportsEmbeddedMTP }
+
+    /// Explicitly loads GLM's structural NextN layer into the existing text
+    /// trunk without replacing this multimodal container.
+    public func loadEmbeddedMTP(modelDirectory: URL) throws {
+        try languageModel.loadEmbeddedMTP(modelDirectory: modelDirectory)
+    }
+
+    /// Creates a text-only speculative generator over this wrapper's text
+    /// trunk. Image and video requests must continue through `prepare`.
+    public func makeEmbeddedMTPGenerator(depth: Int = 1) -> GLM5NextMTPGenerator? {
+        GLM5NextMTPGenerator(model: languageModel, depth: depth)
+    }
+
     public func newCache(parameters: GenerateParameters?) -> [KVCache] {
         languageModel.newCache(parameters: parameters)
     }

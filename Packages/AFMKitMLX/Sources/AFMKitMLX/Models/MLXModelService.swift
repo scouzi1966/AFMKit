@@ -40,6 +40,7 @@ private extension Dictionary where Key == String, Value == AnyCodable {
 private enum MTPGeneratorRuntime: @unchecked Sendable {
     case llm(Qwen3_5MoEMTPGenerator)
     case vlm(MTPGenerator)
+    case glm(GLM5NextMTPGenerator)
 
     func generate(
         promptIds: [Int],
@@ -56,6 +57,13 @@ private enum MTPGeneratorRuntime: @unchecked Sendable {
                 onToken: onToken
             )
         case .vlm(let generator):
+            generator.generate(
+                promptIds: promptIds,
+                maxTokens: maxTokens,
+                eosIds: eosIds,
+                onToken: onToken
+            )
+        case .glm(let generator):
             generator.generate(
                 promptIds: promptIds,
                 maxTokens: maxTokens,
@@ -1882,24 +1890,38 @@ public final class MLXModelService:
         // Explicit MTP resolves synchronously and fails closed. Disabled-MTP
         // startup only checks local resources; a missing sidecar is prefetched
         // asynchronously after the base model is ready.
-        let resolvedMTPSidecar: String?
-        do {
-            resolvedMTPSidecar = try await resolveMTPHead(
-                baseModelDirectory: directory,
-                progress: progress,
-                stage: stage,
-                allowDownload: AFMMLXMTPRuntimePolicy.allowSynchronousSidecarDownload(
-                    mtpEnabled: mtpEnabled
-                )
+        let embeddedCompatibility = AFMMLXSpeculativeModelCompatibility.evaluate(
+            modelDirectory: directory)
+        let usesEmbeddedMTP = AFMMLXMTPRuntimePolicy.usesEmbeddedHead(
+            canonicalModelType: modelArchitecture.canonicalModelType,
+            embeddedAssetsPresent: embeddedCompatibility.mtpCompatible)
+        if mtpEnabled && usesEmbeddedMTP && mtpDepth != 1 {
+            throw MLXServiceError.loadFailed(
+                "GLM-5.3 has one qualified NextN predictor; use --mtp-depth 1 (requested \(mtpDepth))"
             )
-        } catch {
-            if mtpEnabled {
-                throw error
-            }
-            resolvedMTPSidecar = nil
-            print("[\(ts())] [MTP] optional head prefetch failed (\(error)); continuing with AR")
         }
-        if mtpEnabled && resolvedMTPSidecar == nil {
+        let resolvedMTPSidecar: String?
+        if usesEmbeddedMTP {
+            resolvedMTPSidecar = nil
+        } else {
+            do {
+                resolvedMTPSidecar = try await resolveMTPHead(
+                    baseModelDirectory: directory,
+                    progress: progress,
+                    stage: stage,
+                    allowDownload: AFMMLXMTPRuntimePolicy.allowSynchronousSidecarDownload(
+                        mtpEnabled: mtpEnabled
+                    )
+                )
+            } catch {
+                if mtpEnabled {
+                    throw error
+                }
+                resolvedMTPSidecar = nil
+                print("[\(ts())] [MTP] optional head prefetch failed (\(error)); continuing with AR")
+            }
+        }
+        if mtpEnabled && resolvedMTPSidecar == nil && !usesEmbeddedMTP {
             throw MLXServiceError.loadFailed(
                 "MTP was requested, but no compatible sidecar could be resolved for \(modelID)"
             )
@@ -1949,11 +1971,15 @@ public final class MLXModelService:
             modelID: modelID,
             qualification: visionQualification
         )
-        let selectedFactory = AFMMLXModelFactoryPolicy.initialFactory(
+        let policyFactory = AFMMLXModelFactoryPolicy.initialFactory(
             forceVLM: forceVLM,
             architecture: modelArchitecture,
             visionQualification: visionQualification
         )
+        let selectedFactory = AFMMLXMTPRuntimePolicy.loadingFactory(
+            selected: policyFactory,
+            mtpEnabled: mtpEnabled,
+            usesEmbeddedGLMHead: usesEmbeddedMTP)
         print(
             "[\(ts())] [ModelArchitecture] declared=\(modelArchitecture.modelType) "
                 + "canonical=\(modelArchitecture.canonicalModelType) "
@@ -2001,11 +2027,38 @@ public final class MLXModelService:
             if actualFactory != selectedFactory {
                 print("[\(ts())] [ModelArchitecture] actualFactory=VLM (LLM fallback)")
             }
-            // MTP: load the explicitly resolved sidecar only after the base model
-            // has loaded. The sidecar remains outside the base checkpoint.
+            // Load speculative resources only after the base model has loaded.
+            // Qwen uses an external sidecar; GLM explicitly loads its structural
+            // NextN layer into the already-selected text or vision container.
             var loadedMTPBinding: MTPGeneratorBinding?
             if mtpEnabled {
-                if let sidecar = resolvedMTPSidecar {
+                if usesEmbeddedMTP {
+                    loadedMTPBinding = try await loaded.perform {
+                        (context: ModelContext) async throws -> MTPGeneratorBinding in
+                        let generator: GLM5NextMTPGenerator?
+                        let containerKind: String
+                        if let glm = context.model as? GLM5NextModel {
+                            try glm.loadEmbeddedMTP(modelDirectory: directory)
+                            generator = GLM5NextMTPGenerator(model: glm, depth: mtpDepth)
+                            containerKind = "text"
+                        } else if let glm = context.model as? GLM5NextVLModel {
+                            try glm.loadEmbeddedMTP(modelDirectory: directory)
+                            generator = glm.makeEmbeddedMTPGenerator(depth: mtpDepth)
+                            containerKind = "vision"
+                        } else {
+                            throw MLXServiceError.loadFailed(
+                                "GLM embedded MTP selected, but loaded \(type(of: context.model))"
+                            )
+                        }
+                        guard let generator else {
+                            throw MLXServiceError.loadFailed(
+                                "GLM checkpoint advertises MTP but its embedded NextN layer is incomplete"
+                            )
+                        }
+                        print("[\(ts())] [MTP] GLM embedded NextN layer loaded into \(containerKind) container — self-speculative text decoding enabled (depth 1)")
+                        return MTPGeneratorBinding(modelID: modelID, generator: .glm(generator))
+                    }
+                } else if let sidecar = resolvedMTPSidecar {
                     do {
                         guard let runtimeModelKind = AFMMLXMTPRuntimePolicy.compatibleModelKind(
                             mtpEnabled: mtpEnabled,
@@ -2073,6 +2126,10 @@ public final class MLXModelService:
                                     modelID: modelID,
                                     generator: .vlm(generator)
                                 )
+                            case .glmEmbedded:
+                                throw MLXServiceError.loadFailed(
+                                    "GLM embedded MTP must not resolve a sidecar"
+                                )
                             }
                         }
                     } catch {
@@ -2083,6 +2140,8 @@ public final class MLXModelService:
                         "MTP was requested, but no compatible sidecar could be resolved for \(modelID)"
                     )
                 }
+            } else if usesEmbeddedMTP {
+                print("[\(ts())] [MTP] embedded GLM NextN layer available; pass --mtp to enable serial speculative decoding")
             } else if resolvedMTPSidecar != nil {
                 print("[\(ts())] [MTP] matching head cached; pass --mtp to enable serial speculative decoding")
             }
@@ -2633,6 +2692,7 @@ public final class MLXModelService:
         // Eligible when an MTP head is installed and the request is plain greedy generation.
         // Produces output identical to greedy AR (validated P2) but with fewer trunk forwards.
         let mtpEligible = mtpBinding != nil
+            && resolvedMedia.mediaKinds.isEmpty
             && (temperature ?? 0) <= 0.0
             && (tools?.isEmpty ?? true)
             && responseFormat == nil
@@ -3728,6 +3788,7 @@ public final class MLXModelService:
         let dsparkStreamEligible = specGreedyStream && loadedSupportsDSpark
         let eagle3StreamEligible = specGreedyStream && Eagle3Runtime.shared.active != nil
         let mtpStreamEligible = specGreedyStream && mtpBinding != nil
+            && resolvedMedia.mediaKinds.isEmpty
         if dsparkStreamEligible || eagle3StreamEligible || mtpStreamEligible {
             // Prep prompt ids under the lock; nil => multimodal/empty/wrong-model => fall back to AR.
             // Also detect a template-opened think block (last prompt tokens contain thinkStart): for

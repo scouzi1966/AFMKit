@@ -10,12 +10,13 @@ public enum AFMMLXSpeculativeRuntime {
     case none
     case mtpLLM(Qwen3_5MoEMTPGenerator)
     case mtpVLM(MTPGenerator)
+    case glmMTP(GLM5NextMTPGenerator)
     case eagle3(Gemma4Eagle3Drafter)
 
     public var kind: AFMMLXSpeculativeRuntimeKind {
         switch self {
         case .none: return .none
-        case .mtpLLM, .mtpVLM: return .mtp
+        case .mtpLLM, .mtpVLM, .glmMTP: return .mtp
         case .eagle3: return .eagle3
         }
     }
@@ -446,14 +447,41 @@ public struct AFMMLXRuntimeAdapter: Sendable {
         container: ModelContainer,
         sidecarPath: String
     ) async throws -> AFMMLXSpeculativeRuntime? {
+        try await makeMTPRuntime(container: container, optionalSidecarPath: sidecarPath)
+    }
+
+    /// Creates a self-speculative runtime from a qualified head embedded in
+    /// the already-loaded model container.
+    @MainActor public func makeEmbeddedMTPRuntime(
+        container: ModelContainer
+    ) async throws -> AFMMLXSpeculativeRuntime? {
+        try await makeMTPRuntime(container: container, optionalSidecarPath: nil)
+    }
+
+    @MainActor private func makeMTPRuntime(
+        container: ModelContainer,
+        optionalSidecarPath sidecarPath: String?
+    ) async throws -> AFMMLXSpeculativeRuntime? {
         try await container.perform { context -> AFMMLXSpeculativeRuntime? in
             if let qwen = context.model as? Qwen3_5MoEModel {
+                guard let sidecarPath else { return nil }
                 let head = try qwen.loadMTPHead(sidecarPath: sidecarPath)
                 return .mtpLLM(Qwen3_5MoEMTPGenerator(model: qwen, head: head, depth: 1))
             }
             if let qwen = context.model as? Qwen3_5MoEVL {
+                guard let sidecarPath else { return nil }
                 let head = try qwen.loadMTPHead(sidecarPath: sidecarPath)
                 return .mtpVLM(MTPGenerator(model: qwen, head: head, depth: 3))
+            }
+            if let glm = context.model as? GLM5NextModel,
+               let generator = GLM5NextMTPGenerator(model: glm)
+            {
+                return .glmMTP(generator)
+            }
+            if let glm = context.model as? GLM5NextVLModel,
+               let generator = glm.makeEmbeddedMTPGenerator()
+            {
+                return .glmMTP(generator)
             }
             return nil
         }
@@ -503,6 +531,8 @@ public struct AFMMLXRuntimeAdapter: Sendable {
             case .mtpLLM(let generator):
                 _ = generator.generate(promptIds: promptIds, maxTokens: maxTokens, eosIds: eos, onToken: emit)
             case .mtpVLM(let generator):
+                _ = generator.generate(promptIds: promptIds, maxTokens: maxTokens, eosIds: eos, onToken: emit)
+            case .glmMTP(let generator):
                 _ = generator.generate(promptIds: promptIds, maxTokens: maxTokens, eosIds: eos, onToken: emit)
             case .eagle3(let drafter):
                 guard let model = context.model as? Gemma4Model else { return 0 }

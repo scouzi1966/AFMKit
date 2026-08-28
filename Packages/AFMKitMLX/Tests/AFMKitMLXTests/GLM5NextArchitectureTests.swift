@@ -6,6 +6,65 @@ import XCTest
 @testable import AFMKitMLX
 
 final class GLM5NextArchitectureTests: XCTestCase {
+    func testDefaultMultiLinearAcceptsGenericQuantizedParameterUpdate() throws {
+        let denseWeight = MLXArray(Array(repeating: Float(0.25), count: 32), [1, 1, 32])
+        let quantizedWeight = quantized(denseWeight, groupSize: 32, bits: 4)
+        let biases = try XCTUnwrap(quantizedWeight.biases)
+        let module = GLM5MoeDsaMultiLinear(inputDims: 32, outputDims: 1, numHeads: 1)
+
+        module.update(parameters: ModuleParameters.unflattened([
+            "weight": quantizedWeight.wq,
+            "scales": quantizedWeight.scales,
+            "biases": biases,
+        ]))
+
+        XCTAssertEqual(module.weight.dtype, .uint32)
+        XCTAssertEqual(module.scales?.shape, quantizedWeight.scales.shape)
+        XCTAssertEqual(module.biases?.shape, biases.shape)
+
+        let input = MLXArray(Array(repeating: Float(1), count: 32), [1, 1, 32])
+        let output = module(input)
+        let oracle = quantizedMatmul(
+            input,
+            quantizedWeight.wq,
+            scales: quantizedWeight.scales,
+            biases: biases,
+            groupSize: 32,
+            bits: 4)
+        MLX.eval(output, oracle)
+
+        XCTAssertTrue(allClose(output, oracle, rtol: 0, atol: 0).item())
+    }
+
+    func testMultiLinearUsesValidSingleScaleQuantization() throws {
+        let denseWeight = MLXArray(Array(repeating: Float(0.25), count: 32), [1, 1, 32])
+        let quantizedWeight = quantized(denseWeight, groupSize: 32, bits: 4)
+        let biases = try XCTUnwrap(quantizedWeight.biases)
+        XCTAssertEqual(quantizedWeight.scales.size, 1)
+        XCTAssertEqual(biases.size, 1)
+        let module = GLM5MoeDsaMultiLinear(
+            inputDims: 32,
+            outputDims: 1,
+            numHeads: 1,
+            checkpointWeight: quantizedWeight.wq,
+            checkpointScales: quantizedWeight.scales,
+            checkpointBiases: biases)
+        let input = MLXArray(Array(repeating: Float(1), count: 32), [1, 1, 32])
+
+        let output = module(input)
+        let oracle = quantizedMatmul(
+            input,
+            quantizedWeight.wq,
+            scales: quantizedWeight.scales,
+            biases: biases,
+            groupSize: 32,
+            bits: 4)
+        MLX.eval(output, oracle)
+
+        XCTAssertEqual(output.shape, [1, 1, 1])
+        XCTAssertTrue(allClose(output, oracle, rtol: 0, atol: 0).item())
+    }
+
     func testPublishedTextConfigurationDecodesHybridArchitecture() throws {
         let config = try JSONDecoder().decode(
             GLM5NextConfiguration.self,
@@ -45,6 +104,27 @@ final class GLM5NextArchitectureTests: XCTestCase {
 
         XCTAssertThrowsError(
             try JSONDecoder().decode(GLM5NextConfiguration.self, from: incompatible))
+    }
+
+    func testNestedTextQuantizationIsCanonicalizedForLoaderAndQualifier() throws {
+        let source = try XCTUnwrap(tinyConfigurationData())
+        var object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: source) as? [String: Any])
+        var text = try XCTUnwrap(object["text_config"] as? [String: Any])
+        text["quantization_config"] = [
+            "bits": 4,
+            "group_size": 64,
+            "mode": "affine",
+        ]
+        object["text_config"] = text
+
+        let data = try JSONSerialization.data(withJSONObject: object)
+        let config = try JSONDecoder().decode(GLM5NextConfiguration.self, from: data)
+
+        XCTAssertEqual(config.quantization?.bits, 4)
+        XCTAssertEqual(config.quantization?.groupSize, 64)
+        XCTAssertEqual(config.textConfig.quantization?.bits, 4)
+        XCTAssertEqual(config.textConfig.quantization?.groupSize, 64)
     }
 
     func testRegistryCreatesWrapperAndFlatTextModels() async throws {
@@ -209,16 +289,139 @@ final class GLM5NextArchitectureTests: XCTestCase {
         XCTAssertNotNil(sanitized["model.layers.0.mlp.gate_proj.weight_scale_inv"])
     }
 
-    func testTextLoaderFilterDropsVisionAndStructuralMTPBeforeRetention() throws {
+    func testOrdinaryTextLoaderDropsVisionAndStructuralMTP() throws {
         let data = try XCTUnwrap(tinyConfigurationData())
         let config = try JSONDecoder().decode(GLM5NextConfiguration.self, from: data)
         let model = GLM5NextModel(config)
 
+        XCTAssertFalse(model.supportsEmbeddedMTP)
         XCTAssertTrue(model.shouldLoad(weightKey: "model.language_model.layers.1.input_layernorm.weight"))
         XCTAssertFalse(model.shouldLoad(weightKey: "model.language_model.layers.2.eh_proj.weight"))
         XCTAssertFalse(model.shouldLoad(weightKey: "model.visual.patch_embed.proj.weight"))
         XCTAssertFalse(model.shouldLoad(weightKey: "vision_model.blocks.0.attn.qkv.weight"))
         XCTAssertTrue(model.shouldLoad(weightKey: "lm_head.weight"))
+    }
+
+    func testEmbeddedMTPCompletenessRejectsPackedWeightWithoutBothCompanions() throws {
+        let data = try XCTUnwrap(tinyConfigurationData())
+        let config = try JSONDecoder().decode(GLM5NextConfiguration.self, from: data)
+        var weights = completeEmbeddedMTPKeys(config: config.textConfig)
+        let prefix = "model.language_model.layers.2."
+        weights[prefix + "eh_proj.weight"] = MLXArray(UInt32(1))
+        weights[prefix + "eh_proj.scales"] = MLXArray(Float(1))
+        weights[prefix + "eh_proj.biases"] = nil
+        XCTAssertFalse(GLM5NextModel.hasCompleteEmbeddedMTP(
+            weights: weights, config: config.textConfig, quantized: false))
+
+        weights[prefix + "eh_proj.biases"] = MLXArray(Float(0))
+        XCTAssertTrue(GLM5NextModel.hasCompleteEmbeddedMTP(
+            weights: weights, config: config.textConfig, quantized: false))
+    }
+
+    func testEmbeddedMTPPersistentCacheMatchesFullSequenceDraftLogitOracle() throws {
+        MLXRandom.seed(42)
+        let data = try XCTUnwrap(tinyConfigurationData(indexTopK: 8))
+        let config = try JSONDecoder().decode(GLM5NextConfiguration.self, from: data)
+        let model = GLM5NextModel(config)
+        initializeTinyTarget(model, config: config.textConfig)
+        let head = initializedMTPHead(config: config.textConfig)
+        let prompt = MLXArray([1, 2, 3]).reshaped(1, 3)
+        let target = model.forwardHidden(prompt, cache: nil)
+        let primary = MLX.argMax(target.logits[0, -1, 0...], axis: -1).item(Int.self)
+        let shifted = MLXArray([2, 3, Int32(primary)]).reshaped(1, 3)
+
+        let full = model.projectLMHead(head(
+            hiddenStates: target.hidden,
+            tokenEmbeddings: model.embedTokens(shifted),
+            cache: nil))[0..., 2 ..< 3, 0...]
+
+        let cache = model.makeEmbeddedMTPCache()
+        _ = head(
+            hiddenStates: target.hidden[0..., 0 ..< 2, 0...],
+            tokenEmbeddings: model.embedTokens(MLXArray([2, 3]).reshaped(1, 2)),
+            cache: cache)
+        let incremental = model.projectLMHead(head(
+            hiddenStates: target.hidden[0..., 2 ..< 3, 0...],
+            tokenEmbeddings: model.embedTokens(MLXArray([Int32(primary)]).reshaped(1, 1)),
+            cache: cache))
+        MLX.eval(full, incremental)
+
+        XCTAssertTrue(allClose(full, incremental, rtol: 1e-4, atol: 1e-4).item(Bool.self))
+        XCTAssertEqual((cache as? CacheList)?[0].offset, 3)
+        XCTAssertEqual((cache as? CacheList)?[1].offset, 3)
+    }
+
+    func testEmbeddedMTPGeneratorRemainsTargetGreedyExact() throws {
+        MLXRandom.seed(7)
+        let data = try XCTUnwrap(tinyConfigurationData(indexTopK: 8))
+        let config = try JSONDecoder().decode(GLM5NextConfiguration.self, from: data)
+        let model = GLM5NextModel(config)
+        initializeTinyTarget(model, config: config.textConfig)
+        model.installEmbeddedMTPForTesting(initializedMTPHead(config: config.textConfig))
+        let prompt = [1, 2, 3]
+        let expected = ordinaryGreedy(model: model, prompt: prompt, count: 8)
+        let generated = try XCTUnwrap(GLM5NextMTPGenerator(model: model)).generate(
+            promptIds: prompt, maxTokens: 8)
+        XCTAssertEqual(generated, expected)
+    }
+
+    func testEmbeddedMTPRejectsUnsupportedRequestedDepth() throws {
+        let data = try XCTUnwrap(tinyConfigurationData(indexTopK: 8))
+        let config = try JSONDecoder().decode(GLM5NextConfiguration.self, from: data)
+        let model = GLM5NextModel(config)
+        model.installEmbeddedMTPForTesting(initializedMTPHead(config: config.textConfig))
+
+        XCTAssertNotNil(GLM5NextMTPGenerator(model: model, depth: 1))
+        XCTAssertNil(GLM5NextMTPGenerator(model: model, depth: 2))
+        XCTAssertNil(GLM5NextMTPGenerator(model: model, depth: 3))
+    }
+
+    func testRepeatedForcedRejectionsRestoreTargetCacheToAROracle() throws {
+        MLXRandom.seed(17)
+        let data = try XCTUnwrap(tinyConfigurationData(indexTopK: 8))
+        let config = try JSONDecoder().decode(GLM5NextConfiguration.self, from: data)
+        let model = GLM5NextModel(config)
+        initializeTinyTarget(model, config: config.textConfig)
+        model.installEmbeddedMTPForTesting(initializedMTPHead(config: config.textConfig))
+        let prompt = [1, 2, 3]
+        let expectedTokens = ordinaryGreedy(model: model, prompt: prompt, count: 7)
+
+        let expectedCaches: [(offsets: [Int], states: [[MLXArray]])] =
+            (1 ..< expectedTokens.count).map { committed in
+                let cache = model.newCache(parameters: nil)
+                let ids = prompt + Array(expectedTokens.prefix(committed))
+                let logits = model(
+                    MLXArray(ids.map(Int32.init)).reshaped(1, ids.count),
+                    cache: cache)
+                MLX.eval(logits)
+                let states = cache.map(\.state)
+                for state in states { for array in state { MLX.eval(array) } }
+                return (cache.map(\.offset), states)
+            }
+
+        var rejection = 0
+        let generated = try XCTUnwrap(GLM5NextMTPGenerator(model: model)).generateForTesting(
+            promptIds: prompt,
+            maxTokens: expectedTokens.count,
+            forceRejectEveryDraft: true
+        ) { cache in
+            XCTAssertLessThan(rejection, expectedCaches.count)
+            let expected = expectedCaches[rejection]
+            XCTAssertEqual(cache.map(\.offset), expected.offsets)
+            for (actualLayer, expectedLayer) in zip(cache.map(\.state), expected.states) {
+                XCTAssertEqual(actualLayer.count, expectedLayer.count)
+                for (actual, oracle) in zip(actualLayer, expectedLayer) {
+                    MLX.eval(actual)
+                    XCTAssertEqual(actual.shape, oracle.shape)
+                    XCTAssertTrue(
+                        allClose(actual, oracle, rtol: 1e-4, atol: 1e-4).item(Bool.self))
+                }
+            }
+            rejection += 1
+        }
+
+        XCTAssertEqual(generated, expectedTokens)
+        XCTAssertEqual(rejection, expectedCaches.count)
     }
 
     func testSanitizerSplitsConvertedQuantizedKVProjection() throws {
@@ -423,6 +626,83 @@ final class GLM5NextArchitectureTests: XCTestCase {
             ? ["model_type": modelType, "text_config": text]
             : text.merging(["model_type": modelType]) { _, new in new }
         return try? JSONSerialization.data(withJSONObject: object)
+    }
+
+    private func ordinaryGreedy(
+        model: GLM5NextModel,
+        prompt: [Int],
+        count: Int
+    ) -> [Int] {
+        let cache = model.newCache(parameters: nil)
+        var logits = model(MLXArray(prompt.map(Int32.init)).reshaped(1, prompt.count), cache: cache)
+        var result = [Int]()
+        for _ in 0 ..< count {
+            let token = MLX.argMax(logits[0, -1, 0...], axis: -1).item(Int.self)
+            result.append(token)
+            logits = model(MLXArray([Int32(token)]).reshaped(1, 1), cache: cache)
+        }
+        return result
+    }
+
+    private func completeEmbeddedMTPKeys(
+        config: GLM5NextTextConfiguration
+    ) -> [String: MLXArray] {
+        let prefix = "model.language_model.layers.\(config.hiddenLayers)."
+        var names = [
+            "enorm.weight", "hnorm.weight", "eh_proj.weight",
+            "input_layernorm.weight", "post_attention_layernorm.weight",
+            "self_attn.q_a_proj.weight", "self_attn.q_a_layernorm.weight",
+            "self_attn.q_b_proj.weight", "self_attn.kv_a_proj_with_mqa.weight",
+            "self_attn.kv_a_layernorm.weight", "self_attn.kv_b_proj.weight",
+            "self_attn.o_proj.weight", "self_attn.indexer.wq_b.weight",
+            "self_attn.indexer.wk.weight", "self_attn.indexer.k_norm.weight",
+            "self_attn.indexer.k_norm.bias", "self_attn.indexer.weights_proj.weight",
+            "self_attn.indexer.index_kpool_compress_ape",
+            "self_attn.indexer.index_kpool_compress_gate",
+            "mlp.gate.weight", "mlp.gate.e_score_correction_bias", "shared_head.norm.weight",
+        ]
+        for expert in 0 ..< config.routedExperts {
+            for projection in ["gate_proj", "up_proj", "down_proj"] {
+                names.append("mlp.experts.\(expert).\(projection).weight")
+            }
+        }
+        if config.sharedExperts > 0 {
+            for projection in ["gate_proj", "up_proj", "down_proj"] {
+                names.append("mlp.shared_experts.\(projection).weight")
+            }
+        }
+        return Dictionary(uniqueKeysWithValues: names.map {
+            (prefix + $0, MLXArray(Float(1)))
+        })
+    }
+
+    private func initializedMTPHead(
+        config: GLM5NextTextConfiguration
+    ) -> GLM5NextMTPHead {
+        let head = GLM5NextMTPHead(config)
+        head.update(parameters: ModuleParameters.unflattened([
+            "decoder.self_attn.embed_q.weight": MLXArray.ones([
+                config.attentionHeads, config.kvLoraRank, config.qkNopeHeadDim,
+            ]),
+            "decoder.self_attn.unembed_out.weight": MLXArray.ones([
+                config.attentionHeads, config.vHeadDim, config.kvLoraRank,
+            ]),
+        ]))
+        return head
+    }
+
+    private func initializeTinyTarget(
+        _ model: GLM5NextModel,
+        config: GLM5NextTextConfiguration
+    ) {
+        model.update(parameters: ModuleParameters.unflattened([
+            "model.layers.1.self_attn.embed_q.weight": MLXArray.ones([
+                config.attentionHeads, config.kvLoraRank, config.qkNopeHeadDim,
+            ]),
+            "model.layers.1.self_attn.unembed_out.weight": MLXArray.ones([
+                config.attentionHeads, config.vHeadDim, config.kvLoraRank,
+            ]),
+        ]))
     }
 
     private var publishedConfiguration: String {
