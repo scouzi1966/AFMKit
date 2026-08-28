@@ -15,7 +15,7 @@ public enum AFMMLXRuntimeVisionPolicy {
         guard factory == .vlm, architecture.isVisionConfiguration else {
             return false
         }
-        if qualification.isQwenFamilyConfiguration {
+        if qualification.requiresQualifiedConditionalVisionAssets {
             return qualification.isAssetUsable
         }
         return true
@@ -30,7 +30,8 @@ public enum AFMMLXRuntimeVisionPolicy {
         guard AFMMLXRequestMediaPolicy.supports(kind, architecture: architecture) else {
             return .unsupported
         }
-        if qualification.isQwenFamilyConfiguration && !qualification.isAssetUsable {
+        if qualification.requiresQualifiedConditionalVisionAssets
+            && !qualification.isAssetUsable {
             return .visionAssetsUnavailable(missing: qualification.missingAssetNames)
         }
         guard factory == .vlm else {

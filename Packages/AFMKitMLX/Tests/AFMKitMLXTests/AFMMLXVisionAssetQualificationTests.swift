@@ -50,40 +50,7 @@ final class AFMMLXVisionAssetQualificationTests: XCTestCase {
     }
 
     func testGLM5NextUsesNativeTokenAndNestedProcessorContracts() throws {
-        let directory = try makeModelDirectory()
-        var config = Self.fixtureConfiguration()
-        config["model_type"] = "glm5_next"
-        config["architectures"] = ["Glm5NextForConditionalGeneration"]
-        config["image_token_id"] = 154_854
-        config["video_token_id"] = 154_855
-        config.removeValue(forKey: "vision_start_token_id")
-        config.removeValue(forKey: "vision_end_token_id")
-        var vision = try XCTUnwrap(config["vision_config"] as? [String: Any])
-        vision["model_type"] = "glm5_next_vision"
-        config["vision_config"] = vision
-        try Self.writeJSON(config, to: directory.appendingPathComponent("config.json"))
-
-        let media: [String: Any] = [
-            "image_mean": [0.48145466, 0.4578275, 0.40821073],
-            "image_std": [0.26862954, 0.26130258, 0.27577711],
-            "merge_size": 2, "patch_size": 2, "temporal_patch_size": 2,
-            "min_image_tokens": 16, "max_image_tokens": 8_000,
-        ]
-        try Self.writeJSON([
-            "processor_class": "Glm5NextProcessor",
-            "image_processor": media,
-            "video_processor": media.merging(["fps": 2.0]) { _, new in new },
-        ], to: directory.appendingPathComponent("preprocessor_config.json"))
-        let tensorNames = Self.glmVisionTensorNames(depth: 2)
-            .union(["model.language_model.embed_tokens.weight"])
-        try Self.writeJSON([
-            "weight_map": Dictionary(uniqueKeysWithValues: tensorNames.map {
-                ($0, "model-00001-of-00001.safetensors")
-            })
-        ], to: directory.appendingPathComponent("model.safetensors.index.json"))
-        try Self.writeSafetensorHeader(
-            tensorNames: tensorNames,
-            to: directory.appendingPathComponent("model-00001-of-00001.safetensors"))
+        let directory = try makeGLMModelDirectory()
 
         let qualification = try qualify(directory)
         XCTAssertEqual(qualification.canonicalModelType, "glm5_next")
@@ -92,6 +59,8 @@ final class AFMMLXVisionAssetQualificationTests: XCTestCase {
         XCTAssertTrue(qualification.missingAssets.isEmpty)
         XCTAssertTrue(qualification.isAssetUsable)
 
+        let tensorNames = Self.glmVisionTensorNames(depth: 2)
+            .union(["model.language_model.embed_tokens.weight"])
         let omitted = "model.visual.blocks.1.attn.qkv.weight"
         let incomplete = tensorNames.subtracting([omitted])
         try Self.writeJSON([
@@ -101,9 +70,81 @@ final class AFMMLXVisionAssetQualificationTests: XCTestCase {
         ], to: directory.appendingPathComponent("model.safetensors.index.json"))
         try Self.writeSafetensorHeader(
             tensorNames: incomplete,
+            metadata: Self.glmVisionTensorMetadata(depth: 2),
             to: directory.appendingPathComponent("model-00001-of-00001.safetensors"))
         XCTAssertTrue(
             try qualify(directory).missingAssets.contains(.visionWeights))
+    }
+
+    func testGLM5NextConvertedVisionModelNamespaceQualifies() throws {
+        let directory = try makeGLMModelDirectory(
+            namespace: "vision_model", convertedConvolutions: true)
+        let qualification = try qualify(directory)
+
+        XCTAssertTrue(qualification.isAssetUsable)
+        XCTAssertEqual(qualification.visionTensorCount, 39)
+    }
+
+    func testGLM5NextRequiresAllBoundaryIDsAndVideoProcessor() throws {
+        let missingBoundary = try makeGLMModelDirectory()
+        var config = try XCTUnwrap(
+            JSONSerialization.jsonObject(
+                with: Data(contentsOf: missingBoundary.appendingPathComponent("config.json")))
+                as? [String: Any])
+        config.removeValue(forKey: "image_end_token_id")
+        try Self.writeJSON(
+            config, to: missingBoundary.appendingPathComponent("config.json"))
+        XCTAssertTrue(
+            try qualify(missingBoundary).missingAssets.contains(.imageTokenIdentifiers))
+
+        let missingVideoProcessor = try makeGLMModelDirectory()
+        let processorURL = missingVideoProcessor.appendingPathComponent(
+            "preprocessor_config.json")
+        var processor = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(contentsOf: processorURL))
+                as? [String: Any])
+        processor.removeValue(forKey: "video_processor")
+        try Self.writeJSON(processor, to: processorURL)
+        XCTAssertTrue(
+            try qualify(missingVideoProcessor).missingAssets.contains(
+                .processorConfiguration))
+    }
+
+    func testGLM5NextRejectsMalformedVisionShapeAndDType() throws {
+        for metadata in [
+            ("F16", [1]),
+            ("U8", [32, 3, 2, 2, 2]),
+        ] {
+            let directory = try makeGLMModelDirectory()
+            try rewriteGLMShard(
+                in: directory,
+                metadata: [
+                    "model.visual.patch_embed.proj.weight": metadata,
+                ])
+            XCTAssertFalse(try qualify(directory).isAssetUsable)
+        }
+    }
+
+    func testGLM5NextRejectsIncoherentVisionConfiguration() throws {
+        for mutation in [
+            ("out_hidden_size", 32 as Any),
+            ("num_heads", 3 as Any),
+            ("attention_bias", false as Any),
+            ("hidden_act", "gelu" as Any),
+        ] {
+            let directory = try makeGLMModelDirectory()
+            let configURL = directory.appendingPathComponent("config.json")
+            var config = try XCTUnwrap(
+                JSONSerialization.jsonObject(with: Data(contentsOf: configURL))
+                    as? [String: Any])
+            var vision = try XCTUnwrap(config["vision_config"] as? [String: Any])
+            vision[mutation.0] = mutation.1
+            config["vision_config"] = vision
+            try Self.writeJSON(config, to: configURL)
+
+            XCTAssertTrue(
+                try qualify(directory).missingAssets.contains(.visionConfiguration))
+        }
     }
 
     func testOptionalVisionFailuresDoNotChangeBaseCacheCompleteness() throws {
@@ -910,6 +951,80 @@ final class AFMMLXVisionAssetQualificationTests: XCTestCase {
         )
     }
 
+    private func makeGLMModelDirectory(
+        namespace: String = "model.visual",
+        convertedConvolutions: Bool = false
+    ) throws -> URL {
+        let directory = try makeModelDirectory()
+        var config = Self.fixtureConfiguration()
+        config["model_type"] = "glm5_next"
+        config["architectures"] = ["Glm5NextForConditionalGeneration"]
+        config["image_start_token_id"] = 154_830
+        config["image_end_token_id"] = 154_831
+        config["video_start_token_id"] = 154_832
+        config["video_end_token_id"] = 154_833
+        config["image_token_id"] = 154_854
+        config["video_token_id"] = 154_855
+        config.removeValue(forKey: "vision_start_token_id")
+        config.removeValue(forKey: "vision_end_token_id")
+        var vision = try XCTUnwrap(config["vision_config"] as? [String: Any])
+        vision["model_type"] = "glm5_next_vision"
+        vision["projection_intermediate_size"] = 128
+        vision["rms_norm_eps"] = 0.00001
+        vision["attention_bias"] = true
+        vision["hidden_act"] = "silu"
+        vision["swiglu_limit"] = 10.0
+        config["vision_config"] = vision
+        try Self.writeJSON(config, to: directory.appendingPathComponent("config.json"))
+
+        let image: [String: Any] = [
+            "image_mean": [0.48145466, 0.4578275, 0.40821073],
+            "image_std": [0.26862954, 0.26130258, 0.27577711],
+            "merge_size": 2, "patch_size": 2, "temporal_patch_size": 2,
+            "patch_expand_factor": 1,
+            "min_image_tokens": 16, "max_image_tokens": 8_000,
+        ]
+        let video = image.merging([
+            "fps": 2.0, "max_frames": 2_048,
+            "max_image_tokens": 240_000,
+        ]) { _, new in new }
+        try Self.writeJSON([
+            "processor_class": "Glm5NextProcessor",
+            "image_processor": image,
+            "video_processor": video,
+        ], to: directory.appendingPathComponent("preprocessor_config.json"))
+
+        let names = Self.glmVisionTensorNames(depth: 2, namespace: namespace)
+            .union(["model.language_model.embed_tokens.weight"])
+        try Self.writeJSON([
+            "weight_map": Dictionary(uniqueKeysWithValues: names.map {
+                ($0, "model-00001-of-00001.safetensors")
+            })
+        ], to: directory.appendingPathComponent("model.safetensors.index.json"))
+        try Self.writeSafetensorHeader(
+            tensorNames: names,
+            metadata: Self.glmVisionTensorMetadata(
+                depth: 2,
+                namespace: namespace,
+                convertedConvolutions: convertedConvolutions),
+            to: directory.appendingPathComponent("model-00001-of-00001.safetensors"))
+        return directory
+    }
+
+    private func rewriteGLMShard(
+        in directory: URL,
+        metadata overrides: [String: (dtype: String, shape: [Int])]
+    ) throws {
+        let names = Self.glmVisionTensorNames(depth: 2)
+            .union(["model.language_model.embed_tokens.weight"])
+        var metadata = Self.glmVisionTensorMetadata(depth: 2)
+        for (name, value) in overrides { metadata[name] = value }
+        try Self.writeSafetensorHeader(
+            tensorNames: names,
+            metadata: metadata,
+            to: directory.appendingPathComponent("model-00001-of-00001.safetensors"))
+    }
+
     private static func writeJSON(_ object: Any, to url: URL) throws {
         try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
             .write(to: url)
@@ -1002,7 +1117,10 @@ final class AFMMLXVisionAssetQualificationTests: XCTestCase {
         return metadata
     }
 
-    private static func glmVisionTensorNames(depth: Int) -> Set<String> {
+    private static func glmVisionTensorNames(
+        depth: Int,
+        namespace: String = "model.visual"
+    ) -> Set<String> {
         let leaves = [
             "attn.k_norm.weight", "attn.proj.bias", "attn.proj.weight",
             "attn.q_norm.weight", "attn.qkv.bias", "attn.qkv.weight",
@@ -1011,19 +1129,61 @@ final class AFMMLXVisionAssetQualificationTests: XCTestCase {
             "norm1.weight", "norm2.weight",
         ]
         var names = Set((0..<depth).flatMap { block in
-            leaves.map { "model.visual.blocks.\(block).\($0)" }
+            leaves.map { "\(namespace).blocks.\(block).\($0)" }
         })
         names.formUnion([
-            "model.visual.downsample.bias", "model.visual.downsample.weight",
-            "model.visual.merger.down_proj.weight",
-            "model.visual.merger.gate_proj.weight",
-            "model.visual.merger.post_projection_norm.bias",
-            "model.visual.merger.post_projection_norm.weight",
-            "model.visual.merger.proj.weight", "model.visual.merger.up_proj.weight",
-            "model.visual.patch_embed.proj.bias", "model.visual.patch_embed.proj.weight",
-            "model.visual.post_layernorm.weight",
+            "\(namespace).downsample.bias", "\(namespace).downsample.weight",
+            "\(namespace).merger.down_proj.weight",
+            "\(namespace).merger.gate_proj.weight",
+            "\(namespace).merger.post_projection_norm.bias",
+            "\(namespace).merger.post_projection_norm.weight",
+            "\(namespace).merger.proj.weight", "\(namespace).merger.up_proj.weight",
+            "\(namespace).patch_embed.proj.bias", "\(namespace).patch_embed.proj.weight",
+            "\(namespace).post_layernorm.weight",
         ])
         return names
+    }
+
+    private static func glmVisionTensorMetadata(
+        depth: Int,
+        namespace: String = "model.visual",
+        convertedConvolutions: Bool = false
+    ) -> [String: (dtype: String, shape: [Int])] {
+        var metadata: [String: (dtype: String, shape: [Int])] = [
+            "\(namespace).patch_embed.proj.weight": (
+                "BF16",
+                convertedConvolutions ? [32, 2, 2, 2, 3] : [32, 3, 2, 2, 2]),
+            "\(namespace).patch_embed.proj.bias": ("BF16", [32]),
+            "\(namespace).downsample.weight": (
+                "BF16",
+                convertedConvolutions ? [64, 2, 2, 32] : [64, 32, 2, 2]),
+            "\(namespace).downsample.bias": ("BF16", [64]),
+            "\(namespace).post_layernorm.weight": ("BF16", [32]),
+            "\(namespace).merger.proj.weight": ("BF16", [64, 64]),
+            "\(namespace).merger.post_projection_norm.weight": ("BF16", [64]),
+            "\(namespace).merger.post_projection_norm.bias": ("BF16", [64]),
+            "\(namespace).merger.gate_proj.weight": ("BF16", [128, 64]),
+            "\(namespace).merger.up_proj.weight": ("BF16", [128, 64]),
+            "\(namespace).merger.down_proj.weight": ("BF16", [64, 128]),
+        ]
+        for block in 0..<depth {
+            let prefix = "\(namespace).blocks.\(block)"
+            metadata["\(prefix).attn.q_norm.weight"] = ("BF16", [8])
+            metadata["\(prefix).attn.k_norm.weight"] = ("BF16", [8])
+            metadata["\(prefix).attn.qkv.weight"] = ("BF16", [96, 32])
+            metadata["\(prefix).attn.qkv.bias"] = ("BF16", [96])
+            metadata["\(prefix).attn.proj.weight"] = ("BF16", [32, 32])
+            metadata["\(prefix).attn.proj.bias"] = ("BF16", [32])
+            metadata["\(prefix).mlp.gate_proj.weight"] = ("BF16", [64, 32])
+            metadata["\(prefix).mlp.gate_proj.bias"] = ("BF16", [64])
+            metadata["\(prefix).mlp.up_proj.weight"] = ("BF16", [64, 32])
+            metadata["\(prefix).mlp.up_proj.bias"] = ("BF16", [64])
+            metadata["\(prefix).mlp.down_proj.weight"] = ("BF16", [32, 64])
+            metadata["\(prefix).mlp.down_proj.bias"] = ("BF16", [32])
+            metadata["\(prefix).norm1.weight"] = ("BF16", [32])
+            metadata["\(prefix).norm2.weight"] = ("BF16", [32])
+        }
+        return metadata
     }
 
     private func makeAmbiguousPatchEmbeddingDirectory(

@@ -28,6 +28,8 @@ public struct GLM5NextProcessorConfiguration: Codable, Sendable {
         public let temporalPatchSize: Int
         public let minImageTokens: Int
         public let maxImageTokens: Int
+        let patchExpandFactor: Int?
+        let maxFrames: Int?
         public let fps: Double?
 
         enum CodingKeys: String, CodingKey {
@@ -38,6 +40,8 @@ public struct GLM5NextProcessorConfiguration: Codable, Sendable {
             case temporalPatchSize = "temporal_patch_size"
             case minImageTokens = "min_image_tokens"
             case maxImageTokens = "max_image_tokens"
+            case patchExpandFactor = "patch_expand_factor"
+            case maxFrames = "max_frames"
             case fps
         }
 
@@ -56,6 +60,9 @@ public struct GLM5NextProcessorConfiguration: Codable, Sendable {
         public var maxPixels: Int {
             maxImageTokens * patchSize * patchSize * mergeSize * mergeSize
         }
+
+        var effectivePatchExpandFactor: Int { patchExpandFactor ?? 1 }
+        var effectiveMaximumFrames: Int { maxFrames ?? 2_048 }
     }
 
     public let imageProcessor: MediaConfiguration
@@ -70,6 +77,14 @@ public struct GLM5NextProcessorConfiguration: Codable, Sendable {
 }
 
 public struct GLM5NextProcessor: UserInputProcessor {
+    struct ResizePlan: Equatable {
+        let targetHeight: Int
+        let targetWidth: Int
+        let contentHeight: Int
+        let contentWidth: Int
+        let alignedFrames: Int
+    }
+
     private let config: GLM5NextProcessorConfiguration
     private let tokenizer: any Tokenizer
 
@@ -78,10 +93,114 @@ public struct GLM5NextProcessor: UserInputProcessor {
         self.tokenizer = tokenizer
     }
 
+    /// Port of Transformers `glm5_next.smart_resize` plus its aspect-preserving
+    /// content fit. Token limits are spatiotemporal token counts, not bare pixels.
+    static func resizePlan(
+        numFrames: Int,
+        height: Int,
+        width: Int,
+        configuration: GLM5NextProcessorConfiguration.MediaConfiguration
+    ) throws -> ResizePlan {
+        let temporal = configuration.temporalPatchSize
+        let factor = configuration.patchSize * configuration.mergeSize
+            * configuration.effectivePatchExpandFactor
+        guard numFrames > 0, height > 0, width > 0, temporal > 0, factor > 0,
+              configuration.minImageTokens > 0,
+              configuration.maxImageTokens >= configuration.minImageTokens
+        else {
+            throw VLMError.imageProcessingFailure("Invalid GLM media geometry")
+        }
+
+        func align(_ value: Int) -> Int {
+            ((value + factor - 1) / factor) * factor
+        }
+
+        let pixelsPerToken = temporal * factor * factor
+        let minimumPixels = configuration.minImageTokens * pixelsPerToken
+        let maximumPixels = configuration.maxImageTokens * pixelsPerToken
+        let roundedFrameGroups = Int(
+            (Double(numFrames) / Double(temporal)).rounded(.toNearestOrEven))
+        let alignedFrames = max(temporal, roundedFrameGroups * temporal)
+        guard maximumPixels >= alignedFrames * factor * factor else {
+            throw VLMError.imageProcessingFailure(
+                "GLM max_image_tokens is too small for one aligned patch")
+        }
+
+        var targetHeight = align(height)
+        var targetWidth = align(width)
+        var budget = alignedFrames * targetHeight * targetWidth
+        if budget < minimumPixels {
+            let scale = sqrt(
+                Double(minimumPixels) / Double(numFrames * height * width))
+            targetHeight = align(max(1, Int(ceil(Double(height) * scale))))
+            targetWidth = align(max(1, Int(ceil(Double(width) * scale))))
+            budget = alignedFrames * targetHeight * targetWidth
+        }
+        if budget > maximumPixels {
+            var low = 1
+            var high = height
+            var bestHeight = factor
+            var bestWidth = factor
+            while low <= high {
+                let contentHeight = (low + high) / 2
+                let contentWidth = max(
+                    1, Int(floor(Double(width * contentHeight) / Double(height))))
+                let candidateHeight = align(contentHeight)
+                let candidateWidth = align(contentWidth)
+                if alignedFrames * candidateHeight * candidateWidth <= maximumPixels {
+                    bestHeight = candidateHeight
+                    bestWidth = candidateWidth
+                    low = contentHeight + 1
+                } else {
+                    high = contentHeight - 1
+                }
+            }
+            targetHeight = bestHeight
+            targetWidth = bestWidth
+        }
+
+        var scale = min(
+            Double(targetHeight) / Double(height),
+            Double(targetWidth) / Double(width))
+        if numFrames * height * width >= minimumPixels {
+            scale = min(1, scale)
+        }
+        let contentHeight = max(
+            1, min(targetHeight, Int(floor(Double(height) * scale))))
+        let contentWidth = max(
+            1, min(targetWidth, Int(floor(Double(width) * scale))))
+        return ResizePlan(
+            targetHeight: targetHeight,
+            targetWidth: targetWidth,
+            contentHeight: contentHeight,
+            contentWidth: contentWidth,
+            alignedFrames: alignedFrames)
+    }
+
+    static func resizeAndPad(_ image: CIImage, plan: ResizePlan) -> CIImage {
+        let resized = MediaProcessing.resampleBicubic(
+            image,
+            to: CGSize(width: plan.contentWidth, height: plan.contentHeight))
+        guard plan.contentWidth != plan.targetWidth
+                || plan.contentHeight != plan.targetHeight else { return resized }
+        let background = CIImage(color: .black).cropped(
+            to: CGRect(
+                x: 0, y: 0,
+                width: plan.targetWidth, height: plan.targetHeight))
+        // Core Image's origin is bottom-left. Translating upward leaves padding
+        // on the right and bottom in tensor (top-left-origin) coordinates.
+        let placed = resized.transformed(
+            by: CGAffineTransform(
+                translationX: 0,
+                y: CGFloat(plan.targetHeight - plan.contentHeight)))
+        return placed.composited(over: background)
+    }
+
     private func preprocess(
         images: [CIImage],
         configuration: GLM5NextProcessorConfiguration.MediaConfiguration,
-        processing: UserInput.Processing?
+        processing: UserInput.Processing?,
+        budgetFrameCount: Int
     ) throws -> (MLXArray, THW) {
         let processed = images.map { MediaProcessing.apply($0, processing: processing) }
         guard let first = processed.first else {
@@ -89,15 +208,13 @@ public struct GLM5NextProcessor: UserInputProcessor {
         }
 
         let extent = first.extent.size
-        let (height, width) = try QwenVL.targetSize(
+        let plan = try Self.resizePlan(
+            numFrames: budgetFrameCount,
             height: Int(extent.height),
             width: Int(extent.width),
-            factor: configuration.patchSize * configuration.mergeSize,
-            minPixels: configuration.minPixels,
-            maxPixels: configuration.maxPixels)
-        let target = CGSize(width: width, height: height)
+            configuration: configuration)
         let normalized = processed
-            .map { MediaProcessing.resampleBicubic($0, to: target) }
+            .map { Self.resizeAndPad($0, plan: plan) }
             .map {
                 MediaProcessing.normalize(
                     $0,
@@ -111,6 +228,68 @@ public struct GLM5NextProcessor: UserInputProcessor {
             mergeSize: configuration.mergeSize,
             patchSize: configuration.patchSize,
             temporalPatchSize: configuration.temporalPatchSize)
+    }
+
+    static func replaceImagePlaceholders(
+        in promptTokens: [Int],
+        grids: [THW],
+        imageTokenID: Int,
+        mergeSize: Int
+    ) throws -> [Int] {
+        let placeholderCount = promptTokens.count(where: { $0 == imageTokenID })
+        guard placeholderCount == grids.count else {
+            throw VLMError.processing(
+                "Number of GLM image placeholders does not match image inputs")
+        }
+        var gridIndex = 0
+        return promptTokens.flatMap { token -> [Int] in
+            guard token == imageTokenID else { return [token] }
+            defer { gridIndex += 1 }
+            let count = grids[gridIndex].product / (mergeSize * mergeSize)
+            return Array(repeating: imageTokenID, count: count)
+        }
+    }
+
+    static func replaceVideoPlaceholders(
+        in promptTokens: [Int],
+        grids: [THW],
+        timestamps: [[Double]],
+        videoTokenID: Int,
+        imageTokenID: Int,
+        imageStartTokenID: Int,
+        imageEndTokenID: Int,
+        mergeSize: Int,
+        temporalPatchSize: Int,
+        timestampTokens: (Double) -> [Int]
+    ) throws -> [Int] {
+        let placeholderCount = promptTokens.count(where: { $0 == videoTokenID })
+        guard placeholderCount == grids.count, timestamps.count == grids.count else {
+            throw VLMError.processing(
+                "Number of GLM video placeholders does not match video inputs")
+        }
+        var videoIndex = 0
+        return promptTokens.flatMap { token -> [Int] in
+            guard token == videoTokenID else { return [token] }
+            defer { videoIndex += 1 }
+            let grid = grids[videoIndex]
+            let tokensPerFrame = grid.h * grid.w / (mergeSize * mergeSize)
+            let candidates = stride(
+                from: 0,
+                to: timestamps[videoIndex].count,
+                by: temporalPatchSize
+            ).map { timestamps[videoIndex][$0] }
+            var replacement = [Int]()
+            for frame in 0..<grid.t {
+                let timestamp = candidates.indices.contains(frame)
+                    ? candidates[frame] : (candidates.last ?? 0)
+                replacement.append(imageStartTokenID)
+                replacement.append(
+                    contentsOf: repeatElement(imageTokenID, count: tokensPerFrame))
+                replacement.append(imageEndTokenID)
+                replacement.append(contentsOf: timestampTokens(timestamp))
+            }
+            return replacement
+        }
     }
 
     public func prepare(input: UserInput) async throws -> LMInput {
@@ -136,6 +315,14 @@ public struct GLM5NextProcessor: UserInputProcessor {
                 text: .init(tokens: tokens, mask: ones(like: tokens).asType(.int8)))
         }
 
+        guard let imageTokenID = tokenizer.convertTokenToId("<|image|>"),
+              let videoTokenID = tokenizer.convertTokenToId("<|video|>"),
+              let imageStartTokenID = tokenizer.convertTokenToId("<|begin_of_image|>"),
+              let imageEndTokenID = tokenizer.convertTokenToId("<|end_of_image|>")
+        else {
+            throw VLMError.processing("GLM multimodal special tokens are unavailable")
+        }
+
         let imageConfiguration = config.imageProcessor
         var processedImage: LMInput.ProcessedImage?
         if !input.images.isEmpty {
@@ -143,17 +330,17 @@ public struct GLM5NextProcessor: UserInputProcessor {
                 try preprocess(
                     images: [$0.asCIImage()],
                     configuration: imageConfiguration,
-                    processing: input.processing)
+                    processing: input.processing,
+                    budgetFrameCount: imageConfiguration.temporalPatchSize)
             }
             processedImage = .init(
                 pixels: concatenated(images.map(\.0)),
                 frames: images.map(\.1))
-            promptTokens = try QwenVL.replacePaddingTokens(
+            promptTokens = try Self.replaceImagePlaceholders(
                 in: promptTokens,
-                frames: images.map(\.1),
-                paddingToken: "<|image|>",
-                mergeSize: imageConfiguration.mergeSize,
-                tokenizer: tokenizer)
+                grids: images.map(\.1),
+                imageTokenID: imageTokenID,
+                mergeSize: imageConfiguration.mergeSize)
         }
 
         var processedVideo: LMInput.ProcessedVideo?
@@ -162,50 +349,50 @@ public struct GLM5NextProcessor: UserInputProcessor {
                 throw VLMError.videoNotSupported("glm5_next")
             }
             var videos = [(MLXArray, THW)]()
+            var videoTimestamps = [[Double]]()
             for video in input.videos {
-                var resizedSize: CGSize = .zero
+                var sampledFrames = [VideoFrame]()
                 let sequence = try await MediaProcessing.asProcessedSequence(
                     video,
-                    targetFPS: { _ in videoConfiguration.fps ?? 2 }
+                    targetFPS: { _ in videoConfiguration.fps ?? 2 },
+                    maxFrames: videoConfiguration.effectiveMaximumFrames
                 ) { frame in
                     let processed = MediaProcessing.apply(
                         frame.frame, processing: input.processing)
-                    if resizedSize == .zero {
-                        let extent = processed.extent.size
-                        let (height, width) = try QwenVL.targetSize(
-                            height: Int(extent.height),
-                            width: Int(extent.width),
-                            factor: videoConfiguration.patchSize
-                                * videoConfiguration.mergeSize,
-                            minPixels: videoConfiguration.minPixels,
-                            maxPixels: videoConfiguration.maxPixels)
-                        resizedSize = CGSize(width: width, height: height)
-                    }
-                    let resized = MediaProcessing.resampleBicubic(
-                        processed, to: resizedSize)
-                    let normalized = MediaProcessing.normalize(
-                        resized,
-                        mean: videoConfiguration.imageMeanTuple,
-                        std: videoConfiguration.imageStdTuple)
-                    return VideoFrame(
-                        frame: normalized, timeStamp: frame.timeStamp)
+                    let result = VideoFrame(frame: processed, timeStamp: frame.timeStamp)
+                    sampledFrames.append(result)
+                    return result
                 }
-                videos.append(
-                    try QwenVL.patchify(
-                        images: sequence.frames,
-                        mergeSize: videoConfiguration.mergeSize,
-                        patchSize: videoConfiguration.patchSize,
-                        temporalPatchSize: videoConfiguration.temporalPatchSize))
+                let temporal = videoConfiguration.temporalPatchSize
+                let paddedFrameCount =
+                    ((sampledFrames.count + temporal - 1) / temporal) * temporal
+                videos.append(try preprocess(
+                    images: sampledFrames.map(\.frame),
+                    configuration: videoConfiguration,
+                    processing: nil,
+                    budgetFrameCount: paddedFrameCount))
+                videoTimestamps.append(sequence.timestamps.map(\.seconds))
             }
             processedVideo = .init(
                 pixels: concatenated(videos.map(\.0)),
                 frames: videos.map(\.1))
-            promptTokens = try QwenVL.replacePaddingTokens(
+            promptTokens = try Self.replaceVideoPlaceholders(
                 in: promptTokens,
-                frames: videos.map(\.1),
-                paddingToken: "<|video|>",
+                grids: videos.map(\.1),
+                timestamps: videoTimestamps,
+                videoTokenID: videoTokenID,
+                imageTokenID: imageTokenID,
+                imageStartTokenID: imageStartTokenID,
+                imageEndTokenID: imageEndTokenID,
                 mergeSize: videoConfiguration.mergeSize,
-                tokenizer: tokenizer)
+                temporalPatchSize: videoConfiguration.temporalPatchSize
+            ) { timestamp in
+                let text = String(
+                    format: "%.1f seconds",
+                    locale: Locale(identifier: "en_US_POSIX"),
+                    timestamp)
+                return tokenizer.encode(text: text)
+            }
         }
 
         let tokens = MLXArray(promptTokens).expandedDimensions(axis: 0)
@@ -224,12 +411,20 @@ public struct GLM5NextVLConfiguration: Decodable, Sendable {
     let visionConfiguration: GLM5NextVisionConfiguration
     let imageTokenID: Int
     let videoTokenID: Int
+    let imageStartTokenID: Int
+    let imageEndTokenID: Int
+    let videoStartTokenID: Int
+    let videoEndTokenID: Int
 
     enum CodingKeys: String, CodingKey {
         case modelType = "model_type"
         case visionConfiguration = "vision_config"
         case imageTokenID = "image_token_id"
         case videoTokenID = "video_token_id"
+        case imageStartTokenID = "image_start_token_id"
+        case imageEndTokenID = "image_end_token_id"
+        case videoStartTokenID = "video_start_token_id"
+        case videoEndTokenID = "video_end_token_id"
     }
 
     public init(from decoder: any Swift.Decoder) throws {
@@ -241,6 +436,10 @@ public struct GLM5NextVLConfiguration: Decodable, Sendable {
             GLM5NextVisionConfiguration.self, forKey: .visionConfiguration)
         imageTokenID = try container.decode(Int.self, forKey: .imageTokenID)
         videoTokenID = try container.decode(Int.self, forKey: .videoTokenID)
+        imageStartTokenID = try container.decode(Int.self, forKey: .imageStartTokenID)
+        imageEndTokenID = try container.decode(Int.self, forKey: .imageEndTokenID)
+        videoStartTokenID = try container.decode(Int.self, forKey: .videoStartTokenID)
+        videoEndTokenID = try container.decode(Int.self, forKey: .videoEndTokenID)
     }
 }
 
@@ -603,6 +802,11 @@ enum GLM5NextVision {
 // MARK: - Multimodal wrapper
 
 public final class GLM5NextVLModel: Module, VLMModel, KVCacheDimensionProvider {
+    struct ModalityTokenPositions: Equatable {
+        let images: [Int]
+        let videos: [Int]
+    }
+
     let config: GLM5NextVLConfiguration
     @ModuleInfo(key: "vision_model") var visionModel: GLM5NextVision.VisionModel
     @ModuleInfo(key: "language_model") var languageModel: GLM5NextModel
@@ -621,17 +825,52 @@ public final class GLM5NextVLModel: Module, VLMModel, KVCacheDimensionProvider {
         languageModel.newCache(parameters: parameters)
     }
 
-    private func merge(
+    static func modalityTokenPositions(
+        inputIDs: [Int],
+        imageTokenID: Int,
+        videoStartTokenID: Int,
+        videoEndTokenID: Int
+    ) throws -> ModalityTokenPositions {
+        var videoDepth = 0
+        var images = [Int]()
+        var videos = [Int]()
+        for (index, token) in inputIDs.enumerated() {
+            if token == videoStartTokenID {
+                videoDepth += 1
+            } else if token == videoEndTokenID {
+                guard videoDepth > 0 else {
+                    throw VLMError.processing("Unbalanced GLM video boundary tokens")
+                }
+                videoDepth -= 1
+            } else if token == imageTokenID {
+                if videoDepth > 0 {
+                    videos.append(index)
+                } else {
+                    images.append(index)
+                }
+            }
+        }
+        guard videoDepth == 0 else {
+            throw VLMError.processing("Unbalanced GLM video boundary tokens")
+        }
+        return ModalityTokenPositions(images: images, videos: videos)
+    }
+
+    static func merge(
         features: MLXArray,
         embeddings: MLXArray,
-        inputIDs: MLXArray
+        tokenPositions: [Int],
+        modality: String
     ) throws -> MLXArray {
-        let mask = (inputIDs .== MLXArray(config.imageTokenID))
-            .|| (inputIDs .== MLXArray(config.videoTokenID))
+        var maskValues = Array(repeating: false, count: embeddings.dim(1))
+        for position in tokenPositions where maskValues.indices.contains(position) {
+            maskValues[position] = true
+        }
+        let mask = MLXArray(maskValues)[.newAxis, 0...]
         let expanded = broadcast(expandedDimensions(mask, axis: -1), to: embeddings.shape)
         guard expanded.sum().item(Int.self) == features.size else {
             throw VLMError.processing(
-                "GLM visual feature/token mismatch: \(features.dim(0)) features for "
+                "GLM \(modality) feature/token mismatch: \(features.dim(0)) features for "
                     + "\(mask.sum().item(Int.self)) media tokens")
         }
         let indices = expanded.flattened().asArray(Bool.self).enumerated().compactMap {
@@ -648,21 +887,46 @@ public final class GLM5NextVLModel: Module, VLMModel, KVCacheDimensionProvider {
         windowSize _: Int?
     ) throws -> PrepareResult {
         let inputIDs = input.text.tokens
-        let grids = (input.image?.frames ?? []) + (input.video?.frames ?? [])
-        var pixelParts = [MLXArray]()
+        let positions: ModalityTokenPositions
+        if input.image != nil || input.video != nil {
+            positions = try Self.modalityTokenPositions(
+                inputIDs: inputIDs.asArray(Int.self),
+                imageTokenID: config.imageTokenID,
+                videoStartTokenID: config.videoStartTokenID,
+                videoEndTokenID: config.videoEndTokenID)
+        } else {
+            positions = ModalityTokenPositions(images: [], videos: [])
+        }
         let dtype = visionModel.patchEmbed.projection.weight.dtype
-        if let image = input.image { pixelParts.append(image.pixels.asType(dtype)) }
-        if let video = input.video { pixelParts.append(video.pixels.asType(dtype)) }
+        var embeddings: MLXArray? = input.image == nil && input.video == nil
+            ? nil : languageModel.embedTokens(inputIDs)
 
-        var embeddings: MLXArray?
-        if !pixelParts.isEmpty, !grids.isEmpty {
-            let textEmbeddings = languageModel.embedTokens(inputIDs)
-            let features = visionModel(concatenated(pixelParts), gridTHW: grids)
-                .asType(textEmbeddings.dtype)
-            embeddings = try merge(
+        if let image = input.image,
+           let imageGrids = image.frames,
+           !imageGrids.isEmpty {
+            let features = visionModel(
+                image.pixels.asType(dtype), gridTHW: imageGrids)
+                .asType(embeddings!.dtype)
+            embeddings = try Self.merge(
                 features: features,
-                embeddings: textEmbeddings,
-                inputIDs: inputIDs)
+                embeddings: embeddings!,
+                tokenPositions: positions.images,
+                modality: "image")
+        }
+        if let video = input.video,
+           let videoGrids = video.frames,
+           !videoGrids.isEmpty {
+            let frameGrids = videoGrids.flatMap { grid in
+                Array(repeating: THW(1, grid.h, grid.w), count: grid.t)
+            }
+            let features = visionModel(
+                video.pixels.asType(dtype), gridTHW: frameGrids)
+                .asType(embeddings!.dtype)
+            embeddings = try Self.merge(
+                features: features,
+                embeddings: embeddings!,
+                tokenPositions: positions.videos,
+                modality: "video")
         }
         let logits = languageModel.forward(
             inputIDs: inputIDs,

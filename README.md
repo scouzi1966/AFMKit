@@ -97,9 +97,12 @@ official upstream repository publishes FP8 Transformers shards rather than an
 MLX-quantized checkpoint. AFMKit therefore expects an MLX conversion such as
 [`Vontra/GLM-5.3-Flash-MLX-4bit-MTP`](https://huggingface.co/Vontra/GLM-5.3-Flash-MLX-4bit-MTP);
 it does not claim that the original FP8 distribution can be loaded directly on
-Apple Silicon. This first implementation covers the language decoder and tool
-format. Image/video execution and the checkpoint's embedded MTP layer are
-tracked separately in [#43](https://github.com/scouzi1966/AFMKit/issues/43) and
+Apple Silicon. AFMKit includes the GLM language decoder, tool format, and the
+self-contained `glm5_next_vision` image/video tower and processor. Vision is
+enabled only when the converted checkpoint has a complete, shape-validated
+vision namespace plus the official processor and boundary-token metadata; an
+incomplete multimodal conversion remains a text-only runtime. The checkpoint's
+embedded MTP layer is tracked separately in
 [#44](https://github.com/scouzi1966/AFMKit/issues/44).
 
 The AFM-compatible MLX, MLX C, Swift bindings, and language-model sources live

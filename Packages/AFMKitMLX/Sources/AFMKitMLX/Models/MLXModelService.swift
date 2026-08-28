@@ -1977,6 +1977,16 @@ public final class MLXModelService:
                     loaded = try await LLMModelFactory.shared.loadContainer(configuration: config)
                 } catch let llmError {
                     print("[\(ts())] [MLX] LLM factory load failed for \(modelID): \(llmError)")
+                    guard AFMMLXModelFactoryPolicy.allowsVLMFallback(
+                        architecture: modelArchitecture,
+                        visionQualification: visionQualification
+                    ) else {
+                        print(
+                            "[\(ts())] [VisionAssets] skipping unsafe VLM fallback; "
+                                + "required assets are unavailable"
+                        )
+                        throw llmError
+                    }
                     // LLM factory failed — try VLM factory as fallback
                     do {
                         loaded = try await VLMModelFactory.shared.loadContainer(configuration: config)
@@ -6626,7 +6636,7 @@ public final class MLXModelService:
         qualification: AFMMLXVisionAssetQualification
     ) throws {
         guard forceVLM,
-              qualification.isQwenFamilyConfiguration,
+              qualification.requiresQualifiedConditionalVisionAssets,
               !qualification.isAssetUsable else { return }
         throw MLXServiceError.visionAssetsUnavailable(
             model: modelID,

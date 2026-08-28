@@ -200,6 +200,45 @@ final class AFMMLXStartupFactoryPolicyTests: XCTestCase {
         }
     }
 
+    func testQualifiedGLMConditionalGenerationAutomaticallySelectsVLM() {
+        let architecture = glmArchitecture()
+        let qualification = glmQualification()
+
+        XCTAssertTrue(qualification.requiresQualifiedConditionalVisionAssets)
+        XCTAssertEqual(
+            AFMMLXModelFactoryPolicy.initialFactory(
+                forceVLM: false,
+                architecture: architecture,
+                visionQualification: qualification),
+            .vlm)
+    }
+
+    func testIncompleteGLMConditionalGenerationFallsBackAndForcedModeRejects() {
+        let architecture = glmArchitecture()
+        let qualification = glmQualification(
+            missing: [.processorConfiguration, .visionWeights])
+
+        XCTAssertEqual(
+            AFMMLXModelFactoryPolicy.initialFactory(
+                forceVLM: true,
+                architecture: architecture,
+                visionQualification: qualification),
+            .llm)
+        XCTAssertThrowsError(
+            try MLXModelService.validateForcedVisionSelection(
+                forceVLM: true,
+                modelID: "glm-fixture",
+                qualification: qualification))
+        XCTAssertFalse(
+            AFMMLXModelFactoryPolicy.allowsVLMFallback(
+                architecture: architecture,
+                visionQualification: qualification))
+        XCTAssertTrue(
+            AFMMLXModelFactoryPolicy.allowsVLMFallback(
+                architecture: architecture,
+                visionQualification: glmQualification()))
+    }
+
     private func qwenArchitecture() throws -> AFMMLXModelArchitecturePreflight {
         try AFMMLXModelArchitecture.preflightConfiguration(
             Qwen38PublishedConfigFixture.mxfp8,
@@ -221,5 +260,29 @@ final class AFMMLXStartupFactoryPolicyTests: XCTestCase {
             visionTensorCount: missingAssets.contains(.visionWeights) ? 0 : 1,
             missingAssets: missingAssets
         )
+    }
+
+    private func glmArchitecture() -> AFMMLXModelArchitecturePreflight {
+        AFMMLXModelArchitecturePreflight(
+            modelID: "Vontra/GLM-5.3-Flash-MLX-4bit-MTP",
+            modelType: "glm5_next",
+            canonicalModelType: "glm5_next",
+            isVisionConfiguration: true,
+            requiresVisionModelFactory: false)
+    }
+
+    private func glmQualification(
+        missing: Set<AFMMLXVisionAssetIssue> = []
+    ) -> AFMMLXVisionAssetQualification {
+        AFMMLXVisionAssetQualification(
+            snapshotIdentity: "glm",
+            modelType: "glm5_next",
+            canonicalModelType: "glm5_next",
+            isConditionalGeneration: true,
+            declaresVision: true,
+            processorClass: missing.contains(.processorConfiguration)
+                ? nil : "Glm5NextProcessor",
+            visionTensorCount: missing.contains(.visionWeights) ? 0 : 347,
+            missingAssets: missing)
     }
 }

@@ -1008,7 +1008,9 @@ private final class GLM5NextModelInner: Module {
     }
 }
 
-public final class GLM5NextModel: Module, LLMModel, KVCacheDimensionProvider, LoRAModel {
+public final class GLM5NextModel: Module, LLMModel, KVCacheDimensionProvider, LoRAModel,
+    LanguageModelWeightFilter
+{
     public let vocabularySize: Int
     public let kvHeads: [Int]
     let configuration: GLM5NextTextConfiguration
@@ -1054,6 +1056,33 @@ public final class GLM5NextModel: Module, LLMModel, KVCacheDimensionProvider, Lo
             }
             return CacheList(KVCacheSimple(), KVCacheSimple())
         }
+    }
+
+    public func shouldLoad(weightKey key: String) -> Bool {
+        if key.hasPrefix("model.visual.") || key.hasPrefix("visual.")
+            || key.hasPrefix("vision_model.") || key.hasPrefix("vision_tower.")
+        {
+            return false
+        }
+
+        let languagePrefix: String
+        if key.hasPrefix("model.language_model.layers.") {
+            languagePrefix = "model.language_model.layers."
+        } else if key.hasPrefix("language_model.model.layers.") {
+            languagePrefix = "language_model.model.layers."
+        } else if key.hasPrefix("model.layers.") {
+            languagePrefix = "model.layers."
+        } else {
+            return true
+        }
+
+        let suffix = key.dropFirst(languagePrefix.count)
+        guard let separator = suffix.firstIndex(of: "."),
+            let layer = Int(suffix[..<separator])
+        else {
+            return true
+        }
+        return layer < configuration.hiddenLayers
     }
 
     public func sanitize(weights originalWeights: [String: MLXArray]) -> [String: MLXArray] {

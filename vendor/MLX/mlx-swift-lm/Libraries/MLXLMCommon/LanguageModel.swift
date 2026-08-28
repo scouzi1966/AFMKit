@@ -176,6 +176,15 @@ public protocol LanguageModel: Module {
     func sanitize(weights: [String: MLXArray]) -> [String: MLXArray]
 }
 
+/// Optional early filter for checkpoint tensors that a model will never consume.
+///
+/// `loadWeights` applies this while visiting each safetensor shard, before the
+/// tensors are retained in its aggregate dictionary. Multimodal wrappers should
+/// omit this conformance when they need the complete checkpoint.
+public protocol LanguageModelWeightFilter {
+    func shouldLoad(weightKey: String) -> Bool
+}
+
 extension LanguageModel {
     public func callAsFunction(_ input: LMInput.Text, cache: [KVCache]?, state: LMOutput.State?)
         -> LMOutput

@@ -209,6 +209,18 @@ final class GLM5NextArchitectureTests: XCTestCase {
         XCTAssertNotNil(sanitized["model.layers.0.mlp.gate_proj.weight_scale_inv"])
     }
 
+    func testTextLoaderFilterDropsVisionAndStructuralMTPBeforeRetention() throws {
+        let data = try XCTUnwrap(tinyConfigurationData())
+        let config = try JSONDecoder().decode(GLM5NextConfiguration.self, from: data)
+        let model = GLM5NextModel(config)
+
+        XCTAssertTrue(model.shouldLoad(weightKey: "model.language_model.layers.1.input_layernorm.weight"))
+        XCTAssertFalse(model.shouldLoad(weightKey: "model.language_model.layers.2.eh_proj.weight"))
+        XCTAssertFalse(model.shouldLoad(weightKey: "model.visual.patch_embed.proj.weight"))
+        XCTAssertFalse(model.shouldLoad(weightKey: "vision_model.blocks.0.attn.qkv.weight"))
+        XCTAssertTrue(model.shouldLoad(weightKey: "lm_head.weight"))
+    }
+
     func testSanitizerSplitsConvertedQuantizedKVProjection() throws {
         let data = try XCTUnwrap(
             tinyConfigurationData(

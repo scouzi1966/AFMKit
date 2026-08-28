@@ -238,6 +238,37 @@ final class MLXMediaPreflightTests: XCTestCase {
         )
     }
 
+    func testGLMRuntimeVisionRequiresQualifiedAssets() {
+        let architecture = glmArchitecture()
+        let complete = glmQualification()
+        let incomplete = glmQualification(missing: [.visionWeights])
+
+        XCTAssertTrue(
+            AFMMLXRuntimeVisionPolicy.supportsVision(
+                architecture: architecture,
+                qualification: complete,
+                factory: .vlm))
+        XCTAssertEqual(
+            AFMMLXRuntimeVisionPolicy.admission(
+                for: .video,
+                architecture: architecture,
+                qualification: complete,
+                factory: .vlm),
+            .allowed)
+        XCTAssertFalse(
+            AFMMLXRuntimeVisionPolicy.supportsVision(
+                architecture: architecture,
+                qualification: incomplete,
+                factory: .vlm))
+        XCTAssertEqual(
+            AFMMLXRuntimeVisionPolicy.admission(
+                for: .image,
+                architecture: architecture,
+                qualification: incomplete,
+                factory: .llm),
+            .visionAssetsUnavailable(missing: ["visionWeights"]))
+    }
+
     private func qwenArchitecture() -> AFMMLXModelArchitecturePreflight {
         AFMMLXModelArchitecturePreflight(
             modelID: "mlx-community/Qwen3.8-27B-4bit",
@@ -246,6 +277,30 @@ final class MLXMediaPreflightTests: XCTestCase {
             isVisionConfiguration: true,
             requiresVisionModelFactory: false
         )
+    }
+
+    private func glmArchitecture() -> AFMMLXModelArchitecturePreflight {
+        AFMMLXModelArchitecturePreflight(
+            modelID: "Vontra/GLM-5.3-Flash-MLX-4bit-MTP",
+            modelType: "glm5_next",
+            canonicalModelType: "glm5_next",
+            isVisionConfiguration: true,
+            requiresVisionModelFactory: false)
+    }
+
+    private func glmQualification(
+        missing: Set<AFMMLXVisionAssetIssue> = []
+    ) -> AFMMLXVisionAssetQualification {
+        AFMMLXVisionAssetQualification(
+            snapshotIdentity: "glm",
+            modelType: "glm5_next",
+            canonicalModelType: "glm5_next",
+            isConditionalGeneration: true,
+            declaresVision: true,
+            processorClass: missing.contains(.processorConfiguration)
+                ? nil : "Glm5NextProcessor",
+            visionTensorCount: missing.contains(.visionWeights) ? 0 : 347,
+            missingAssets: missing)
     }
 
     private func qwenQualification(

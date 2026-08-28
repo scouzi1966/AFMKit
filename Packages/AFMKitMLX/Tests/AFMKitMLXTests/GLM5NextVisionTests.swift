@@ -1,4 +1,5 @@
 import Foundation
+import CoreImage
 import MLX
 import MLXLMCommon
 @testable import MLXVLM
@@ -6,12 +7,20 @@ import XCTest
 @testable import AFMKitMLX
 
 final class GLM5NextVisionTests: XCTestCase {
+    override func setUpWithError() throws {
+        try MLXMetalLibrary.ensureAvailable(verbose: false)
+    }
+
     func testPublishedVisionAndProcessorConfigurationsDecode() throws {
         let model = try JSONDecoder().decode(
             GLM5NextVLConfiguration.self, from: try modelConfigurationData())
         XCTAssertEqual(model.modelType, "glm5_next")
         XCTAssertEqual(model.imageTokenID, 154_854)
         XCTAssertEqual(model.videoTokenID, 154_855)
+        XCTAssertEqual(model.imageStartTokenID, 154_830)
+        XCTAssertEqual(model.imageEndTokenID, 154_831)
+        XCTAssertEqual(model.videoStartTokenID, 154_832)
+        XCTAssertEqual(model.videoEndTokenID, 154_833)
         XCTAssertEqual(model.visionConfiguration.modelType, "glm5_next_vision")
         XCTAssertEqual(model.visionConfiguration.hiddenSize, 8)
         XCTAssertEqual(model.visionConfiguration.projectionIntermediateSize, 16)
@@ -42,6 +51,162 @@ final class GLM5NextVisionTests: XCTestCase {
         XCTAssertEqual(features.shape, [1, 8])
     }
 
+    func testOfficialSmartResizePreservesContentAspectAndPadsCanvas() throws {
+        let processor = try JSONDecoder().decode(
+            GLM5NextProcessorConfiguration.self, from: processorConfigurationData)
+        let plan = try GLM5NextProcessor.resizePlan(
+            numFrames: 2,
+            height: 480,
+            width: 640,
+            configuration: processor.imageProcessor)
+        XCTAssertEqual(
+            plan,
+            .init(
+                targetHeight: 216,
+                targetWidth: 288,
+                contentHeight: 216,
+                contentWidth: 288,
+                alignedFrames: 2))
+
+        let official = try JSONDecoder().decode(
+            GLM5NextProcessorConfiguration.self,
+            from: officialProcessorConfigurationData)
+        let officialPlan = try GLM5NextProcessor.resizePlan(
+            numFrames: 2,
+            height: 480,
+            width: 640,
+            configuration: official.imageProcessor)
+        XCTAssertEqual(
+            officialPlan,
+            .init(
+                targetHeight: 504,
+                targetWidth: 644,
+                contentHeight: 480,
+                contentWidth: 640,
+                alignedFrames: 2))
+
+        let padded = GLM5NextProcessor.resizeAndPad(
+            CIImage(color: CIColor(red: 1, green: 0, blue: 0))
+                .cropped(to: CGRect(x: 0, y: 0, width: 4, height: 2)),
+            plan: .init(
+                targetHeight: 4,
+                targetWidth: 4,
+                contentHeight: 2,
+                contentWidth: 4,
+                alignedFrames: 2))
+        let pixels = MediaProcessing.asMLXArray(padded)
+        MLX.eval(pixels)
+        XCTAssertEqual(pixels.shape, [1, 3, 4, 4])
+        let red = pixels[0, 0, 0..., 0...].asArray(Float.self)
+        XCTAssertEqual(
+            red.count(where: { $0 > 0.5 }),
+            8)
+        XCTAssertTrue(red.prefix(8).allSatisfy { $0 > 0.5 })
+        XCTAssertTrue(red.suffix(8).allSatisfy { abs($0) < 0.001 })
+    }
+
+    func testImageAndVideoExpansionMatchesOfficialGLMContract() throws {
+        let image = try GLM5NextProcessor.replaceImagePlaceholders(
+            in: [154_830, 154_854, 154_831],
+            grids: [THW(1, 4, 4)],
+            imageTokenID: 154_854,
+            mergeSize: 2)
+        XCTAssertEqual(
+            image,
+            [154_830, 154_854, 154_854, 154_854, 154_854, 154_831])
+
+        let video = try GLM5NextProcessor.replaceVideoPlaceholders(
+            in: [154_832, 154_855, 154_833],
+            grids: [THW(2, 4, 4)],
+            timestamps: [[0, 0.5, 1, 1.5]],
+            videoTokenID: 154_855,
+            imageTokenID: 154_854,
+            imageStartTokenID: 154_830,
+            imageEndTokenID: 154_831,
+            mergeSize: 2,
+            temporalPatchSize: 2,
+            timestampTokens: { [900 + Int(($0 * 10).rounded())] })
+        XCTAssertEqual(video, [
+            154_832,
+            154_830, 154_854, 154_854, 154_854, 154_854, 154_831, 900,
+            154_830, 154_854, 154_854, 154_854, 154_854, 154_831, 910,
+            154_833,
+        ])
+    }
+
+    func testVideoExpansionPadsMissingTemporalTimestampWithLastValue() throws {
+        let tokens = try GLM5NextProcessor.replaceVideoPlaceholders(
+            in: [20],
+            grids: [THW(2, 2, 2)],
+            timestamps: [[0]],
+            videoTokenID: 20,
+            imageTokenID: 10,
+            imageStartTokenID: 11,
+            imageEndTokenID: 12,
+            mergeSize: 2,
+            temporalPatchSize: 2,
+            timestampTokens: { [100 + Int($0)] })
+        XCTAssertEqual(tokens, [11, 10, 12, 100, 11, 10, 12, 100])
+    }
+
+    func testFeatureMasksDistinguishImageTokensInsideVideoBoundaries() throws {
+        let positions = try GLM5NextVLModel.modalityTokenPositions(
+            inputIDs: [154_830, 154_854, 154_831, 154_832,
+                       154_830, 154_854, 154_831, 42, 154_833],
+            imageTokenID: 154_854,
+            videoStartTokenID: 154_832,
+            videoEndTokenID: 154_833)
+        XCTAssertEqual(positions.images, [1])
+        XCTAssertEqual(positions.videos, [5])
+
+        let merged = try GLM5NextVLModel.merge(
+            features: MLXArray([Float(1), 2, 3, 4]).reshaped(2, 2),
+            embeddings: MLXArray.zeros([1, 4, 2]),
+            tokenPositions: [1, 3],
+            modality: "fixture")
+        MLX.eval(merged)
+        XCTAssertEqual(
+            merged.flattened().asArray(Float.self),
+            [0, 0, 1, 2, 0, 0, 3, 4])
+    }
+
+    func testPatchifyOrderingMatchesTransformersOracle() throws {
+        let first = MLXArray([Float(0), 1, 2, 3]).reshaped(1, 1, 2, 2)
+        let second = MLXArray([Float(4), 5, 6, 7]).reshaped(1, 1, 2, 2)
+        let (patches, grid) = try QwenVL.patchify(
+            images: [first, second],
+            mergeSize: 2,
+            patchSize: 1,
+            temporalPatchSize: 2)
+        MLX.eval(patches)
+        XCTAssertEqual(grid.values.0, 1)
+        XCTAssertEqual(grid.values.1, 2)
+        XCTAssertEqual(grid.values.2, 2)
+        XCTAssertEqual(patches.shape, [4, 2])
+        XCTAssertEqual(
+            patches.flattened().asArray(Float.self),
+            [0, 4, 1, 5, 2, 6, 3, 7])
+    }
+
+    func testVisionRotaryPrimitiveMatchesReferenceFixture() {
+        let queries = MLXArray([Float(1), 2, 3, 4]).reshaped(1, 1, 4)
+        let keys = MLXArray([Float(5), 6, 7, 8]).reshaped(1, 1, 4)
+        let cosine = MLXArray.zeros([1, 4])
+        let sine = MLXArray.ones([1, 4])
+        let (rotatedQueries, rotatedKeys) = GLM5NextVision.applyRotary(
+            queries: queries,
+            keys: keys,
+            cosine: cosine,
+            sine: sine)
+        MLX.eval(rotatedQueries, rotatedKeys)
+        XCTAssertEqual(
+            rotatedQueries.flattened().asArray(Float.self),
+            [-3, -4, 1, 2])
+        XCTAssertEqual(
+            rotatedKeys.flattened().asArray(Float.self),
+            [-7, -8, 5, 6])
+    }
+
     func testSanitizerMapsPublishedNamespacesAndConvolutionLayoutsOnce() throws {
         let config = try JSONDecoder().decode(
             GLM5NextVLConfiguration.self, from: try modelConfigurationData())
@@ -60,6 +225,17 @@ final class GLM5NextVisionTests: XCTestCase {
             [8, 1, 2, 2, 3])
         XCTAssertEqual(
             sanitized["vision_model.downsample.weight"]?.shape,
+            [8, 2, 2, 8])
+
+        let converted = model.sanitize(weights: [
+            "vision_model.patch_embed.proj.weight": MLXArray.zeros([8, 1, 2, 2, 3]),
+            "vision_model.downsample.weight": MLXArray.zeros([8, 2, 2, 8]),
+        ])
+        XCTAssertEqual(
+            converted["vision_model.patch_embed.proj.weight"]?.shape,
+            [8, 1, 2, 2, 3])
+        XCTAssertEqual(
+            converted["vision_model.downsample.weight"]?.shape,
             [8, 2, 2, 8])
     }
 
@@ -120,6 +296,8 @@ final class GLM5NextVisionTests: XCTestCase {
         return try JSONSerialization.data(withJSONObject: [
             "model_type": "glm5_next",
             "architectures": ["Glm5NextForConditionalGeneration"],
+            "image_start_token_id": 154_830, "image_end_token_id": 154_831,
+            "video_start_token_id": 154_832, "video_end_token_id": 154_833,
             "image_token_id": 154_854, "video_token_id": 154_855,
             "text_config": text, "vision_config": vision,
         ])
@@ -137,6 +315,27 @@ final class GLM5NextVisionTests: XCTestCase {
                 "processor_class": "Glm5NextProcessor",
                 "image_processor": media,
                 "video_processor": media.merging(["fps": 2.0]) { _, new in new },
+            ])
+        }
+    }
+
+    private var officialProcessorConfigurationData: Data {
+        get throws {
+            let image: [String: Any] = [
+                "image_mean": [0.48145466, 0.4578275, 0.40821073],
+                "image_std": [0.26862954, 0.26130258, 0.27577711],
+                "merge_size": 2, "patch_size": 14, "temporal_patch_size": 2,
+                "patch_expand_factor": 1,
+                "min_image_tokens": 16, "max_image_tokens": 8_000,
+            ]
+            let video = image.merging([
+                "fps": 2.0, "max_frames": 2_048,
+                "max_image_tokens": 240_000,
+            ]) { _, new in new }
+            return try JSONSerialization.data(withJSONObject: [
+                "processor_class": "Glm5NextProcessor",
+                "image_processor": image,
+                "video_processor": video,
             ])
         }
     }
