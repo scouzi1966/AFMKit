@@ -364,8 +364,14 @@ public final class AFMMLXVisionAssetValidator: @unchecked Sendable {
             guard weightMap.allSatisfy({ tensorName, shardName in
                 shardEvidence[shardName]?.tensors[tensorName] != nil
             }) else { return [] }
+            guard !requiresCompleteGLMTower
+                    || !weightMap.keys.contains(where: isUnsupportedGLMVisionTensorName)
+            else { return [] }
             var discovered: [String: SafetensorEvidence.TensorMetadata] = [:]
-            for (tensorName, shardName) in weightMap where isVisionTensorName(tensorName) {
+            for (tensorName, shardName) in weightMap
+            where isVisionTensorName(
+                tensorName, requiresCompleteGLMTower: requiresCompleteGLMTower)
+            {
                 guard let metadata = shardEvidence[shardName]?.tensors[tensorName] else {
                     return []
                 }
@@ -387,7 +393,14 @@ public final class AFMMLXVisionAssetValidator: @unchecked Sendable {
             var discovered: [String: SafetensorEvidence.TensorMetadata] = [:]
             for file in weightFiles {
                 guard let evidence = safetensorEvidence(in: file) else { return [] }
-                for (name, metadata) in evidence.tensors where isVisionTensorName(name) {
+                guard !requiresCompleteGLMTower
+                        || !evidence.tensorNames.contains(
+                            where: isUnsupportedGLMVisionTensorName)
+                else { return [] }
+                for (name, metadata) in evidence.tensors
+                where isVisionTensorName(
+                    name, requiresCompleteGLMTower: requiresCompleteGLMTower)
+                {
                     let normalizedName = normalizedVisionTensorName(name)
                     guard discovered[normalizedName] == nil else { return [] }
                     discovered[normalizedName] = metadata
@@ -448,9 +461,19 @@ public final class AFMMLXVisionAssetValidator: @unchecked Sendable {
         return required
     }
 
-    private static func isVisionTensorName(_ name: String) -> Bool {
-        name.hasPrefix("vision_tower.") || name.hasPrefix("vision_model.")
+    private static func isVisionTensorName(
+        _ name: String,
+        requiresCompleteGLMTower: Bool
+    ) -> Bool {
+        if requiresCompleteGLMTower {
+            return name.hasPrefix("vision_model.") || name.hasPrefix("model.visual.")
+        }
+        return name.hasPrefix("vision_tower.") || name.hasPrefix("vision_model.")
             || name.hasPrefix("model.visual.")
+    }
+
+    private static func isUnsupportedGLMVisionTensorName(_ name: String) -> Bool {
+        name.hasPrefix("vision_tower.") || name.hasPrefix("visual.")
     }
 
     private static func normalizedVisionTensorName(_ name: String) -> String {

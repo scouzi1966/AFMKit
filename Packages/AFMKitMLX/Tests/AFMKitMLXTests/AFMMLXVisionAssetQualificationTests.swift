@@ -85,6 +85,19 @@ final class AFMMLXVisionAssetQualificationTests: XCTestCase {
         XCTAssertEqual(qualification.visionTensorCount, 39)
     }
 
+    func testGLM5NextRejectsUnsupportedVisionNamespaces() throws {
+        for namespace in ["vision_tower", "visual"] {
+            let directory = try makeGLMModelDirectory(
+                namespace: namespace, convertedConvolutions: true)
+            let qualification = try qualify(directory)
+
+            XCTAssertTrue(
+                qualification.missingAssets.contains(.visionWeights),
+                "GLM must reject unsupported \(namespace).* checkpoint tensors")
+            XCTAssertFalse(qualification.isAssetUsable)
+        }
+    }
+
     func testGLM5NextRequiresAllBoundaryIDsAndVideoProcessor() throws {
         let missingBoundary = try makeGLMModelDirectory()
         var config = try XCTUnwrap(

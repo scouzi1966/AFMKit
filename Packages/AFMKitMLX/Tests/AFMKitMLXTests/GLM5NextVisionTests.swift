@@ -1,7 +1,8 @@
 import Foundation
+import AVFoundation
 import CoreImage
 import MLX
-import MLXLMCommon
+@testable import MLXLMCommon
 @testable import MLXVLM
 import XCTest
 @testable import AFMKitMLX
@@ -103,6 +104,78 @@ final class GLM5NextVisionTests: XCTestCase {
             8)
         XCTAssertTrue(red.prefix(8).allSatisfy { $0 > 0.5 })
         XCTAssertTrue(red.suffix(8).allSatisfy { abs($0) < 0.001 })
+    }
+
+    func testPreprocessingAppliesSRGBToneCurveBeforeNormalization() throws {
+        let configuration = try JSONDecoder().decode(
+            GLM5NextProcessorConfiguration.self,
+            from: try JSONSerialization.data(withJSONObject: [
+                "processor_class": "Glm5NextProcessor",
+                "image_processor": [
+                    "image_mean": [0, 0, 0], "image_std": [1, 1, 1],
+                    "merge_size": 1, "patch_size": 1, "temporal_patch_size": 1,
+                    "min_image_tokens": 1, "max_image_tokens": 1,
+                ],
+            ])).imageProcessor
+        let image = CIImage(color: CIColor(red: 0.25, green: 0.25, blue: 0.25))
+            .cropped(to: CGRect(x: 0, y: 0, width: 1, height: 1))
+
+        let (pixels, grid) = try GLM5NextProcessor.preprocess(
+            images: [image],
+            configuration: configuration,
+            processing: nil,
+            budgetFrameCount: 1)
+        MLX.eval(pixels)
+
+        XCTAssertEqual(grid.values.0, 1)
+        XCTAssertEqual(grid.values.1, 1)
+        XCTAssertEqual(grid.values.2, 1)
+        for component in pixels.flattened().asArray(Float.self) {
+            XCTAssertEqual(component, 0.5371, accuracy: 0.01)
+        }
+    }
+
+    func testVideoSamplingMatchesTransformersOddCountOracle() async throws {
+        XCTAssertEqual(
+            try GLM5NextProcessor.videoSampleIndices(
+                totalFrames: 3,
+                sourceFPS: 1,
+                targetFPS: 2,
+                maximumFrames: 5),
+            [0, 1, 2, 2])
+
+        let image = CIImage(color: .red).cropped(
+            to: CGRect(x: 0, y: 0, width: 1, height: 1))
+        let source = (0..<3).map {
+            VideoFrame(
+                frame: image,
+                timeStamp: CMTime(value: Int64($0), timescale: 1))
+        }
+        let sampled = try await GLM5NextProcessor.sampleVideo(
+            .frames(source), targetFPS: 2, maximumFrames: 5)
+
+        XCTAssertEqual(sampled.map { $0.timeStamp.seconds }, [0, 1, 2, 2])
+
+        let single = try await GLM5NextProcessor.sampleVideo(
+            .frames([source[0]]), targetFPS: 2, maximumFrames: 5)
+        XCTAssertEqual(single.map { $0.timeStamp.seconds }, [0, 0])
+    }
+
+    func testAVAssetSamplingReconstructsEvenSequenceFromRealFrames() async throws {
+        var repository = URL(fileURLWithPath: #filePath)
+        for _ in 0..<5 { repository.deleteLastPathComponent() }
+        let fixture = repository.appendingPathComponent(
+            "vendor/MLX/mlx-swift-lm/Tests/MLXLMTests/Resources/1080p_30.mov")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.path))
+
+        let sampled = try await GLM5NextProcessor.sampleVideo(
+            .url(fixture), targetFPS: 1, maximumFrames: 2_048)
+        let timestamps = sampled.map { $0.timeStamp.seconds }
+
+        XCTAssertEqual(timestamps.count, 6)
+        XCTAssertEqual(timestamps[timestamps.count - 2], timestamps.last)
+        XCTAssertTrue(timestamps.allSatisfy { $0 >= 0 && $0 < 5 })
+        XCTAssertEqual(Array(timestamps.dropLast()), timestamps.dropLast().sorted())
     }
 
     func testImageAndVideoExpansionMatchesOfficialGLMContract() throws {
@@ -237,6 +310,48 @@ final class GLM5NextVisionTests: XCTestCase {
         XCTAssertEqual(
             converted["vision_model.downsample.weight"]?.shape,
             [8, 2, 2, 8])
+
+        let unsupported = model.sanitize(weights: [
+            "vision_tower.patch_embed.proj.bias": MLXArray.ones([8]),
+            "visual.patch_embed.proj.bias": MLXArray.ones([8]),
+        ])
+        XCTAssertNil(unsupported["vision_model.patch_embed.proj.bias"])
+    }
+
+    func testVLMLoadBoundaryRetainsOfficialVisionAndDropsStructuralLayer() throws {
+        XCTAssertTrue(languageModelHasVisionParameters([
+            "vision_model.patch_embed.proj.bias"
+        ]))
+        XCTAssertTrue(isCheckpointVisionWeight("model.visual.patch_embed.proj.bias"))
+        XCTAssertTrue(isCheckpointVisionWeight("vision_model.patch_embed.proj.bias"))
+
+        let config = try JSONDecoder().decode(
+            GLM5NextVLConfiguration.self, from: try modelConfigurationData())
+        for namespace in ["model.visual", "vision_model"] {
+            let model = GLM5NextVLModel(config)
+            XCTAssertTrue(model.shouldLoad(weightKey: "\(namespace).patch_embed.proj.bias"))
+            XCTAssertFalse(model.shouldLoad(
+                weightKey: "model.language_model.layers.45.input_layernorm.weight"))
+            XCTAssertFalse(model.shouldLoad(
+                weightKey: "vision_tower.patch_embed.proj.bias"))
+
+            let directory = FileManager.default.temporaryDirectory
+                .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            try FileManager.default.createDirectory(
+                at: directory, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: directory) }
+            let expected = MLXArray((1...8).map(Float.init))
+            try MLX.save(arrays: [
+                "\(namespace).patch_embed.proj.bias": expected,
+                "model.language_model.layers.45.input_layernorm.weight":
+                    MLXArray.ones([8]),
+            ], url: directory.appendingPathComponent("weights.safetensors"))
+
+            try loadWeights(modelDirectory: directory, model: model)
+            let loaded = try XCTUnwrap(model.visionModel.patchEmbed.projection.bias)
+            MLX.eval(loaded)
+            XCTAssertEqual(loaded.asArray(Float.self), expected.asArray(Float.self))
+        }
     }
 
     func testArchitectureClassifiesGLMAsDualMode() throws {

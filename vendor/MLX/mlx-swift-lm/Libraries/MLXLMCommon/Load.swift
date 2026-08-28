@@ -13,6 +13,20 @@ private func deepseekV4LoadTrace(_ message: String) {
     fputs("[DSV4Load] \(message)\n", stderr)
 }
 
+private let checkpointVisionPrefixes = [
+    "model.visual.", "vision_model.", "vision_tower.", "visual.",
+]
+
+func languageModelHasVisionParameters(_ keys: Set<String>) -> Bool {
+    keys.contains { key in
+        key.hasPrefix("vision_model.") || key.hasPrefix("vision_tower.")
+    }
+}
+
+func isCheckpointVisionWeight(_ key: String) -> Bool {
+    checkpointVisionPrefixes.contains { key.hasPrefix($0) }
+}
+
 /// Download the model using the `HubApi`.
 ///
 /// This will download `*.safetensors` and `*.json` if the ``ModelConfiguration``
@@ -79,10 +93,11 @@ public func loadWeights(
     let enumerator = FileManager.default.enumerator(
         at: modelDirectory, includingPropertiesForKeys: nil)!
 
-    // Check if the model has vision parameters — if not, skip vision_tower weights
+    // Check if the model has vision parameters — if not, skip all recognized
+    // vision checkpoint namespaces
     // to avoid loading ~10 GB of unused vision weights for VLM safetensors used as LLM.
     let modelKeys = Set(model.parameters().flattened().map { $0.0 })
-    let hasVisionParams = modelKeys.contains(where: { $0.hasPrefix("vision_tower") })
+    let hasVisionParams = languageModelHasVisionParameters(modelKeys)
 
     for case let url as URL in enumerator {
         if url.pathExtension == "safetensors" {
@@ -93,7 +108,7 @@ public func loadWeights(
                 {
                     continue
                 }
-                if !hasVisionParams && key.hasPrefix("vision_tower") {
+                if !hasVisionParams && isCheckpointVisionWeight(key) {
                     continue
                 }
                 weights[key] = value

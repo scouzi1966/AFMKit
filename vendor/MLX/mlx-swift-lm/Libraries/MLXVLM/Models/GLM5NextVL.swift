@@ -8,6 +8,7 @@
 //
 
 
+@preconcurrency import AVFoundation
 import CoreImage
 import Foundation
 import MLX
@@ -196,13 +197,183 @@ public struct GLM5NextProcessor: UserInputProcessor {
         return placed.composited(over: background)
     }
 
-    private func preprocess(
+    /// Current Transformers GLM5 Next sampling: compute a floored target count,
+    /// sample source-frame thresholds, stabilize duplicate indices, then make
+    /// the temporal sequence even by repeating its final real frame.
+    static func videoSampleIndices(
+        totalFrames: Int,
+        sourceFPS: Double,
+        duration: Double? = nil,
+        targetFPS: Double,
+        maximumFrames: Int
+    ) throws -> [Int] {
+        guard totalFrames > 0, sourceFPS > 0, targetFPS > 0, maximumFrames > 0 else {
+            throw VLMError.imageProcessingFailure("Invalid GLM video sampling metadata")
+        }
+
+        let maximumFrameIndex = totalFrames - 1
+        let resolvedDuration = duration
+            ?? (Double(maximumFrameIndex) / sourceFPS).rounded() + 1
+        let targetCount = min(Int(resolvedDuration * targetFPS), maximumFrames)
+        guard targetCount > 0 else {
+            throw VLMError.imageProcessingFailure("GLM video duration produced no frames")
+        }
+
+        func linspace(_ start: Int, _ end: Int, count: Int) -> [Int] {
+            guard count > 1 else { return [start] }
+            return (0..<count).map { position in
+                Int(
+                    Double(start)
+                        + Double(end - start) * Double(position) / Double(count - 1))
+            }
+        }
+
+        var indices: [Int]
+        if totalFrames < targetCount {
+            indices = linspace(0, maximumFrameIndex, count: targetCount)
+        } else {
+            let maximumSeconds = Int(resolvedDuration)
+            var currentSecond = 0.0
+            indices = []
+            for frameIndex in 0..<totalFrames {
+                let timestamp = Double(frameIndex) / sourceFPS
+                if timestamp >= currentSecond {
+                    currentSecond += 1 / targetFPS
+                    indices.append(frameIndex)
+                    if currentSecond >= Double(maximumSeconds) { break }
+                }
+            }
+        }
+
+        if indices.count < targetCount {
+            let start = indices.first ?? 0
+            let end = indices.last ?? maximumFrameIndex
+            indices = linspace(start, end, count: targetCount)
+        } else if indices.count > targetCount {
+            indices = linspace(0, maximumFrameIndex, count: targetCount)
+        }
+
+        var seen = Set<Int>()
+        indices = indices.filter { seen.insert($0).inserted }
+        guard let finalIndex = indices.last else {
+            throw VLMError.imageProcessingFailure("GLM video sampling produced no frames")
+        }
+        if !indices.count.isMultiple(of: 2) {
+            indices.append(finalIndex)
+        }
+        return indices
+    }
+
+    private static func inferredFrameRate(_ frames: [VideoFrame]) -> Double? {
+        let deltas = zip(frames, frames.dropFirst()).compactMap { first, second in
+            let seconds = (second.timeStamp - first.timeStamp).seconds
+            return seconds > 0 && seconds.isFinite ? seconds : nil
+        }.sorted()
+        guard let median = deltas.isEmpty ? nil : deltas[deltas.count / 2] else {
+            return nil
+        }
+        return 1 / median
+    }
+
+    static func sampleVideo(
+        _ video: UserInput.Video,
+        targetFPS: Double,
+        maximumFrames: Int
+    ) async throws -> [VideoFrame] {
+        switch video {
+        case .frames(let frames):
+            guard !frames.isEmpty else {
+                throw VLMError.imageProcessingFailure(
+                    "GLM in-memory video requires at least one source frame")
+            }
+            // Transformers defaults metadata without an FPS to 24 for prompt
+            // timestamp construction. Keep pre-sampled one-frame inputs usable.
+            let sourceFPS = inferredFrameRate(frames) ?? 24
+            let indices = try videoSampleIndices(
+                totalFrames: frames.count,
+                sourceFPS: sourceFPS,
+                targetFPS: targetFPS,
+                maximumFrames: maximumFrames)
+            return indices.map { frames[$0] }
+
+        case .url(let url):
+            return try await sampleVideo(
+                AVURLAsset(url: url), targetFPS: targetFPS, maximumFrames: maximumFrames)
+        case .avAsset(let asset):
+            return try await sampleVideo(
+                asset, targetFPS: targetFPS, maximumFrames: maximumFrames)
+        }
+    }
+
+    private static func sampleVideo(
+        _ asset: AVAsset,
+        targetFPS: Double,
+        maximumFrames: Int
+    ) async throws -> [VideoFrame] {
+        guard let track = try await asset.loadTracks(withMediaType: .video).first else {
+            throw VLMError.noVideoTrackFound
+        }
+        guard try await track.load(.isDecodable) else {
+            throw VLMError.videoNotDecodable
+        }
+        let sourceFPS = Double(try await track.load(.nominalFrameRate))
+        let duration = try await asset.load(.duration)
+        guard duration.seconds.isFinite, duration.seconds > 0, sourceFPS > 0 else {
+            throw VLMError.imageProcessingFailure("Invalid GLM AVAsset metadata")
+        }
+        // A media duration is the exclusive end of its last source frame.
+        let totalFrames = max(1, Int(floor(duration.seconds * sourceFPS)))
+        let indices = try videoSampleIndices(
+            totalFrames: totalFrames,
+            sourceFPS: sourceFPS,
+            duration: duration.seconds,
+            targetFPS: targetFPS,
+            maximumFrames: maximumFrames)
+
+        let generator = AVAssetImageGenerator(asset: asset)
+        generator.appliesPreferredTrackTransform = true
+        generator.requestedTimeToleranceBefore = .zero
+        generator.requestedTimeToleranceAfter = .zero
+        var seenIndices = Set<Int>()
+        let uniqueIndices = indices.filter { seenIndices.insert($0).inserted }
+        let times = uniqueIndices.map {
+            CMTime(seconds: Double($0) / sourceFPS, preferredTimescale: 60_000)
+        }
+        var framesByIndex = [Int: VideoFrame]()
+        for await result in generator.images(for: times) {
+            switch result {
+            case .success(requestedTime: let requested, let image, actualTime: let actual):
+                let sourceIndex = Int((requested.seconds * sourceFPS).rounded())
+                framesByIndex[sourceIndex] = VideoFrame(
+                    frame: CIImage(
+                        cgImage: image,
+                        options: [.colorSpace: CGColorSpace(name: CGColorSpace.sRGB)!]),
+                    timeStamp: actual)
+            case .failure(requestedTime: _, let error):
+                throw error
+            }
+        }
+        guard framesByIndex.count == uniqueIndices.count else {
+            throw VLMError.imageProcessingFailure("GLM AVAsset frame extraction was incomplete")
+        }
+        return try indices.map { index in
+            guard let frame = framesByIndex[index] else {
+                throw VLMError.imageProcessingFailure(
+                    "GLM AVAsset frame extraction omitted source index \(index)")
+            }
+            return frame
+        }
+    }
+
+    static func preprocess(
         images: [CIImage],
         configuration: GLM5NextProcessorConfiguration.MediaConfiguration,
         processing: UserInput.Processing?,
         budgetFrameCount: Int
     ) throws -> (MLXArray, THW) {
-        let processed = images.map { MediaProcessing.apply($0, processing: processing) }
+        let processed = images
+            .map(MediaProcessing.inSRGBToneCurveSpace)
+            .map { MediaProcessing.apply($0, processing: processing) }
         guard let first = processed.first else {
             throw VLMError.imageProcessingFailure("No image provided")
         }
@@ -221,7 +392,10 @@ public struct GLM5NextProcessor: UserInputProcessor {
                     mean: configuration.imageMeanTuple,
                     std: configuration.imageStdTuple)
             }
-            .map { MediaProcessing.asMLXArray($0) }
+            .map {
+                MediaProcessing.asMLXArray(
+                    $0, colorSpace: CGColorSpace(name: CGColorSpace.sRGB))
+            }
 
         return try QwenVL.patchify(
             images: normalized,
@@ -327,7 +501,7 @@ public struct GLM5NextProcessor: UserInputProcessor {
         var processedImage: LMInput.ProcessedImage?
         if !input.images.isEmpty {
             let images = try input.images.map {
-                try preprocess(
+                try Self.preprocess(
                     images: [$0.asCIImage()],
                     configuration: imageConfiguration,
                     processing: input.processing,
@@ -351,27 +525,16 @@ public struct GLM5NextProcessor: UserInputProcessor {
             var videos = [(MLXArray, THW)]()
             var videoTimestamps = [[Double]]()
             for video in input.videos {
-                var sampledFrames = [VideoFrame]()
-                let sequence = try await MediaProcessing.asProcessedSequence(
+                let sampledFrames = try await Self.sampleVideo(
                     video,
-                    targetFPS: { _ in videoConfiguration.fps ?? 2 },
-                    maxFrames: videoConfiguration.effectiveMaximumFrames
-                ) { frame in
-                    let processed = MediaProcessing.apply(
-                        frame.frame, processing: input.processing)
-                    let result = VideoFrame(frame: processed, timeStamp: frame.timeStamp)
-                    sampledFrames.append(result)
-                    return result
-                }
-                let temporal = videoConfiguration.temporalPatchSize
-                let paddedFrameCount =
-                    ((sampledFrames.count + temporal - 1) / temporal) * temporal
-                videos.append(try preprocess(
+                    targetFPS: videoConfiguration.fps ?? 2,
+                    maximumFrames: videoConfiguration.effectiveMaximumFrames)
+                videos.append(try Self.preprocess(
                     images: sampledFrames.map(\.frame),
                     configuration: videoConfiguration,
-                    processing: nil,
-                    budgetFrameCount: paddedFrameCount))
-                videoTimestamps.append(sequence.timestamps.map(\.seconds))
+                    processing: input.processing,
+                    budgetFrameCount: sampledFrames.count))
+                videoTimestamps.append(sampledFrames.map { $0.timeStamp.seconds })
             }
             processedVideo = .init(
                 pixels: concatenated(videos.map(\.0)),
@@ -801,7 +964,9 @@ enum GLM5NextVision {
 
 // MARK: - Multimodal wrapper
 
-public final class GLM5NextVLModel: Module, VLMModel, KVCacheDimensionProvider {
+public final class GLM5NextVLModel: Module, VLMModel, KVCacheDimensionProvider,
+    LanguageModelWeightFilter
+{
     struct ModalityTokenPositions: Equatable {
         let images: [Int]
         let videos: [Int]
@@ -939,6 +1104,16 @@ public final class GLM5NextVLModel: Module, VLMModel, KVCacheDimensionProvider {
         languageModel(inputs, cache: cache)
     }
 
+    public func shouldLoad(weightKey key: String) -> Bool {
+        if key.hasPrefix("model.visual.") || key.hasPrefix("vision_model.") {
+            return true
+        }
+        if key.hasPrefix("visual.") || key.hasPrefix("vision_tower.") {
+            return false
+        }
+        return languageModel.shouldLoad(weightKey: key)
+    }
+
     public func sanitize(weights: [String: MLXArray]) -> [String: MLXArray] {
         var result = [String: MLXArray]()
         for (key, value) in languageModel.sanitize(weights: weights) {
@@ -949,8 +1124,6 @@ public final class GLM5NextVLModel: Module, VLMModel, KVCacheDimensionProvider {
         for (key, value) in weights {
             if key.hasPrefix("model.visual.") {
                 vision[String(key.dropFirst("model.visual.".count))] = value
-            } else if key.hasPrefix("visual.") {
-                vision[String(key.dropFirst("visual.".count))] = value
             } else if key.hasPrefix("vision_model.") {
                 vision[String(key.dropFirst("vision_model.".count))] = value
             }
