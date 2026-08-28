@@ -5103,6 +5103,11 @@
       "target": "s:9AFMKitMLX25AFMMLXCheckpointConverterV10InspectionV"
     },
     {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX25AFMMLXCheckpointConverterV13inspectResume6source6output7profile0G8RevisionAC0F10InspectionV10Foundation3URLV_AMSSSgANtKFZ",
+      "target": "s:9AFMKitMLX25AFMMLXCheckpointConverterV"
+    },
+    {
       "kind": "conformsTo",
       "source": "s:9AFMKitMLX25AFMMLXCheckpointConverterV15ConversionErrorO",
       "target": "s:10Foundation14LocalizedErrorP",
@@ -5160,6 +5165,44 @@
       "kind": "memberOf",
       "source": "s:9AFMKitMLX25AFMMLXCheckpointConverterV15ProgressHandlera",
       "target": "s:9AFMKitMLX25AFMMLXCheckpointConverterV"
+    },
+    {
+      "kind": "conformsTo",
+      "source": "s:9AFMKitMLX25AFMMLXCheckpointConverterV16ResumeInspectionV",
+      "target": "s:SQ",
+      "targetFallback": "Swift.Equatable"
+    },
+    {
+      "kind": "conformsTo",
+      "source": "s:9AFMKitMLX25AFMMLXCheckpointConverterV16ResumeInspectionV",
+      "target": "s:s16SendableMetatypeP",
+      "targetFallback": "Swift.SendableMetatype"
+    },
+    {
+      "kind": "conformsTo",
+      "source": "s:9AFMKitMLX25AFMMLXCheckpointConverterV16ResumeInspectionV",
+      "target": "s:s8SendableP",
+      "targetFallback": "Swift.Sendable"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX25AFMMLXCheckpointConverterV16ResumeInspectionV",
+      "target": "s:9AFMKitMLX25AFMMLXCheckpointConverterV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX25AFMMLXCheckpointConverterV16ResumeInspectionV14sourceRevision28verifiedCompletedOutputBytesAESSSg_s5Int64Vtcfc",
+      "target": "s:9AFMKitMLX25AFMMLXCheckpointConverterV16ResumeInspectionV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX25AFMMLXCheckpointConverterV16ResumeInspectionV14sourceRevisionSSSgvp",
+      "target": "s:9AFMKitMLX25AFMMLXCheckpointConverterV16ResumeInspectionV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX25AFMMLXCheckpointConverterV16ResumeInspectionV28verifiedCompletedOutputBytess5Int64Vvp",
+      "target": "s:9AFMKitMLX25AFMMLXCheckpointConverterV16ResumeInspectionV"
     },
     {
       "kind": "memberOf",
@@ -6655,6 +6698,11 @@
       "target": "s:9AFMKitMLX27GLM5NextCheckpointConverterV10InspectionV"
     },
     {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX27GLM5NextCheckpointConverterV13inspectResume6source6output7profile0I8RevisionAC0H10InspectionV10Foundation3URLV_AmC7ProfileOSSSgtKFZ",
+      "target": "s:9AFMKitMLX27GLM5NextCheckpointConverterV"
+    },
+    {
       "kind": "conformsTo",
       "source": "s:9AFMKitMLX27GLM5NextCheckpointConverterV15ConversionErrorO",
       "target": "s:10Foundation14LocalizedErrorP",
@@ -6732,6 +6780,39 @@
       "kind": "memberOf",
       "source": "s:9AFMKitMLX27GLM5NextCheckpointConverterV15officialModelIDSSvpZ",
       "target": "s:9AFMKitMLX27GLM5NextCheckpointConverterV"
+    },
+    {
+      "kind": "conformsTo",
+      "source": "s:9AFMKitMLX27GLM5NextCheckpointConverterV16ResumeInspectionV",
+      "target": "s:SQ",
+      "targetFallback": "Swift.Equatable"
+    },
+    {
+      "kind": "conformsTo",
+      "source": "s:9AFMKitMLX27GLM5NextCheckpointConverterV16ResumeInspectionV",
+      "target": "s:s16SendableMetatypeP",
+      "targetFallback": "Swift.SendableMetatype"
+    },
+    {
+      "kind": "conformsTo",
+      "source": "s:9AFMKitMLX27GLM5NextCheckpointConverterV16ResumeInspectionV",
+      "target": "s:s8SendableP",
+      "targetFallback": "Swift.Sendable"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX27GLM5NextCheckpointConverterV16ResumeInspectionV",
+      "target": "s:9AFMKitMLX27GLM5NextCheckpointConverterV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX27GLM5NextCheckpointConverterV16ResumeInspectionV14sourceRevisionSSvp",
+      "target": "s:9AFMKitMLX27GLM5NextCheckpointConverterV16ResumeInspectionV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX27GLM5NextCheckpointConverterV16ResumeInspectionV28verifiedCompletedOutputBytess5Int64Vvp",
+      "target": "s:9AFMKitMLX27GLM5NextCheckpointConverterV16ResumeInspectionV"
     },
     {
       "kind": "memberOf",
@@ -101694,6 +101775,367 @@
       "declarationFragments": [
         {
           "kind": "keyword",
+          "spelling": "static"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "keyword",
+          "spelling": "func"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "inspectResume"
+        },
+        {
+          "kind": "text",
+          "spelling": "("
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "source"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:10Foundation3URLV",
+          "spelling": "URL"
+        },
+        {
+          "kind": "text",
+          "spelling": ", "
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "output"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:10Foundation3URLV",
+          "spelling": "URL"
+        },
+        {
+          "kind": "text",
+          "spelling": ", "
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "profile"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:SS",
+          "spelling": "String"
+        },
+        {
+          "kind": "text",
+          "spelling": "? = nil, "
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "sourceRevision"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:SS",
+          "spelling": "String"
+        },
+        {
+          "kind": "text",
+          "spelling": "? = nil) "
+        },
+        {
+          "kind": "keyword",
+          "spelling": "throws"
+        },
+        {
+          "kind": "text",
+          "spelling": " -> "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:9AFMKitMLX25AFMMLXCheckpointConverterV",
+          "spelling": "AFMMLXCheckpointConverter"
+        },
+        {
+          "kind": "text",
+          "spelling": "."
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:9AFMKitMLX25AFMMLXCheckpointConverterV16ResumeInspectionV",
+          "spelling": "ResumeInspection"
+        }
+      ],
+      "docComment": {
+        "lines": [
+          {
+            "text": "Returns provider-verified resumable output bytes. Consumers must not"
+          },
+          {
+            "text": "decode provider-private conversion manifests themselves."
+          }
+        ],
+        "module": "AFMKitMLX"
+      },
+      "functionSignature": {
+        "parameters": [
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "source"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:10Foundation3URLV",
+                "spelling": "URL"
+              }
+            ],
+            "name": "source"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "output"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:10Foundation3URLV",
+                "spelling": "URL"
+              }
+            ],
+            "name": "output"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "profile"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:SS",
+                "spelling": "String"
+              },
+              {
+                "kind": "text",
+                "spelling": "?"
+              }
+            ],
+            "name": "profile"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "sourceRevision"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:SS",
+                "spelling": "String"
+              },
+              {
+                "kind": "text",
+                "spelling": "?"
+              }
+            ],
+            "name": "sourceRevision"
+          }
+        ],
+        "returns": [
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:9AFMKitMLX25AFMMLXCheckpointConverterV",
+            "spelling": "AFMMLXCheckpointConverter"
+          },
+          {
+            "kind": "text",
+            "spelling": "."
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:9AFMKitMLX25AFMMLXCheckpointConverterV16ResumeInspectionV",
+            "spelling": "ResumeInspection"
+          }
+        ]
+      },
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX25AFMMLXCheckpointConverterV13inspectResume6source6output7profile0G8RevisionAC0F10InspectionV10Foundation3URLV_AMSSSgANtKFZ"
+      },
+      "kind": {
+        "displayName": "Type Method",
+        "identifier": "swift.type.method"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "static"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "keyword",
+            "spelling": "func"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "inspectResume"
+          },
+          {
+            "kind": "text",
+            "spelling": "("
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "source"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:10Foundation3URLV",
+            "spelling": "URL"
+          },
+          {
+            "kind": "text",
+            "spelling": ", "
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "output"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:10Foundation3URLV",
+            "spelling": "URL"
+          },
+          {
+            "kind": "text",
+            "spelling": ", "
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "profile"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:SS",
+            "spelling": "String"
+          },
+          {
+            "kind": "text",
+            "spelling": "?, "
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "sourceRevision"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:SS",
+            "spelling": "String"
+          },
+          {
+            "kind": "text",
+            "spelling": "?) "
+          },
+          {
+            "kind": "keyword",
+            "spelling": "throws"
+          },
+          {
+            "kind": "text",
+            "spelling": " -> "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:9AFMKitMLX25AFMMLXCheckpointConverterV",
+            "spelling": "AFMMLXCheckpointConverter"
+          },
+          {
+            "kind": "text",
+            "spelling": "."
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:9AFMKitMLX25AFMMLXCheckpointConverterV16ResumeInspectionV",
+            "spelling": "ResumeInspection"
+          }
+        ],
+        "title": "inspectResume(source:output:profile:sourceRevision:)"
+      },
+      "pathComponents": [
+        "AFMMLXCheckpointConverter",
+        "inspectResume(source:output:profile:sourceRevision:)"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
           "spelling": "enum"
         },
         {
@@ -102036,6 +102478,347 @@
       "pathComponents": [
         "AFMMLXCheckpointConverter",
         "ProgressHandler"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "struct"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "ResumeInspection"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX25AFMMLXCheckpointConverterV16ResumeInspectionV"
+      },
+      "kind": {
+        "displayName": "Structure",
+        "identifier": "swift.struct"
+      },
+      "names": {
+        "navigator": [
+          {
+            "kind": "identifier",
+            "spelling": "ResumeInspection"
+          }
+        ],
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "struct"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "ResumeInspection"
+          }
+        ],
+        "title": "AFMMLXCheckpointConverter.ResumeInspection"
+      },
+      "pathComponents": [
+        "AFMMLXCheckpointConverter",
+        "ResumeInspection"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "init"
+        },
+        {
+          "kind": "text",
+          "spelling": "("
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "sourceRevision"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:SS",
+          "spelling": "String"
+        },
+        {
+          "kind": "text",
+          "spelling": "?, "
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "verifiedCompletedOutputBytes"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:s5Int64V",
+          "spelling": "Int64"
+        },
+        {
+          "kind": "text",
+          "spelling": ")"
+        }
+      ],
+      "functionSignature": {
+        "parameters": [
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "sourceRevision"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:SS",
+                "spelling": "String"
+              },
+              {
+                "kind": "text",
+                "spelling": "?"
+              }
+            ],
+            "name": "sourceRevision"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "verifiedCompletedOutputBytes"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:s5Int64V",
+                "spelling": "Int64"
+              }
+            ],
+            "name": "verifiedCompletedOutputBytes"
+          }
+        ]
+      },
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX25AFMMLXCheckpointConverterV16ResumeInspectionV14sourceRevision28verifiedCompletedOutputBytesAESSSg_s5Int64Vtcfc"
+      },
+      "kind": {
+        "displayName": "Initializer",
+        "identifier": "swift.init"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "init"
+          },
+          {
+            "kind": "text",
+            "spelling": "("
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "sourceRevision"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:SS",
+            "spelling": "String"
+          },
+          {
+            "kind": "text",
+            "spelling": "?, "
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "verifiedCompletedOutputBytes"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:s5Int64V",
+            "spelling": "Int64"
+          },
+          {
+            "kind": "text",
+            "spelling": ")"
+          }
+        ],
+        "title": "init(sourceRevision:verifiedCompletedOutputBytes:)"
+      },
+      "pathComponents": [
+        "AFMMLXCheckpointConverter",
+        "ResumeInspection",
+        "init(sourceRevision:verifiedCompletedOutputBytes:)"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "let"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "sourceRevision"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:SS",
+          "spelling": "String"
+        },
+        {
+          "kind": "text",
+          "spelling": "?"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX25AFMMLXCheckpointConverterV16ResumeInspectionV14sourceRevisionSSSgvp"
+      },
+      "kind": {
+        "displayName": "Instance Property",
+        "identifier": "swift.property"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "let"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "sourceRevision"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:SS",
+            "spelling": "String"
+          },
+          {
+            "kind": "text",
+            "spelling": "?"
+          }
+        ],
+        "title": "sourceRevision"
+      },
+      "pathComponents": [
+        "AFMMLXCheckpointConverter",
+        "ResumeInspection",
+        "sourceRevision"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "let"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "verifiedCompletedOutputBytes"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:s5Int64V",
+          "spelling": "Int64"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX25AFMMLXCheckpointConverterV16ResumeInspectionV28verifiedCompletedOutputBytess5Int64Vvp"
+      },
+      "kind": {
+        "displayName": "Instance Property",
+        "identifier": "swift.property"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "let"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "verifiedCompletedOutputBytes"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:s5Int64V",
+            "spelling": "Int64"
+          }
+        ],
+        "title": "verifiedCompletedOutputBytes"
+      },
+      "pathComponents": [
+        "AFMMLXCheckpointConverter",
+        "ResumeInspection",
+        "verifiedCompletedOutputBytes"
       ]
     },
     {
@@ -136545,6 +137328,396 @@
       "declarationFragments": [
         {
           "kind": "keyword",
+          "spelling": "static"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "keyword",
+          "spelling": "func"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "inspectResume"
+        },
+        {
+          "kind": "text",
+          "spelling": "("
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "source"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:10Foundation3URLV",
+          "spelling": "URL"
+        },
+        {
+          "kind": "text",
+          "spelling": ", "
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "output"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:10Foundation3URLV",
+          "spelling": "URL"
+        },
+        {
+          "kind": "text",
+          "spelling": ", "
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "profile"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:9AFMKitMLX27GLM5NextCheckpointConverterV",
+          "spelling": "GLM5NextCheckpointConverter"
+        },
+        {
+          "kind": "text",
+          "spelling": "."
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:9AFMKitMLX27GLM5NextCheckpointConverterV7ProfileO",
+          "spelling": "Profile"
+        },
+        {
+          "kind": "text",
+          "spelling": " = .mlxAffine4, "
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "sourceRevision"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:SS",
+          "spelling": "String"
+        },
+        {
+          "kind": "text",
+          "spelling": "? = nil) "
+        },
+        {
+          "kind": "keyword",
+          "spelling": "throws"
+        },
+        {
+          "kind": "text",
+          "spelling": " -> "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:9AFMKitMLX27GLM5NextCheckpointConverterV",
+          "spelling": "GLM5NextCheckpointConverter"
+        },
+        {
+          "kind": "text",
+          "spelling": "."
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:9AFMKitMLX27GLM5NextCheckpointConverterV16ResumeInspectionV",
+          "spelling": "ResumeInspection"
+        }
+      ],
+      "docComment": {
+        "lines": [
+          {
+            "text": "Validates the complete source identity, conversion plan, private resume"
+          },
+          {
+            "text": "manifest, and completed SafeTensor outputs before returning resumable"
+          },
+          {
+            "text": "bytes. Source shards are hashed in a streaming pass; no tensor payload is"
+          },
+          {
+            "text": "materialized by this inspection."
+          }
+        ],
+        "module": "AFMKitMLX"
+      },
+      "functionSignature": {
+        "parameters": [
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "source"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:10Foundation3URLV",
+                "spelling": "URL"
+              }
+            ],
+            "name": "source"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "output"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:10Foundation3URLV",
+                "spelling": "URL"
+              }
+            ],
+            "name": "output"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "profile"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:9AFMKitMLX27GLM5NextCheckpointConverterV",
+                "spelling": "GLM5NextCheckpointConverter"
+              },
+              {
+                "kind": "text",
+                "spelling": "."
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:9AFMKitMLX27GLM5NextCheckpointConverterV7ProfileO",
+                "spelling": "Profile"
+              }
+            ],
+            "name": "profile"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "sourceRevision"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:SS",
+                "spelling": "String"
+              },
+              {
+                "kind": "text",
+                "spelling": "?"
+              }
+            ],
+            "name": "sourceRevision"
+          }
+        ],
+        "returns": [
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:9AFMKitMLX27GLM5NextCheckpointConverterV",
+            "spelling": "GLM5NextCheckpointConverter"
+          },
+          {
+            "kind": "text",
+            "spelling": "."
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:9AFMKitMLX27GLM5NextCheckpointConverterV16ResumeInspectionV",
+            "spelling": "ResumeInspection"
+          }
+        ]
+      },
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX27GLM5NextCheckpointConverterV13inspectResume6source6output7profile0I8RevisionAC0H10InspectionV10Foundation3URLV_AmC7ProfileOSSSgtKFZ"
+      },
+      "kind": {
+        "displayName": "Type Method",
+        "identifier": "swift.type.method"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "static"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "keyword",
+            "spelling": "func"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "inspectResume"
+          },
+          {
+            "kind": "text",
+            "spelling": "("
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "source"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:10Foundation3URLV",
+            "spelling": "URL"
+          },
+          {
+            "kind": "text",
+            "spelling": ", "
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "output"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:10Foundation3URLV",
+            "spelling": "URL"
+          },
+          {
+            "kind": "text",
+            "spelling": ", "
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "profile"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:9AFMKitMLX27GLM5NextCheckpointConverterV",
+            "spelling": "GLM5NextCheckpointConverter"
+          },
+          {
+            "kind": "text",
+            "spelling": "."
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:9AFMKitMLX27GLM5NextCheckpointConverterV7ProfileO",
+            "spelling": "Profile"
+          },
+          {
+            "kind": "text",
+            "spelling": ", "
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "sourceRevision"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:SS",
+            "spelling": "String"
+          },
+          {
+            "kind": "text",
+            "spelling": "?) "
+          },
+          {
+            "kind": "keyword",
+            "spelling": "throws"
+          },
+          {
+            "kind": "text",
+            "spelling": " -> "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:9AFMKitMLX27GLM5NextCheckpointConverterV",
+            "spelling": "GLM5NextCheckpointConverter"
+          },
+          {
+            "kind": "text",
+            "spelling": "."
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:9AFMKitMLX27GLM5NextCheckpointConverterV16ResumeInspectionV",
+            "spelling": "ResumeInspection"
+          }
+        ],
+        "title": "inspectResume(source:output:profile:sourceRevision:)"
+      },
+      "pathComponents": [
+        "GLM5NextCheckpointConverter",
+        "inspectResume(source:output:profile:sourceRevision:)"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
           "spelling": "enum"
         },
         {
@@ -137186,6 +138359,199 @@
       "pathComponents": [
         "GLM5NextCheckpointConverter",
         "officialModelID"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "struct"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "ResumeInspection"
+        }
+      ],
+      "docComment": {
+        "lines": [
+          {
+            "text": "Provider-owned validation of bytes that an interrupted conversion can"
+          },
+          {
+            "text": "safely credit during destination-capacity preflight."
+          }
+        ],
+        "module": "AFMKitMLX"
+      },
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX27GLM5NextCheckpointConverterV16ResumeInspectionV"
+      },
+      "kind": {
+        "displayName": "Structure",
+        "identifier": "swift.struct"
+      },
+      "names": {
+        "navigator": [
+          {
+            "kind": "identifier",
+            "spelling": "ResumeInspection"
+          }
+        ],
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "struct"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "ResumeInspection"
+          }
+        ],
+        "title": "GLM5NextCheckpointConverter.ResumeInspection"
+      },
+      "pathComponents": [
+        "GLM5NextCheckpointConverter",
+        "ResumeInspection"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "let"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "sourceRevision"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:SS",
+          "spelling": "String"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX27GLM5NextCheckpointConverterV16ResumeInspectionV14sourceRevisionSSvp"
+      },
+      "kind": {
+        "displayName": "Instance Property",
+        "identifier": "swift.property"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "let"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "sourceRevision"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:SS",
+            "spelling": "String"
+          }
+        ],
+        "title": "sourceRevision"
+      },
+      "pathComponents": [
+        "GLM5NextCheckpointConverter",
+        "ResumeInspection",
+        "sourceRevision"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "let"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "verifiedCompletedOutputBytes"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:s5Int64V",
+          "spelling": "Int64"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX27GLM5NextCheckpointConverterV16ResumeInspectionV28verifiedCompletedOutputBytess5Int64Vvp"
+      },
+      "kind": {
+        "displayName": "Instance Property",
+        "identifier": "swift.property"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "let"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "verifiedCompletedOutputBytes"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:s5Int64V",
+            "spelling": "Int64"
+          }
+        ],
+        "title": "verifiedCompletedOutputBytes"
+      },
+      "pathComponents": [
+        "GLM5NextCheckpointConverter",
+        "ResumeInspection",
+        "verifiedCompletedOutputBytes"
       ]
     },
     {

@@ -382,7 +382,7 @@ final class GLM5NextCheckpointConverterTests: XCTestCase {
             output: container,
             overwrite: true,
             sourceRevision: String(repeating: "a", count: 40)).run()) { error in
-                XCTAssertTrue(error.localizedDescription.contains("neither may contain"))
+                XCTAssertTrue(error.localizedDescription.contains("source/output must be separate"))
             }
         XCTAssertTrue(FileManager.default.fileExists(
             atPath: source.appendingPathComponent("config.json").path))
@@ -405,8 +405,30 @@ final class GLM5NextCheckpointConverterTests: XCTestCase {
             output: alias,
             overwrite: true,
             sourceRevision: String(repeating: "a", count: 40)).run()) { error in
-                XCTAssertTrue(error.localizedDescription.contains("neither may contain"))
+                XCTAssertTrue(error.localizedDescription.contains("source/output must be separate"))
             }
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: source.appendingPathComponent("config.json").path))
+    }
+
+    func testFilesystemRootAndRootSymlinkAreRejectedWithoutDeletion() throws {
+        let source = try makeFixture()
+        let alias = source.deletingLastPathComponent()
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createSymbolicLink(
+            at: alias, withDestinationURL: URL(fileURLWithPath: "/", isDirectory: true))
+        defer {
+            try? FileManager.default.removeItem(at: source)
+            try? FileManager.default.removeItem(at: alias)
+        }
+
+        for output in [URL(fileURLWithPath: "/", isDirectory: true), alias] {
+            XCTAssertThrowsError(try GLM5NextCheckpointConverter.validatedPaths(
+                source: source,
+                output: output)) { error in
+                    XCTAssertTrue(error.localizedDescription.contains("filesystem or volume root"))
+                }
+        }
         XCTAssertTrue(FileManager.default.fileExists(
             atPath: source.appendingPathComponent("config.json").path))
     }
@@ -493,6 +515,47 @@ final class GLM5NextCheckpointConverterTests: XCTestCase {
         }
     }
 
+    func testProviderResumeInspectionRejectsUnitsOutsidePlan() throws {
+        let source = try makeFixture()
+        let output = source.deletingLastPathComponent()
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer {
+            try? FileManager.default.removeItem(at: source)
+            try? FileManager.default.removeItem(at: output)
+        }
+        let revision = String(repeating: "a", count: 40)
+        try GLM5NextCheckpointConverter(
+            source: source,
+            output: output,
+            sourceRevision: revision).run()
+
+        let valid = try AFMMLXCheckpointConverter.inspectResume(
+            source: source,
+            output: output,
+            sourceRevision: revision)
+        XCTAssertGreaterThan(valid.verifiedCompletedOutputBytes, 0)
+
+        let stateURL = output.appendingPathComponent(".afm-mlx-conversion.json")
+        var state = try json(at: stateURL)
+        var completed = try XCTUnwrap(state["completed"] as? [String: Any])
+        completed["forged-unit"] = [
+            "outputFile": "model-forged.safetensors",
+            "outputSize": 1,
+            "outputSHA256": String(repeating: "0", count: 64),
+            "outputKeys": ["forged.weight"],
+        ]
+        state["completed"] = completed
+        try JSONSerialization.data(withJSONObject: state, options: [.sortedKeys])
+            .write(to: stateURL)
+
+        XCTAssertThrowsError(try AFMMLXCheckpointConverter.inspectResume(
+            source: source,
+            output: output,
+            sourceRevision: revision)) { error in
+                XCTAssertTrue(error.localizedDescription.contains("outside the current conversion plan"))
+            }
+    }
+
     func testDispatcherPreservesDeepSeekProfilesAndDetectsGLM() throws {
         let source = try makeFixture()
         defer { try? FileManager.default.removeItem(at: source) }
@@ -515,6 +578,11 @@ final class GLM5NextCheckpointConverterTests: XCTestCase {
         XCTAssertEqual(
             deepSeekInspection.supportedProfiles,
             DeepseekV4CheckpointConverter.Profile.allCases.map(\.rawValue))
+        XCTAssertThrowsError(try AFMMLXCheckpointConverter.inspect(
+            source: deepSeek,
+            sourceRevision: String(repeating: "b", count: 40))) { error in
+                XCTAssertTrue(error.localizedDescription.contains("supported only for GLM-5.3"))
+            }
     }
 
     private func makeFixture(

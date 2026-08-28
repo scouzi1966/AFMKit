@@ -26,6 +26,13 @@ public struct AFMDwarfStarProjection: Sendable {
     package let virtualSize: UInt64
     package let regions: [Region]
 
+    /// Parses a GGUF metadata template without writing output or loading tensor
+    /// payloads. Call this before a long conversion so malformed templates fail
+    /// before any checkpoint work begins.
+    public static func validateMetadataTemplate(at sourceGGUF: URL) throws {
+        _ = try GGUFTemplate(url: sourceGGUF)
+    }
+
     /// Copies only the GGUF metadata and tensor descriptors needed to project
     /// AFM safetensor shards. The resulting file is typically a few MiB and
     /// makes an executor checkpoint self-contained without duplicating weights.

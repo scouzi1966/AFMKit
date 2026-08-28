@@ -40,6 +40,13 @@ public struct GLM5NextCheckpointConverter {
         public let omittedMTPTensorCount: Int
     }
 
+    /// Provider-owned validation of bytes that an interrupted conversion can
+    /// safely credit during destination-capacity preflight.
+    public struct ResumeInspection: Sendable, Equatable {
+        public let sourceRevision: String
+        public let verifiedCompletedOutputBytes: Int64
+    }
+
     public enum ConversionError: LocalizedError, Equatable {
         case invalidSource(String)
         case unsafeOutput(String)
@@ -226,22 +233,51 @@ public struct GLM5NextCheckpointConverter {
         return inspection(for: checkpoint)
     }
 
+    /// Validates the complete source identity, conversion plan, private resume
+    /// manifest, and completed SafeTensor outputs before returning resumable
+    /// bytes. Source shards are hashed in a streaming pass; no tensor payload is
+    /// materialized by this inspection.
+    public static func inspectResume(
+        source: URL,
+        output: URL,
+        profile: Profile = .mlxAffine4,
+        sourceRevision: String? = nil
+    ) throws -> ResumeInspection {
+        let paths = try validatedPaths(source: source, output: output)
+        let checkpoint = try loadSource(
+            paths.source, explicitRevision: sourceRevision, fingerprintContents: true)
+        let stateURL = paths.output.appendingPathComponent(".afm-mlx-conversion.json")
+        guard FileManager.default.fileExists(atPath: stateURL.path) else {
+            return ResumeInspection(
+                sourceRevision: checkpoint.revision,
+                verifiedCompletedOutputBytes: 0)
+        }
+        let state: State
+        do {
+            state = try JSONDecoder().decode(State.self, from: Data(contentsOf: stateURL))
+        } catch {
+            throw ConversionError.sourceMismatch(
+                "The existing conversion resume manifest is invalid; use --overwrite after verifying the destination.")
+        }
+        let plan = try makePlan(checkpoint: checkpoint)
+        try validate(
+            state: state,
+            checkpoint: checkpoint,
+            configHash: sha256(checkpoint.configData),
+            indexHash: sha256(checkpoint.indexData),
+            profile: profile,
+            plan: plan)
+        return ResumeInspection(
+            sourceRevision: checkpoint.revision,
+            verifiedCompletedOutputBytes: try verifiedCompletedBytes(
+                state: state, plan: plan, checkpoint: checkpoint, output: paths.output))
+    }
+
     public func run() throws {
         let fm = FileManager.default
-        let sourceURL = source.standardizedFileURL
-        let outputURL = output.standardizedFileURL
-        let resolvedSource = sourceURL.resolvingSymlinksInPath()
-        let resolvedOutput = outputURL.resolvingSymlinksInPath()
-        guard !Self.contains(resolvedSource, resolvedOutput),
-              !Self.contains(resolvedOutput, resolvedSource)
-        else {
-            throw ConversionError.unsafeOutput(
-                "Conversion source and output must be separate directories; neither may contain the other, including through symlinks.")
-        }
-        guard sourceURL.isFileURL, outputURL.isFileURL else {
-            throw ConversionError.invalidSource(
-                "GLM-5.3 conversion requires local filesystem paths; remote download is not supported.")
-        }
+        let paths = try Self.validatedPaths(source: source, output: output)
+        let sourceURL = paths.source
+        let outputURL = paths.output
 
         let checkpoint = try Self.loadSource(
             sourceURL, explicitRevision: sourceRevision, fingerprintContents: true)
@@ -267,6 +303,7 @@ public struct GLM5NextCheckpointConverter {
 
         let configHash = Self.sha256(checkpoint.configData)
         let indexHash = Self.sha256(checkpoint.indexData)
+        let plan = try Self.makePlan(checkpoint: checkpoint)
         var state: State
         if fm.fileExists(atPath: stateURL.path) {
             state = try JSONDecoder().decode(State.self, from: Data(contentsOf: stateURL))
@@ -275,7 +312,8 @@ public struct GLM5NextCheckpointConverter {
                 checkpoint: checkpoint,
                 configHash: configHash,
                 indexHash: indexHash,
-                profile: profile)
+                profile: profile,
+                plan: plan)
         } else {
             state = State(
                 profile: profile.rawValue,
@@ -287,16 +325,12 @@ public struct GLM5NextCheckpointConverter {
             try saveState(state)
         }
 
-        let plan = try Self.makePlan(checkpoint: checkpoint)
         let loader = TensorLoader(root: checkpoint.root)
         for (position, unit) in plan.enumerated() {
             let destination = outputURL.appendingPathComponent(unit.outputFile)
             if let completed = state.completed[unit.id],
                completed.outputFile == unit.outputFile,
-               fm.fileExists(atPath: destination.path),
-               Int64(try destination.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? -1)
-                    == completed.outputSize,
-               try Self.sha256File(destination) == completed.outputSHA256
+               try Self.isCompletedOutputValid(completed, at: destination)
             {
                 report("[\(position + 1)/\(plan.count)] \(unit.id): already converted")
                 continue
@@ -494,8 +528,43 @@ public struct GLM5NextCheckpointConverter {
         return contiguous(value.transposed(axes: permutation))
     }
 
+    static func validatedPaths(
+        source: URL,
+        output: URL
+    ) throws -> (source: URL, output: URL) {
+        let sourceURL = source.standardizedFileURL
+        let outputURL = output.standardizedFileURL
+        guard sourceURL.isFileURL, outputURL.isFileURL else {
+            throw ConversionError.invalidSource(
+                "GLM-5.3 conversion requires local filesystem paths; remote download is not supported.")
+        }
+        let resolvedSource = sourceURL.resolvingSymlinksInPath()
+        let resolvedOutput = outputURL.resolvingSymlinksInPath()
+        guard !isFilesystemOrVolumeRoot(resolvedOutput),
+              !contains(resolvedSource, resolvedOutput),
+              !contains(resolvedOutput, resolvedSource)
+        else {
+            throw ConversionError.unsafeOutput(
+                "Conversion output cannot be a filesystem or volume root, and source/output must be separate directories with neither containing the other, including through symlinks.")
+        }
+        return (sourceURL, outputURL)
+    }
+
     private static func contains(_ directory: URL, _ candidate: URL) -> Bool {
-        directory == candidate || candidate.path.hasPrefix(directory.path + "/")
+        let parent = directory.standardizedFileURL.pathComponents
+        let child = candidate.standardizedFileURL.pathComponents
+        guard parent.count <= child.count else { return false }
+        return Array(child.prefix(parent.count)) == parent
+    }
+
+    private static func isFilesystemOrVolumeRoot(_ url: URL) -> Bool {
+        let resolved = url.standardizedFileURL.resolvingSymlinksInPath()
+        if resolved.path == "/" { return true }
+        return FileManager.default.mountedVolumeURLs(
+            includingResourceValuesForKeys: nil,
+            options: [.skipHiddenVolumes])?.contains {
+                $0.standardizedFileURL.resolvingSymlinksInPath() == resolved
+            } ?? false
     }
 
     private static func loadSource(
@@ -988,7 +1057,8 @@ public struct GLM5NextCheckpointConverter {
         checkpoint: SourceCheckpoint,
         configHash: String,
         indexHash: String,
-        profile: Profile
+        profile: Profile,
+        plan: [ConversionUnit]
     ) throws {
         guard state.formatVersion == currentFormatVersion else {
             throw ConversionError.sourceMismatch(
@@ -1009,6 +1079,173 @@ public struct GLM5NextCheckpointConverter {
             throw ConversionError.sourceMismatch(
                 "Source config, index, shard contents, or support assets changed; use --overwrite after verifying the checkpoint.")
         }
+        let planned = Dictionary(uniqueKeysWithValues: plan.map { ($0.id, $0) })
+        guard state.completed.keys.allSatisfy({ planned[$0] != nil }) else {
+            throw ConversionError.sourceMismatch(
+                "The conversion resume manifest contains units outside the current conversion plan.")
+        }
+        for (id, completed) in state.completed {
+            guard let unit = planned[id], completed.outputFile == unit.outputFile,
+                  URL(fileURLWithPath: completed.outputFile).lastPathComponent
+                    == completed.outputFile,
+                  completed.outputSize >= 0,
+                  isSHA256(completed.outputSHA256),
+                  !completed.outputKeys.isEmpty,
+                  Set(completed.outputKeys).count == completed.outputKeys.count,
+                  Set(completed.outputKeys) == expectedOutputKeys(
+                    for: unit, checkpoint: checkpoint),
+                  completed.outputSize <= maximumOutputBytes(
+                    for: unit, checkpoint: checkpoint),
+                  completed.outputKeys.allSatisfy({ key in
+                      state.weightMap[key] == completed.outputFile
+                  })
+            else {
+                throw ConversionError.sourceMismatch(
+                    "The conversion resume manifest does not match planned unit \(id).")
+            }
+        }
+        let completedKeys = Set(state.completed.values.flatMap(\.outputKeys))
+        guard Set(state.weightMap.keys) == completedKeys,
+              state.weightMap.values.allSatisfy({ outputFile in
+                  state.completed.values.contains(where: {
+                      $0.outputFile == outputFile
+                  })
+              })
+        else {
+            throw ConversionError.sourceMismatch(
+                "The conversion resume manifest weight map is inconsistent with completed units.")
+        }
+    }
+
+    private static func verifiedCompletedBytes(
+        state: State,
+        plan: [ConversionUnit],
+        checkpoint: SourceCheckpoint,
+        output: URL
+    ) throws -> Int64 {
+        let planned = Dictionary(uniqueKeysWithValues: plan.map { ($0.id, $0) })
+        var total: Int64 = 0
+        for (id, completed) in state.completed {
+            guard let unit = planned[id] else { continue }
+            let url = output.appendingPathComponent(unit.outputFile)
+            guard try isCompletedOutputValid(completed, at: url)
+            else { continue }
+            let sum = total.addingReportingOverflow(completed.outputSize)
+            guard !sum.overflow else {
+                throw ConversionError.sourceMismatch(
+                    "Completed conversion output size overflowed Int64.")
+            }
+            total = sum.partialValue
+        }
+        return total
+    }
+
+    private static func isCompletedOutputValid(
+        _ completed: CompletedUnit,
+        at url: URL
+    ) throws -> Bool {
+        guard FileManager.default.fileExists(atPath: url.path),
+              Int64(try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? -1)
+                == completed.outputSize,
+              try sha256File(url) == completed.outputSHA256,
+              let header = try? AFMSafetensorHeader(url: url),
+              Set(header.tensors.map(\.name)) == Set(completed.outputKeys)
+        else { return false }
+        return true
+    }
+
+    private static func expectedOutputKeys(
+        for unit: ConversionUnit,
+        checkpoint: SourceCheckpoint
+    ) -> Set<String> {
+        switch unit {
+        case .experts(_, _, let layer, let projection, _):
+            let base = "language_model.model.layers.\(layer).mlp.switch_mlp.\(projection)"
+            return ["\(base).weight", "\(base).scales", "\(base).biases"]
+        case .ordinary(_, _, let references):
+            let byName = Dictionary(uniqueKeysWithValues: references.map { ($0.name, $0) })
+            var handled = Set<String>()
+            var result = Set<String>()
+            for reference in references where reference.name.hasSuffix(".q_conv1d.weight") {
+                let prefix = String(reference.name.dropLast("q_conv1d.weight".count))
+                let names = ["q", "k", "v"].map { "\(prefix)\($0)_conv1d.weight" }
+                guard names.allSatisfy({ byName[$0] != nil }) else { continue }
+                handled.formUnion(names)
+                result.insert(mappedName(prefix + "conv1d.weight"))
+            }
+            for reference in references where reference.name.hasSuffix(".kv_b_proj.weight") {
+                handled.insert(reference.name)
+                let prefix = String(
+                    mappedName(reference.name).dropLast("kv_b_proj.weight".count))
+                for base in [prefix + "embed_q", prefix + "unembed_out"] {
+                    result.formUnion([
+                        "\(base).weight", "\(base).scales", "\(base).biases",
+                    ])
+                }
+            }
+            for reference in references where !handled.contains(reference.name) {
+                let mapped = mappedName(reference.name)
+                if reference.dtype == .float8E4M3 || shouldQuantize(reference) {
+                    let base = String(mapped.dropLast(".weight".count))
+                    result.formUnion([
+                        "\(base).weight", "\(base).scales", "\(base).biases",
+                    ])
+                } else {
+                    result.insert(mapped)
+                }
+            }
+            return result
+        }
+    }
+
+    private static func maximumOutputBytes(
+        for unit: ConversionUnit,
+        checkpoint: SourceCheckpoint
+    ) -> Int64 {
+        let payload: Int64
+        switch unit {
+        case .experts(_, _, _, _, let references):
+            payload = references.reduce(0) { $0 + affineOutputBytes(shape: $1.shape) }
+        case .ordinary(_, _, let references):
+            var handled = Set<String>()
+            var bytes: Int64 = 0
+            let byName = Dictionary(uniqueKeysWithValues: references.map { ($0.name, $0) })
+            for reference in references where reference.name.hasSuffix(".q_conv1d.weight") {
+                let prefix = String(reference.name.dropLast("q_conv1d.weight".count))
+                let names = ["q", "k", "v"].map { "\(prefix)\($0)_conv1d.weight" }
+                guard names.allSatisfy({ byName[$0] != nil }) else { continue }
+                handled.formUnion(names)
+                for name in names {
+                    let item = byName[name]!
+                    bytes += item.dtype == .float8E4M3
+                        ? Int64(item.shape.reduce(1, *)) * 4 : item.byteCount
+                }
+            }
+            for reference in references where reference.name.hasSuffix(".kv_b_proj.weight") {
+                handled.insert(reference.name)
+                bytes += affineOutputBytes(shape: [
+                    checkpoint.config.attentionHeads,
+                    checkpoint.config.kvLoraRank,
+                    checkpoint.config.qkNopeHeadDim,
+                ])
+                bytes += affineOutputBytes(shape: [
+                    checkpoint.config.attentionHeads,
+                    checkpoint.config.vHeadDim,
+                    checkpoint.config.kvLoraRank,
+                ])
+            }
+            for reference in references where !handled.contains(reference.name) {
+                bytes += reference.dtype == .float8E4M3 || shouldQuantize(reference)
+                    ? affineOutputBytes(shape: reference.shape) : reference.byteCount
+            }
+            payload = bytes
+        }
+        let bounded = payload.addingReportingOverflow(4_000_000)
+        return bounded.overflow ? Int64.max : bounded.partialValue
+    }
+
+    private static func isSHA256(_ value: String) -> Bool {
+        value.count == 64 && value.allSatisfy(\.isHexDigit)
     }
 
     private static func resolveRevision(root: URL, explicit: String?) throws -> String {

@@ -39,6 +39,19 @@ public struct AFMMLXCheckpointConverter {
         }
     }
 
+    public struct ResumeInspection: Sendable, Equatable {
+        public let sourceRevision: String?
+        public let verifiedCompletedOutputBytes: Int64
+
+        public init(
+            sourceRevision: String?,
+            verifiedCompletedOutputBytes: Int64
+        ) {
+            self.sourceRevision = sourceRevision
+            self.verifiedCompletedOutputBytes = verifiedCompletedOutputBytes
+        }
+    }
+
     public enum ConversionError: LocalizedError, Equatable {
         case invalidSource(String)
         case unsupportedProfile(String)
@@ -88,6 +101,10 @@ public struct AFMMLXCheckpointConverter {
         }
         switch modelType {
         case ModelKind.deepseekV4.rawValue:
+            guard sourceRevision == nil else {
+                throw ConversionError.invalidSource(
+                    "--source-revision is supported only for GLM-5.3 conversion; DeepSeek conversion does not consume Hugging Face revision provenance.")
+            }
             let profiles = DeepseekV4CheckpointConverter.Profile.allCases.map(\.rawValue)
             return Inspection(
                 modelKind: .deepseekV4,
@@ -111,6 +128,36 @@ public struct AFMMLXCheckpointConverter {
         default:
             throw ConversionError.invalidSource(
                 "Built-in conversion does not support model_type \(modelType).")
+        }
+    }
+
+    /// Returns provider-verified resumable output bytes. Consumers must not
+    /// decode provider-private conversion manifests themselves.
+    public static func inspectResume(
+        source: URL,
+        output: URL,
+        profile: String? = nil,
+        sourceRevision: String? = nil
+    ) throws -> ResumeInspection {
+        let inspection = try inspect(source: source, sourceRevision: sourceRevision)
+        let selected = profile ?? inspection.defaultProfile
+        guard inspection.supportedProfiles.contains(selected) else {
+            throw ConversionError.unsupportedProfile(
+                "Profile '\(selected)' is not supported for \(inspection.modelKind.rawValue). Expected: \(inspection.supportedProfiles.joined(separator: ", ")).")
+        }
+        switch inspection.modelKind {
+        case .deepseekV4:
+            return ResumeInspection(
+                sourceRevision: nil, verifiedCompletedOutputBytes: 0)
+        case .glm5Next:
+            let status = try GLM5NextCheckpointConverter.inspectResume(
+                source: source,
+                output: output,
+                profile: GLM5NextCheckpointConverter.Profile(rawValue: selected)!,
+                sourceRevision: inspection.sourceRevision)
+            return ResumeInspection(
+                sourceRevision: status.sourceRevision,
+                verifiedCompletedOutputBytes: status.verifiedCompletedOutputBytes)
         }
     }
 
