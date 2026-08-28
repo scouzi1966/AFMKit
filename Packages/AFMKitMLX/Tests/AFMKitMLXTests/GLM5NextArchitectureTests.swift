@@ -6,6 +6,10 @@ import XCTest
 @testable import AFMKitMLX
 
 final class GLM5NextArchitectureTests: XCTestCase {
+    override func setUpWithError() throws {
+        try MLXMetalLibrary.ensureAvailable(verbose: false)
+    }
+
     func testDefaultMultiLinearAcceptsGenericQuantizedParameterUpdate() throws {
         let denseWeight = MLXArray(Array(repeating: Float(0.25), count: 32), [1, 1, 32])
         let quantizedWeight = quantized(denseWeight, groupSize: 32, bits: 4)
