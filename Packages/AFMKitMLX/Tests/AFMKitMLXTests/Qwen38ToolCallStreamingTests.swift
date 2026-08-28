@@ -1,6 +1,7 @@
 import AFMKitCore
 import AFMOpenAICompat
 import Foundation
+import MLXLMCommon
 @testable import AFMKitMLX
 import Testing
 
@@ -195,6 +196,143 @@ struct Qwen38ToolCallStreamingTests {
         #expect(completed.map(\.index) == [0, 1])
         #expect(try decodeArguments(completed[0].function.arguments)["location"] as? String == "London")
         #expect(try decodeArguments(completed[1].function.arguments)["timezone"] as? String == "Asia/Tokyo")
+    }
+
+    @Test("Serial Qwen XML emits each adjacent call once with a stable index")
+    func serialXMLPreservesAdjacentCallsThroughProviderFallback() throws {
+        let processor = ToolCallProcessor(format: .xmlFunction)
+        let output = "<tool_call><function=get_weather><parameter=location>London</parameter><parameter=days>1</parameter></function></tool_call><tool_call><function=get_time><parameter=timezone>Asia/Tokyo</parameter></function></tool_call>"
+        var nextIndex = 0
+        var serviceChunks: [StreamChunk] = []
+
+        if let text = processor.processChunk(output), !text.isEmpty {
+            serviceChunks.append(StreamChunk(text: text))
+        }
+        let drainedCalls = processor.drainToolCalls()
+        #expect(drainedCalls.map(\.function.name) == ["get_weather", "get_time"])
+        for call in drainedCalls {
+            serviceChunks.append(
+                MLXModelService.serialToolCallChunk(
+                    call,
+                    nextIndex: &nextIndex
+                )
+            )
+        }
+
+        var fallback = AFMMLXRawToolStreamFallback(
+            toolCallStartTag: "<tool_call>",
+            toolCallEndTag: "</tool_call>",
+            toolCallParser: "qwen3_xml",
+            tools: [weatherTool, timeTool],
+            applyFixToolArgs: { $0 },
+            remapSingleKey: { key, _ in key }
+        )
+        var translator = MLXStreamEventTranslator(
+            thinkStartTag: nil,
+            thinkEndTag: nil,
+            maximumResponseTokens: 100,
+            tools: [weatherTool, timeTool]
+        )
+        var events: [AFMGenerationEvent] = []
+        for chunk in serviceChunks {
+            for normalizedChunk in fallback.consume(chunk) {
+                events += translator.consume(normalizedChunk)
+            }
+        }
+        for normalizedChunk in fallback.finish() {
+            events += translator.consume(normalizedChunk)
+        }
+        events += translator.finish()
+
+        let completed = events.compactMap { event -> AFMToolCall? in
+            guard case .toolCall(let call, .completed) = event else { return nil }
+            return call
+        }
+        #expect(nextIndex == 2)
+        #expect(completed.map(\.name) == ["get_weather", "get_time"])
+        #expect(Set(completed.map(\.id)).count == 2)
+        #expect(try decodeArguments(completed[0].arguments)["location"] as? String == "London")
+        #expect(try decodeArguments(completed[1].arguments)["timezone"] as? String == "Asia/Tokyo")
+        #expect(!events.contains { event in
+            guard case .responseText(_, let text, _) = event else { return false }
+            return text.contains("<tool_call>") || text.contains("<function=")
+        })
+    }
+
+    @Test("Shared XML processor accepts wrapped Qwen and bare compatible calls")
+    func xmlProcessorAcceptsWrappedAndBareForms() {
+        #expect(ToolCallFormat.infer(from: "qwen3_next") == .xmlFunction)
+        #expect(ToolCallFormat.infer(from: "nemotron_h") == .xmlFunction)
+
+        let wrapped = ToolCallProcessor(format: .xmlFunction)
+        let bare = ToolCallProcessor(format: .xmlFunction)
+        #expect(wrapped.processChunk("<tool_call><function=get_weather><parameter=location>Paris</parameter></function></tool_call>") == nil)
+        #expect(bare.processChunk("<function=get_time><parameter=timezone>UTC</parameter></function>") == nil)
+        #expect(wrapped.drainToolCalls().map(\.function.name) == ["get_weather"])
+        #expect(bare.drainToolCalls().map(\.function.name) == ["get_time"])
+    }
+
+    @Test("Malformed wrapped XML remains available to the AFM fallback")
+    func malformedWrappedXMLPassesThrough() {
+        let processor = ToolCallProcessor(format: .xmlFunction)
+        let malformed = "<tool_call><function=bad-name><parameter=location>Paris</parameter></function></tool_call>"
+
+        #expect(processor.processChunk(malformed) == malformed)
+        #expect(processor.drainToolCalls().isEmpty)
+    }
+
+    @Test("Production drain preserves FIFO order and stop-after-first semantics")
+    func productionDrainPreservesOrderAndStopBehavior() {
+        let processor = ToolCallProcessor(format: .xmlFunction)
+        let output = "<tool_call><function=get_weather><parameter=location>London</parameter></function></tool_call><tool_call><function=get_time><parameter=timezone>Asia/Tokyo</parameter></function></tool_call>"
+
+        #expect(processor.processChunk(output) == nil)
+        #expect(processor.toolCalls.count == 2)
+        #expect(processor.drainToolCalls(stopAfterFirst: true).map(\.function.name) == ["get_weather"])
+        #expect(processor.drainToolCalls().map(\.function.name) == ["get_time"])
+    }
+
+    @Test("Incomplete wrapped and bare XML reach provider salvage")
+    func incompleteXMLReachesProviderSalvage() throws {
+        let cases = [
+            "<tool_call><function=get_weather><parameter=location>Paris",
+            "<function=get_weather><parameter=location>Paris",
+        ]
+
+        for output in cases {
+            let processor = ToolCallProcessor(format: .xmlFunction)
+            #expect(processor.processChunk(output) == nil)
+            let pending = try #require(processor.finishPendingText())
+            #expect(pending == output)
+
+            var fallback = AFMMLXRawToolStreamFallback(
+                toolCallStartTag: "<tool_call>",
+                toolCallEndTag: "</tool_call>",
+                toolCallParser: "qwen3_xml",
+                tools: [weatherTool],
+                applyFixToolArgs: { $0 },
+                remapSingleKey: { key, _ in key }
+            )
+            var chunks = fallback.consume(StreamChunk(text: pending))
+            chunks += fallback.finish()
+
+            var translator = MLXStreamEventTranslator(
+                thinkStartTag: nil,
+                thinkEndTag: nil,
+                maximumResponseTokens: 100,
+                tools: [weatherTool]
+            )
+            var events = chunks.flatMap { translator.consume($0) }
+            events += translator.finish()
+            let completed = events.compactMap { event -> AFMToolCall? in
+                guard case .toolCall(let call, .completed) = event else { return nil }
+                return call
+            }
+
+            let call = try #require(completed.first)
+            #expect(completed.map(\.name) == ["get_weather"])
+            #expect(try decodeArguments(call.arguments)["location"] as? String == "Paris")
+        }
     }
 
     @Test("Native Qwen coercion does not fabricate omitted required arguments")

@@ -1393,6 +1393,7 @@ public func generateTask(
         var perfDetokNs: UInt64 = 0
         var perfLoopOverheadNs: UInt64 = 0
         var stoppedAfterToolCall = false
+        var continuationTerminated = false
 
         while true {
             let tLoopTop: UInt64 = perfEnabled ? DispatchTime.now().uptimeNanoseconds : 0
@@ -1431,7 +1432,6 @@ public func generateTask(
 
             let tDetok0: UInt64 = perfEnabled ? DispatchTime.now().uptimeNanoseconds : 0
             detokenizer.append(token: token)
-            var didYield = false
             if let chunk = detokenizer.next() {
                 tokenCount += 1
 
@@ -1443,14 +1443,18 @@ public func generateTask(
                         pendingLogprobs = []
                     }
                     if case .terminated = continuation.yield(.chunk(textToYield)) {
+                        continuationTerminated = true
                         break
                     }
-                    didYield = true
                 }
 
                 // Check if we have a complete tool call
-                if let toolCall = toolCallProcessor.toolCalls.popLast() {
+                let completedToolCalls = toolCallProcessor.drainToolCalls(
+                    stopAfterFirst: stopAfterToolCall
+                )
+                for toolCall in completedToolCalls {
                     if case .terminated = continuation.yield(.toolCall(toolCall)) {
+                        continuationTerminated = true
                         break
                     }
                     if stopAfterToolCall {
@@ -1458,12 +1462,28 @@ public func generateTask(
                         break
                     }
                 }
+                if stoppedAfterToolCall || continuationTerminated {
+                    break
+                }
             }
             if perfEnabled {
                 let tDetok1 = DispatchTime.now().uptimeNanoseconds
                 perfDetokNs += (tDetok1 - tDetok0)
                 perfLoopOverheadNs += (tAfterNext - tLoopTop)
             }
+        }
+
+        // On normal EOS or token-limit completion, preserve an unfinished
+        // tagged call for AFM's provider-level salvage. Do not emit buffered
+        // content after consumer cancellation or an intentional tool stop.
+        if !Task.isCancelled && !stoppedAfterToolCall && !continuationTerminated,
+            let pendingToolText = toolCallProcessor.finishPendingText()
+        {
+            if !pendingLogprobs.isEmpty {
+                continuation.yield(.tokenLogprobs(pendingLogprobs))
+                pendingLogprobs = []
+            }
+            continuation.yield(.chunk(pendingToolText))
         }
 
         // Print performance breakdown if AFM_PERF=1
