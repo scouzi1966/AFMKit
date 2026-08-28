@@ -336,6 +336,7 @@ final class AFMMLXSpeculativeDecodingTests: XCTestCase {
     }
 
     func testEmbeddedGLMMTPLoaderConsumesQualifiedUnquantizedManifest() throws {
+        try MLXMetalLibrary.ensureAvailable(verbose: false)
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -394,6 +395,7 @@ final class AFMMLXSpeculativeDecodingTests: XCTestCase {
     }
 
     func testEmbeddedGLMMTPLoaderConsumesQualifiedShardedU32Manifest() throws {
+        try MLXMetalLibrary.ensureAvailable(verbose: false)
         let directory = try Self.makeShardedQuantizedGLMDirectory(mutation: .none)
         defer { try? FileManager.default.removeItem(at: directory) }
         let data = try Data(contentsOf: directory.appendingPathComponent("config.json"))
@@ -406,6 +408,7 @@ final class AFMMLXSpeculativeDecodingTests: XCTestCase {
     }
 
     func testEmbeddedGLMMTPNestedQuantizationDrivesQualifierAndLoader() throws {
+        try MLXMetalLibrary.ensureAvailable(verbose: false)
         let directory = try Self.makeShardedQuantizedGLMDirectory(
             mutation: .none,
             quantizationInTextConfig: true)
@@ -423,6 +426,7 @@ final class AFMMLXSpeculativeDecodingTests: XCTestCase {
     }
 
     func testEmbeddedGLMMTPLoaderRejectsUnindexedShardTensor() throws {
+        try MLXMetalLibrary.ensureAvailable(verbose: false)
         let directory = try Self.makeShardedQuantizedGLMDirectory(mutation: .unindexed)
         defer { try? FileManager.default.removeItem(at: directory) }
         let data = try Data(contentsOf: directory.appendingPathComponent("config.json"))
@@ -433,6 +437,7 @@ final class AFMMLXSpeculativeDecodingTests: XCTestCase {
     }
 
     func testEmbeddedGLMMTPLoaderRejectsConflictingShardTensor() throws {
+        try MLXMetalLibrary.ensureAvailable(verbose: false)
         let directory = try Self.makeShardedQuantizedGLMDirectory(mutation: .conflicting)
         defer { try? FileManager.default.removeItem(at: directory) }
         let data = try Data(contentsOf: directory.appendingPathComponent("config.json"))
