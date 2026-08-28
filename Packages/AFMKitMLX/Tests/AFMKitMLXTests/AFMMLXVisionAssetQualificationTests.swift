@@ -49,6 +49,63 @@ final class AFMMLXVisionAssetQualificationTests: XCTestCase {
         XCTAssertTrue(qualification.isUsableQwenConditionalGeneration)
     }
 
+    func testGLM5NextUsesNativeTokenAndNestedProcessorContracts() throws {
+        let directory = try makeModelDirectory()
+        var config = Self.fixtureConfiguration()
+        config["model_type"] = "glm5_next"
+        config["architectures"] = ["Glm5NextForConditionalGeneration"]
+        config["image_token_id"] = 154_854
+        config["video_token_id"] = 154_855
+        config.removeValue(forKey: "vision_start_token_id")
+        config.removeValue(forKey: "vision_end_token_id")
+        var vision = try XCTUnwrap(config["vision_config"] as? [String: Any])
+        vision["model_type"] = "glm5_next_vision"
+        config["vision_config"] = vision
+        try Self.writeJSON(config, to: directory.appendingPathComponent("config.json"))
+
+        let media: [String: Any] = [
+            "image_mean": [0.48145466, 0.4578275, 0.40821073],
+            "image_std": [0.26862954, 0.26130258, 0.27577711],
+            "merge_size": 2, "patch_size": 2, "temporal_patch_size": 2,
+            "min_image_tokens": 16, "max_image_tokens": 8_000,
+        ]
+        try Self.writeJSON([
+            "processor_class": "Glm5NextProcessor",
+            "image_processor": media,
+            "video_processor": media.merging(["fps": 2.0]) { _, new in new },
+        ], to: directory.appendingPathComponent("preprocessor_config.json"))
+        let tensorNames = Self.glmVisionTensorNames(depth: 2)
+            .union(["model.language_model.embed_tokens.weight"])
+        try Self.writeJSON([
+            "weight_map": Dictionary(uniqueKeysWithValues: tensorNames.map {
+                ($0, "model-00001-of-00001.safetensors")
+            })
+        ], to: directory.appendingPathComponent("model.safetensors.index.json"))
+        try Self.writeSafetensorHeader(
+            tensorNames: tensorNames,
+            to: directory.appendingPathComponent("model-00001-of-00001.safetensors"))
+
+        let qualification = try qualify(directory)
+        XCTAssertEqual(qualification.canonicalModelType, "glm5_next")
+        XCTAssertTrue(qualification.isConditionalGeneration)
+        XCTAssertEqual(qualification.processorClass, "Glm5NextProcessor")
+        XCTAssertTrue(qualification.missingAssets.isEmpty)
+        XCTAssertTrue(qualification.isAssetUsable)
+
+        let omitted = "model.visual.blocks.1.attn.qkv.weight"
+        let incomplete = tensorNames.subtracting([omitted])
+        try Self.writeJSON([
+            "weight_map": Dictionary(uniqueKeysWithValues: incomplete.map {
+                ($0, "model-00001-of-00001.safetensors")
+            })
+        ], to: directory.appendingPathComponent("model.safetensors.index.json"))
+        try Self.writeSafetensorHeader(
+            tensorNames: incomplete,
+            to: directory.appendingPathComponent("model-00001-of-00001.safetensors"))
+        XCTAssertTrue(
+            try qualify(directory).missingAssets.contains(.visionWeights))
+    }
+
     func testOptionalVisionFailuresDoNotChangeBaseCacheCompleteness() throws {
         let mutations: [(String, (inout [String: Any], URL) throws -> Void)] = [
             ("processor", { _, directory in
@@ -943,6 +1000,30 @@ final class AFMMLXVisionAssetQualificationTests: XCTestCase {
             metadata["\(prefix).norm2.bias"] = ("F16", [32])
         }
         return metadata
+    }
+
+    private static func glmVisionTensorNames(depth: Int) -> Set<String> {
+        let leaves = [
+            "attn.k_norm.weight", "attn.proj.bias", "attn.proj.weight",
+            "attn.q_norm.weight", "attn.qkv.bias", "attn.qkv.weight",
+            "mlp.down_proj.bias", "mlp.down_proj.weight", "mlp.gate_proj.bias",
+            "mlp.gate_proj.weight", "mlp.up_proj.bias", "mlp.up_proj.weight",
+            "norm1.weight", "norm2.weight",
+        ]
+        var names = Set((0..<depth).flatMap { block in
+            leaves.map { "model.visual.blocks.\(block).\($0)" }
+        })
+        names.formUnion([
+            "model.visual.downsample.bias", "model.visual.downsample.weight",
+            "model.visual.merger.down_proj.weight",
+            "model.visual.merger.gate_proj.weight",
+            "model.visual.merger.post_projection_norm.bias",
+            "model.visual.merger.post_projection_norm.weight",
+            "model.visual.merger.proj.weight", "model.visual.merger.up_proj.weight",
+            "model.visual.patch_embed.proj.bias", "model.visual.patch_embed.proj.weight",
+            "model.visual.post_layernorm.weight",
+        ])
+        return names
     }
 
     private func makeAmbiguousPatchEmbeddingDirectory(

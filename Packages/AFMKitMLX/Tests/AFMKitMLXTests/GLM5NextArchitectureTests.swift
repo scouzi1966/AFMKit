@@ -34,6 +34,19 @@ final class GLM5NextArchitectureTests: XCTestCase {
         XCTAssertEqual(config.textConfig.layerTypes, ["linear_attention", "deepseek_sparse_attention"])
     }
 
+    func testUnsupportedSharedIndexerConfigurationFailsClosed() throws {
+        let data = try XCTUnwrap(tinyConfigurationData())
+        var object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: data) as? [String: Any])
+        var text = try XCTUnwrap(object["text_config"] as? [String: Any])
+        text["indexer_types"] = ["full", "shared"]
+        object["text_config"] = text
+        let incompatible = try JSONSerialization.data(withJSONObject: object)
+
+        XCTAssertThrowsError(
+            try JSONDecoder().decode(GLM5NextConfiguration.self, from: incompatible))
+    }
+
     func testRegistryCreatesWrapperAndFlatTextModels() async throws {
         let wrapperData = try XCTUnwrap(tinyConfigurationData())
         let wrapper = try await LLMTypeRegistry.shared.createModel(

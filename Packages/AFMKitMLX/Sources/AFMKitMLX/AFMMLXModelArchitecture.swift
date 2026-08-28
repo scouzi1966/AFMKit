@@ -221,6 +221,7 @@ public enum AFMMLXModelArchitecture {
         "idefics3",
         "gemma3",
         "gemma4",
+        "glm5_next",
         "smolvlm",
         "fastvlm",
         "llava_qwen2",
@@ -382,7 +383,9 @@ public enum AFMMLXModelArchitecture {
         "qwen3.6-",
         "qwen3.6_",
         "qwen3.8-",
-        "qwen3.8_"
+        "qwen3.8_",
+        "glm-5.3-",
+        "glm_5.3_"
     ]
 
     public static let visionNamePatterns: [String] = [
