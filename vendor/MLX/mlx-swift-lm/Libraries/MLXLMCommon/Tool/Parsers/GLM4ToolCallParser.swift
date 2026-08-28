@@ -21,8 +21,14 @@ public struct GLM4ToolCallParser: ToolCallParser, Sendable {
         }
         text = text.trimmingCharacters(in: .whitespacesAndNewlines)
 
+        // A tool without parameters is serialized as just its function name.
+        // Reject dangling argument markup rather than accepting a malformed call.
+        guard let argKeyStart = text.range(of: "<arg_key>") else {
+            guard !text.isEmpty, !text.contains("<arg_") else { return nil }
+            return ToolCall(function: .init(name: text, arguments: [:]))
+        }
+
         // Extract function name (everything before first <arg_key>)
-        guard let argKeyStart = text.range(of: "<arg_key>") else { return nil }
         let funcName = String(text[..<argKeyStart.lowerBound]).trimmingCharacters(
             in: .whitespacesAndNewlines)
 

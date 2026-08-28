@@ -416,7 +416,7 @@ var targets: [Target] = [
         name: "AFMKitMLXTests",
         dependencies: [
             "AFMKitMLX", "AFMKitCore", "AFMKitServices", "AFMOpenAICompat",
-            "MLXLLM", "MLXLMCommon"
+            "MLXLMCommon", "MLXLLM", "MLX", "MLXNN"
         ],
         path: "Packages/AFMKitMLX/Tests/AFMKitMLXTests"
     ),

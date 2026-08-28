@@ -51,12 +51,35 @@ final class AFMMLXModelArchitectureTests: XCTestCase {
         XCTAssertTrue(AFMMLXModelArchitecture.isSupported("qwen4_exp"))
         XCTAssertTrue(AFMMLXModelArchitecture.isSupported("qwen3_vl"))
         XCTAssertTrue(AFMMLXModelArchitecture.isSupported("deepseek_v4"))
+        XCTAssertTrue(AFMMLXModelArchitecture.isSupported("glm5_next"))
         XCTAssertTrue(AFMMLXModelArchitecture.isSupported("afmoe"))
         XCTAssertTrue(AFMMLXModelArchitecture.isSupported("muse_glimmer"))
         XCTAssertFalse(AFMMLXModelArchitecture.isSupported("unknown_arch"))
 
         XCTAssertTrue(AFMMLXModelArchitecture.crashesMetal("afmoe"))
         XCTAssertFalse(AFMMLXModelArchitecture.crashesMetal("qwen3"))
+    }
+
+    func testGLM53FlashUsesTextFactoryForConvertedCheckpoint() throws {
+        let config: [String: Any] = [
+            "model_type": "glm5_next",
+            "architectures": ["Glm5NextForConditionalGeneration"],
+            "text_config": [
+                "model_type": "glm5_next_text",
+                "num_attention_heads": 64,
+            ],
+            "vision_config": ["model_type": "glm5_next_vision"],
+        ]
+
+        let preflight = try AFMMLXModelArchitecture.preflightConfiguration(
+            config, modelID: "converted/GLM-5.3-Flash-MLX")
+
+        XCTAssertEqual(preflight.canonicalModelType, "glm5_next")
+        XCTAssertFalse(preflight.isVisionConfiguration)
+        XCTAssertFalse(preflight.requiresVisionModelFactory)
+        XCTAssertEqual(
+            AFMMLXModelFactoryPolicy.initialFactory(forceVLM: false, architecture: preflight),
+            .llm)
     }
 
     func testLanguageVisionAndDualModeClassification() {

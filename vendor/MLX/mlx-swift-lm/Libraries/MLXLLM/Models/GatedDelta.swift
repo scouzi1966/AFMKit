@@ -19,6 +19,18 @@ func computeG(_ ALog: MLXArray, _ a: MLXArray, _ dtBias: MLXArray) -> MLXArray {
     return result.asType(ALog.dtype)
 }
 
+/// Compute the bounded GLM-5.3 decay used by Kimi Delta Attention.
+/// `lowerBound` is a negative log-decay floor (the published checkpoint uses -5).
+func computeGSafe(
+    _ ALog: MLXArray, _ a: MLXArray, _ dtBias: MLXArray, lowerBound: Float
+) -> MLXArray {
+    MLX.exp(
+        lowerBound * sigmoid(
+            MLX.exp(ALog.asType(.float32)) * (a + dtBias)
+        )
+    ).asType(a.dtype)
+}
+
 // MARK: - Metal Kernel
 
 private func makeGatedDeltaKernel(hasMask: Bool, vectorized: Bool, fuseGating: Bool = false) -> MLXFast.MLXFastKernel? {
@@ -424,17 +436,37 @@ func gatedDeltaUpdate(
     ALog: MLXArray, dtBias: MLXArray,
     state: MLXArray? = nil,
     mask: MLXArray? = nil,
-    useKernel: Bool = true
+    useKernel: Bool = true,
+    lowerBound: Float? = nil
 ) -> (MLXArray, MLXArray) {
     var currentState = state
     if currentState == nil {
-        let (B, _, Hk, Dk) = q.shape4
+        let (B, _, _, Dk) = q.shape4
         let Hv = v.dim(2)
         let Dv = v.dim(3)
         currentState = MLXArray.zeros([B, Hv, Dv, Dk], dtype: q.dtype)
     }
 
-    if !useKernel {
+    let requiresExplicitGate = lowerBound != nil || a.ndim == 4
+    let kernelCompatible = Device.defaultDevice().deviceType == .gpu
+        && q.dim(-1) >= 32 && q.dim(-1) % 32 == 0
+
+    if requiresExplicitGate {
+        let beta = sigmoid(b)
+        let g = lowerBound.map {
+            computeGSafe(ALog, a, dtBias, lowerBound: $0)
+        } ?? computeG(ALog, a, dtBias)
+        if useKernel && kernelCompatible {
+            return gatedDeltaKernel(
+                q: q, k: k, v: v, g: g, beta: beta,
+                state: currentState!, mask: mask)
+        }
+        return gatedDeltaOps(
+            q: q, k: k, v: v, g: g, beta: beta,
+            state: currentState, mask: mask)
+    }
+
+    if !useKernel || !kernelCompatible {
         let beta = sigmoid(b)
         let g = computeG(ALog, a, dtBias)
         return gatedDeltaOps(q: q, k: k, v: v, g: g, beta: beta, state: currentState, mask: mask)

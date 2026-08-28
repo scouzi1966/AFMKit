@@ -134,7 +134,7 @@ public enum ToolCallFormat: String, Sendable, Codable, CaseIterable {
         case "lfm2", "lfm2_moe":
             return .lfm2
         case "glm4", "glm4_moe", "glm4_moe_lite",
-             "glm_moe_dsa":
+             "glm_moe_dsa", "glm5_next", "glm5_next_text":
             return .glm4
         case "gemma", "gemma3_text":
             return .gemma
