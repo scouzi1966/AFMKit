@@ -187,6 +187,24 @@ final class GLM5NextArchitectureTests: XCTestCase {
         XCTAssertEqual((caches[1] as? CacheList)?[1].offset, 3)
     }
 
+    func testHybridAttentionUsesOneCheckpointModulePerSelfAttentionKey() throws {
+        let data = try XCTUnwrap(tinyConfigurationData())
+        let config = try JSONDecoder().decode(GLM5NextConfiguration.self, from: data)
+        let model = GLM5NextModel(config)
+        let flattened = Dictionary(uniqueKeysWithValues: model.parameters().flattened())
+        let linearKey = "model.layers.0.self_attn.q_proj.weight"
+        let sparseKey = "model.layers.1.self_attn.q_a_proj.weight"
+
+        XCTAssertNotNil(flattened[linearKey])
+        XCTAssertNotNil(flattened[sparseKey])
+        try model.update(
+            parameters: ModuleParameters.unflattened([
+                linearKey: try XCTUnwrap(flattened[linearKey]),
+                sparseKey: try XCTUnwrap(flattened[sparseKey]),
+            ]),
+            verify: [.noUnusedKeys])
+    }
+
     func testKDAKeepsRecurrentStateInFloat32ForHalfPrecisionModel() throws {
         let data = try XCTUnwrap(tinyConfigurationData())
         let config = try JSONDecoder().decode(GLM5NextConfiguration.self, from: data)

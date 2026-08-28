@@ -42,6 +42,15 @@ final class GLM5NextVisionTests: XCTestCase {
         XCTAssertEqual(glm.kvHeads, [0, 1])
     }
 
+    func testVLMExposesLinearAttentionAtCanonicalLanguageModelPath() throws {
+        let config = try JSONDecoder().decode(
+            GLM5NextVLConfiguration.self, from: try modelConfigurationData())
+        let model = GLM5NextVLModel(config)
+        let keys = Set(model.parameters().flattened().map { $0.0 })
+
+        XCTAssertTrue(keys.contains("language_model.model.layers.0.self_attn.q_proj.weight"))
+    }
+
     func testVLMRetainsTextTrunkMTPWithoutLoadingItForOrdinaryUse() throws {
         let config = try JSONDecoder().decode(
             GLM5NextVLConfiguration.self, from: try modelConfigurationData())
