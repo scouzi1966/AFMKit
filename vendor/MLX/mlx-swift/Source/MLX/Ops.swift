@@ -2393,6 +2393,32 @@ public func quantized(
     return (arrays[0], arrays[1], arrays.count > 2 ? arrays[2] : nil)
 }
 
+/// Decode raw E4M3 FP8 payload bytes into a real floating-point array.
+///
+/// SafeTensor readers expose `F8_E4M3` storage as ``DType/uint8`` because MLX
+/// does not model FP8 as a first-class array dtype. Callers must therefore
+/// validate the source format out-of-band before invoking this function; an
+/// arbitrary UInt8 array is not evidence that its bytes contain FP8 values.
+///
+/// - Parameters:
+///   - x: Raw E4M3 bytes represented as a UInt8 array.
+///   - dtype: Floating-point output dtype. Defaults to Float32 so block-scale
+///     multiplication can be performed without first rounding to half precision.
+///   - stream: Stream or device used to evaluate the operation.
+/// - Returns: The decoded floating-point array.
+public func fromFP8(
+    _ x: MLXArray,
+    dtype: DType = .float32,
+    stream: StreamOrDevice = .default
+) -> MLXArray {
+    precondition(x.dtype == .uint8, "fromFP8 requires raw UInt8 storage")
+    precondition(dtype.isFloatingPoint && !dtype.isComplex,
+                 "fromFP8 requires a real floating-point output dtype")
+    var result = mlx_array_new()
+    mlx_from_fp8(&result, x.ctx, dtype.cmlxDtype, stream.ctx)
+    return MLXArray(result)
+}
+
 @available(
     *, deprecated, renamed: "quantizedMM(_:_:scales:biases:transpose:groupSize:bits:mode:stream:)"
 )

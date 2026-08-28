@@ -39,6 +39,11 @@
       "target": "s:15AFMKitDwarfStar08AFMDwarfC10ProjectionV"
     },
     {
+      "kind": "memberOf",
+      "source": "s:15AFMKitDwarfStar08AFMDwarfC10ProjectionV24validateMetadataTemplate2aty10Foundation3URLV_tKFZ",
+      "target": "s:15AFMKitDwarfStar08AFMDwarfC10ProjectionV"
+    },
+    {
       "kind": "conformsTo",
       "source": "s:15AFMKitDwarfStar08AFMDwarfC11HubResolverV",
       "target": "s:s16SendableMetatypeP",
@@ -695,6 +700,169 @@
       "pathComponents": [
         "AFMDwarfStarProjection",
         "writeMetadataTemplate(from:to:)"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "static"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "keyword",
+          "spelling": "func"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "validateMetadataTemplate"
+        },
+        {
+          "kind": "text",
+          "spelling": "("
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "at"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "internalParam",
+          "spelling": "sourceGGUF"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:10Foundation3URLV",
+          "spelling": "URL"
+        },
+        {
+          "kind": "text",
+          "spelling": ") "
+        },
+        {
+          "kind": "keyword",
+          "spelling": "throws"
+        }
+      ],
+      "docComment": {
+        "lines": [
+          {
+            "text": "Parses a GGUF metadata template without writing output or loading tensor"
+          },
+          {
+            "text": "payloads. Call this before a long conversion so malformed templates fail"
+          },
+          {
+            "text": "before any checkpoint work begins."
+          }
+        ],
+        "module": "AFMKitDwarfStar"
+      },
+      "functionSignature": {
+        "parameters": [
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "sourceGGUF"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:10Foundation3URLV",
+                "spelling": "URL"
+              }
+            ],
+            "internalName": "sourceGGUF",
+            "name": "at"
+          }
+        ],
+        "returns": [
+          {
+            "kind": "text",
+            "spelling": "()"
+          }
+        ]
+      },
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:15AFMKitDwarfStar08AFMDwarfC10ProjectionV24validateMetadataTemplate2aty10Foundation3URLV_tKFZ"
+      },
+      "kind": {
+        "displayName": "Type Method",
+        "identifier": "swift.type.method"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "static"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "keyword",
+            "spelling": "func"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "validateMetadataTemplate"
+          },
+          {
+            "kind": "text",
+            "spelling": "("
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "at"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:10Foundation3URLV",
+            "spelling": "URL"
+          },
+          {
+            "kind": "text",
+            "spelling": ") "
+          },
+          {
+            "kind": "keyword",
+            "spelling": "throws"
+          }
+        ],
+        "title": "validateMetadataTemplate(at:)"
+      },
+      "pathComponents": [
+        "AFMDwarfStarProjection",
+        "validateMetadataTemplate(at:)"
       ]
     },
     {

@@ -30,6 +30,7 @@ public class ToolCallProcessor {
     private let tools: [[String: any Sendable]]?
     private var state = State.normal
     private var toolCallBuffer = ""
+    private var activeEndTag: String?
 
     /// The tool calls extracted during processing.
     public var toolCalls: [ToolCall] = []
@@ -38,8 +39,12 @@ public class ToolCallProcessor {
 
     private enum State {
         case normal
-        case potentialToolCall
         case collectingToolCall
+    }
+
+    private struct TagPair {
+        let start: String
+        let end: String
     }
 
     // MARK: - Initialization
@@ -57,12 +62,18 @@ public class ToolCallProcessor {
 
     /// Whether this processor uses inline format (no start/end tags).
     private var isInlineFormat: Bool {
-        parser.startTag == nil || parser.endTag == nil
+        tagPairs.isEmpty
     }
 
-    /// The first character of the start tag for quick detection.
-    private var startTagFirstChar: Character? {
-        parser.startTag?.first
+    private var tagPairs: [TagPair] {
+        var result: [TagPair] = []
+        if let start = parser.startTag, let end = parser.endTag {
+            result.append(TagPair(start: start, end: end))
+        }
+        if let start = parser.alternateStartTag, let end = parser.alternateEndTag {
+            result.append(TagPair(start: start, end: end))
+        }
+        return result
     }
 
     // MARK: - Public Methods
@@ -75,6 +86,39 @@ public class ToolCallProcessor {
             return processInlineChunk(chunk)
         }
         return processTaggedChunk(chunk)
+    }
+
+    /// Remove completed calls in generation order.
+    ///
+    /// `generateTask` uses this method directly, so tests can exercise the
+    /// production FIFO and `stopAfterToolCall` queue semantics without a model.
+    public func drainToolCalls(stopAfterFirst: Bool = false) -> [ToolCall] {
+        let count = stopAfterFirst ? min(1, toolCalls.count) : toolCalls.count
+        guard count > 0 else { return [] }
+
+        let drained = Array(toolCalls.prefix(count))
+        toolCalls.removeFirst(count)
+        return drained
+    }
+
+    /// Return raw tagged content that remained incomplete when generation ended.
+    ///
+    /// Tagged parsers must not silently consume a partial call. AFM's provider
+    /// fallback owns incomplete-call salvage, so normal EOS/token-limit
+    /// completion forwards this text downstream. Inline parsers already return
+    /// every chunk as passthrough while incomplete and therefore have nothing
+    /// additional to flush.
+    public func finishPendingText() -> String? {
+        guard !isInlineFormat else {
+            toolCallBuffer = ""
+            return nil
+        }
+
+        let pending = toolCallBuffer
+        state = .normal
+        activeEndTag = nil
+        toolCallBuffer = ""
+        return pending.isEmpty ? nil : pending
     }
 
     // MARK: - Private Methods
@@ -95,106 +139,85 @@ public class ToolCallProcessor {
 
     /// Process chunk for tagged formats.
     private func processTaggedChunk(_ chunk: String) -> String? {
-        guard let startTag = parser.startTag,
-            let startChar = startTagFirstChar
-        else {
-            return chunk
-        }
-
-        guard (state == .normal && chunk.contains(startChar)) || state != .normal else {
-            return chunk
-        }
-
-        toolCallBuffer += chunk
-        var leadingToken: String?
-
         switch state {
         case .normal:
-            // Change state to potential tool call
-            state = .potentialToolCall
-
-            leadingToken = separateToken(
-                from: &toolCallBuffer, separator: String(startChar), returnLeading: true)
-
-            fallthrough
-        case .potentialToolCall:
-            if partialMatch(buffer: toolCallBuffer, tag: startTag) {
-                if toolCallBuffer.starts(with: startTag) {
-                    state = .collectingToolCall
-                    fallthrough
-                } else {
-                    return nil
-                }
-            } else {
-                // Otherwise, return the collected text and reset the state
-                state = .normal
-                let buffer = toolCallBuffer
-                toolCallBuffer = ""
-                return (leadingToken ?? "") + buffer
-            }
+            return beginTaggedCall(in: chunk)
         case .collectingToolCall:
-            guard let endTag = parser.endTag else {
-                return nil
-            }
-
-            if toolCallBuffer.contains(endTag) {
-                // Separate the trailing token
-                let trailingToken = separateToken(
-                    from: &toolCallBuffer, separator: endTag, returnLeading: false)
-
-                // Parse the tool call using the parser
-                if let toolCall = parser.parse(content: toolCallBuffer, tools: tools) {
-                    toolCalls.append(toolCall)
-                }
-
-                state = .normal
-                toolCallBuffer = ""
-
-                // If the token contains the start character, there may be more tool calls to come
-                if let trailingToken, let startChar = startTagFirstChar,
-                    trailingToken.contains(startChar)
-                {
-                    return processChunk(trailingToken)
-                } else {
-                    // Otherwise, return the collected token, or nil if it's empty
-                    return trailingToken?.isEmpty ?? true ? nil : trailingToken
-                }
-            } else {
-                return nil
-            }
+            toolCallBuffer += chunk
+            return finishTaggedCallIfComplete()
         }
     }
 
-    /// Separates a token from a string buffer based on a separator
-    /// - Parameters:
-    ///   - buffer: The string buffer to modify
-    ///   - separator: The separator string to search for
-    ///   - returnLeading: If true, returns text before separator; if false, returns text after
-    /// - Returns: The separated token, or nil if separator not found
-    private func separateToken(from buffer: inout String, separator: String, returnLeading: Bool)
-        -> String?
-    {
-        guard let range = buffer.range(of: separator) else { return nil }
+    private func beginTaggedCall(in chunk: String) -> String? {
+        let input = toolCallBuffer + chunk
+        toolCallBuffer = ""
 
-        let token: String
-        if returnLeading {
-            token = String(buffer[..<range.lowerBound])
-            buffer = String(buffer[range.lowerBound...])
+        let matches: [(pair: TagPair, range: Range<String.Index>)] = tagPairs.compactMap { pair in
+            input.range(of: pair.start).map { (pair, $0) }
+        }
+
+        if let match = matches.min(by: { $0.range.lowerBound < $1.range.lowerBound }) {
+            let leadingText = String(input[..<match.range.lowerBound])
+            toolCallBuffer = String(input[match.range.lowerBound...])
+            activeEndTag = match.pair.end
+            state = .collectingToolCall
+
+            let completedText = finishTaggedCallIfComplete() ?? ""
+            let output = leadingText + completedText
+            return output.isEmpty ? nil : output
+        }
+
+        let partialLength = longestStartTagPrefixSuffixLength(in: input)
+        if partialLength > 0 {
+            toolCallBuffer = String(input.suffix(partialLength))
+            let output = String(input.dropLast(partialLength))
+            return output.isEmpty ? nil : output
+        }
+
+        return input.isEmpty ? nil : input
+    }
+
+    private func finishTaggedCallIfComplete() -> String? {
+        guard let endTag = activeEndTag,
+            let endRange = toolCallBuffer.range(of: endTag)
+        else { return nil }
+
+        let captured = String(toolCallBuffer[..<endRange.upperBound])
+        let trailingText = String(toolCallBuffer[endRange.upperBound...])
+        let parsedCall = parser.parse(content: captured, tools: tools)
+
+        state = .normal
+        activeEndTag = nil
+        toolCallBuffer = ""
+
+        var output = ""
+        if let parsedCall {
+            toolCalls.append(parsedCall)
         } else {
-            token = String(buffer[range.upperBound...])
-            buffer = String(buffer[..<range.upperBound])
+            // A strict parse failure must remain visible to AFM's raw fallback,
+            // which owns compatibility repair and coercion.
+            output = captured
         }
 
-        return token
+        if !trailingText.isEmpty, let trailingOutput = processTaggedChunk(trailingText) {
+            output += trailingOutput
+        }
+        return output.isEmpty ? nil : output
     }
 
-    private func partialMatch(buffer: String, tag: String) -> Bool {
-        for (tagIndex, bufferIndex) in zip(tag.indices, buffer.indices) {
-            if buffer[bufferIndex] != tag[tagIndex] {
-                return false
+    private func longestStartTagPrefixSuffixLength(in input: String) -> Int {
+        var best = 0
+        for pair in tagPairs {
+            let maximum = min(input.count, max(0, pair.start.count - 1))
+            guard maximum > best else { continue }
+
+            for length in stride(from: maximum, through: best + 1, by: -1) {
+                if pair.start.hasPrefix(String(input.suffix(length))) {
+                    best = length
+                    break
+                }
             }
         }
-
-        return true
+        return best
     }
 }

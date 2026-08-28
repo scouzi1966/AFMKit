@@ -887,8 +887,11 @@ public final class AFMMLXModel: AFMModel, AFMTextTokenizing, AFMPrewarmableModel
 struct AFMMLXRawToolStreamFallback {
     private static let defaultDeepseekToolCallStartTag = "<｜DSML｜tool_calls>"
     private static let defaultDeepseekToolCallEndTag = "</｜DSML｜tool_calls>"
+    private static let defaultQwenToolCallStartTag = "<tool_call>"
+    private static let defaultQwenToolCallEndTag = "</tool_call>"
 
-    private let toolCallStartTag: String?
+    private let toolCallStartTag: String
+    private let isQwenNativeXML: Bool
     private let runtime: ToolCallStreamingRuntime?
 
     init(
@@ -900,9 +903,15 @@ struct AFMMLXRawToolStreamFallback {
         applyFixToolArgs: @escaping @Sendable (ResponseToolCall) -> ResponseToolCall,
         remapSingleKey: @escaping @Sendable (String, String) -> String
     ) {
-        let startTag = toolCallStartTag ?? Self.defaultDeepseekToolCallStartTag
-        let endTag = toolCallEndTag ?? Self.defaultDeepseekToolCallEndTag
+        let isQwenNativeXML = toolCallParser == "qwen3_xml"
+        let startTag = toolCallStartTag ?? (isQwenNativeXML
+            ? Self.defaultQwenToolCallStartTag
+            : Self.defaultDeepseekToolCallStartTag)
+        let endTag = toolCallEndTag ?? (isQwenNativeXML
+            ? Self.defaultQwenToolCallEndTag
+            : Self.defaultDeepseekToolCallEndTag)
         self.toolCallStartTag = startTag
+        self.isQwenNativeXML = isQwenNativeXML
         if isEnabled, tools?.isEmpty == false {
             self.runtime = ToolCallStreamingRuntime(
                 toolCallStartTag: startTag,
@@ -928,7 +937,19 @@ struct AFMMLXRawToolStreamFallback {
         var chunks: [StreamChunk] = []
         var toolPiece = chunk.text
         if !runtime.inToolCall,
-           let toolCallStartTag,
+           isQwenNativeXML,
+           !toolPiece.contains(toolCallStartTag),
+           let bareRange = toolPiece.range(of: "<function=") {
+            let prefix = String(toolPiece[..<bareRange.lowerBound])
+            if !prefix.isEmpty {
+                chunks.append(StreamChunk(text: prefix))
+            }
+            // Native XML also permits the legacy bare function form. Route an
+            // incomplete bare call through the existing Qwen salvage runtime
+            // by supplying only the missing outer envelope start.
+            toolPiece = toolCallStartTag + String(toolPiece[bareRange.lowerBound...])
+        }
+        if !runtime.inToolCall,
            let range = toolPiece.range(of: toolCallStartTag),
            range.lowerBound != toolPiece.startIndex {
             chunks.append(StreamChunk(text: String(toolPiece[..<range.lowerBound])))
@@ -1004,8 +1025,13 @@ public enum AFMMLXModelDescriptor {
         let generation = directory.flatMap {
             jsonObject(at: $0.appendingPathComponent("generation_config.json"))
         }
-        let template = tokenizer?["chat_template"] as? String ?? ""
+        let templates = AFMMLXChatTemplateAssets.templates(
+            in: directory,
+            tokenizerConfig: tokenizer
+        )
         let lowerID = modelID.lowercased()
+        let canonicalModelType = (config?["model_type"] as? String)
+            .map(AFMMLXModelArchitecture.canonicalModelType)
 
         var capabilities: AFMModelCapabilities = [
             .text, .streaming, .structuredOutput, .prefixCaching
@@ -1017,12 +1043,16 @@ public enum AFMMLXModelDescriptor {
             "qwen3", "deepseek-r", "glm-4", "glm-5", "kimi", "qwq",
             "marco-o1", "skywork-o1", "ling-", "nemotron", "minimax", "gpt-oss"
         ]
-        if template.contains("<think>")
+        if templates.contains(where: { $0.contains("<think>") })
             || generation?["enable_thinking"] as? Bool == true
             || reasoningPatterns.contains(where: lowerID.contains) {
             capabilities.insert(.reasoning)
         }
-        if template.contains("tools") || template.contains("tool_call") {
+        // DeepSeek V4 uses AFMKit's native chat encoder, so converted checkpoints
+        // remain tool-capable even when they do not ship a Jinja chat template.
+        let usesNativeToolEncoder = canonicalModelType == "deepseek_v4"
+        if usesNativeToolEncoder
+            || templates.contains(where: { $0.contains("tools") || $0.contains("tool_call") }) {
             capabilities.insert(.toolCalling)
         }
         if let directory,

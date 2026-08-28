@@ -19,12 +19,27 @@ public protocol ToolCallParser: Sendable {
     /// Returns `nil` for inline formats that don't use wrapper tags.
     var endTag: String? { get }
 
+    /// An optional second start tag accepted by the streaming processor.
+    ///
+    /// Parsers use this when a model family emits both a wrapped native form
+    /// and a legacy bare form. The parser still receives the complete matched
+    /// envelope in either case.
+    var alternateStartTag: String? { get }
+
+    /// The end tag paired with ``alternateStartTag``.
+    var alternateEndTag: String? { get }
+
     /// Parse the content into a `ToolCall`.
     /// - Parameters:
     ///   - content: The text content to parse (may include tags)
     ///   - tools: Optional tool schemas for type-aware parsing
     /// - Returns: A `ToolCall` if parsing succeeds, `nil` otherwise
     func parse(content: String, tools: [[String: any Sendable]]?) -> ToolCall?
+}
+
+extension ToolCallParser {
+    public var alternateStartTag: String? { nil }
+    public var alternateEndTag: String? { nil }
 }
 
 // MARK: - ToolCallFormat Enum

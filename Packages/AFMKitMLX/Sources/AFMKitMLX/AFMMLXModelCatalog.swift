@@ -4,6 +4,34 @@ import MLXLMCommon
 import MLXLLM
 import MLXVLM
 
+enum AFMMLXChatTemplateAssets {
+    static func templates(
+        in modelDirectory: URL?,
+        tokenizerConfig: [String: Any]?
+    ) -> [String] {
+        var templates = embeddedTemplates(in: tokenizerConfig)
+        if let modelDirectory,
+           let standaloneTemplate = try? String(
+               contentsOf: modelDirectory.appendingPathComponent("chat_template.jinja"),
+               encoding: .utf8
+           ) {
+            templates.append(standaloneTemplate)
+        }
+        return templates
+    }
+
+    private static func embeddedTemplates(in tokenizerConfig: [String: Any]?) -> [String] {
+        guard let tokenizerConfig else { return [] }
+        if let template = tokenizerConfig["chat_template"] as? String {
+            return [template]
+        }
+        if let templates = tokenizerConfig["chat_template"] as? [[String: Any]] {
+            return templates.compactMap { $0["template"] as? String }
+        }
+        return []
+    }
+}
+
 public struct AFMMLXGenerationPreset: Hashable, Sendable {
     public var temperature: Double?
     public var topP: Double?
@@ -111,20 +139,16 @@ public struct AFMMLXLocalModelMetadata: Hashable, Sendable {
         let config = jsonObject(at: modelDirectory.appendingPathComponent("config.json"))
         let tokenizer = jsonObject(at: modelDirectory.appendingPathComponent("tokenizer_config.json"))
         let generation = jsonObject(at: modelDirectory.appendingPathComponent("generation_config.json"))
-        let jinja = try? String(
-            contentsOf: modelDirectory.appendingPathComponent("chat_template.jinja"),
-            encoding: .utf8
+        let templates = AFMMLXChatTemplateAssets.templates(
+            in: modelDirectory,
+            tokenizerConfig: tokenizer
         )
-
-        let templates = chatTemplates(in: tokenizer)
         let templateDefaultsToThinking = templates.contains(where: chatTemplateDefaultsToThinking)
-            || jinja.map(chatTemplateDefaultsToThinking) == true
         let generationDefaultsToThinking = generation?["enable_thinking"] as? Bool == true
         let implicitReasoning = templateDefaultsToThinking
             || generationDefaultsToThinking
             || modelNameLooksReasoningCapable(modelName)
         let templateSupportsThinkingToggle = templates.contains { $0.contains("enable_thinking") }
-            || jinja?.contains("enable_thinking") == true
 
         return AFMMLXLocalModelMetadata(
             modelType: config?["model_type"] as? String,
@@ -146,17 +170,6 @@ public struct AFMMLXLocalModelMetadata: Hashable, Sendable {
             return nil
         }
         return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-    }
-
-    private static func chatTemplates(in tokenizerConfig: [String: Any]?) -> [String] {
-        guard let tokenizerConfig else { return [] }
-        if let template = tokenizerConfig["chat_template"] as? String {
-            return [template]
-        }
-        if let templates = tokenizerConfig["chat_template"] as? [[String: Any]] {
-            return templates.compactMap { $0["template"] as? String }
-        }
-        return []
     }
 
     private static func chatTemplateDefaultsToThinking(_ template: String) -> Bool {
