@@ -553,7 +553,26 @@ final class GLM5NextCheckpointConverterTests: XCTestCase {
             output: output,
             sourceRevision: revision)) { error in
                 XCTAssertTrue(error.localizedDescription.contains("outside the current conversion plan"))
-            }
+        }
+    }
+
+    func testNewDestinationResumeInspectionReturnsZeroWithoutCreatingState() throws {
+        let source = try makeFixture()
+        let output = source.deletingLastPathComponent()
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer {
+            try? FileManager.default.removeItem(at: source)
+            try? FileManager.default.removeItem(at: output)
+        }
+
+        let result = try GLM5NextCheckpointConverter.inspectResume(
+            source: source,
+            output: output,
+            sourceRevision: String(repeating: "a", count: 40))
+
+        XCTAssertEqual(result.verifiedCompletedOutputBytes, 0)
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: output.appendingPathComponent(".afm-mlx-conversion.json").path))
     }
 
     func testDispatcherPreservesDeepSeekProfilesAndDetectsGLM() throws {

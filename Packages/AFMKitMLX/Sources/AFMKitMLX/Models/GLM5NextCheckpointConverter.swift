@@ -244,14 +244,19 @@ public struct GLM5NextCheckpointConverter {
         sourceRevision: String? = nil
     ) throws -> ResumeInspection {
         let paths = try validatedPaths(source: source, output: output)
-        let checkpoint = try loadSource(
-            paths.source, explicitRevision: sourceRevision, fingerprintContents: true)
         let stateURL = paths.output.appendingPathComponent(".afm-mlx-conversion.json")
         guard FileManager.default.fileExists(atPath: stateURL.path) else {
+            // A new destination has nothing to credit. Validate/infer source
+            // provenance without hashing the complete ~328 GB checkpoint; run()
+            // performs the authoritative content fingerprint before writing.
+            let checkpoint = try loadSource(
+                paths.source, explicitRevision: sourceRevision, fingerprintContents: false)
             return ResumeInspection(
                 sourceRevision: checkpoint.revision,
                 verifiedCompletedOutputBytes: 0)
         }
+        let checkpoint = try loadSource(
+            paths.source, explicitRevision: sourceRevision, fingerprintContents: true)
         let state: State
         do {
             state = try JSONDecoder().decode(State.self, from: Data(contentsOf: stateURL))
@@ -532,39 +537,17 @@ public struct GLM5NextCheckpointConverter {
         source: URL,
         output: URL
     ) throws -> (source: URL, output: URL) {
-        let sourceURL = source.standardizedFileURL
-        let outputURL = output.standardizedFileURL
-        guard sourceURL.isFileURL, outputURL.isFileURL else {
+        do {
+            let paths = try CheckpointConversionPathSafety.validate(
+                source: source, output: output)
+            return (paths.source, paths.output)
+        } catch CheckpointConversionPathSafety.PathError.nonLocal {
             throw ConversionError.invalidSource(
                 "GLM-5.3 conversion requires local filesystem paths; remote download is not supported.")
-        }
-        let resolvedSource = sourceURL.resolvingSymlinksInPath()
-        let resolvedOutput = outputURL.resolvingSymlinksInPath()
-        guard !isFilesystemOrVolumeRoot(resolvedOutput),
-              !contains(resolvedSource, resolvedOutput),
-              !contains(resolvedOutput, resolvedSource)
-        else {
+        } catch {
             throw ConversionError.unsafeOutput(
                 "Conversion output cannot be a filesystem or volume root, and source/output must be separate directories with neither containing the other, including through symlinks.")
         }
-        return (sourceURL, outputURL)
-    }
-
-    private static func contains(_ directory: URL, _ candidate: URL) -> Bool {
-        let parent = directory.standardizedFileURL.pathComponents
-        let child = candidate.standardizedFileURL.pathComponents
-        guard parent.count <= child.count else { return false }
-        return Array(child.prefix(parent.count)) == parent
-    }
-
-    private static func isFilesystemOrVolumeRoot(_ url: URL) -> Bool {
-        let resolved = url.standardizedFileURL.resolvingSymlinksInPath()
-        if resolved.path == "/" { return true }
-        return FileManager.default.mountedVolumeURLs(
-            includingResourceValuesForKeys: nil,
-            options: [.skipHiddenVolumes])?.contains {
-                $0.standardizedFileURL.resolvingSymlinksInPath() == resolved
-            } ?? false
     }
 
     private static func loadSource(

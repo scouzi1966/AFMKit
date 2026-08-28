@@ -68,7 +68,9 @@ public struct DeepseekV4CheckpointConverter {
     let profile: Profile
     let progress: ProgressHandler?
 
-    private var stateURL: URL { output.appendingPathComponent(".afm-mlx-conversion.json") }
+    private var stateURL: URL {
+        output.standardizedFileURL.appendingPathComponent(".afm-mlx-conversion.json")
+    }
 
     public init(
         source: URL,
@@ -86,14 +88,9 @@ public struct DeepseekV4CheckpointConverter {
 
     public func run() throws {
         let fm = FileManager.default
-        let sourceURL = source.standardizedFileURL
-        let outputURL = output.standardizedFileURL
-        guard sourceURL != outputURL else {
-            throw ConversionError.unsafeOutput("Conversion output must differ from the source directory.")
-        }
-        guard !outputURL.path.hasPrefix(sourceURL.path + "/") else {
-            throw ConversionError.unsafeOutput("Conversion output cannot be inside the source checkpoint.")
-        }
+        let paths = try Self.validatedPaths(source: source, output: output)
+        let sourceURL = paths.source
+        let outputURL = paths.output
 
         try MLXMetalLibrary.ensureAvailable(verbose: true)
 
@@ -249,6 +246,23 @@ public struct DeepseekV4CheckpointConverter {
 
         report("Conversion complete: \(outputURL.path)")
         report("Run: afm mlx -m \(outputURL.path)")
+    }
+
+    static func validatedPaths(
+        source: URL,
+        output: URL
+    ) throws -> (source: URL, output: URL) {
+        do {
+            let paths = try CheckpointConversionPathSafety.validate(
+                source: source, output: output)
+            return (paths.source, paths.output)
+        } catch CheckpointConversionPathSafety.PathError.nonLocal {
+            throw ConversionError.invalidSource(
+                "DeepSeek conversion requires local filesystem paths; remote download is not supported.")
+        } catch {
+            throw ConversionError.unsafeOutput(
+                "Conversion output cannot be a filesystem or volume root, and source/output must be separate directories with neither containing the other, including through symlinks.")
+        }
     }
 
     private func report(_ message: String) {
