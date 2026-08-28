@@ -1004,7 +1004,10 @@ public enum AFMMLXModelDescriptor {
         let generation = directory.flatMap {
             jsonObject(at: $0.appendingPathComponent("generation_config.json"))
         }
-        let template = tokenizer?["chat_template"] as? String ?? ""
+        let templates = AFMMLXChatTemplateAssets.templates(
+            in: directory,
+            tokenizerConfig: tokenizer
+        )
         let lowerID = modelID.lowercased()
 
         var capabilities: AFMModelCapabilities = [
@@ -1017,12 +1020,12 @@ public enum AFMMLXModelDescriptor {
             "qwen3", "deepseek-r", "glm-4", "glm-5", "kimi", "qwq",
             "marco-o1", "skywork-o1", "ling-", "nemotron", "minimax", "gpt-oss"
         ]
-        if template.contains("<think>")
+        if templates.contains(where: { $0.contains("<think>") })
             || generation?["enable_thinking"] as? Bool == true
             || reasoningPatterns.contains(where: lowerID.contains) {
             capabilities.insert(.reasoning)
         }
-        if template.contains("tools") || template.contains("tool_call") {
+        if templates.contains(where: { $0.contains("tools") || $0.contains("tool_call") }) {
             capabilities.insert(.toolCalling)
         }
         if let directory,

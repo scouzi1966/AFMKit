@@ -751,6 +751,41 @@ final class AFMMLXProviderTests: XCTestCase {
         XCTAssertTrue(descriptor.capabilities.contains(.speculativeDecoding))
     }
 
+    func testDescriptorInfersToolCallingFromStandaloneChatTemplate() throws {
+        let root = try makeModelCache(
+            config: ["model_type": "qwen3_5"],
+            standaloneChatTemplate: "{% if tools %}<tool_call>{% endif %}"
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let descriptor = AFMMLXModelDescriptor.describe(
+            modelID: "test/model",
+            resolver: MLXCacheResolver(cacheRoot: root)
+        )
+
+        XCTAssertTrue(descriptor.capabilities.contains(.toolCalling))
+    }
+
+    func testDescriptorInfersToolCallingFromEmbeddedTemplateCollection() throws {
+        let root = try makeModelCache(
+            config: ["model_type": "test"],
+            tokenizer: [
+                "chat_template": [
+                    ["name": "default", "template": "ordinary chat template"],
+                    ["name": "tool_use", "template": "{% if tools %}<tool_call>{% endif %}"],
+                ]
+            ]
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let descriptor = AFMMLXModelDescriptor.describe(
+            modelID: "test/model",
+            resolver: MLXCacheResolver(cacheRoot: root)
+        )
+
+        XCTAssertTrue(descriptor.capabilities.contains(.toolCalling))
+    }
+
     func testDescriptorInfersVisionFromArchitectureMetadata() throws {
         let root = try makeModelCache(
             config: [
@@ -1017,6 +1052,7 @@ final class AFMMLXProviderTests: XCTestCase {
         config: [String: Any],
         tokenizer: [String: Any] = [:],
         generation: [String: Any] = [:],
+        standaloneChatTemplate: String? = nil,
         includeMTP: Bool = false
     ) throws -> URL {
         let root = FileManager.default.temporaryDirectory
@@ -1035,6 +1071,11 @@ final class AFMMLXProviderTests: XCTestCase {
             generation,
             to: model.appendingPathComponent("generation_config.json")
         )
+        if let standaloneChatTemplate {
+            try Data(standaloneChatTemplate.utf8).write(
+                to: model.appendingPathComponent("chat_template.jinja")
+            )
+        }
         try Data().write(to: model.appendingPathComponent("model.safetensors"))
         if includeMTP {
             try Data().write(to: model.appendingPathComponent("mtp.safetensors"))
