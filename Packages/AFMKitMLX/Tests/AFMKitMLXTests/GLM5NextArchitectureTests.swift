@@ -88,6 +88,14 @@ final class GLM5NextArchitectureTests: XCTestCase {
         XCTAssertEqual(config.textConfig.qkRopeHeadDim, 0)
     }
 
+    func testChatTemplateNumericDotIndexesUseEquivalentBracketSyntax() {
+        let template = "m.content.0.type tr.output.0.type entry.output.0.type"
+
+        XCTAssertEqual(
+            MLXModelService.patchNumericDotIndexesForSwiftJinja(template),
+            "m.content[0].type tr.output[0].type entry.output[0].type")
+    }
+
     func testFlatTextConfigurationAlsoDecodes() throws {
         let data = try XCTUnwrap(tinyConfigurationData(modelType: "glm5_next_text", nested: false))
         let config = try JSONDecoder().decode(GLM5NextConfiguration.self, from: data)

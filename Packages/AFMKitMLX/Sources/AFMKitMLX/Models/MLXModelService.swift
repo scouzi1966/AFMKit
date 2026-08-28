@@ -2296,6 +2296,10 @@ public final class MLXModelService:
                             print("[\(ts())] [ResponseTemplate] Detected Muse response channels — routing to=self to reasoning_content and to=user to content")
                         }
                     }
+                    if modelType == "glm5_next" || modelType == "glm5_next_text" {
+                        self.builtinChatTemplate = Self.swiftJinjaCompatibleGLM5NextTemplate(
+                            directory: modelDir)
+                    }
                     if Self.requiresSerialGeneration(canonicalModelType: modelArchitecture.canonicalModelType) {
                         self.forceSerialGeneration = true
                         if debugLogging {
@@ -4598,6 +4602,19 @@ public final class MLXModelService:
             .replacingOccurrences(of: "{{ tool | tojson }}", with: "{{ tool.__python_json__ }}")
             .replacingOccurrences(of: "{{- tool|tojson }}", with: "{{- tool.__python_json__ }}")
             .replacingOccurrences(of: "{{ tool|tojson }}", with: "{{ tool.__python_json__ }}")
+    }
+
+    private static func swiftJinjaCompatibleGLM5NextTemplate(directory: URL) -> String? {
+        let templateURL = directory.appendingPathComponent("chat_template.jinja")
+        guard let template = try? String(contentsOf: templateURL, encoding: .utf8) else {
+            return nil
+        }
+        let patched = patchNumericDotIndexesForSwiftJinja(template)
+        return patched == template ? nil : patched
+    }
+
+    static func patchNumericDotIndexesForSwiftJinja(_ template: String) -> String {
+        template.replacingOccurrences(of: ".0.", with: "[0].")
     }
 
     static func pythonStyleToolJSON(_ tool: RequestTool) -> String {
