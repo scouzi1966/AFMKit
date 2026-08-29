@@ -199,6 +199,7 @@ let noCudaCmlxExcludes = [
         .define("MLX_USE_ACCELERATE"),
         .define("ACCELERATE_NEW_LAPACK"),
         .define("_METAL_"),
+        .define("MLX_SWIFT_TASK_SAFE_DEFAULT_STREAMS"),
         .define("SWIFTPM_BUNDLE", to: "\"mlx-swift_Cmlx\""),
         .define("METAL_PATH", to: "\"default.metallib\""),
     ]
