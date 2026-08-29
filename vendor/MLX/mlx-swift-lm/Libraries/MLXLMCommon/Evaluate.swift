@@ -833,57 +833,61 @@ public struct TokenIterator: Sequence, IteratorProtocol {
             return nil
         }
 
-        guard let previousY = y else {
-            return nil
-        }
-
-        let tStart: UInt64 = Self.perfEnabled ? DispatchTime.now().uptimeNanoseconds : 0
-
-        // Promote pending logprob info: the logprob computed during the PREVIOUS
-        // step() corresponds to the token we are about to return (previousY).
-        lastLogprobInfo = pendingLogprobInfo
-
-        // compute the next state and async eval the next token
-        let token = step(previous: previousY)
-        y = .init(tokens: token)
-
-        let tEval0: UInt64 = Self.perfEnabled ? DispatchTime.now().uptimeNanoseconds : 0
-        // Eval token — cache arrays share the same computation graph and will be
-        // scheduled automatically as dependencies.
-        asyncEval(token)
-        let tEval1: UInt64 = Self.perfEnabled ? DispatchTime.now().uptimeNanoseconds : 0
-
-        tokenCount += 1
-
-        // Periodically clear GPU memory cache to prevent fragmentation,
-        // especially important for large MoE models. Higher interval reduces
-        // allocator churn at the cost of slightly more fragmentation.
-        if tokenCount % 1024 == 0 {
-            Memory.clearCache()
-        }
-
-        let tItem0: UInt64 = Self.perfEnabled ? DispatchTime.now().uptimeNanoseconds : 0
-        let result = previousY.tokens.item(Int.self)
-        let tItem1: UInt64 = Self.perfEnabled ? DispatchTime.now().uptimeNanoseconds : 0
-
-        if Self.perfEnabled {
-            let tEnd = DispatchTime.now().uptimeNanoseconds
-            perfAsyncEvalNs += (tEval1 - tEval0)
-            perfItemNs += (tItem1 - tItem0)
-            perfTotalNextNs += (tEnd - tStart)
-            perfTokenCount += 1
-
-            // Every 100 tokens, sample GPU sync time to see if asyncEval is truly async
-            if perfTokenCount == 100 {
-                // One-shot: time a synchronize to see GPU queue depth
-                let syncStart = DispatchTime.now().uptimeNanoseconds
-                Stream.gpu.synchronize()
-                let syncEnd = DispatchTime.now().uptimeNanoseconds
-                perfGpuSyncNs = syncEnd - syncStart
+        // A full model forward creates many autoreleased MLX wrappers and this
+        // loop does not otherwise return to an autorelease-pool boundary.
+        return autoreleasepool {
+            guard let previousY = y else {
+                return nil
             }
-        }
 
-        return result
+            let tStart: UInt64 = Self.perfEnabled ? DispatchTime.now().uptimeNanoseconds : 0
+
+            // Promote pending logprob info: the logprob computed during the PREVIOUS
+            // step() corresponds to the token we are about to return (previousY).
+            lastLogprobInfo = pendingLogprobInfo
+
+            // compute the next state and async eval the next token
+            let token = step(previous: previousY)
+            y = .init(tokens: token)
+
+            let tEval0: UInt64 = Self.perfEnabled ? DispatchTime.now().uptimeNanoseconds : 0
+            // Cache updates are functional MLX operations. Evaluate their state
+            // with the token so a long decode cannot retain an unevaluated chain
+            // of prior steps (or the stream that created those old graphs).
+            asyncEval([token] + cache.flatMap { $0.state })
+            let tEval1: UInt64 = Self.perfEnabled ? DispatchTime.now().uptimeNanoseconds : 0
+
+            tokenCount += 1
+
+            // Return freed buffers that cannot be reused. This cadence matches
+            // current mlx-swift-lm and bounds pool growth for long generations.
+            if tokenCount % 256 == 0 {
+                Memory.clearCache()
+            }
+
+            let tItem0: UInt64 = Self.perfEnabled ? DispatchTime.now().uptimeNanoseconds : 0
+            let result = previousY.tokens.item(Int.self)
+            let tItem1: UInt64 = Self.perfEnabled ? DispatchTime.now().uptimeNanoseconds : 0
+
+            if Self.perfEnabled {
+                let tEnd = DispatchTime.now().uptimeNanoseconds
+                perfAsyncEvalNs += (tEval1 - tEval0)
+                perfItemNs += (tItem1 - tItem0)
+                perfTotalNextNs += (tEnd - tStart)
+                perfTokenCount += 1
+
+                // Every 100 tokens, sample GPU sync time to see if asyncEval is truly async
+                if perfTokenCount == 100 {
+                    // One-shot: time a synchronize to see GPU queue depth
+                    let syncStart = DispatchTime.now().uptimeNanoseconds
+                    Stream.gpu.synchronize()
+                    let syncEnd = DispatchTime.now().uptimeNanoseconds
+                    perfGpuSyncNs = syncEnd - syncStart
+                }
+            }
+
+            return result
+        }
     }
 
     mutating func excludeLastTokenFromGenerationLimit() {

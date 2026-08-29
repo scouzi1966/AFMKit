@@ -37,6 +37,28 @@ public class EvalTests: XCTestCase {
         XCTAssertEqual(output.shape, [1, 5, 100])
     }
 
+    func testTokenIteratorSettlesCachePastMaintenanceBoundary() throws {
+        let config = LlamaConfiguration(
+            hiddenSize: 32, hiddenLayers: 1, intermediateSize: 64, attentionHeads: 4,
+            rmsNormEps: 0.00001, vocabularySize: 32, kvHeads: 2)
+        let model = LlamaModel(config)
+        eval(model)
+
+        let input = LMInput(tokens: MLXArray([1, 2, 3]))
+        var iterator = try TokenIterator(
+            input: input,
+            model: model,
+            parameters: GenerateParameters(maxTokens: 1_030, temperature: 0)
+        )
+
+        var generated = 0
+        while iterator.next() != nil {
+            generated += 1
+        }
+
+        XCTAssertEqual(generated, 1_030)
+    }
+
     func testLlamaLora() throws {
         let config = LlamaConfiguration(
             hiddenSize: 64, hiddenLayers: 16, intermediateSize: 512, attentionHeads: 32,
