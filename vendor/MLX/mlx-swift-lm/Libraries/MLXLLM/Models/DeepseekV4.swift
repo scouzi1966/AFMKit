@@ -1835,17 +1835,18 @@ class DeepseekV4HyperConnection: Module {
 
         if DeepseekV4Math.fusedHC4Enabled && hcMult == 4 && L == 1
             && Device.defaultDevice().deviceType == .gpu
+            && DeepseekV4Math.supportsFusedHCActivationStorage(dtype)
         {
             let fused = DeepseekV4Math.hcSplitSinkhornCollapse4(
                 mixes: mixes,
                 scale: scale,
                 base: base,
-                residual: xFlat.reshaped(B, L, hcMult, hiddenSize),
+                residual: h,
                 hiddenSize: hiddenSize,
                 iters: hcIters,
                 eps: hcEps)
             return (
-                x: fused.collapsed.asType(dtype),
+                x: fused.collapsed,
                 post: fused.post,
                 comb: fused.comb)
         }
@@ -1918,13 +1919,15 @@ class DeepseekV4HyperConnection: Module {
         let dtype = blockOut.dtype
         if DeepseekV4Math.fusedHC4Enabled && hcMult == 4 && residual.dim(1) == 1
             && Device.defaultDevice().deviceType == .gpu
+            && DeepseekV4Math.supportsFusedHCExpansion(
+                blockOut: blockOut, residual: residual)
         {
             return DeepseekV4Math.hcExpand4(
                 blockOut: blockOut,
                 residual: residual,
                 post: post,
                 comb: comb,
-                hiddenSize: hiddenSize).asType(dtype)
+                hiddenSize: hiddenSize)
         }
         // Match the 0731 MLX reference's broadcast/reduction axes exactly.
         let combResid = DeepseekV4Math.hcExpandResidual(
