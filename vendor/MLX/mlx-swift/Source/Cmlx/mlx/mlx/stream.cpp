@@ -45,7 +45,16 @@ Stream default_stream(Device d) {
   }
   auto& s = default_stream_storage(d);
   if (!s.has_value()) {
+#ifdef MLX_SWIFT_TASK_SAFE_DEFAULT_STREAMS
+    // Swift tasks are not bound to their creating OS thread. A lazy graph can
+    // therefore capture this core default in a compiled primitive and later
+    // be evaluated after the task resumes elsewhere. Explicit new_stream()
+    // calls retain upstream thread-local behavior; only defaults use MLX's
+    // cross-thread encoder registry in the Swift-owned build.
+    s = new_thread_unsafe_stream(d.type);
+#else
     s = new_stream(d.type);
+#endif
   }
   return s.value();
 }
