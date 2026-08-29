@@ -295,6 +295,211 @@ final class GLM5NextArchitectureTests: XCTestCase {
         XCTAssertEqual(linearCache[1]?.dtype, .float32)
     }
 
+    func testFusedKDADecodePreservesOutputAndCacheContracts() throws {
+        let heads = 64
+        let dimension = 128
+        let channels = heads * dimension * 3
+        let projected = (MLXArray.ones([1, 1, channels]) * 0.01).asType(.bfloat16)
+        let arguments = (
+            outputGate: MLXArray.zeros([1, 1, heads, dimension], dtype: .bfloat16),
+            gateRaw: MLXArray.zeros([1, 1, heads, dimension], dtype: .bfloat16),
+            betaRaw: MLXArray.zeros([1, 1, heads], dtype: .bfloat16),
+            convState: MLXArray.zeros([1, 3, channels], dtype: .bfloat16),
+            convWeight: MLXArray.zeros([channels, 4, 1], dtype: .bfloat16),
+            aLog: MLXArray.zeros([heads], dtype: .float32),
+            dtBias: MLXArray.zeros([heads, dimension], dtype: .float32),
+            deltaState: MLXArray.zeros(
+                [1, heads, dimension, dimension], dtype: .float32),
+            normWeight: MLXArray.ones([dimension], dtype: .bfloat16)
+        )
+        let result = try XCTUnwrap(glm5NextFusedKDADecode(
+            projected: projected,
+            outputGate: arguments.outputGate,
+            gateRaw: arguments.gateRaw,
+            betaRaw: arguments.betaRaw,
+            convState: arguments.convState,
+            convWeight: arguments.convWeight,
+            aLog: arguments.aLog,
+            dtBias: arguments.dtBias,
+            deltaState: arguments.deltaState,
+            normWeight: arguments.normWeight,
+            lowerBound: -5,
+            normEps: 1e-5))
+        MLX.eval(result.output, result.convState, result.deltaState)
+
+        XCTAssertEqual(result.output.dtype, .bfloat16)
+        XCTAssertEqual(result.convState.dtype, .bfloat16)
+        XCTAssertEqual(result.deltaState.dtype, .float32)
+        XCTAssertTrue(allClose(
+            result.output,
+            MLXArray.zeros(result.output.shape, dtype: .bfloat16),
+            rtol: 0,
+            atol: 0).item(Bool.self))
+        XCTAssertTrue(allClose(
+            result.convState[0..., 2 ..< 3, 0...],
+            projected,
+            rtol: 0,
+            atol: 0).item(Bool.self))
+
+        XCTAssertNil(glm5NextFusedKDADecode(
+            projected: projected,
+            outputGate: arguments.outputGate,
+            gateRaw: arguments.gateRaw,
+            betaRaw: arguments.betaRaw,
+            convState: arguments.convState,
+            convWeight: arguments.convWeight,
+            aLog: arguments.aLog,
+            dtBias: arguments.dtBias,
+            deltaState: arguments.deltaState.asType(.bfloat16),
+            normWeight: arguments.normWeight,
+            lowerBound: -5,
+            normEps: 1e-5))
+        XCTAssertNil(glm5NextFusedKDADecode(
+            projected: projected.asType(.float32),
+            outputGate: arguments.outputGate.asType(.float32),
+            gateRaw: arguments.gateRaw.asType(.float32),
+            betaRaw: arguments.betaRaw.asType(.float32),
+            convState: arguments.convState.asType(.float32),
+            convWeight: arguments.convWeight.asType(.float32),
+            aLog: arguments.aLog,
+            dtBias: arguments.dtBias,
+            deltaState: arguments.deltaState,
+            normWeight: arguments.normWeight.asType(.float32),
+            lowerBound: -5,
+            normEps: 1e-5))
+        XCTAssertNil(glm5NextFusedKDADecode(
+            projected: projected.asType(.float16),
+            outputGate: arguments.outputGate.asType(.float16),
+            gateRaw: arguments.gateRaw.asType(.float16),
+            betaRaw: arguments.betaRaw.asType(.float16),
+            convState: arguments.convState.asType(.float16),
+            convWeight: arguments.convWeight.asType(.float16),
+            aLog: arguments.aLog,
+            dtBias: arguments.dtBias,
+            deltaState: arguments.deltaState,
+            normWeight: arguments.normWeight.asType(.float16),
+            lowerBound: -5,
+            normEps: 1e-5))
+    }
+
+    func testFusedKDADecodeMatchesThreeNonuniformStagedDecodeSteps() throws {
+        let heads = 64
+        let dimension = 128
+        let channels = heads * dimension * 3
+        func pattern(_ count: Int, frequency: Float, offset: Float = 0) -> MLXArray {
+            sin(MLXArray.arange(count, dtype: .float32) * frequency) + offset
+        }
+        var fusedConvState = (pattern(3 * channels, frequency: 0.0007) * 0.02)
+            .reshaped(1, 3, channels).asType(.bfloat16)
+        var stagedConvState = fusedConvState
+        let convWeight = (pattern(4 * channels, frequency: 0.0009) * 0.08)
+            .reshaped(channels, 4, 1).asType(.bfloat16)
+        let aLog = (pattern(heads, frequency: 0.04) * 0.03).asType(.float32)
+        let dtBias = (pattern(heads * dimension, frequency: 0.002, offset: -2))
+            .reshaped(heads, dimension).asType(.float32)
+        var fusedDeltaState = (pattern(
+            heads * dimension * dimension, frequency: 0.00003) * 0.0001)
+            .reshaped(1, heads, dimension, dimension).asType(.float32)
+        var stagedDeltaState = fusedDeltaState
+        let normWeight = (pattern(dimension, frequency: 0.03, offset: 1) * 0.75)
+            .asType(.bfloat16)
+        let lowerBound = Float(-5)
+        let normEps = Float(1e-5)
+
+        for step in 0 ..< 3 {
+            let projected = (pattern(
+                channels, frequency: 0.0013, offset: Float(step) * 0.02) * 0.1)
+                .reshaped(1, 1, channels).asType(.bfloat16)
+            let outputGate = pattern(
+                heads * dimension,
+                frequency: 0.003 + Float(step) * 0.0002,
+                offset: -0.15 + Float(step) * 0.01)
+                .reshaped(1, 1, heads, dimension).asType(.bfloat16)
+            let gateRaw = pattern(
+                heads * dimension,
+                frequency: 0.005 + Float(step) * 0.0003,
+                offset: 0.05 - Float(step) * 0.01)
+                .reshaped(1, 1, heads, dimension).asType(.bfloat16)
+            let betaRaw = pattern(
+                heads,
+                frequency: 0.07 + Float(step) * 0.01,
+                offset: -0.1 + Float(step) * 0.02)
+                .reshaped(1, 1, heads).asType(.bfloat16)
+            let fused = try XCTUnwrap(glm5NextFusedKDADecode(
+                projected: projected,
+                outputGate: outputGate,
+                gateRaw: gateRaw,
+                betaRaw: betaRaw,
+                convState: fusedConvState,
+                convWeight: convWeight,
+                aLog: aLog,
+                dtBias: dtBias,
+                deltaState: fusedDeltaState,
+                normWeight: normWeight,
+                lowerBound: lowerBound,
+                normEps: normEps))
+
+            let convolutionInput = concatenated([stagedConvState, projected], axis: 1)
+            var convolved = MLXArray.zeros([1, 1, channels], dtype: .float32)
+            for tap in 0 ..< 4 {
+                convolved = convolved
+                    + convolutionInput[0..., tap ..< (tap + 1), 0...].asType(.float32)
+                    * convWeight[0..., tap, 0].reshaped(1, 1, channels).asType(.float32)
+            }
+            convolved = silu(convolved).asType(.bfloat16)
+            let pieces = MLX.split(
+                convolved, indices: [heads * dimension, heads * dimension * 2], axis: -1)
+            var q = pieces[0].reshaped(1, 1, heads, dimension).asType(.float32)
+            var k = pieces[1].reshaped(1, 1, heads, dimension).asType(.float32)
+            let v = pieces[2].reshaped(1, 1, heads, dimension).asType(.float32)
+            q = q * rsqrt((q * q).sum(axis: -1, keepDims: true) + 1e-6)
+                * pow(Float(dimension), -0.5)
+            k = k * rsqrt((k * k).sum(axis: -1, keepDims: true) + 1e-6)
+            let staged = gatedDeltaUpdate(
+                q: q,
+                k: k,
+                v: v,
+                a: gateRaw.asType(.float32),
+                b: betaRaw.asType(.float32),
+                ALog: aLog.reshaped(heads, 1),
+                dtBias: dtBias,
+                state: stagedDeltaState,
+                useKernel: true,
+                lowerBound: lowerBound)
+            let stagedValue = staged.0.asType(.bfloat16).asType(.float32)
+            let stagedOutput = (stagedValue
+                * rsqrt((stagedValue * stagedValue).mean(axis: -1, keepDims: true) + normEps)
+                * normWeight.asType(.float32)
+                * sigmoid(outputGate.asType(.float32))).asType(.bfloat16)
+            stagedConvState = concatenated([
+                stagedConvState[0..., 1..., 0...], projected,
+            ], axis: 1)
+            stagedDeltaState = staged.1
+            MLX.eval(
+                fused.output, fused.convState, fused.deltaState,
+                stagedOutput, stagedConvState, stagedDeltaState)
+
+            XCTAssertEqual(fused.output.dtype, .bfloat16)
+            XCTAssertEqual(fused.deltaState.dtype, .float32)
+            XCTAssertTrue(allClose(
+                fused.output, stagedOutput, rtol: 1e-2, atol: 1e-2).item(),
+                "output mismatch at decode step \(step)")
+            XCTAssertTrue(allClose(
+                fused.convState, stagedConvState, rtol: 0, atol: 0).item(),
+                "convolution cache mismatch at decode step \(step)")
+            let maximumStateError = abs(fused.deltaState - stagedDeltaState)
+                .max().item(Float.self)
+            XCTAssertTrue(allClose(
+                fused.deltaState, stagedDeltaState, rtol: 2e-3, atol: 2e-5).item(),
+                "recurrent state mismatch at decode step \(step)")
+            XCTAssertLessThan(
+                maximumStateError, 2e-4,
+                "maximum recurrent state error at decode step \(step)")
+            fusedConvState = fused.convState
+            fusedDeltaState = fused.deltaState
+        }
+    }
+
     func testSparseCachedDecodeMatchesUncachedForwardWithPublishedPoolingPolicy() throws {
         let data = try XCTUnwrap(tinyConfigurationData(indexTopK: 4))
         let config = try JSONDecoder().decode(GLM5NextConfiguration.self, from: data)
