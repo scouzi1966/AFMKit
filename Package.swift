@@ -102,6 +102,10 @@ let mlxCTarget = Target.target(
         .define("MLX_USE_ACCELERATE"),
         .define("ACCELERATE_NEW_LAPACK"),
         .define("_METAL_"),
+        // Swift concurrency may resume a lazy MLX graph on a different OS
+        // thread. Keep explicit streams thread-local, but back core defaults
+        // with cross-thread encoders so compiled primitives remain valid.
+        .define("MLX_SWIFT_TASK_SAFE_DEFAULT_STREAMS"),
         .define("SWIFTPM_BUNDLE", to: "\"AFMKit_Cmlx\""),
         .define("METAL_PATH", to: "\"default.metallib\""),
         .define("MLX_VERSION", to: "\"0.32.2\"")

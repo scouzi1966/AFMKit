@@ -5,6 +5,13 @@ import MLXNN
 import XCTest
 @testable import AFMKitMLX
 
+private final class GLM5CrossThreadGenerationState: @unchecked Sendable {
+    let lock = NSLock()
+    var model: GLM5NextModel?
+    var caches: [KVCache]?
+    var nextShape: [Int]?
+}
+
 final class GLM5NextArchitectureTests: XCTestCase {
     override func setUpWithError() throws {
         try MLXMetalLibrary.ensureAvailable(verbose: false)
@@ -197,6 +204,58 @@ final class GLM5NextArchitectureTests: XCTestCase {
         XCTAssertEqual(caches[0].offset, 3)
         XCTAssertEqual((caches[1] as? CacheList)?[0].offset, 3)
         XCTAssertEqual((caches[1] as? CacheList)?[1].offset, 3)
+    }
+
+    func testHybridCacheContinuesAfterGenerationThreadHop() throws {
+        let data = try XCTUnwrap(tinyConfigurationData())
+        let config = try JSONDecoder().decode(GLM5NextConfiguration.self, from: data)
+        let state = GLM5CrossThreadGenerationState()
+        let prepared = DispatchSemaphore(value: 0)
+        let releaseCreator = DispatchSemaphore(value: 0)
+        let completed = DispatchSemaphore(value: 0)
+
+        Thread.detachNewThread {
+            let model = GLM5NextModel(config)
+            model.update(parameters: ModuleParameters.unflattened([
+                "model.layers.1.self_attn.embed_q.weight": MLXArray.ones([
+                    config.textConfig.attentionHeads,
+                    config.textConfig.kvLoraRank,
+                    config.textConfig.qkNopeHeadDim,
+                ]),
+                "model.layers.1.self_attn.unembed_out.weight": MLXArray.ones([
+                    config.textConfig.attentionHeads,
+                    config.textConfig.vHeadDim,
+                    config.textConfig.kvLoraRank,
+                ]),
+            ]))
+            let caches = model.newCache(parameters: nil)
+            let logits = model(MLXArray([1, 2]).reshaped(1, 2), cache: caches)
+            asyncEval([logits] + caches.flatMap { $0.state })
+            state.lock.withLock {
+                state.model = model
+                state.caches = caches
+            }
+            prepared.signal()
+            releaseCreator.wait()
+        }
+
+        XCTAssertEqual(prepared.wait(timeout: .now() + 30), .success)
+
+        Thread.detachNewThread {
+            let (model, caches) = state.lock.withLock {
+                (state.model!, state.caches!)
+            }
+            let logits = model(MLXArray([3]).reshaped(1, 1), cache: caches)
+            eval([logits] + caches.flatMap { $0.state })
+            state.lock.withLock {
+                state.nextShape = logits.shape
+            }
+            completed.signal()
+        }
+
+        XCTAssertEqual(completed.wait(timeout: .now() + 30), .success)
+        releaseCreator.signal()
+        XCTAssertEqual(state.lock.withLock { state.nextShape }, [1, 1, 32])
     }
 
     func testHybridAttentionUsesOneCheckpointModulePerSelfAttentionKey() throws {
