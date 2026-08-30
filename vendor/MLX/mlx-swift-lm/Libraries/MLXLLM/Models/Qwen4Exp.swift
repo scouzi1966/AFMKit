@@ -1107,6 +1107,12 @@ public final class Qwen4ExpMTPHead: Module {
 }
 
 public final class Qwen4ExpModel: Module, LLMModel, KVCacheDimensionProvider {
+    /// Qwen Next's native predictor is precision-sensitive. Quantizing the
+    /// raw sidecar below q8 materially reduces draft acceptance, so every
+    /// public loading path uses this floor unless a higher precision is
+    /// requested explicitly.
+    public static let defaultMTPHeadBits = 8
+
     public let vocabularySize: Int
     public let kvHeads: [Int]
     @ModuleInfo(key: "model") private var model: Qwen4ExpModelInner
@@ -1156,7 +1162,7 @@ public final class Qwen4ExpModel: Module, LLMModel, KVCacheDimensionProvider {
     public func loadMTPHead(
         sidecarPath: String,
         groupSize: Int = 64,
-        bits: Int = 4,
+        bits: Int = Qwen4ExpModel.defaultMTPHeadBits,
         mode: QuantizationMode = .affine
     ) throws -> Qwen4ExpMTPHead {
         try Qwen4ExpMTPHead.load(

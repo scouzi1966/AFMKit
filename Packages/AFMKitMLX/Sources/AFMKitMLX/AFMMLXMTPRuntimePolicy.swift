@@ -1,4 +1,5 @@
 import Foundation
+import MLXLLM
 
 enum AFMMLXMTPRuntimeModelKind: Equatable, Sendable {
     case qwenText
@@ -16,7 +17,7 @@ enum AFMMLXMTPRuntimePolicy {
     /// makes speculative decoding slower. Keep the head at a q8 floor while
     /// the target model retains the checkpoint's own quantization.
     static func qwenNextMTPHeadBits(configuredBits: Int) -> Int {
-        max(8, configuredBits)
+        max(Qwen4ExpModel.defaultMTPHeadBits, configuredBits)
     }
 
     static func loadingFactory(
