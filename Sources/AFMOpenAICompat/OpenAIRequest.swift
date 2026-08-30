@@ -17,6 +17,11 @@ public struct ChatCompletionRequest: Codable, Sendable {
     public let seed: Int?
     public let logprobs: Bool?
     public let topLogprobs: Int?
+    /// Number of chat-completion choices requested by the client.
+    ///
+    /// Providers that cannot produce multiple choices can reject values other
+    /// than one explicitly instead of silently ignoring the request.
+    public let n: Int?
     public let stop: [String]?
     public let stream: Bool?
     public let streamOptions: StreamOptions?
@@ -45,6 +50,7 @@ public struct ChatCompletionRequest: Codable, Sendable {
         case seed
         case logprobs
         case topLogprobs = "top_logprobs"
+        case n
         case stop
         case stream
         case streamOptions = "stream_options"
@@ -81,7 +87,7 @@ public struct ChatCompletionRequest: Codable, Sendable {
         return result.isEmpty ? nil : result
     }
 
-    public init(model: String?, messages: [Message], temperature: Double?, maxTokens: Int?, maxCompletionTokens: Int?, topP: Double?, repetitionPenalty: Double?, repeatPenalty: Double?, frequencyPenalty: Double?, presencePenalty: Double?, topK: Int?, minP: Double?, seed: Int?, logprobs: Bool?, topLogprobs: Int?, stop: [String]?, stream: Bool?, streamOptions: StreamOptions?, user: String?, tools: [RequestTool]?, toolChoice: ToolChoice?, parallelToolCalls: Bool?, responseFormat: ResponseFormat?, chatTemplateKwargs: [String: AnyCodable]?, reasoningEffort: String? = nil) {
+    public init(model: String?, messages: [Message], temperature: Double?, maxTokens: Int?, maxCompletionTokens: Int?, topP: Double?, repetitionPenalty: Double?, repeatPenalty: Double?, frequencyPenalty: Double?, presencePenalty: Double?, topK: Int?, minP: Double?, seed: Int?, logprobs: Bool?, topLogprobs: Int?, n: Int? = nil, stop: [String]?, stream: Bool?, streamOptions: StreamOptions?, user: String?, tools: [RequestTool]?, toolChoice: ToolChoice?, parallelToolCalls: Bool?, responseFormat: ResponseFormat?, chatTemplateKwargs: [String: AnyCodable]?, reasoningEffort: String? = nil) {
         self.model = model
         self.messages = messages
         self.temperature = temperature
@@ -97,6 +103,7 @@ public struct ChatCompletionRequest: Codable, Sendable {
         self.seed = seed
         self.logprobs = logprobs
         self.topLogprobs = topLogprobs
+        self.n = n
         self.stop = stop
         self.stream = stream
         self.streamOptions = streamOptions
@@ -107,6 +114,46 @@ public struct ChatCompletionRequest: Codable, Sendable {
         self.responseFormat = responseFormat
         self.chatTemplateKwargs = chatTemplateKwargs
         self.reasoningEffort = reasoningEffort
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        model = try container.decodeIfPresent(String.self, forKey: .model)
+        messages = try container.decode([Message].self, forKey: .messages)
+        temperature = try container.decodeIfPresent(Double.self, forKey: .temperature)
+        maxTokens = try container.decodeIfPresent(Int.self, forKey: .maxTokens)
+        maxCompletionTokens = try container.decodeIfPresent(Int.self, forKey: .maxCompletionTokens)
+        topP = try container.decodeIfPresent(Double.self, forKey: .topP)
+        repetitionPenalty = try container.decodeIfPresent(Double.self, forKey: .repetitionPenalty)
+        repeatPenalty = try container.decodeIfPresent(Double.self, forKey: .repeatPenalty)
+        frequencyPenalty = try container.decodeIfPresent(Double.self, forKey: .frequencyPenalty)
+        presencePenalty = try container.decodeIfPresent(Double.self, forKey: .presencePenalty)
+        topK = try container.decodeIfPresent(Int.self, forKey: .topK)
+        minP = try container.decodeIfPresent(Double.self, forKey: .minP)
+        seed = try container.decodeIfPresent(Int.self, forKey: .seed)
+        logprobs = try container.decodeIfPresent(Bool.self, forKey: .logprobs)
+        topLogprobs = try container.decodeIfPresent(Int.self, forKey: .topLogprobs)
+        n = try container.decodeIfPresent(Int.self, forKey: .n)
+        stop = try container.decodeStopSequencesIfPresent(forKey: .stop)
+        stream = try container.decodeIfPresent(Bool.self, forKey: .stream)
+        streamOptions = try container.decodeIfPresent(StreamOptions.self, forKey: .streamOptions)
+        user = try container.decodeIfPresent(String.self, forKey: .user)
+        tools = try container.decodeIfPresent([RequestTool].self, forKey: .tools)
+        toolChoice = try container.decodeIfPresent(ToolChoice.self, forKey: .toolChoice)
+        parallelToolCalls = try container.decodeIfPresent(Bool.self, forKey: .parallelToolCalls)
+        responseFormat = try container.decodeIfPresent(ResponseFormat.self, forKey: .responseFormat)
+        chatTemplateKwargs = try container.decodeIfPresent([String: AnyCodable].self, forKey: .chatTemplateKwargs)
+        reasoningEffort = try container.decodeIfPresent(String.self, forKey: .reasoningEffort)
+    }
+}
+
+private extension KeyedDecodingContainer where Key == ChatCompletionRequest.CodingKeys {
+    func decodeStopSequencesIfPresent(forKey key: Key) throws -> [String]? {
+        guard contains(key), !(try decodeNil(forKey: key)) else { return nil }
+        if let sequences = try? decode([String].self, forKey: key) {
+            return sequences
+        }
+        return [try decode(String.self, forKey: key)]
     }
 }
 
