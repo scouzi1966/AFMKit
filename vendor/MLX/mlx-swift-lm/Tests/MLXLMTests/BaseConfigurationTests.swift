@@ -1,7 +1,7 @@
 // Copyright © 2025 Apple Inc.
 
 import Foundation
-import MLXLMCommon
+@testable import MLXLMCommon
 import XCTest
 
 public class BaseConfigurationTests: XCTestCase {
@@ -187,6 +187,58 @@ public class BaseConfigurationTests: XCTestCase {
         XCTAssertEqual(
             config.perLayerQuantization?.quantization(layer: "model.layers.1.shards.7"),
             .init(groupSize: 64, bits: 4))
+    }
+
+    func testCheckpointQuantizationInfersHeterogeneousAffineBitWidth() {
+        let defaultQuantization = BaseConfiguration.Quantization(groupSize: 64, bits: 4)
+
+        XCTAssertEqual(
+            resolveCheckpointQuantization(
+                layer: "lm_head",
+                weightShape: [248_320, 640],
+                scaleShape: [248_320, 40],
+                quantization: defaultQuantization,
+                perLayerQuantization: nil),
+            .init(groupSize: 64, bits: 8, mode: .affine))
+    }
+
+    func testCheckpointQuantizationKeepsExplicitOverrideAuthoritative() {
+        let explicit = BaseConfiguration.Quantization(groupSize: 32, bits: 4)
+        let perLayer = BaseConfiguration.PerLayerQuantization(
+            quantization: .init(groupSize: 64, bits: 4),
+            perLayerQuantization: ["lm_head": .quantize(explicit)])
+
+        XCTAssertEqual(
+            resolveCheckpointQuantization(
+                layer: "lm_head",
+                weightShape: [248_320, 640],
+                scaleShape: [248_320, 40],
+                quantization: nil,
+                perLayerQuantization: perLayer),
+            explicit)
+    }
+
+    func testCheckpointQuantizationKeepsExplicitSkipAuthoritative() {
+        let perLayer = BaseConfiguration.PerLayerQuantization(
+            quantization: .init(groupSize: 64, bits: 4),
+            perLayerQuantization: ["lm_head": .skip])
+
+        XCTAssertNil(
+            resolveCheckpointQuantization(
+                layer: "lm_head",
+                weightShape: [248_320, 640],
+                scaleShape: [248_320, 40],
+                quantization: nil,
+                perLayerQuantization: perLayer))
+    }
+
+    func testAffineQuantizationInferenceRejectsIncompatibleGeometry() {
+        XCTAssertNil(
+            inferAffineQuantization(
+                weightShape: [8, 640], scaleShape: [7, 40], groupSize: 64))
+        XCTAssertNil(
+            inferAffineQuantization(
+                weightShape: [8, 560], scaleShape: [8, 40], groupSize: 64))
     }
 
 }

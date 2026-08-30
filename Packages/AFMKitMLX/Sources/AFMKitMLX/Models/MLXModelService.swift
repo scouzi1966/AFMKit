@@ -380,6 +380,9 @@ public final class MLXModelService:
     public var kernelEngine: AFMMLXKernelEngine = .native
     public var kvEvictionPolicy: String = "none"  // "none" or "streaming"
     public var enablePrefixCaching: Bool = false
+    /// Explicit opt-in for Qwen Next checkpoints that declare a disk-backed
+    /// ngram_table sidecar. The default resident checkpoint path is unchanged.
+    public var qwenNGramMmapEnabled: Bool = false
     /// MTP self-speculative decoding (--mtp). Qwen 3.8 heads are cached as
     /// separate model repositories so their weights never enter the base loader.
     public var mtpEnabled: Bool = false
@@ -1935,7 +1938,16 @@ public final class MLXModelService:
             )
         }
 
-        var config = ModelConfiguration(directory: directory)
+        let qwenNGramTableURL = try AFMMLXQwenNGramSidecarResolver.resolve(
+            modelDirectory: directory,
+            canonicalModelType: modelArchitecture.canonicalModelType,
+            enabled: qwenNGramMmapEnabled)
+        if let qwenNGramTableURL {
+            print("[\(ts())] [QwenNGram] mapped sidecar enabled: \(qwenNGramTableURL.path)")
+        }
+        var config = ModelConfiguration(
+            directory: directory,
+            qwenNGramTableURL: qwenNGramTableURL)
         // Auto-detect tool call format from model type (vendor LLMModelFactory lost this code)
         var detectedFormat = inferToolCallFormat(directory: directory)
         if let fmt = detectedFormat {

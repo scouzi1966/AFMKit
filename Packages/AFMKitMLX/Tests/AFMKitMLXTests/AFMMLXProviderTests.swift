@@ -435,6 +435,7 @@ final class AFMMLXProviderTests: XCTestCase {
         XCTAssertEqual(descriptor.id, "mlx")
         XCTAssertEqual(descriptor.privacyBoundary, .device)
         XCTAssertTrue(descriptor.configurationKeys.contains("enablePrefixCaching"))
+        XCTAssertTrue(descriptor.configurationKeys.contains("qwenNGramMmapEnabled"))
         XCTAssertTrue(descriptor.configurationKeys.contains("maxConcurrent"))
     }
 

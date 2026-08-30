@@ -16,6 +16,7 @@ public struct Qwen4ExpVLConfiguration: Decodable, Sendable {
     let modelType: String
     let textConfig: Qwen4ExpTextConfiguration
     let visionConfig: Qwen3VLConfiguration.VisionConfiguration
+    let ngramTable: Qwen4ExpNGramTableConfiguration?
     private let configuredImageTokenID: Int?
     private let configuredVideoTokenID: Int?
     private let configuredVisionStartTokenID: Int?
@@ -28,6 +29,7 @@ public struct Qwen4ExpVLConfiguration: Decodable, Sendable {
         case modelType = "model_type"
         case textConfig = "text_config"
         case visionConfig = "vision_config"
+        case ngramTable = "ngram_table"
         case configuredImageTokenID = "image_token_id"
         case configuredVideoTokenID = "video_token_id"
         case configuredVisionStartTokenID = "vision_start_token_id"
@@ -45,12 +47,19 @@ public final class Qwen4ExpVL: Module, VLMModel, KVCacheDimensionProvider {
         self.config = config
         _visionModel.wrappedValue = Qwen3VLVision.VisionModel(config.visionConfig)
         _languageModel.wrappedValue = Qwen4ExpModel(
-            Qwen4ExpConfiguration(modelType: config.modelType, textConfig: config.textConfig))
+            Qwen4ExpConfiguration(
+                modelType: config.modelType,
+                textConfig: config.textConfig,
+                ngramTable: config.ngramTable))
     }
 
     public var vocabularySize: Int { languageModel.vocabularySize }
     public var kvHeads: [Int] { languageModel.kvHeads }
     public var loraLayers: [Module] { languageModel.loraLayers }
+
+    public func configureMappedNGramTable(url: URL) throws {
+        try languageModel.configureMappedNGramTable(url: url)
+    }
 
     public func newCache(parameters: GenerateParameters?) -> [KVCache] {
         languageModel.newCache(parameters: parameters)

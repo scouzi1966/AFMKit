@@ -320,6 +320,14 @@ public final class VLMModelFactory: ModelFactory {
                 configurationURL.lastPathComponent, configuration.name, error)
         }
 
+        if let tableURL = configuration.qwenNGramTableURL {
+            guard let qwen = model as? Qwen4ExpVL else {
+                throw ModelFactoryError.unsupportedModelType(
+                    "external Qwen n-gram table for \(baseConfig.modelType)")
+            }
+            try qwen.configureMappedNGramTable(url: tableURL)
+        }
+
         // Load EOS token IDs from config.json, with optional override from generation_config.json
         var eosTokenIds = Set(baseConfig.eosTokenIds?.values ?? [])
         let generationConfigURL = modelDirectory.appending(component: "generation_config.json")

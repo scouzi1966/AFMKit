@@ -142,10 +142,14 @@ public func loadWeights(
         deepseekV4LoadTrace("module quantization begin")
         quantize(model: model, filter: { path, module in
             if weights["\(path).scales"] != nil {
-                if let perLayerQuantization {
-                    return perLayerQuantization.quantization(layer: path)?.asTuple
-                } else if let quantization {
-                    return quantization.asTuple
+                if perLayerQuantization != nil || quantization != nil {
+                    return resolveCheckpointQuantization(
+                        layer: path,
+                        weightShape: weights["\(path).weight"]?.shape,
+                        scaleShape: weights["\(path).scales"]?.shape,
+                        quantization: quantization,
+                        perLayerQuantization: perLayerQuantization
+                    )?.asTuple
                 } else if hasOfficialBlockScaledWeights,
                     let weight = weights["\(path).weight"],
                     let scales = weights["\(path).scales"],
@@ -193,6 +197,83 @@ public func loadWeights(
     deepseekV4LoadTrace("parameter eval begin")
     eval(model)
     deepseekV4LoadTrace("parameter eval complete")
+}
+
+/// Resolve the quantization parameters for one checkpoint layer.
+///
+/// Explicit per-layer metadata remains authoritative. For an affine layer that
+/// only inherits a top-level default, the packed weight and scale geometry may
+/// prove that the checkpoint used a different supported bit width. This
+/// narrowly handles heterogeneous checkpoints whose top-level metadata omits
+/// an otherwise unambiguous per-layer override.
+func resolveCheckpointQuantization(
+    layer: String,
+    weightShape: [Int]?,
+    scaleShape: [Int]?,
+    quantization: BaseConfiguration.Quantization?,
+    perLayerQuantization: BaseConfiguration.PerLayerQuantization?
+) -> BaseConfiguration.Quantization? {
+    let configured: BaseConfiguration.Quantization?
+    if let perLayerQuantization {
+        if let explicit = perLayerQuantization.explicitQuantizationOption(layer: layer) {
+            switch explicit {
+            case .skip:
+                return nil
+            case .quantize(let quantization):
+                return quantization
+            }
+        }
+        configured = perLayerQuantization.quantization ?? quantization
+    } else {
+        configured = quantization
+    }
+
+    guard let configured else { return nil }
+    guard configured.mode == .affine,
+        let weightShape,
+        let scaleShape,
+        let inferred = inferAffineQuantization(
+            weightShape: weightShape,
+            scaleShape: scaleShape,
+            groupSize: configured.groupSize)
+    else {
+        return configured
+    }
+    return inferred
+}
+
+/// Infer an affine bit width from ordinary MLX packed-weight geometry.
+///
+/// Affine scales contain one value per `groupSize` logical columns, while the
+/// packed UInt32 weight contains `bits` per logical value. Matching all leading
+/// dimensions prevents an unrelated sidecar from influencing the result.
+func inferAffineQuantization(
+    weightShape: [Int],
+    scaleShape: [Int],
+    groupSize: Int
+) -> BaseConfiguration.Quantization? {
+    guard groupSize > 0,
+        weightShape.count == scaleShape.count,
+        !weightShape.isEmpty,
+        weightShape.dropLast() == scaleShape.dropLast(),
+        let packedColumns = weightShape.last,
+        let scaleColumns = scaleShape.last,
+        packedColumns > 0,
+        scaleColumns > 0
+    else { return nil }
+
+    let (logicalColumns, logicalOverflow) = scaleColumns.multipliedReportingOverflow(
+        by: groupSize)
+    let (packedBits, packedOverflow) = packedColumns.multipliedReportingOverflow(by: 32)
+    guard !logicalOverflow,
+        !packedOverflow,
+        logicalColumns > 0,
+        packedBits % logicalColumns == 0
+    else { return nil }
+
+    let bits = packedBits / logicalColumns
+    guard [2, 3, 4, 5, 6, 8].contains(bits) else { return nil }
+    return .init(groupSize: groupSize, bits: bits, mode: .affine)
 }
 
 /// Infer MLX's floating-point quantization mode from an official packed weight

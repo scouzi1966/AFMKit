@@ -164,18 +164,37 @@ public struct Qwen4ExpTextConfiguration: Decodable, Sendable {
     }
 }
 
+public struct Qwen4ExpNGramTableConfiguration: Decodable, Sendable {
+    public let file: String
+    public let bits: Int
+    public let groupSize: Int
+
+    enum CodingKeys: String, CodingKey {
+        case file
+        case bits
+        case groupSize = "group_size"
+    }
+}
+
 public struct Qwen4ExpConfiguration: Decodable, Sendable {
     var modelType: String
     var textConfig: Qwen4ExpTextConfiguration
+    var ngramTable: Qwen4ExpNGramTableConfiguration?
 
     enum CodingKeys: String, CodingKey {
         case modelType = "model_type"
         case textConfig = "text_config"
+        case ngramTable = "ngram_table"
     }
 
-    public init(modelType: String = "qwen4_exp", textConfig: Qwen4ExpTextConfiguration) {
+    public init(
+        modelType: String = "qwen4_exp",
+        textConfig: Qwen4ExpTextConfiguration,
+        ngramTable: Qwen4ExpNGramTableConfiguration? = nil
+    ) {
         self.modelType = modelType
         self.textConfig = textConfig
+        self.ngramTable = ngramTable
     }
 }
 
@@ -711,6 +730,75 @@ private func qwen4NthPrime(after start: Int, count: Int) -> Int {
     return result
 }
 
+/// Compute mapped-table row IDs on the host without constructing an MLX graph
+/// that must immediately synchronize back to the CPU for disk I/O.
+///
+/// `previous` and `input` are row-major `[batch, sequence]` buffers. The
+/// returned row IDs are `[batch, inputLength, heads]`, also row-major.
+func qwen4MappedNGramRowIDs(
+    previous: [Int64],
+    input: [Int64],
+    batchSize: Int,
+    inputLength: Int,
+    contextLength: Int,
+    ngramSize: Int,
+    headsPerNgram: Int,
+    eosTokenID: Int64,
+    headSizes: [Int64],
+    headOffsets: [Int64],
+    multipliers: [Int64]
+) -> (rowIDs: [Int64], nextHistory: [Int64]) {
+    let headCount = contextLength * headsPerNgram
+    precondition(previous.count == batchSize * contextLength)
+    precondition(input.count == batchSize * inputLength)
+    precondition(headSizes.count == headCount)
+    precondition(headOffsets.count == headCount)
+    precondition(multipliers.count == ngramSize)
+
+    var rowIDs = [Int64]()
+    rowIDs.reserveCapacity(batchSize * inputLength * headCount)
+    var nextHistory = [Int64]()
+    nextHistory.reserveCapacity(batchSize * contextLength)
+
+    for batch in 0 ..< batchSize {
+        let previousStart = batch * contextLength
+        let inputStart = batch * inputLength
+        var sequence = Array(previous[previousStart ..< previousStart + contextLength])
+        sequence.append(contentsOf: input[inputStart ..< inputStart + inputLength])
+
+        var lastEOS = -1
+        for position in sequence.indices {
+            let token = sequence[position]
+            if position >= contextLength {
+                let segmentPosition = position - (lastEOS + 1)
+                for order in 2 ... ngramSize {
+                    var mixed = token &* multipliers[0]
+                    for shift in 1 ..< order {
+                        let shifted = segmentPosition >= shift && position >= shift
+                            ? sequence[position - shift]
+                            : eosTokenID
+                        mixed ^= shifted &* multipliers[shift]
+                    }
+
+                    let headStart = (order - 2) * headsPerNgram
+                    for head in headStart ..< headStart + headsPerNgram {
+                        let modulus = headSizes[head]
+                        let remainder = mixed % modulus
+                        let positive = remainder >= 0 ? remainder : remainder + modulus
+                        rowIDs.append(positive + headOffsets[head])
+                    }
+                }
+            }
+            if token == eosTokenID {
+                lastEOS = position
+            }
+        }
+
+        nextHistory.append(contentsOf: sequence.suffix(contextLength))
+    }
+    return (rowIDs, nextHistory)
+}
+
 private final class Qwen4ExpNGramEmbedding: Module {
     let ngramSize: Int
     let headsPerNgram: Int
@@ -718,8 +806,12 @@ private final class Qwen4ExpNGramEmbedding: Module {
     let contextLength: Int
     let headSizes: MLXArray
     let headOffsets: MLXArray
+    let hostHeadSizes: [Int64]
+    let hostHeadOffsets: [Int64]
+    let hostMultipliers: [Int64]
     @ParameterInfo(key: "layer_multipliers") var layerMultipliers: MLXArray
-    @ModuleInfo(key: "ngram_embedding") var ngramEmbedding: SelectiveShardedEmbedding
+    @ModuleInfo(key: "ngram_embedding") var ngramEmbedding: SelectiveShardedEmbedding?
+    private var mappedNGramTable: Qwen4ExpMappedNGramTable?
 
     init(_ config: Qwen4ExpTextConfiguration, pleLayerIndex: Int) {
         ngramSize = config.ngramSize
@@ -739,6 +831,8 @@ private final class Qwen4ExpNGramEmbedding: Module {
         }
         let padded = ((total + config.ngramVocabularyDivisor - 1) / config.ngramVocabularyDivisor)
             * config.ngramVocabularyDivisor
+        hostHeadSizes = sizes.map(Int64.init)
+        hostHeadOffsets = offsets.map(Int64.init)
         headSizes = MLXArray(sizes)
         headOffsets = MLXArray(offsets)
         let maxMultiplier = Int64.max / Int64(max(config.vocabularySize, 1))
@@ -748,11 +842,33 @@ private final class Qwen4ExpNGramEmbedding: Module {
             let value = base &+ qwen4SplitMixGamma &* UInt64(index + 1)
             return Int64(2 * (qwen4SplitMix64(value) % bound) + 1)
         }
+        hostMultipliers = multipliers
         _layerMultipliers.wrappedValue = MLXArray(multipliers)
         _ngramEmbedding.wrappedValue = SelectiveShardedEmbedding(
             rows: padded,
             dimensions: config.pleEmbedDim / heads,
             parts: config.splitNgramParts)
+    }
+
+    func configureMappedTable(
+        url: URL,
+        bits: Int,
+        groupSize: Int
+    ) throws {
+        guard let resident = ngramEmbedding else {
+            throw Qwen4ExpMappedNGramTableError.invalidHeader(
+                "n-gram table was already configured")
+        }
+        let table = try Qwen4ExpMappedNGramTable(
+            url: url,
+            expectedRows: resident.rowsPerShard * resident.shards.count,
+            expectedDimensions: resident.dimensions,
+            expectedBits: bits,
+            expectedGroupSize: groupSize)
+        mappedNGramTable = table
+        var replacements = ModuleChildren()
+        replacements["ngram_embedding"] = NestedItem<String, Module>.none
+        update(modules: replacements)
     }
 
     private func shifted(_ ids: MLXArray, by shift: Int) -> MLXArray {
@@ -777,6 +893,28 @@ private final class Qwen4ExpNGramEmbedding: Module {
         let ids = inputIDs.asType(.int64)
         let previous = cache?[3] ?? MLXArray.full(
             [ids.dim(0), contextLength], values: MLXArray(eosTokenID), dtype: .int64)
+
+        if let mappedNGramTable {
+            let batchSize = ids.dim(0)
+            let inputLength = ids.dim(1)
+            let computed = qwen4MappedNGramRowIDs(
+                previous: previous.reshaped(-1).asArray(Int64.self),
+                input: ids.reshaped(-1).asArray(Int64.self),
+                batchSize: batchSize,
+                inputLength: inputLength,
+                contextLength: contextLength,
+                ngramSize: ngramSize,
+                headsPerNgram: headsPerNgram,
+                eosTokenID: Int64(eosTokenID),
+                headSizes: hostHeadSizes,
+                headOffsets: hostHeadOffsets,
+                multipliers: hostMultipliers)
+            cache?[3] = MLXArray(computed.nextHistory).reshaped(batchSize, contextLength)
+            let ngramIDs = MLXArray(computed.rowIDs).reshaped(
+                batchSize, inputLength, contextLength * headsPerNgram)
+            return try! mappedNGramTable.gather(ngramIDs).flattened(start: -2)
+        }
+
         let history = concatenated([previous, ids], axis: 1)
         cache?[3] = history[0..., (history.dim(1) - contextLength)...]
         let shiftedIDs = (0 ..< ngramSize).map { shifted(history, by: $0) }
@@ -795,7 +933,7 @@ private final class Qwen4ExpNGramEmbedding: Module {
         let allNgramIDs = concatenated(blocks, axis: -1)
         let outputStart = allNgramIDs.dim(1) - ids.dim(1)
         let ngramIDs = allNgramIDs[0..., outputStart...]
-        return ngramEmbedding(ngramIDs).flattened(start: -2)
+        return ngramEmbedding!(ngramIDs).flattened(start: -2)
     }
 }
 
@@ -829,6 +967,17 @@ private final class Qwen4ExpPLE: Module {
             inputChannels: width, outputChannels: width,
             kernelSize: config.pleConvKernelSize,
             dilation: config.ngramSize, groups: width, bias: false)
+    }
+
+    func configureMappedNGramTable(
+        url: URL,
+        bits: Int,
+        groupSize: Int
+    ) throws {
+        try pleEmbedding.configureMappedTable(
+            url: url,
+            bits: bits,
+            groupSize: groupSize)
     }
 
     private func shortConv(_ x: MLXArray, cache: ArraysCache?) -> MLXArray {
@@ -880,6 +1029,19 @@ private final class Qwen4ExpDecoderLayer: Module {
         _mlpHyperConnection.wrappedValue = Qwen4ExpGatedResidual(config)
     }
 
+    func configureMappedNGramTable(
+        url: URL,
+        bits: Int,
+        groupSize: Int
+    ) throws -> Bool {
+        guard let ple else { return false }
+        try ple.configureMappedNGramTable(
+            url: url,
+            bits: bits,
+            groupSize: groupSize)
+        return true
+    }
+
     func callAsFunction(
         _ input: MLXArray,
         inputIDs: MLXArray,
@@ -916,6 +1078,24 @@ private final class Qwen4ExpModelInner: Module {
             Qwen4ExpDecoderLayer(config, layerIndex: $0)
         }
         _hyperConnectionMixer.wrappedValue = Qwen4ExpGatedResidual(config, useCombine: false)
+    }
+
+    func configureMappedNGramTable(
+        url: URL,
+        bits: Int,
+        groupSize: Int
+    ) throws -> Int {
+        var configured = 0
+        for layer in layers {
+            if try layer.configureMappedNGramTable(
+                url: url,
+                bits: bits,
+                groupSize: groupSize)
+            {
+                configured += 1
+            }
+        }
+        return configured
     }
 
     func forwardStream(
@@ -1117,17 +1297,38 @@ public final class Qwen4ExpModel: Module, LLMModel, KVCacheDimensionProvider {
     public let kvHeads: [Int]
     @ModuleInfo(key: "model") private var model: Qwen4ExpModelInner
     let configuration: Qwen4ExpTextConfiguration
+    private let ngramTableConfiguration: Qwen4ExpNGramTableConfiguration?
+    private var usesMappedNGramTable = false
     @ModuleInfo(key: "lm_head") var lmHead: Linear?
 
     public init(_ wrapper: Qwen4ExpConfiguration) {
         let config = wrapper.textConfig
         configuration = config
+        ngramTableConfiguration = wrapper.ngramTable
         vocabularySize = config.vocabularySize
         kvHeads = config.layerTypes.map { $0 == "linear_attention" ? 0 : config.kvHeads }
         _model.wrappedValue = Qwen4ExpModelInner(config)
         if !config.tieWordEmbeddings {
             _lmHead.wrappedValue = Linear(config.hiddenSize, config.vocabularySize, bias: false)
         }
+    }
+
+    /// Replaces the resident PLE table with an explicitly selected mapped
+    /// sidecar. Callers must opt in before checkpoint weights are loaded.
+    public func configureMappedNGramTable(url: URL) throws {
+        guard let tableConfiguration = ngramTableConfiguration else {
+            throw Qwen4ExpMappedNGramTableError.invalidHeader(
+                "config.json does not declare ngram_table")
+        }
+        let configured = try model.configureMappedNGramTable(
+            url: url,
+            bits: tableConfiguration.bits,
+            groupSize: tableConfiguration.groupSize)
+        guard configured > 0 else {
+            throw Qwen4ExpMappedNGramTableError.invalidHeader(
+                "model has no PLE layers")
+        }
+        usesMappedNGramTable = true
     }
 
     public func callAsFunction(_ inputs: MLXArray, cache: [KVCache]?) -> MLXArray {
@@ -1227,6 +1428,11 @@ public final class Qwen4ExpModel: Module, LLMModel, KVCacheDimensionProvider {
                 || normalizedKey.hasPrefix("model.hyper_connection_mixer.")
                 || normalizedKey.hasPrefix("lm_head.")
             guard isTextWeight else { continue }
+            if usesMappedNGramTable,
+               normalizedKey.contains(".ple.ple_embedding.ngram_embedding.")
+            {
+                continue
+            }
             guard !normalizedKey.hasSuffix(".ngram_heads_offsets"),
                   !normalizedKey.hasSuffix(".ngram_heads_vocab_sizes") else { continue }
             var key = normalizedKey
