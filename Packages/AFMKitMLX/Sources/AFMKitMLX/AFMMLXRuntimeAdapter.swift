@@ -476,7 +476,10 @@ public struct AFMMLXRuntimeAdapter: Sendable {
             }
             if let qwen = context.model as? Qwen4ExpModel {
                 guard let sidecarPath else { return nil }
-                let head = try qwen.loadMTPHead(sidecarPath: sidecarPath)
+                let head = try qwen.loadMTPHead(
+                    sidecarPath: sidecarPath,
+                    bits: Qwen4ExpModel.defaultMTPHeadBits
+                )
                 return .qwenNextMTP(
                     Qwen4ExpMTPGenerator(model: qwen, head: head, depth: 3))
             }
