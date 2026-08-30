@@ -721,26 +721,30 @@ public struct TokenIterator: Sequence, IteratorProtocol {
     }
 
     mutating func prepare(input: LMInput, windowSize: Int? = nil) throws {
-        processor?.prompt(input.text.tokens)
+        // `model.prepare` and the first `asyncEval` can report a C++ MLX error
+        // synchronously through MLX's global callback. This is a throwing
+        // initialization path, so retain a scoped handler until that first
+        // evaluation has been scheduled. Otherwise the unscoped callback
+        // terminates a long-running server instead of failing this request.
+        try withError {
+            processor?.prompt(input.text.tokens)
 
-        switch try model.prepare(input, cache: cache, windowSize: windowSize) {
-        case .tokens(let tokens):
-            y = tokens
+            switch try model.prepare(input, cache: cache, windowSize: windowSize) {
+            case .tokens(let tokens):
+                y = tokens
 
-            // evaluate the remainder of the prompt -- this primes the pump
-            let token = step(previous: tokens)
-            y = .init(tokens: token)
-            asyncEval(token)
+                // evaluate the remainder of the prompt -- this primes the pump
+                let token = step(previous: tokens)
+                y = .init(tokens: token)
+                asyncEval(token)
 
-        case .logits(let result):
-            y = .init(tokens: convertToToken(logits: result.logits))
-            if let y {
-                asyncEval(y.tokens)
+            case .logits(let result):
+                y = .init(tokens: convertToToken(logits: result.logits))
+                if let y {
+                    asyncEval(y.tokens)
+                }
             }
-
-            break
         }
-
     }
 
     mutating func convertToToken(logits: MLXArray) -> MLXArray {
