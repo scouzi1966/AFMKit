@@ -711,32 +711,6 @@ private func qwen4NthPrime(after start: Int, count: Int) -> Int {
     return result
 }
 
-private final class Qwen4ExpShardedEmbedding: Module {
-    let rowsPerShard: Int
-    @ModuleInfo var shards: [Embedding]
-
-    init(rows: Int, dimensions: Int, parts: Int) {
-        precondition(rows % parts == 0)
-        let shardRows = rows / parts
-        rowsPerShard = shardRows
-        _shards.wrappedValue = (0 ..< parts).map { _ in
-            Embedding(embeddingCount: shardRows, dimensions: dimensions)
-        }
-    }
-
-    func callAsFunction(_ ids: MLXArray) -> MLXArray {
-        let shardIDs = ids.floorDivide(rowsPerShard)
-        let localIDs = ids % rowsPerShard
-        var result: MLXArray?
-        for (index, shard) in shards.enumerated() {
-            let safeIDs = which(shardIDs .== index, localIDs, 0)
-            let values = shard(safeIDs) * (shardIDs .== index)[.ellipsis, .newAxis]
-            result = result.map { $0 + values } ?? values
-        }
-        return result!
-    }
-}
-
 private final class Qwen4ExpNGramEmbedding: Module {
     let ngramSize: Int
     let headsPerNgram: Int
@@ -745,7 +719,7 @@ private final class Qwen4ExpNGramEmbedding: Module {
     let headSizes: MLXArray
     let headOffsets: MLXArray
     @ParameterInfo(key: "layer_multipliers") var layerMultipliers: MLXArray
-    @ModuleInfo(key: "ngram_embedding") var ngramEmbedding: Qwen4ExpShardedEmbedding
+    @ModuleInfo(key: "ngram_embedding") var ngramEmbedding: SelectiveShardedEmbedding
 
     init(_ config: Qwen4ExpTextConfiguration, pleLayerIndex: Int) {
         ngramSize = config.ngramSize
@@ -775,7 +749,7 @@ private final class Qwen4ExpNGramEmbedding: Module {
             return Int64(2 * (qwen4SplitMix64(value) % bound) + 1)
         }
         _layerMultipliers.wrappedValue = MLXArray(multipliers)
-        _ngramEmbedding.wrappedValue = Qwen4ExpShardedEmbedding(
+        _ngramEmbedding.wrappedValue = SelectiveShardedEmbedding(
             rows: padded,
             dimensions: config.pleEmbedDim / heads,
             parts: config.splitNgramParts)
