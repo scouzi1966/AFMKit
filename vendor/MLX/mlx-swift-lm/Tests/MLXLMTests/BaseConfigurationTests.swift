@@ -70,4 +70,123 @@ public class BaseConfigurationTests: XCTestCase {
             .init(groupSize: 64, bits: 4))
     }
 
+    func testQwenNextPLEShardQuantizationFollowsSanitizedModulePath() throws {
+        let json =
+            """
+            {
+                "model_type": "qwen4_exp",
+                "quantization": {
+                    "group_size": 64,
+                    "bits": 4,
+                    "model.layers.1.ple.ple_embedding.ngram_embedding.shard_7": {
+                        "group_size": 32,
+                        "bits": 4
+                    }
+                }
+            }
+            """
+
+        let config = try JSONDecoder().decode(
+            BaseConfiguration.self, from: Data(json.utf8))
+
+        XCTAssertEqual(
+            config.perLayerQuantization?.quantization(
+                layer: "model.layers.1.ple.ple_embedding.ngram_embedding.shards.7"),
+            .init(groupSize: 32, bits: 4))
+    }
+
+    func testQwenNextPLEShardQuantizationAliasIsBidirectional() throws {
+        let json =
+            """
+            {
+                "model_type": "qwen4_exp",
+                "quantization": {
+                    "group_size": 64,
+                    "bits": 4,
+                    "model.layers.1.ple.ple_embedding.ngram_embedding.shards.11": {
+                        "group_size": 32,
+                        "bits": 4
+                    }
+                }
+            }
+            """
+
+        let config = try JSONDecoder().decode(
+            BaseConfiguration.self, from: Data(json.utf8))
+
+        XCTAssertEqual(
+            config.perLayerQuantization?.quantization(
+                layer: "model.layers.1.ple.ple_embedding.ngram_embedding.shard_11"),
+            .init(groupSize: 32, bits: 4))
+    }
+
+    func testQwenNextPLEShardQuantizationAliasPreservesSkipAndExactPrecedence() throws {
+        let json =
+            """
+            {
+                "model_type": "qwen4_exp",
+                "quantization": {
+                    "group_size": 64,
+                    "bits": 4,
+                    "model.layers.1.ple.ple_embedding.ngram_embedding.shard_3": false,
+                    "model.layers.1.ple.ple_embedding.ngram_embedding.shard_5": {
+                        "group_size": 32,
+                        "bits": 4
+                    },
+                    "model.layers.1.ple.ple_embedding.ngram_embedding.shards.5": {
+                        "group_size": 16,
+                        "bits": 4
+                    }
+                }
+            }
+            """
+
+        let config = try JSONDecoder().decode(
+            BaseConfiguration.self, from: Data(json.utf8))
+
+        XCTAssertNil(
+            config.perLayerQuantization?.quantization(
+                layer: "model.layers.1.ple.ple_embedding.ngram_embedding.shards.3"))
+        XCTAssertEqual(
+            config.perLayerQuantization?.quantization(
+                layer: "model.layers.1.ple.ple_embedding.ngram_embedding.shards.5"),
+            .init(groupSize: 16, bits: 4))
+        XCTAssertEqual(
+            config.perLayerQuantization?.quantization(
+                layer: "model.layers.1.ple.ple_embedding.ngram_embedding.shard_5"),
+            .init(groupSize: 32, bits: 4))
+    }
+
+    func testQwenNextPLEShardQuantizationAliasPreservesNamespacesAndUnrelatedPaths() throws {
+        let json =
+            """
+            {
+                "model_type": "qwen4_exp",
+                "quantization": {
+                    "group_size": 64,
+                    "bits": 4,
+                    "language_model.model.layers.2.ple.ple_embedding.ngram_embedding.shard_9": {
+                        "group_size": 32,
+                        "bits": 4
+                    },
+                    "model.layers.1.shard_7": {
+                        "group_size": 32,
+                        "bits": 4
+                    }
+                }
+            }
+            """
+
+        let config = try JSONDecoder().decode(
+            BaseConfiguration.self, from: Data(json.utf8))
+
+        XCTAssertEqual(
+            config.perLayerQuantization?.quantization(
+                layer: "layers.2.ple.ple_embedding.ngram_embedding.shards.9"),
+            .init(groupSize: 32, bits: 4))
+        XCTAssertEqual(
+            config.perLayerQuantization?.quantization(layer: "model.layers.1.shards.7"),
+            .init(groupSize: 64, bits: 4))
+    }
+
 }

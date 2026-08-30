@@ -1183,11 +1183,28 @@ public final class Qwen4ExpModel: Module, LLMModel, KVCacheDimensionProvider {
             ".k_layernorm.weight",
         ]
         for (originalKey, value) in weights {
-            guard originalKey.hasPrefix("language_model.") else { continue }
-            var key = String(originalKey.dropFirst("language_model.".count))
-            guard !key.hasPrefix("mtp.") else { continue }
-            guard !key.hasSuffix(".ngram_heads_offsets"),
-                  !key.hasSuffix(".ngram_heads_vocab_sizes") else { continue }
+            let normalizedKey: String
+            if originalKey.hasPrefix("language_model.") {
+                normalizedKey = String(originalKey.dropFirst("language_model.".count))
+            } else {
+                // Text-only Qwen Next conversions publish the language-model
+                // namespace directly instead of wrapping it in
+                // `language_model.*`.
+                normalizedKey = originalKey
+            }
+
+            // Keep this list aligned with Qwen4ExpModel's actual text module
+            // tree. A broad `model.*` check would also accept nested visual,
+            // MTP, or unknown provider-owned subtrees from multimodal bundles.
+            let isTextWeight =
+                normalizedKey.hasPrefix("model.embed_tokens.")
+                || normalizedKey.hasPrefix("model.layers.")
+                || normalizedKey.hasPrefix("model.hyper_connection_mixer.")
+                || normalizedKey.hasPrefix("lm_head.")
+            guard isTextWeight else { continue }
+            guard !normalizedKey.hasSuffix(".ngram_heads_offsets"),
+                  !normalizedKey.hasSuffix(".ngram_heads_vocab_sizes") else { continue }
+            var key = normalizedKey
             if key.contains(".ple.ple_embedding.ngram_embedding.shard_") {
                 key = key.replacingOccurrences(
                     of: ".ple.ple_embedding.ngram_embedding.shard_",

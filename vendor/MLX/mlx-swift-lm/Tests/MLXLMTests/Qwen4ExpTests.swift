@@ -145,6 +145,44 @@ final class Qwen4ExpTests: XCTestCase {
         XCTAssertNil(sanitized["model.layers.1.ple.ple_embedding.ngram_heads_vocab_sizes"])
     }
 
+    func testSanitizeAcceptsTextOnlyCheckpointRootsWithoutVisionLeakage() async throws {
+        let model = try await LLMTypeRegistry.shared.createModel(
+            configuration: Data(minimalConfiguration.utf8),
+            modelType: "qwen4_exp"
+        )
+        let qwen = try XCTUnwrap(model as? Qwen4ExpModel)
+
+        let sanitized = qwen.sanitize(weights: [
+            "model.embed_tokens.weight": MLXArray.zeros([1]),
+            "lm_head.weight": MLXArray.zeros([1]),
+            "model.layers.0.attn_hyper_connection.hc_norm.weight":
+                MLXArray([Float(1.25)]),
+            "mtp.fc_hidden.weight": MLXArray.zeros([1]),
+            "vision_model.patch_embed.weight": MLXArray.zeros([1]),
+            "model.visual.patch_embed.weight": MLXArray.zeros([1]),
+            "model.vision_tower.patch_embed.weight": MLXArray.zeros([1]),
+            "model.mtp.fc_hidden.weight": MLXArray.zeros([1]),
+            "model.unrelated.weight": MLXArray.zeros([1]),
+            "language_model.model.visual.patch_embed.weight": MLXArray.zeros([1]),
+        ])
+
+        XCTAssertNotNil(sanitized["model.embed_tokens.weight"])
+        XCTAssertNotNil(sanitized["lm_head.weight"])
+        XCTAssertEqual(
+            try XCTUnwrap(sanitized[
+                "model.layers.0.attn_hyper_connection.hc_norm.weight"
+            ]).item(Float.self),
+            0.25,
+            accuracy: 0.0001
+        )
+        XCTAssertNil(sanitized["mtp.fc_hidden.weight"])
+        XCTAssertNil(sanitized["vision_model.patch_embed.weight"])
+        XCTAssertNil(sanitized["model.visual.patch_embed.weight"])
+        XCTAssertNil(sanitized["model.vision_tower.patch_embed.weight"])
+        XCTAssertNil(sanitized["model.mtp.fc_hidden.weight"])
+        XCTAssertNil(sanitized["model.unrelated.weight"])
+    }
+
     func testMultimodalRoPEInterleavesUnequalSectionsIndependently() {
         let rope = Qwen4ExpMultimodalRoPE(
             dimensions: 64,
