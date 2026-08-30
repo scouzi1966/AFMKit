@@ -2143,7 +2143,9 @@ public final class MLXModelService:
                                 let head = try qwen.loadMTPHead(
                                     sidecarPath: sidecar,
                                     groupSize: quantization.groupSize,
-                                    bits: quantization.bits,
+                                    bits: AFMMLXMTPRuntimePolicy.qwenNextMTPHeadBits(
+                                        configuredBits: quantization.bits
+                                    ),
                                     mode: quantization.mode
                                 )
                                 let generator = Qwen4ExpMTPGenerator(

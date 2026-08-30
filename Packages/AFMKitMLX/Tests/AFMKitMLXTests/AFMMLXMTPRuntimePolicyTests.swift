@@ -3,6 +3,11 @@ import Foundation
 import XCTest
 
 final class AFMMLXMTPRuntimePolicyTests: XCTestCase {
+    func testQwenNextMTPHeadUsesEightBitPrecisionFloor() {
+        XCTAssertEqual(AFMMLXMTPRuntimePolicy.qwenNextMTPHeadBits(configuredBits: 4), 8)
+        XCTAssertEqual(AFMMLXMTPRuntimePolicy.qwenNextMTPHeadBits(configuredBits: 8), 8)
+    }
+
     func testQwenNextMTPSelectsOnlyTheTextRuntime() {
         XCTAssertEqual(
             AFMMLXMTPRuntimePolicy.compatibleModelKind(

@@ -11,6 +11,14 @@ enum AFMMLXMTPRuntimeModelKind: Equatable, Sendable {
 /// Keeping these rules independent of MLX objects makes failure/retry and
 /// model-switch behavior deterministic and directly testable.
 enum AFMMLXMTPRuntimePolicy {
+    /// Qwen Next's raw MTP sidecar is precision-sensitive: quantizing its
+    /// proposal layer to the trunk's q4 default lowers draft acceptance and
+    /// makes speculative decoding slower. Keep the head at a q8 floor while
+    /// the target model retains the checkpoint's own quantization.
+    static func qwenNextMTPHeadBits(configuredBits: Int) -> Int {
+        max(8, configuredBits)
+    }
+
     static func loadingFactory(
         selected: AFMMLXModelFactoryKind,
         mtpEnabled: Bool,
