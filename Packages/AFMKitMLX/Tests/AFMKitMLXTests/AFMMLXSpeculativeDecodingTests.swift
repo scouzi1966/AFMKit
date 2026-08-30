@@ -280,6 +280,18 @@ final class AFMMLXSpeculativeDecodingTests: XCTestCase {
         XCTAssertFalse(compatibility.denseGemma4Verifier)
     }
 
+    func testSpeculativeModelCompatibilityAcceptsQwenNextWithSidecar() {
+        let compatibility = AFMMLXSpeculativeModelCompatibility.evaluate(
+            config: [
+                "model_type": "qwen4_exp",
+                "architectures": ["Qwen4ExpForConditionalGeneration"],
+                "text_config": ["model_type": "qwen4_exp_text"],
+            ],
+            hasMTPSidecar: true
+        )
+        XCTAssertTrue(compatibility.mtpCompatible)
+    }
+
     func testGLMEmbeddedMTPIsNotAdvertisedFromConfigAlone() {
         let config: [String: Any] = [
             "model_type": "glm5_next",

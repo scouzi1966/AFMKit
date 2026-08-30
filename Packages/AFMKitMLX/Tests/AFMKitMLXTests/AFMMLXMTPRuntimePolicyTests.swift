@@ -3,6 +3,24 @@ import Foundation
 import XCTest
 
 final class AFMMLXMTPRuntimePolicyTests: XCTestCase {
+    func testQwenNextMTPSelectsOnlyTheTextRuntime() {
+        XCTAssertEqual(
+            AFMMLXMTPRuntimePolicy.compatibleModelKind(
+                mtpEnabled: true,
+                factory: .llm,
+                canonicalModelType: "qwen4_exp"
+            ),
+            .qwenNextText
+        )
+        XCTAssertNil(
+            AFMMLXMTPRuntimePolicy.compatibleModelKind(
+                mtpEnabled: true,
+                factory: .vlm,
+                canonicalModelType: "qwen4_exp"
+            )
+        )
+    }
+
     func testFailedMTPSetupCannotReuseBaseOnlyLoadedStateOnRetry() {
         XCTAssertFalse(
             AFMMLXMTPRuntimePolicy.canReuseLoadedModel(

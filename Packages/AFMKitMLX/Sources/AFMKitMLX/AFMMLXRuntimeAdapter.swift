@@ -10,13 +10,14 @@ public enum AFMMLXSpeculativeRuntime {
     case none
     case mtpLLM(Qwen3_5MoEMTPGenerator)
     case mtpVLM(MTPGenerator)
+    case qwenNextMTP(Qwen4ExpMTPGenerator)
     case glmMTP(GLM5NextMTPGenerator)
     case eagle3(Gemma4Eagle3Drafter)
 
     public var kind: AFMMLXSpeculativeRuntimeKind {
         switch self {
         case .none: return .none
-        case .mtpLLM, .mtpVLM, .glmMTP: return .mtp
+        case .mtpLLM, .mtpVLM, .qwenNextMTP, .glmMTP: return .mtp
         case .eagle3: return .eagle3
         }
     }
@@ -473,6 +474,12 @@ public struct AFMMLXRuntimeAdapter: Sendable {
                 let head = try qwen.loadMTPHead(sidecarPath: sidecarPath)
                 return .mtpVLM(MTPGenerator(model: qwen, head: head, depth: 3))
             }
+            if let qwen = context.model as? Qwen4ExpModel {
+                guard let sidecarPath else { return nil }
+                let head = try qwen.loadMTPHead(sidecarPath: sidecarPath)
+                return .qwenNextMTP(
+                    Qwen4ExpMTPGenerator(model: qwen, head: head, depth: 3))
+            }
             if let glm = context.model as? GLM5NextModel,
                let generator = GLM5NextMTPGenerator(model: glm)
             {
@@ -531,6 +538,8 @@ public struct AFMMLXRuntimeAdapter: Sendable {
             case .mtpLLM(let generator):
                 _ = generator.generate(promptIds: promptIds, maxTokens: maxTokens, eosIds: eos, onToken: emit)
             case .mtpVLM(let generator):
+                _ = generator.generate(promptIds: promptIds, maxTokens: maxTokens, eosIds: eos, onToken: emit)
+            case .qwenNextMTP(let generator):
                 _ = generator.generate(promptIds: promptIds, maxTokens: maxTokens, eosIds: eos, onToken: emit)
             case .glmMTP(let generator):
                 _ = generator.generate(promptIds: promptIds, maxTokens: maxTokens, eosIds: eos, onToken: emit)

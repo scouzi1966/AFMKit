@@ -3,6 +3,7 @@ import Foundation
 enum AFMMLXMTPRuntimeModelKind: Equatable, Sendable {
     case qwenText
     case qwenVision
+    case qwenNextText
     case glmEmbedded
 }
 
@@ -30,6 +31,9 @@ enum AFMMLXMTPRuntimePolicy {
         guard mtpEnabled else { return nil }
         if canonicalModelType == "glm5_next" {
             return .glmEmbedded
+        }
+        if canonicalModelType == "qwen4_exp" {
+            return factory == .llm ? .qwenNextText : nil
         }
         guard canonicalModelType == "qwen3_5" || canonicalModelType == "qwen3_5_moe"
         else { return nil }

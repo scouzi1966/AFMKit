@@ -863,12 +863,17 @@ private final class Qwen4ExpDecoderLayer: Module {
     @ModuleInfo(key: "attn_hyper_connection") var attentionHyperConnection: Qwen4ExpGatedResidual
     @ModuleInfo(key: "mlp_hyper_connection") var mlpHyperConnection: Qwen4ExpGatedResidual
 
-    init(_ config: Qwen4ExpTextConfiguration, layerIndex: Int) {
-        isLinear = config.layerTypes[layerIndex] == "linear_attention"
+    init(
+        _ config: Qwen4ExpTextConfiguration,
+        layerIndex: Int,
+        forceFullAttention: Bool = false,
+        disablePLE: Bool = false
+    ) {
+        isLinear = !forceFullAttention && config.layerTypes[layerIndex] == "linear_attention"
         if isLinear { _linearAttention.wrappedValue = Qwen4ExpGatedDeltaNet(config) }
         else { _selfAttention.wrappedValue = Qwen4ExpAttention(config) }
         _mlp.wrappedValue = Qwen4ExpSparseMoE(config)
-        if let pleIndex = config.pleLayerIDs.firstIndex(of: layerIndex + 1) {
+        if !disablePLE, let pleIndex = config.pleLayerIDs.firstIndex(of: layerIndex + 1) {
             _ple.wrappedValue = Qwen4ExpPLE(config, pleLayerIndex: pleIndex)
         }
         _attentionHyperConnection.wrappedValue = Qwen4ExpGatedResidual(config)
@@ -913,7 +918,7 @@ private final class Qwen4ExpModelInner: Module {
         _hyperConnectionMixer.wrappedValue = Qwen4ExpGatedResidual(config, useCombine: false)
     }
 
-    func callAsFunction(
+    func forwardStream(
         _ inputIDs: MLXArray,
         inputEmbeddings: MLXArray? = nil,
         positionIDs: MLXArray? = nil,
@@ -930,7 +935,155 @@ private final class Qwen4ExpModelInner: Module {
                 hidden, inputIDs: inputIDs,
                 attentionMask: mask, positionIDs: positionIDs, cache: layerCaches[index])
         }
-        return hyperConnectionMixer.combine(hidden)
+        return hidden
+    }
+
+    func callAsFunction(
+        _ inputIDs: MLXArray,
+        inputEmbeddings: MLXArray? = nil,
+        positionIDs: MLXArray? = nil,
+        cache: [KVCache]?
+    ) -> MLXArray {
+        hyperConnectionMixer.combine(
+            forwardStream(
+                inputIDs,
+                inputEmbeddings: inputEmbeddings,
+                positionIDs: positionIDs,
+                cache: cache
+            )
+        )
+    }
+
+    func combineStream(_ stream: MLXArray) -> MLXArray {
+        hyperConnectionMixer.combine(stream)
+    }
+}
+
+// MARK: - Native MTP head
+
+/// Qwen3.8-Flash-Next's one-layer native multi-token-prediction head.
+///
+/// Unlike the earlier Qwen MTP head, `fc_hidden` is shared across each of the
+/// four hyper-connection streams. The head then runs a complete QSA + sparse
+/// MoE decoder layer and its own final hyper-connection mixer.
+public final class Qwen4ExpMTPHead: Module {
+    @ModuleInfo(key: "pre_fc_norm_embedding") private var preFcNormEmbedding: RMSNorm
+    @ModuleInfo(key: "pre_fc_norm_hidden") private var preFcNormHidden: RMSNorm
+    @ModuleInfo(key: "fc_embedding") private var fcEmbedding: Linear
+    @ModuleInfo(key: "fc_hidden") private var fcHidden: Linear
+    @ModuleInfo private var layers: [Qwen4ExpDecoderLayer]
+    @ModuleInfo(key: "hyper_connection_mixer") private var hyperConnectionMixer: Qwen4ExpGatedResidual
+
+    private let hiddenSize: Int
+    private let hcCount: Int
+
+    fileprivate init(_ config: Qwen4ExpTextConfiguration) {
+        hiddenSize = config.hiddenSize
+        hcCount = config.hcCount
+        _preFcNormEmbedding.wrappedValue = RMSNorm(
+            dimensions: config.hiddenSize, eps: config.rmsNormEps)
+        _preFcNormHidden.wrappedValue = RMSNorm(
+            dimensions: config.hiddenSize * config.hcCount, eps: config.rmsNormEps)
+        _fcEmbedding.wrappedValue = Linear(
+            config.hiddenSize, config.hiddenSize, bias: false)
+        _fcHidden.wrappedValue = Linear(
+            config.hiddenSize, config.hiddenSize, bias: false)
+        _layers.wrappedValue = [
+            Qwen4ExpDecoderLayer(
+                config,
+                layerIndex: 0,
+                forceFullAttention: true,
+                disablePLE: true
+            )
+        ]
+        _hyperConnectionMixer.wrappedValue = Qwen4ExpGatedResidual(
+            config, useCombine: false)
+    }
+
+    public struct Output {
+        public let stream: MLXArray
+        public let hidden: MLXArray
+    }
+
+    public func callAsFunction(
+        hiddenStream: MLXArray,
+        tokenEmbeddings: MLXArray,
+        tokenIDs: MLXArray,
+        positionIDs: MLXArray,
+        cache: [KVCache]
+    ) -> Output {
+        let shape = Array(hiddenStream.shape.dropLast())
+        let normalizedEmbedding = preFcNormEmbedding(tokenEmbeddings)
+        let normalizedHidden = preFcNormHidden(hiddenStream)
+            .reshaped(shape + [hcCount, hiddenSize])
+        let projectedHidden = fcHidden(normalizedHidden)
+        let projectedEmbedding = expandedDimensions(
+            fcEmbedding(normalizedEmbedding), axis: -2)
+        var stream = (projectedHidden + projectedEmbedding)
+            .reshaped(shape + [hcCount * hiddenSize])
+        let mask = createAttentionMask(h: stream, cache: cache[0])
+        stream = layers[0](
+            stream,
+            inputIDs: tokenIDs,
+            attentionMask: mask,
+            positionIDs: positionIDs,
+            cache: cache[0]
+        )
+        return Output(
+            stream: stream,
+            hidden: hyperConnectionMixer.combine(stream)
+        )
+    }
+
+    public func newCache() -> [KVCache] {
+        [Qwen4ExpAttentionCache()]
+    }
+
+    fileprivate static func load(
+        sidecarPath: String,
+        config: Qwen4ExpTextConfiguration,
+        groupSize: Int,
+        bits: Int,
+        mode: QuantizationMode
+    ) throws -> Qwen4ExpMTPHead {
+        let head = Qwen4ExpMTPHead(config)
+        let raw = try MLX.loadArrays(url: URL(fileURLWithPath: sidecarPath))
+        var weights: [String: MLXArray] = [:]
+        let zeroCenteredNormSuffixes = [
+            ".hc_norm.weight",
+            ".q_norm.weight",
+            ".k_norm.weight",
+            ".q_layernorm.weight",
+            ".k_layernorm.weight",
+        ]
+
+        for (originalKey, value) in raw {
+            var key = originalKey.hasPrefix("mtp.")
+                ? String(originalKey.dropFirst("mtp.".count))
+                : originalKey
+            switch key {
+            case "layers.0.mlp.experts.gate_up_proj":
+                let parts = MLX.split(value, parts: 2, axis: 1)
+                weights["layers.0.mlp.switch_mlp.gate_proj.weight"] = parts[0]
+                weights["layers.0.mlp.switch_mlp.up_proj.weight"] = parts[1]
+                continue
+            case "layers.0.mlp.experts.down_proj":
+                key = "layers.0.mlp.switch_mlp.down_proj.weight"
+            default:
+                break
+            }
+            weights[key] = zeroCenteredNormSuffixes.contains(where: key.hasSuffix)
+                ? value - 1
+                : value
+        }
+
+        try head.update(parameters: ModuleParameters.unflattened(weights), verify: [.all])
+        // The published sidecar preserves the MTP layer in FP16 torch layout.
+        // Quantize only after assigning the real tensors so no random placeholder
+        // is quantized and no 5.2 GB FP16 expert layer remains on the decode path.
+        quantize(model: head, groupSize: groupSize, bits: bits, mode: mode)
+        eval(head)
+        return head
     }
 }
 
@@ -959,6 +1112,41 @@ public final class Qwen4ExpModel: Module, LLMModel, KVCacheDimensionProvider {
 
     public func embedTokens(_ inputIDs: MLXArray) -> MLXArray {
         model.embedTokens(inputIDs)
+    }
+
+    public func projectLMHead(_ hidden: MLXArray) -> MLXArray {
+        lmHead?(hidden) ?? model.embedTokens.asLinear(hidden)
+    }
+
+    public func forwardStreamHidden(
+        inputIDs: MLXArray,
+        inputEmbeddings: MLXArray? = nil,
+        positionIDs: MLXArray? = nil,
+        cache: [KVCache]?
+    ) -> (stream: MLXArray, hidden: MLXArray, logits: MLXArray) {
+        let stream = model.forwardStream(
+            inputIDs,
+            inputEmbeddings: inputEmbeddings,
+            positionIDs: positionIDs,
+            cache: cache
+        )
+        let hidden = model.combineStream(stream)
+        return (stream, hidden, projectLMHead(hidden))
+    }
+
+    public func loadMTPHead(
+        sidecarPath: String,
+        groupSize: Int = 64,
+        bits: Int = 4,
+        mode: QuantizationMode = .affine
+    ) throws -> Qwen4ExpMTPHead {
+        try Qwen4ExpMTPHead.load(
+            sidecarPath: sidecarPath,
+            config: configuration,
+            groupSize: groupSize,
+            bits: bits,
+            mode: mode
+        )
     }
 
     public func forward(
@@ -1009,6 +1197,183 @@ public final class Qwen4ExpModel: Module, LLMModel, KVCacheDimensionProvider {
         }
         if configuration.tieWordEmbeddings { result["lm_head.weight"] = nil }
         return result
+    }
+}
+
+/// Greedy self-speculative decoding for Qwen3.8-Flash-Next's native MTP head.
+/// Draft-head history is rebuilt from verifier streams after every round so
+/// accepted output is exactly the target model's greedy output.
+public final class Qwen4ExpMTPGenerator {
+    private let model: Qwen4ExpModel
+    private let head: Qwen4ExpMTPHead
+    public let depth: Int
+
+    public init(model: Qwen4ExpModel, head: Qwen4ExpMTPHead, depth: Int = 3) {
+        self.model = model
+        self.head = head
+        self.depth = max(1, depth)
+    }
+
+    private static func argmax(_ logits: MLXArray) -> Int {
+        MLX.argMax(logits, axis: -1).item(Int.self)
+    }
+
+    private static func tokens(_ ids: [Int]) -> MLXArray {
+        MLXArray(ids.map(Int32.init)).reshaped([1, ids.count])
+    }
+
+    private static func positions(_ range: Range<Int>) -> MLXArray {
+        MLXArray(range.map(Int32.init)).reshaped([1, range.count])
+    }
+
+    public func generate(
+        promptIds: [Int],
+        maxTokens: Int,
+        eosIds: Set<Int> = [],
+        onToken: ((Int) -> Bool)? = nil
+    ) -> [Int] {
+        guard !promptIds.isEmpty, maxTokens > 0 else { return [] }
+        let targetCache = model.newCache(parameters: nil)
+        let mtpCache = head.newCache()
+        let prompt = Self.tokens(promptIds)
+        let initial = model.forwardStreamHidden(inputIDs: prompt, cache: targetCache)
+        var primary = Self.argmax(initial.logits[0, -1, 0...])
+        var primaryStream = initial.stream[0..., (initial.stream.dim(1) - 1)..., 0...]
+        var primaryPosition = promptIds.count
+
+        // Prime the head with true target streams for the shifted prompt pairs:
+        // stream[p] + token[p+1] predicts token[p+2].
+        if promptIds.count > 1 {
+            let historyCount = promptIds.count - 1
+            _ = head(
+                hiddenStream: initial.stream[0..., ..<historyCount, 0...],
+                tokenEmbeddings: model.embedTokens(Self.tokens(Array(promptIds.dropFirst()))),
+                tokenIDs: Self.tokens(Array(promptIds.dropFirst())),
+                positionIDs: Self.positions(1 ..< promptIds.count),
+                cache: mtpCache
+            )
+        }
+
+        var output: [Int] = []
+        var totalCycles = 0
+        var totalDrafted = 0
+        var totalAccepted = 0
+        var totalReplays = 0
+        var acceptedByDepth = [Int](repeating: 0, count: depth)
+        defer {
+            if ProcessInfo.processInfo.environment["AFM_DEBUG"] == "1" {
+                let acceptance = totalDrafted > 0
+                    ? Double(totalAccepted) / Double(totalDrafted)
+                    : 0
+                let tokensPerCycle = totalCycles > 0
+                    ? Double(output.count) / Double(totalCycles)
+                    : 0
+                let depthCounts = acceptedByDepth.enumerated()
+                    .map { "d\($0.offset + 1)=\($0.element)" }
+                    .joined(separator: ",")
+                let message = String(
+                    format:
+                        "[MTP][QwenNext] %d tok in %d cycles — %.2f tok/cycle, accept %.1f%% (%d/%d), replays %d, %@\n",
+                    output.count,
+                    totalCycles,
+                    tokensPerCycle,
+                    acceptance * 100,
+                    totalAccepted,
+                    totalDrafted,
+                    totalReplays,
+                    depthCounts
+                )
+                FileHandle.standardError.write(Data(message.utf8))
+            }
+        }
+        func emit(_ token: Int) -> Bool {
+            output.append(token)
+            if let onToken, !onToken(token) { return false }
+            return output.count < maxTokens && !eosIds.contains(token)
+        }
+
+        while true {
+            if !emit(primary) { break }
+            totalCycles += 1
+
+            let roundHeadOffset = mtpCache[0].offset
+            var drafts: [Int] = []
+            drafts.reserveCapacity(depth)
+            var chainStream = primaryStream
+            var chainToken = primary
+            for index in 0 ..< depth {
+                let tokenArray = Self.tokens([chainToken])
+                let draftOutput = head(
+                    hiddenStream: chainStream,
+                    tokenEmbeddings: model.embedTokens(tokenArray),
+                    tokenIDs: tokenArray,
+                    positionIDs: Self.positions(
+                        (primaryPosition + index) ..< (primaryPosition + index + 1)),
+                    cache: mtpCache
+                )
+                let draft = Self.argmax(model.projectLMHead(draftOutput.hidden)[0, -1, 0...])
+                drafts.append(draft)
+                chainStream = draftOutput.stream
+                chainToken = draft
+            }
+            totalDrafted += drafts.count
+
+            let verifyTokens = [primary] + drafts
+            let targetSnapshot = Qwen3MTPCacheSnapshot.capture(targetCache)
+            let verified = model.forwardStreamHidden(
+                inputIDs: Self.tokens(verifyTokens), cache: targetCache)
+            let verdicts = MLX.argMax(verified.logits[0, 0..., 0...], axis: -1)
+                .asArray(Int32.self)
+            var accepted = 0
+            while accepted < drafts.count,
+                  Int(verdicts[accepted]) == drafts[accepted]
+            {
+                acceptedByDepth[accepted] += 1
+                accepted += 1
+            }
+            totalAccepted += accepted
+
+            for token in drafts.prefix(accepted) {
+                if !emit(token) { return output }
+            }
+            let nextPrimary = Int(verdicts[accepted])
+
+            // Discard every speculative head row and rebuild only the committed
+            // shifted pairs from the target model's true residual streams.
+            let speculativeRows = mtpCache[0].offset - roundHeadOffset
+            if speculativeRows > 0 { _ = mtpCache[0].trim(speculativeRows) }
+            let committedTokens = [primary] + Array(drafts.prefix(accepted))
+            let committedStreams: MLXArray
+            if accepted == 0 {
+                committedStreams = primaryStream
+            } else {
+                committedStreams = concatenated([
+                    primaryStream,
+                    verified.stream[0..., 0 ..< accepted, 0...],
+                ], axis: 1)
+            }
+            let committedTokenArray = Self.tokens(committedTokens)
+            _ = head(
+                hiddenStream: committedStreams,
+                tokenEmbeddings: model.embedTokens(committedTokenArray),
+                tokenIDs: committedTokenArray,
+                positionIDs: Self.positions(
+                    primaryPosition ..< (primaryPosition + committedTokens.count)),
+                cache: mtpCache
+            )
+
+            if accepted != drafts.count {
+                totalReplays += 1
+                Qwen3MTPCacheSnapshot.restore(targetSnapshot, into: targetCache)
+                _ = model.forwardStreamHidden(
+                    inputIDs: committedTokenArray, cache: targetCache)
+            }
+
+            primary = nextPrimary
+            primaryStream = verified.stream[0..., accepted ..< (accepted + 1), 0...]
+            primaryPosition += accepted + 1
+        }
+        return output
     }
 }
 
