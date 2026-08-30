@@ -1039,15 +1039,7 @@ public final class Qwen4ExpMTPHead: Module {
         [Qwen4ExpAttentionCache()]
     }
 
-    fileprivate static func load(
-        sidecarPath: String,
-        config: Qwen4ExpTextConfiguration,
-        groupSize: Int,
-        bits: Int,
-        mode: QuantizationMode
-    ) throws -> Qwen4ExpMTPHead {
-        let head = Qwen4ExpMTPHead(config)
-        let raw = try MLX.loadArrays(url: URL(fileURLWithPath: sidecarPath))
+    static func prepareCheckpointWeights(_ raw: [String: MLXArray]) -> [String: MLXArray] {
         var weights: [String: MLXArray] = [:]
         let zeroCenteredNormSuffixes = [
             ".hc_norm.weight",
@@ -1055,6 +1047,10 @@ public final class Qwen4ExpMTPHead: Module {
             ".k_norm.weight",
             ".q_layernorm.weight",
             ".k_layernorm.weight",
+        ]
+        let standardNormRawZeroCenteredKeys = [
+            "pre_fc_norm_embedding.weight",
+            "pre_fc_norm_hidden.weight",
         ]
 
         for (originalKey, value) in raw {
@@ -1072,10 +1068,31 @@ public final class Qwen4ExpMTPHead: Module {
             default:
                 break
             }
-            weights[key] = zeroCenteredNormSuffixes.contains(where: key.hasSuffix)
-                ? value - 1
-                : value
+            if standardNormRawZeroCenteredKeys.contains(key) {
+                // The published MTP sidecar stores these two ordinary RMSNorm
+                // weights in torch's zero-centered convention.
+                weights[key] = value + 1
+            } else if zeroCenteredNormSuffixes.contains(where: key.hasSuffix) {
+                // AFM's Qwen zero-centered modules apply `1 + weight`
+                // internally, so convert their conventional torch weights.
+                weights[key] = value - 1
+            } else {
+                weights[key] = value
+            }
         }
+        return weights
+    }
+
+    fileprivate static func load(
+        sidecarPath: String,
+        config: Qwen4ExpTextConfiguration,
+        groupSize: Int,
+        bits: Int,
+        mode: QuantizationMode
+    ) throws -> Qwen4ExpMTPHead {
+        let head = Qwen4ExpMTPHead(config)
+        let raw = try MLX.loadArrays(url: URL(fileURLWithPath: sidecarPath))
+        let weights = prepareCheckpointWeights(raw)
 
         try head.update(parameters: ModuleParameters.unflattened(weights), verify: [.all])
         // The published sidecar preserves the MTP layer in FP16 torch layout.

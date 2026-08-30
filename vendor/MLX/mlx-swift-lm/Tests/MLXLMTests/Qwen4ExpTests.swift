@@ -183,6 +183,45 @@ final class Qwen4ExpTests: XCTestCase {
         XCTAssertNil(sanitized["model.unrelated.weight"])
     }
 
+    func testMTPCheckpointConvertsNormConventions() throws {
+        let prepared = Qwen4ExpMTPHead.prepareCheckpointWeights([
+            "mtp.pre_fc_norm_embedding.weight": MLXArray([Float(-0.75)]),
+            "mtp.pre_fc_norm_hidden.weight": MLXArray([Float(-0.25)]),
+            "mtp.layers.0.attn_hyper_connection.hc_norm.weight":
+                MLXArray([Float(1.25)]),
+            "mtp.layers.0.self_attn.q_norm.weight": MLXArray([Float(1.5)]),
+            "mtp.fc_hidden.weight": MLXArray([Float(3)]),
+        ])
+
+        XCTAssertEqual(
+            try XCTUnwrap(prepared["pre_fc_norm_embedding.weight"]).item(Float.self),
+            0.25,
+            accuracy: 0.0001
+        )
+        XCTAssertEqual(
+            try XCTUnwrap(prepared["pre_fc_norm_hidden.weight"]).item(Float.self),
+            0.75,
+            accuracy: 0.0001
+        )
+        XCTAssertEqual(
+            try XCTUnwrap(prepared[
+                "layers.0.attn_hyper_connection.hc_norm.weight"
+            ]).item(Float.self),
+            0.25,
+            accuracy: 0.0001
+        )
+        XCTAssertEqual(
+            try XCTUnwrap(prepared["layers.0.self_attn.q_norm.weight"]).item(Float.self),
+            0.5,
+            accuracy: 0.0001
+        )
+        XCTAssertEqual(
+            try XCTUnwrap(prepared["fc_hidden.weight"]).item(Float.self),
+            3,
+            accuracy: 0.0001
+        )
+    }
+
     func testMultimodalRoPEInterleavesUnequalSectionsIndependently() {
         let rope = Qwen4ExpMultimodalRoPE(
             dimensions: 64,
