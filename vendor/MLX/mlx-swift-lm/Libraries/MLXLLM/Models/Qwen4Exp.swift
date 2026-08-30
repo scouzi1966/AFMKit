@@ -1073,9 +1073,11 @@ public final class Qwen4ExpMTPHead: Module {
                 // weights in torch's zero-centered convention.
                 weights[key] = value + 1
             } else if zeroCenteredNormSuffixes.contains(where: key.hasSuffix) {
-                // AFM's Qwen zero-centered modules apply `1 + weight`
-                // internally, so convert their conventional torch weights.
-                weights[key] = value - 1
+                // The raw torch-layout MTP sidecar already stores the delta
+                // consumed by Qwen's zero-centered `1 + weight` norms. Keep
+                // that value unchanged; subtracting one here applies the
+                // convention conversion twice and distorts proposal logits.
+                weights[key] = value
             } else {
                 weights[key] = value
             }

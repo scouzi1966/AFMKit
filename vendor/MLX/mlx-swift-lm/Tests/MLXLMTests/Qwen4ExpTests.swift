@@ -207,12 +207,12 @@ final class Qwen4ExpTests: XCTestCase {
             try XCTUnwrap(prepared[
                 "layers.0.attn_hyper_connection.hc_norm.weight"
             ]).item(Float.self),
-            0.25,
+            1.25,
             accuracy: 0.0001
         )
         XCTAssertEqual(
             try XCTUnwrap(prepared["layers.0.self_attn.q_norm.weight"]).item(Float.self),
-            0.5,
+            1.5,
             accuracy: 0.0001
         )
         XCTAssertEqual(
