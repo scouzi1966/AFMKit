@@ -284,31 +284,7 @@ actor BatchScheduler {
     /// beyond the current decode step. Views and already-contiguous arrays may
     /// otherwise alias mutable rotating-cache buffers.
     nonisolated static func snapshotCacheState(_ state: [MLXArray]) -> [MLXArray] {
-        state.map { $0 * 1 }
-    }
-
-    /// Select bounded exact recurrent-state boundaries across a prefill. These
-    /// checkpoints let a later divergent request restore the closest captured
-    /// prefix without pretending recurrent state can be trimmed.
-    nonisolated static func recurrentCheckpointBoundaries(
-        restoredPrefix: Int,
-        finalBoundary: Int,
-        minimumStride: Int = 256,
-        maximumCheckpoints: Int = 8
-    ) -> [Int] {
-        guard finalBoundary > restoredPrefix,
-              minimumStride > 0,
-              maximumCheckpoints > 0
-        else { return [] }
-        let span = finalBoundary - restoredPrefix
-        let stride = max(minimumStride, (span + maximumCheckpoints - 1) / maximumCheckpoints)
-        var boundaries: [Int] = []
-        var boundary = restoredPrefix + stride
-        while boundary < finalBoundary && boundaries.count < maximumCheckpoints {
-            boundaries.append(boundary)
-            boundary += stride
-        }
-        return boundaries
+        MLXPrefixReplayPolicy.snapshotCacheState(state)
     }
 
     private func unsafeExactReplaySuffix() -> Int? {
@@ -1280,7 +1256,8 @@ actor BatchScheduler {
                 }
                 let tRoundtrip = Date.timeIntervalSinceReferenceDate
                 let suffixTokens = Array(inputTokens[effectivePrefix...])
-                generateInput = LMInput(text: .init(tokens: MLXArray(suffixTokens)))
+                generateInput = LMInput(
+                    text: .init(tokens: MLXPrefixReplayPolicy.batchedReplayTokens(suffixTokens)))
                 cachedTokens = effectivePrefix
                 cacheOutcome = "hit"
                 cacheRestoreTime = tRestore1 - tRestore0
@@ -1319,33 +1296,14 @@ actor BatchScheduler {
             // token. The consumed offsets below are relative to that suffix.
             let uncachedLeadingTokens = Array(suffixTokens.dropLast())
             let finalBoundary = inputTokens.count - 1
-            let checkpoints = Self.recurrentCheckpointBoundaries(
-                restoredPrefix: cachedTokens,
-                finalBoundary: finalBoundary
-            )
-            var consumed = 0
-            for boundary in checkpoints + [finalBoundary] {
-                let targetConsumed = boundary - cachedTokens
-                guard targetConsumed > consumed else { continue }
-                let chunk = Array(uncachedLeadingTokens[consumed..<targetConsumed])
+            let uncachedBoundaryTokens = finalBoundary - cachedTokens
+            if uncachedBoundaryTokens > 0 {
+                let chunk = Array(uncachedLeadingTokens[..<uncachedBoundaryTokens])
                 recurrentState = model(
                     LMInput.Text(tokens: MLXArray(chunk)[.newAxis]),
                     cache: cache,
                     state: recurrentState
                 ).state
-                consumed = targetConsumed
-
-                if boundary < finalBoundary, let radix = radixCache {
-                    let states = cache.map { Self.snapshotCacheState($0.state) }
-                    MLX.eval(states.flatMap { $0 })
-                    radix.insert(
-                        tokens: Array(inputTokens.prefix(boundary)),
-                        layerStates: states,
-                        layerMetaStates: cache.map { $0.metaState }
-                    )
-                    DebugLogger.log(
-                        "[BatchScheduler] Recurrent prefix checkpoint: \(boundary) tokens")
-                }
             }
             let states = cache.map { layerCache in
                 // `contiguous` may return the original storage when the source

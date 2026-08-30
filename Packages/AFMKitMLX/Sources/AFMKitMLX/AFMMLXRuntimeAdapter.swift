@@ -171,6 +171,8 @@ public struct AFMMLXRuntimeAdapter: Sendable {
                 shouldContinue = try await onEvent(.toolCall)
             case .tokenLogprobs:
                 shouldContinue = try await onEvent(.tokenLogprobs)
+            case .failure(let message):
+                throw MLXServiceError.generationFailed(message)
             }
 
             if !shouldContinue {
@@ -264,6 +266,8 @@ public struct AFMMLXRuntimeAdapter: Sendable {
 
             case .toolCall, .tokenLogprobs:
                 break
+            case .failure(let message):
+                throw MLXServiceError.generationFailed(message)
             }
 
             if stopPollState.shouldStop {

@@ -299,6 +299,12 @@ public class SamplerTests: XCTestCase {
         XCTAssertNil(params.processor())
     }
 
+    func testTopKOneUsesGreedySamplerRegardlessOfTemperature() {
+        let params = GenerateParameters(temperature: 1.0, topK: 1)
+
+        XCTAssertTrue(params.sampler() is ArgMaxSampler)
+    }
+
     func testProcessorMinPBoundary() {
         let params1 = GenerateParameters(minP: 1.0)
         XCTAssertNil(params1.processor())

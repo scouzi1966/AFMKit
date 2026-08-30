@@ -219,6 +219,7 @@ public enum MLXServiceError: Error, LocalizedError {
     case loadFailed(String)
     case noModelLoaded
     case noMetalDevice
+    case generationFailed(String)
     case serviceShuttingDown
     case serverBusy(Int)
     case invalidMediaInput(String)
@@ -239,6 +240,8 @@ public enum MLXServiceError: Error, LocalizedError {
             return "No MLX model loaded"
         case .noMetalDevice:
             return "No Metal device is available to MLX in this process."
+        case .generationFailed(let reason):
+            return "MLX generation failed: \(reason)"
         case .serviceShuttingDown:
             return "MLX service is shutting down"
         case .serverBusy(let max):
@@ -324,6 +327,15 @@ private final class StreamingScratch: @unchecked Sendable {
     var streamStatPromptTime = 0.0
     var streamStatGenerateTime = 0.0
     var streamStatStoppedBySequence = false
+}
+
+/// A recurrent cache captured at the exact token boundary represented by
+/// `tokens`. Serial generation retains this pre-decode snapshot instead of
+/// trying to trim a Mamba/ArraysCache after generation.
+private struct SerialRecurrentPrefixSnapshot {
+    let tokens: [Int]
+    let layerStates: [[MLXArray]]
+    let layerMetaStates: [[String]]
 }
 
 public final class MLXModelService:
@@ -2882,6 +2894,8 @@ public final class MLXModelService:
                         collectedToolCalls.append(tc)
                     } else if case .info(let info) = piece {
                         completionInfo = info
+                    } else if case .failure(let message) = piece {
+                        throw MLXServiceError.generationFailed(message)
                     }
                 }
             } onCancel: {
@@ -3104,6 +3118,7 @@ public final class MLXModelService:
             }
             var generationCache = context.model.newCache(parameters: params)
             var generateInput: LMInput
+            var recurrentPrefixSnapshot: SerialRecurrentPrefixSnapshot? = nil
 
             cacheOutcome = useCache ? "disabled" : "multimodal-skip"
             cacheLookupTime = nil
@@ -3181,7 +3196,8 @@ public final class MLXModelService:
                     }
                     let tRoundtrip = Date.timeIntervalSinceReferenceDate
                     let suffixTokens = Array(inputTokens[effectivePrefix...])
-                    generateInput = LMInput(text: .init(tokens: MLXArray(suffixTokens)))
+                    generateInput = LMInput(
+                        text: .init(tokens: MLXPrefixReplayPolicy.batchedReplayTokens(suffixTokens)))
                     cachedTokenCount = effectivePrefix
                     cacheOutcome = "hit"
                     StatsAggregator.shared.cacheHit()  // /metrics: afm:radix_cache_hits_total
@@ -3243,6 +3259,17 @@ public final class MLXModelService:
                 if debugLogging {
                     print("[\(ts())] [KVCache] Multimodal input, skipping cache")
                 }
+            }
+
+            if useCache, self.radixCache != nil,
+               MLXPrefixReplayPolicy.supportsSerialBoundaryCapture(generationCache) {
+                recurrentPrefixSnapshot = self.captureSerialRecurrentPrefixBoundary(
+                    model: context.model,
+                    parameters: params,
+                    inputTokens: inputTokens,
+                    restoredPrefix: cachedTokenCount,
+                    restoredCache: generationCache
+                )
             }
 
             let activeStops = ((stop ?? []) + self.implicitStopSequences).filter { !$0.isEmpty }
@@ -3322,6 +3349,8 @@ public final class MLXModelService:
                         collectedToolCalls.append(tc)
                     } else if case .info(let info) = piece {
                         completionInfo = info
+                    } else if case .failure(let message) = piece {
+                        throw MLXServiceError.generationFailed(message)
                     }
                 }
                 if stoppedBySequence {
@@ -3358,46 +3387,53 @@ public final class MLXModelService:
             // Skip save when RotatingKVCache has wrapped past maxCacheSize (#94).
             if useCache, let radix = self.radixCache, !inputTokens.isEmpty,
                !self.hasWrappedRotatingCache(generationCache) {
-                let promptLen = inputTokens.count
                 let tSave0 = Date.timeIntervalSinceReferenceDate
-                if debugLogging {
-                    // Log KVCacheSimple layers (full attn at interval 4: indices 3,7,11,...) and MambaCache layers (0,1)
-                    let diagLayers = [0, 1, 3, 7]  // 0,1=Mamba, 3,7=KVCacheSimple
-                    for i in diagLayers where i < generationCache.count {
-                        let layer = generationCache[i]
-                        let cacheType = type(of: layer)
-                        let stateShapes = layer.state.map { "\($0.shape)" }.joined(separator: ", ")
-                        print("[\(ts())] [PrefixCache] PRE-TRIM layer[\(i)] (\(cacheType)): offset=\(layer.offset), isTrimmable=\(layer.isTrimmable), shapes=[\(stateShapes)]")
+                let tokensToSave: [Int]
+                let layerStates: [[MLXArray]]
+                let layerMetaStates: [[String]]
+                let tSaveTrim: TimeInterval
+                let tSaveTruncate: TimeInterval
+                if let recurrentPrefixSnapshot {
+                    // Mamba/ArraysCache cannot be rewound after decode. Persist
+                    // the independently captured prompt-minus-one boundary.
+                    tokensToSave = recurrentPrefixSnapshot.tokens
+                    layerStates = recurrentPrefixSnapshot.layerStates
+                    layerMetaStates = recurrentPrefixSnapshot.layerMetaStates
+                    tSaveTrim = tSave0
+                    tSaveTruncate = tSave0
+                } else {
+                    let promptLen = inputTokens.count
+                    if debugLogging {
+                        // Log KVCacheSimple layers (full attn at interval 4: indices 3,7,11,...) and MambaCache layers (0,1)
+                        let diagLayers = [0, 1, 3, 7]  // 0,1=Mamba, 3,7=KVCacheSimple
+                        for i in diagLayers where i < generationCache.count {
+                            let layer = generationCache[i]
+                            let cacheType = type(of: layer)
+                            let stateShapes = layer.state.map { "\($0.shape)" }.joined(separator: ", ")
+                            print("[\(ts())] [PrefixCache] PRE-TRIM layer[\(i)] (\(cacheType)): offset=\(layer.offset), isTrimmable=\(layer.isTrimmable), shapes=[\(stateShapes)]")
+                        }
+                        print("[\(ts())] [PrefixCache] PRE-TRIM: promptLen=\(promptLen)")
                     }
-                    print("[\(ts())] [PrefixCache] PRE-TRIM: promptLen=\(promptLen)")
-                }
-                for layer in generationCache {
-                    let excess = layer.offset - promptLen
-                    if excess > 0 { layer.trim(excess) }
-                }
-                let tSaveTrim = Date.timeIntervalSinceReferenceDate
-                // Physically truncate trimmed cache arrays to eliminate stale data. (#47)
-                for i in 0..<generationCache.count {
-                    if generationCache[i].isTrimmable && generationCache[i].offset > 0
-                        && self.supportsPhysicalTruncation(generationCache[i])
-                    {
-                        generationCache[i].truncateToOffset()
+                    for layer in generationCache {
+                        let excess = layer.offset - promptLen
+                        if excess > 0 { layer.trim(excess) }
                     }
-                }
-                let tSaveTruncate = Date.timeIntervalSinceReferenceDate
-                if debugLogging {
-                    let diagLayers = [0, 1, 3, 7]
-                    for i in diagLayers where i < generationCache.count {
-                        let layer = generationCache[i]
-                        let cacheType = type(of: layer)
-                        let stateShapes = layer.state.map { "\($0.shape)" }.joined(separator: ", ")
-                        print("[\(ts())] [PrefixCache] POST-TRIM layer[\(i)] (\(cacheType)): offset=\(layer.offset), shapes=[\(stateShapes)]")
+                    tSaveTrim = Date.timeIntervalSinceReferenceDate
+                    // Physically truncate trimmed cache arrays to eliminate stale data. (#47)
+                    for i in 0..<generationCache.count {
+                        if generationCache[i].isTrimmable && generationCache[i].offset > 0
+                            && self.supportsPhysicalTruncation(generationCache[i])
+                        {
+                            generationCache[i].truncateToOffset()
+                        }
                     }
+                    tSaveTruncate = Date.timeIntervalSinceReferenceDate
+                    tokensToSave = inputTokens
+                    layerStates = generationCache.map { $0.state }
+                    layerMetaStates = generationCache.map { $0.metaState }
                 }
-                let layerStates = generationCache.map { $0.state }
-                let layerMetaStates = generationCache.map { $0.metaState }
                 radix.insert(
-                    tokens: inputTokens,
+                    tokens: tokensToSave,
                     layerStates: layerStates,
                     layerMetaStates: layerMetaStates
                 )
@@ -3415,7 +3451,7 @@ public final class MLXModelService:
                     insertTime: saveInsertTime
                 )
                 if debugLogging {
-                    print("[\(ts())] [PrefixCache] Insert: \(inputTokens.count) tokens, \(generationCache.count) layers")
+                    print("[\(ts())] [PrefixCache] Insert: \(tokensToSave.count) tokens, \(generationCache.count) layers")
                     // Log stored state for KVCacheSimple layers
                     for i in [3, 7] where i < layerStates.count {
                         let shapes = layerStates[i].map { "\($0.shape)" }.joined(separator: ", ")
@@ -4005,6 +4041,7 @@ public final class MLXModelService:
                         var generationCache = context.model.newCache(parameters: params)
                         var generateInput: LMInput
                         var streamCachedTokens = 0
+                        var recurrentPrefixSnapshot: SerialRecurrentPrefixSnapshot? = nil
 
                         var cacheOutcome = useCache ? "disabled" : "multimodal-skip"
                         var cacheLookupTime: Double? = nil
@@ -4064,7 +4101,8 @@ public final class MLXModelService:
                                 }
                                 let tRoundtrip = Date.timeIntervalSinceReferenceDate
                                 let suffixTokens = Array(inputTokens[effectivePrefix...])
-                                generateInput = LMInput(text: .init(tokens: MLXArray(suffixTokens)))
+                                generateInput = LMInput(
+                                    text: .init(tokens: MLXPrefixReplayPolicy.batchedReplayTokens(suffixTokens)))
                                 streamCachedTokens = effectivePrefix
                                 cacheOutcome = "hit"
                                 StatsAggregator.shared.cacheHit()  // /metrics: afm:radix_cache_hits_total
@@ -4126,6 +4164,17 @@ public final class MLXModelService:
                             if debugLogging {
                                 print("[\(ts())] [KVCache] Multimodal input, skipping cache")
                             }
+                        }
+
+                        if useCache, self.radixCache != nil,
+                           MLXPrefixReplayPolicy.supportsSerialBoundaryCapture(generationCache) {
+                            recurrentPrefixSnapshot = self.captureSerialRecurrentPrefixBoundary(
+                                model: context.model,
+                                parameters: params,
+                                inputTokens: inputTokens,
+                                restoredPrefix: streamCachedTokens,
+                                restoredCache: generationCache
+                            )
                         }
 
                         // Emit cached token count so the controller can include it in usage
@@ -4311,6 +4360,8 @@ public final class MLXModelService:
                                     if streamGpuProfile {
                                         self.printGPUProfileFooter(promptTokens: finalPromptTokens, completionTokens: info.generationTokenCount, promptTime: info.promptTime, generateTime: info.generateTime)
                                     }
+                                } else if case .failure(let message) = piece {
+                                    throw MLXServiceError.generationFailed(message)
                                 }
                             }
                         }
@@ -4371,26 +4422,40 @@ public final class MLXModelService:
                         // Skip when RotatingKVCache has wrapped (#94).
                         if useCache, let radix = self.radixCache, !inputTokens.isEmpty, !Task.isCancelled,
                            !self.hasWrappedRotatingCache(generationCache) {
-                            let promptLen = inputTokens.count
                             let tSave0 = Date.timeIntervalSinceReferenceDate
-                            for layer in generationCache {
-                                let excess = layer.offset - promptLen
-                                if excess > 0 { layer.trim(excess) }
-                            }
-                            let tSaveTrim = Date.timeIntervalSinceReferenceDate
-                            // Physically truncate trimmed cache arrays to eliminate stale data. (#47)
-                            for i in 0..<generationCache.count {
-                                if generationCache[i].isTrimmable && generationCache[i].offset > 0
-                                    && self.supportsPhysicalTruncation(generationCache[i])
-                                {
-                                    generationCache[i].truncateToOffset()
+                            let tokensToSave: [Int]
+                            let layerStates: [[MLXArray]]
+                            let layerMetaStates: [[String]]
+                            let tSaveTrim: TimeInterval
+                            let tSaveTruncate: TimeInterval
+                            if let recurrentPrefixSnapshot {
+                                tokensToSave = recurrentPrefixSnapshot.tokens
+                                layerStates = recurrentPrefixSnapshot.layerStates
+                                layerMetaStates = recurrentPrefixSnapshot.layerMetaStates
+                                tSaveTrim = tSave0
+                                tSaveTruncate = tSave0
+                            } else {
+                                let promptLen = inputTokens.count
+                                for layer in generationCache {
+                                    let excess = layer.offset - promptLen
+                                    if excess > 0 { layer.trim(excess) }
                                 }
+                                tSaveTrim = Date.timeIntervalSinceReferenceDate
+                                // Physically truncate trimmed cache arrays to eliminate stale data. (#47)
+                                for i in 0..<generationCache.count {
+                                    if generationCache[i].isTrimmable && generationCache[i].offset > 0
+                                        && self.supportsPhysicalTruncation(generationCache[i])
+                                    {
+                                        generationCache[i].truncateToOffset()
+                                    }
+                                }
+                                tSaveTruncate = Date.timeIntervalSinceReferenceDate
+                                tokensToSave = inputTokens
+                                layerStates = generationCache.map { $0.state }
+                                layerMetaStates = generationCache.map { $0.metaState }
                             }
-                            let tSaveTruncate = Date.timeIntervalSinceReferenceDate
-                            let layerStates = generationCache.map { $0.state }
-                            let layerMetaStates = generationCache.map { $0.metaState }
                             radix.insert(
-                                tokens: inputTokens,
+                                tokens: tokensToSave,
                                 layerStates: layerStates,
                                 layerMetaStates: layerMetaStates
                             )
@@ -4408,7 +4473,7 @@ public final class MLXModelService:
                                 insertTime: saveInsertTime
                             )
                             if debugLogging {
-                                print("[\(ts())] [PrefixCache] Insert: \(inputTokens.count) tokens, \(generationCache.count) layers")
+                                print("[\(ts())] [PrefixCache] Insert: \(tokensToSave.count) tokens, \(generationCache.count) layers")
                             }
                         }
                         self.logCacheProfile(
@@ -7631,6 +7696,76 @@ public final class MLXModelService:
             requiresExactBoundary: requiresExactBoundary,
             forcedSuffix: unsafeExactReplaySuffix(),
             sourceTokenCount: sourceTokenCount
+        )
+    }
+
+    /// Build an exact recurrent-state boundary without changing the cache used
+    /// by the existing serial `TokenIterator` generation path. The separate
+    /// cache preserves cold/warm sampler and prompt-processor behavior while
+    /// ensuring every retained ArraysCache state really belongs to its radix
+    /// token boundary.
+    private func captureSerialRecurrentPrefixBoundary(
+        model: any LanguageModel,
+        parameters: GenerateParameters,
+        inputTokens: [Int],
+        restoredPrefix: Int,
+        restoredCache: [KVCache]
+    ) -> SerialRecurrentPrefixSnapshot? {
+        let finalBoundary = inputTokens.count - 1
+        guard finalBoundary > 0,
+              restoredPrefix >= 0,
+              restoredPrefix <= finalBoundary,
+              MLXPrefixReplayPolicy.supportsSerialBoundaryCapture(restoredCache)
+        else { return nil }
+
+        if restoredPrefix == finalBoundary,
+           MLXPrefixReplayPolicy.supportsExactSnapshotReferenceReuse(restoredCache) {
+            return SerialRecurrentPrefixSnapshot(
+                tokens: Array(inputTokens.prefix(finalBoundary)),
+                layerStates: restoredCache.map { $0.state },
+                layerMetaStates: restoredCache.map { $0.metaState }
+            )
+        }
+
+        var captureCache = model.newCache(parameters: parameters)
+        guard captureCache.count == restoredCache.count else { return nil }
+
+        // A restored radix entry may share storage with the generation cache.
+        // Clone it before advancing the capture cache toward new boundaries.
+        var restoredArrays: [MLXArray] = []
+        if restoredPrefix > 0 {
+            for index in captureCache.indices {
+                let state = MLXPrefixReplayPolicy.snapshotCacheState(
+                    restoredCache[index].state
+                )
+                restoredArrays.append(contentsOf: state)
+                captureCache[index].state = state
+                let metaState = restoredCache[index].metaState
+                if !metaState.isEmpty {
+                    captureCache[index].metaState = metaState
+                }
+            }
+            MLX.eval(restoredArrays)
+        }
+
+        if finalBoundary > restoredPrefix {
+            let chunk = Array(inputTokens[restoredPrefix..<finalBoundary])
+            _ = model(
+                LMInput.Text(tokens: MLXArray(chunk)[.newAxis]),
+                cache: captureCache,
+                state: nil
+            )
+        }
+
+        // Retain the capture cache's already-independent state directly. It is
+        // never advanced again, so a second full recurrent-state copy would add
+        // memory pressure without improving isolation.
+        let finalStates = captureCache.map { $0.state }
+        MLX.eval(finalStates.flatMap { $0 })
+        return SerialRecurrentPrefixSnapshot(
+            tokens: Array(inputTokens.prefix(finalBoundary)),
+            layerStates: finalStates,
+            layerMetaStates: captureCache.map { $0.metaState }
         )
     }
 

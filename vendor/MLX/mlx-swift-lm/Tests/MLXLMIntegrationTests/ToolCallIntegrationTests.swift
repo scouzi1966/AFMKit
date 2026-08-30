@@ -226,6 +226,8 @@ public class ToolCallIntegrationTests: XCTestCase {
                     break
                 case .info:
                     break
+                case .failure(let message):
+                    XCTFail("Generation failed: \(message)")
                 }
             }
 

@@ -299,6 +299,11 @@ private func errorHandlerTrampoline(message: UnsafePointer<CChar>?, data: Unsafe
 /// Thread safe and task local implementation of error handling.
 private final class ErrorHandler: @unchecked Sendable {
 
+    private struct ScopedFallbackHandler {
+        let token: UInt64
+        let handler: @Sendable (String) -> Void
+    }
+
     /// task local error handler stack, if any
     @TaskLocal static var errorHandler: [@Sendable (String) -> Void] = []
 
@@ -308,6 +313,8 @@ private final class ErrorHandler: @unchecked Sendable {
         nil
     var globalData: UnsafeMutableRawPointer? = nil
     var globalDtor: (@convention(c) (UnsafeMutableRawPointer?) -> Void)? = nil
+    private var scopedFallbackHandlers: [ScopedFallbackHandler] = []
+    private var nextScopedFallbackToken: UInt64 = 0
 
     init() {
     }
@@ -337,13 +344,46 @@ private final class ErrorHandler: @unchecked Sendable {
     func dispatch(_ message: String) {
         if let handler = Self.errorHandler.last {
             handler(message)
+            return
+        }
+
+        // Metal may report an error from a worker thread that does not inherit
+        // Swift task-local values. Copy the most recently activated scoped
+        // handler under the lock, then invoke it outside the lock so handler
+        // code can safely enter nested MLX error scopes.
+        let fallback = lock.withLock { scopedFallbackHandlers.last?.handler }
+        if let fallback {
+            fallback(message)
+            return
+        }
+
+        // Likewise, never invoke a user-provided global callback while holding
+        // the registry lock.
+        let global = lock.withLock { (globalHandler, globalData) }
+        if let globalHandler = global.0 {
+            globalHandler(message, global.1)
         } else {
-            lock.withLock {
-                if let globalHandler {
-                    globalHandler(message, globalData)
-                } else {
-                    fatalError(message)
-                }
+            fatalError(message)
+        }
+    }
+
+    private func registerScopedFallback(
+        _ handler: @escaping @Sendable (String) -> Void
+    ) -> UInt64 {
+        lock.withLock {
+            nextScopedFallbackToken &+= 1
+            let token = nextScopedFallbackToken
+            scopedFallbackHandlers.append(
+                ScopedFallbackHandler(token: token, handler: handler)
+            )
+            return token
+        }
+    }
+
+    private func removeScopedFallback(token: UInt64) {
+        lock.withLock {
+            if let index = scopedFallbackHandlers.lastIndex(where: { $0.token == token }) {
+                scopedFallbackHandlers.remove(at: index)
             }
         }
     }
@@ -351,7 +391,9 @@ private final class ErrorHandler: @unchecked Sendable {
     public func withErrorHandler<R>(
         _ handler: @escaping @Sendable (String) -> Void, _ body: () throws -> R
     ) rethrows -> R {
-        try ErrorHandler.$errorHandler.withValue(ErrorHandler.errorHandler + [handler]) {
+        let token = registerScopedFallback(handler)
+        defer { removeScopedFallback(token: token) }
+        return try ErrorHandler.$errorHandler.withValue(ErrorHandler.errorHandler + [handler]) {
             try body()
         }
     }
@@ -359,7 +401,9 @@ private final class ErrorHandler: @unchecked Sendable {
     public func withErrorHandler<R>(
         _ handler: @escaping @Sendable (String) -> Void, _ body: () async throws -> R
     ) async rethrows -> R {
-        try await ErrorHandler.$errorHandler.withValue(ErrorHandler.errorHandler + [handler]) {
+        let token = registerScopedFallback(handler)
+        defer { removeScopedFallback(token: token) }
+        return try await ErrorHandler.$errorHandler.withValue(ErrorHandler.errorHandler + [handler]) {
             try await body()
         }
     }

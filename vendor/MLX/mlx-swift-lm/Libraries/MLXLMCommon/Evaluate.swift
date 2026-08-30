@@ -174,7 +174,11 @@ public struct GenerateParameters: Sendable {
     }
 
     public func sampler() -> LogitSampler {
-        if temperature == 0 {
+        // A top-k of one has exactly one eligible token, so sampling it is
+        // greedy regardless of temperature.  Using argmax directly also
+        // avoids platform categorical kernels producing an invalid choice
+        // from a distribution whose other logits are all negative infinity.
+        if temperature == 0 || topK == 1 {
             return ArgMaxSampler()
         } else if topP > 0 && topP < 1 {
             return TopPSampler(temperature: temperature, topP: topP, seed: seed)
@@ -578,6 +582,10 @@ public struct TokenIterator: Sequence, IteratorProtocol {
 
     var tokenCount = 0
     let maxTokens: Int?
+    /// Restored hybrid recurrent caches remain synchronous for the lifetime of
+    /// the iterator. Their Metal graphs can otherwise fail after the scoped MLX
+    /// handler has unwound, invoking the library's process-exiting fallback.
+    let requiresSynchronousTokenEvaluation: Bool
 
     // Cache quantization parameters
     let kvBits: Int?
@@ -625,6 +633,7 @@ public struct TokenIterator: Sequence, IteratorProtocol {
         let promptText = LMInput.Text(tokens: prompt)
         self.y = promptText
         self.cache = cache ?? model.newCache(parameters: parameters)
+        self.requiresSynchronousTokenEvaluation = Self.hasRestoredRecurrentCache(self.cache)
 
         self.processor = parameters.processor()
         self.sampler = parameters.sampler()
@@ -663,6 +672,7 @@ public struct TokenIterator: Sequence, IteratorProtocol {
         self.model = model
         self.y = input.text
         self.cache = cache ?? model.newCache(parameters: parameters)
+        self.requiresSynchronousTokenEvaluation = Self.hasRestoredRecurrentCache(self.cache)
 
         self.processor = parameters.processor()
         self.sampler = parameters.sampler()
@@ -700,6 +710,7 @@ public struct TokenIterator: Sequence, IteratorProtocol {
         self.model = model
         self.y = input.text
         self.cache = cache ?? model.newCache(parameters: nil)
+        self.requiresSynchronousTokenEvaluation = Self.hasRestoredRecurrentCache(self.cache)
 
         self.processor = processor
         self.sampler = sampler
@@ -721,11 +732,9 @@ public struct TokenIterator: Sequence, IteratorProtocol {
     }
 
     mutating func prepare(input: LMInput, windowSize: Int? = nil) throws {
-        // `model.prepare` and the first `asyncEval` can report a C++ MLX error
-        // synchronously through MLX's global callback. This is a throwing
-        // initialization path, so retain a scoped handler until that first
-        // evaluation has been scheduled. Otherwise the unscoped callback
-        // terminates a long-running server instead of failing this request.
+        // Restored recurrent caches must complete evaluation while the scoped
+        // handler is installed. Cold and ordinary KV paths retain the existing
+        // asynchronous preparation pipeline.
         try withError {
             processor?.prompt(input.text.tokens)
 
@@ -736,15 +745,31 @@ public struct TokenIterator: Sequence, IteratorProtocol {
                 // evaluate the remainder of the prompt -- this primes the pump
                 let token = step(previous: tokens)
                 y = .init(tokens: token)
-                asyncEval(token)
+                if requiresSynchronousTokenEvaluation {
+                    eval(token)
+                } else {
+                    asyncEval(token)
+                }
 
             case .logits(let result):
                 y = .init(tokens: convertToToken(logits: result.logits))
                 if let y {
-                    asyncEval(y.tokens)
+                    if requiresSynchronousTokenEvaluation {
+                        eval(y.tokens)
+                    } else {
+                        asyncEval(y.tokens)
+                    }
                 }
             }
         }
+    }
+
+    /// A populated ArraysCache together with a positive positional KV offset
+    /// identifies a restored hybrid recurrent cache. Cold hybrid caches have
+    /// empty recurrent state; ordinary KV models have no ArraysCache.
+    static func hasRestoredRecurrentCache(_ cache: [KVCache]) -> Bool {
+        cache.contains { $0 is ArraysCache && !$0.state.isEmpty }
+            && cache.contains { $0.offset > 0 }
     }
 
     mutating func convertToToken(logits: MLXArray) -> MLXArray {
@@ -832,7 +857,10 @@ public struct TokenIterator: Sequence, IteratorProtocol {
         return token
     }
 
-    mutating public func next() -> Int? {
+    /// Throwing token advance used by async generation. Restored recurrent
+    /// caches are evaluated inside MLX's scoped error handler for every token;
+    /// cold and ordinary KV paths retain the asynchronous pipeline.
+    mutating public func nextThrowing() throws -> Int? {
         if let maxTokens, tokenCount >= maxTokens {
             return nil
         }
@@ -847,14 +875,24 @@ public struct TokenIterator: Sequence, IteratorProtocol {
         // step() corresponds to the token we are about to return (previousY).
         lastLogprobInfo = pendingLogprobInfo
 
-        // compute the next state and async eval the next token
-        let token = step(previous: previousY)
-        y = .init(tokens: token)
-
         let tEval0: UInt64 = Self.perfEnabled ? DispatchTime.now().uptimeNanoseconds : 0
-        // Eval token — cache arrays share the same computation graph and will be
-        // scheduled automatically as dependencies.
-        asyncEval(token)
+        let token: MLXArray
+        if requiresSynchronousTokenEvaluation {
+            // Recurrent state participates in every subsequent decode graph.
+            // Wait under `withError`; merely scheduling any token would let a
+            // later Metal failure reach MLX's default process-exiting handler.
+            token = try withError {
+                let token = step(previous: previousY)
+                eval(token)
+                return token
+            }
+        } else {
+            token = step(previous: previousY)
+            // Cache arrays share the token's computation graph and are
+            // scheduled automatically as dependencies.
+            asyncEval(token)
+        }
+        y = .init(tokens: token)
         let tEval1: UInt64 = Self.perfEnabled ? DispatchTime.now().uptimeNanoseconds : 0
 
         tokenCount += 1
@@ -888,6 +926,17 @@ public struct TokenIterator: Sequence, IteratorProtocol {
         }
 
         return result
+    }
+
+    /// IteratorProtocol compatibility. Error-aware generation paths should use
+    /// `nextThrowing()` so an MLX failure can be returned to their caller.
+    mutating public func next() -> Int? {
+        do {
+            return try nextThrowing()
+        } catch {
+            print("[MLX] Token generation failed: \(error.localizedDescription)")
+            return nil
+        }
     }
 
     mutating func excludeLastTokenFromGenerationLimit() {
@@ -1371,11 +1420,22 @@ public func generateTask(
         var perfLoopOverheadNs: UInt64 = 0
         var stoppedAfterToolCall = false
         var continuationTerminated = false
+        var generationFailure: String? = nil
 
         while true {
             let tLoopTop: UInt64 = perfEnabled ? DispatchTime.now().uptimeNanoseconds : 0
 
-            guard let token = iterator.next() else { break }
+            let token: Int
+            do {
+                guard let nextToken = try iterator.nextThrowing() else { break }
+                token = nextToken
+            } catch {
+                let message = error.localizedDescription
+                generationFailure = message
+                print("[MLX] Token generation failed: \(message)")
+                continuation.yield(.failure(message))
+                break
+            }
 
             let tAfterNext: UInt64 = perfEnabled ? DispatchTime.now().uptimeNanoseconds : 0
 
@@ -1453,7 +1513,8 @@ public func generateTask(
         // On normal EOS or token-limit completion, preserve an unfinished
         // tagged call for AFM's provider-level salvage. Do not emit buffered
         // content after consumer cancellation or an intentional tool stop.
-        if !Task.isCancelled && !stoppedAfterToolCall && !continuationTerminated,
+        if generationFailure == nil && !Task.isCancelled && !stoppedAfterToolCall
+            && !continuationTerminated,
             let pendingToolText = toolCallProcessor.finishPendingText()
         {
             if !pendingLogprobs.isEmpty {
@@ -1483,13 +1544,15 @@ public func generateTask(
         let now = Date.timeIntervalSinceReferenceDate
         let generateTime = now - start
 
-        let info = GenerateCompletionInfo(
-            promptTokenCount: promptTokenCount,
-            generationTokenCount: tokenCount,
-            promptTime: promptTime + iterator.promptPrefillTime,
-            generationTime: generateTime
-        )
-        continuation.yield(.info(info))
+        if generationFailure == nil {
+            let info = GenerateCompletionInfo(
+                promptTokenCount: promptTokenCount,
+                generationTokenCount: tokenCount,
+                promptTime: promptTime + iterator.promptPrefillTime,
+                generationTime: generateTime
+            )
+            continuation.yield(.info(info))
+        }
 
         // Synchronize with the stream to ensure tasks are completed
         Stream().synchronize()
@@ -1571,6 +1634,9 @@ public enum Generation: Sendable {
     /// Per-token log probability data for the preceding chunk.
     case tokenLogprobs([TokenLogprobData])
 
+    /// A request-scoped MLX evaluation failure.
+    case failure(String)
+
     /// Generated text or nil
     public var chunk: String? {
         switch self {
@@ -1578,6 +1644,7 @@ public enum Generation: Sendable {
         case .info: nil
         case .toolCall: nil
         case .tokenLogprobs: nil
+        case .failure: nil
         }
     }
 
@@ -1588,6 +1655,7 @@ public enum Generation: Sendable {
         case .info(let info): info
         case .toolCall: nil
         case .tokenLogprobs: nil
+        case .failure: nil
         }
     }
 
@@ -1598,6 +1666,7 @@ public enum Generation: Sendable {
         case .info: nil
         case .toolCall(let toolCall): toolCall
         case .tokenLogprobs: nil
+        case .failure: nil
         }
     }
 
