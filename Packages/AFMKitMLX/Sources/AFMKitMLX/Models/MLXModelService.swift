@@ -2555,7 +2555,10 @@ public final class MLXModelService:
             try ensureGPUConfigured(for: architecture)
             stage?(.loadingModel)
             print("[\(ts())] [GGUF] tokenizer assets: \(tokenizerDirectory.path)")
-            print("[\(ts())] [GGUF] loading Q8_0 model: \(modelURL.path)")
+            print("[\(ts())] [GGUF] loading experimental model: \(modelURL.path)")
+            if ProcessInfo.processInfo.environment["AFM_EXPERIMENTAL_GGUF_QUANTS"] == "1" {
+                print("[\(ts())] [GGUF] experimental legacy/K compatibility decoding enabled; non-native tensors expand to FP16 and may increase load time and peak memory")
+            }
 
             var configuration = ModelConfiguration(directory: tokenizerDirectory)
             var detectedFormat = inferToolCallFormat(directory: tokenizerDirectory)
@@ -2574,7 +2577,7 @@ public final class MLXModelService:
             async let tokenizerTask = loadTokenizer(
                 configuration: tokenizerConfiguration,
                 hub: HubApi())
-            let loaded = try AFMMLXQwen35GGUFAdapter.loadQ8ModelWithDescriptor(url: modelURL)
+            let loaded = try AFMMLXQwen35GGUFAdapter.loadModelWithDescriptor(url: modelURL)
             if let eosTokenID = loaded.descriptor.eosTokenID {
                 configuration.eosTokenIds.insert(eosTokenID)
             }

@@ -20,3 +20,9 @@ fuzzy merge.
 The Package.swift GGUF target and pinned `vendor/gguflib` sources remain
 AFMKit-owned integration files and are intentionally outside the upstream
 mlx-swift patch.
+
+The patch preserves packed Q4_0/Q4_1/Q8_0 loading and gates the broader
+legacy/K-quant FP16 compatibility path behind
+`AFM_EXPERIMENTAL_GGUF_QUANTS=1`. The AFMKit-owned `gguflib` additions provide
+the corresponding faithful decoders; they are deliberately separate from the
+candidate upstream MLX API patch.

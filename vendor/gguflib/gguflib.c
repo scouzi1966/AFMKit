@@ -563,6 +563,172 @@ void gguf_q8_0_to_float(void *weights_data, void *dst, uint64_t count, store_flo
     }
 }
 
+/* Q5_0 blocks dequantization to floats. */
+void gguf_q5_0_to_float(void *weights_data, void *dst, uint64_t count, store_float_callback store_callback) {
+    float *f = dst;
+    uint8_t *block = weights_data;
+    uint64_t i = 0;
+    while (i < count) {
+        float scale = from_half(*((uint16_t *)block));
+        uint32_t high_bits;
+        memcpy(&high_bits, block + 2, sizeof(high_bits));
+        const uint8_t *quants = block + 6;
+        for (uint32_t j = 0; j < 16; j++) {
+            uint8_t high0 = ((high_bits >> j) << 4) & 0x10;
+            float weight0 = ((int32_t)((quants[j] & 0x0f) | high0) - 16) * scale;
+            if (store_callback) store_callback(dst, i, weight0); else f[i] = weight0;
+            if (++i == count) return;
+        }
+        for (uint32_t j = 0; j < 16; j++) {
+            uint8_t high1 = (high_bits >> (j + 12)) & 0x10;
+            float weight1 = ((int32_t)((quants[j] >> 4) | high1) - 16) * scale;
+            if (store_callback) store_callback(dst, i, weight1); else f[i] = weight1;
+            if (++i == count) return;
+        }
+        block += 22;
+    }
+}
+
+/* Q5_1 blocks dequantization to floats. */
+void gguf_q5_1_to_float(void *weights_data, void *dst, uint64_t count, store_float_callback store_callback) {
+    float *f = dst;
+    uint8_t *block = weights_data;
+    uint64_t i = 0;
+    while (i < count) {
+        float scale = from_half(*((uint16_t *)block));
+        float minimum = from_half(*((uint16_t *)(block + 2)));
+        uint32_t high_bits;
+        memcpy(&high_bits, block + 4, sizeof(high_bits));
+        const uint8_t *quants = block + 8;
+        for (uint32_t j = 0; j < 16; j++) {
+            uint8_t high0 = ((high_bits >> j) << 4) & 0x10;
+            float weight0 = ((quants[j] & 0x0f) | high0) * scale + minimum;
+            if (store_callback) store_callback(dst, i, weight0); else f[i] = weight0;
+            if (++i == count) return;
+        }
+        for (uint32_t j = 0; j < 16; j++) {
+            uint8_t high1 = (high_bits >> (j + 12)) & 0x10;
+            float weight1 = ((quants[j] >> 4) | high1) * scale + minimum;
+            if (store_callback) store_callback(dst, i, weight1); else f[i] = weight1;
+            if (++i == count) return;
+        }
+        block += 24;
+    }
+}
+
+/* Q3_K super-blocks dequantization to floats. */
+void gguf_q3_k_to_float(void *weights_data, void *dst, uint64_t count, store_float_callback store_callback) {
+    float *f = dst;
+    uint8_t *block = weights_data;
+    uint64_t i = 0;
+    const uint32_t mask2 = 0x03030303;
+    const uint32_t mask4 = 0x0f0f0f0f;
+    while (i < count) {
+        const uint8_t *high_mask = block;
+        const uint8_t *quants = block + 32;
+        uint32_t unpacked[4] = {0};
+        memcpy(unpacked, block + 96, 12);
+        uint32_t packed_high = unpacked[2];
+        unpacked[2] = ((unpacked[0] >> 4) & mask4) | (((packed_high >> 4) & mask2) << 4);
+        unpacked[3] = ((unpacked[1] >> 4) & mask4) | (((packed_high >> 6) & mask2) << 4);
+        unpacked[0] = (unpacked[0] & mask4) | (((packed_high >> 0) & mask2) << 4);
+        unpacked[1] = (unpacked[1] & mask4) | (((packed_high >> 2) & mask2) << 4);
+        const int8_t *scales = (const int8_t *)unpacked;
+        float super_scale = from_half(*((uint16_t *)(block + 108)));
+        uint8_t high_bit = 1;
+        int scale_index = 0;
+        for (int cluster = 0; cluster < 2; cluster++) {
+            int shift = 0;
+            for (int group = 0; group < 4; group++) {
+                float scale0 = super_scale * (scales[scale_index++] - 32);
+                for (int j = 0; j < 16; j++) {
+                    float weight = scale0 * ((int8_t)((quants[j] >> shift) & 3) - ((high_mask[j] & high_bit) ? 0 : 4));
+                    if (store_callback) store_callback(dst, i, weight); else f[i] = weight;
+                    if (++i == count) return;
+                }
+                float scale1 = super_scale * (scales[scale_index++] - 32);
+                for (int j = 16; j < 32; j++) {
+                    float weight = scale1 * ((int8_t)((quants[j] >> shift) & 3) - ((high_mask[j] & high_bit) ? 0 : 4));
+                    if (store_callback) store_callback(dst, i, weight); else f[i] = weight;
+                    if (++i == count) return;
+                }
+                shift += 2;
+                high_bit <<= 1;
+            }
+            quants += 32;
+        }
+        block += 110;
+    }
+}
+
+static void gguf_get_scale_min_k4(int index, const uint8_t *packed, uint8_t *scale, uint8_t *minimum) {
+    if (index < 4) {
+        *scale = packed[index] & 63;
+        *minimum = packed[index + 4] & 63;
+    } else {
+        *scale = (packed[index + 4] & 0x0f) | ((packed[index - 4] >> 6) << 4);
+        *minimum = (packed[index + 4] >> 4) | ((packed[index] >> 6) << 4);
+    }
+}
+
+/* Q5_K super-blocks dequantization to floats. */
+void gguf_q5_k_to_float(void *weights_data, void *dst, uint64_t count, store_float_callback store_callback) {
+    float *f = dst;
+    uint8_t *block = weights_data;
+    uint64_t i = 0;
+    while (i < count) {
+        float scale_scale = from_half(*((uint16_t *)block));
+        float minimum_scale = from_half(*((uint16_t *)(block + 2)));
+        const uint8_t *scales = block + 4;
+        const uint8_t *high_bits = block + 16;
+        const uint8_t *quants = block + 48;
+        int scale_index = 0;
+        uint8_t high0 = 1, high1 = 2;
+        for (int group = 0; group < 4; group++) {
+            uint8_t quant_scale, quant_minimum;
+            gguf_get_scale_min_k4(scale_index++, scales, &quant_scale, &quant_minimum);
+            float scale0 = scale_scale * quant_scale;
+            float minimum0 = minimum_scale * quant_minimum;
+            gguf_get_scale_min_k4(scale_index++, scales, &quant_scale, &quant_minimum);
+            float scale1 = scale_scale * quant_scale;
+            float minimum1 = minimum_scale * quant_minimum;
+            for (int j = 0; j < 32; j++) {
+                float weight = scale0 * ((quants[j] & 0x0f) + ((high_bits[j] & high0) ? 16 : 0)) - minimum0;
+                if (store_callback) store_callback(dst, i, weight); else f[i] = weight;
+                if (++i == count) return;
+            }
+            for (int j = 0; j < 32; j++) {
+                float weight = scale1 * ((quants[j] >> 4) + ((high_bits[j] & high1) ? 16 : 0)) - minimum1;
+                if (store_callback) store_callback(dst, i, weight); else f[i] = weight;
+                if (++i == count) return;
+            }
+            quants += 32;
+            high0 <<= 2;
+            high1 <<= 2;
+        }
+        block += 176;
+    }
+}
+
+/* Q8_K is primarily an intermediate dot-product format, but valid GGUF
+ * tensors using it can be decoded faithfully by ignoring the cached sums. */
+void gguf_q8_k_to_float(void *weights_data, void *dst, uint64_t count, store_float_callback store_callback) {
+    float *f = dst;
+    uint8_t *block = weights_data;
+    uint64_t i = 0;
+    while (i < count) {
+        float scale;
+        memcpy(&scale, block, sizeof(scale));
+        const int8_t *quants = (const int8_t *)(block + 4);
+        for (int j = 0; j < 256; j++) {
+            float weight = scale * quants[j];
+            if (store_callback) store_callback(dst, i, weight); else f[i] = weight;
+            if (++i == count) return;
+        }
+        block += 292;
+    }
+}
+
 /* Q4_K blocks dequantization to floats.
  * 'y' is supposed to have enough space for 'count' weights. */
 void gguf_q4_k_to_float(void *weights_data, void *dst, uint64_t count, store_float_callback store_callback) {
@@ -932,6 +1098,16 @@ float *gguf_tensor_to_float(gguf_tensor *tensor) {
         gguf_bf16_to_float(tensor->weights_data, f, tensor->num_weights, NULL);
     } else if (tensor->type == GGUF_TYPE_Q8_0) {
         gguf_q8_0_to_float(tensor->weights_data, f, tensor->num_weights, NULL);
+    } else if (tensor->type == GGUF_TYPE_Q5_0) {
+        gguf_q5_0_to_float(tensor->weights_data, f, tensor->num_weights, NULL);
+    } else if (tensor->type == GGUF_TYPE_Q5_1) {
+        gguf_q5_1_to_float(tensor->weights_data, f, tensor->num_weights, NULL);
+    } else if (tensor->type == GGUF_TYPE_Q3_K) {
+        gguf_q3_k_to_float(tensor->weights_data, f, tensor->num_weights, NULL);
+    } else if (tensor->type == GGUF_TYPE_Q5_K) {
+        gguf_q5_k_to_float(tensor->weights_data, f, tensor->num_weights, NULL);
+    } else if (tensor->type == GGUF_TYPE_Q8_K) {
+        gguf_q8_k_to_float(tensor->weights_data, f, tensor->num_weights, NULL);
     } else if (tensor->type == GGUF_TYPE_Q4_K) {
         gguf_q4_k_to_float(tensor->weights_data, f, tensor->num_weights, NULL);
     } else if (tensor->type == GGUF_TYPE_Q6_K) {
@@ -965,6 +1141,16 @@ int16_t *gguf_tensor_to_f16(gguf_tensor *tensor) {
         gguf_bf16_to_float(tensor->weights_data, f16, tensor->num_weights, gguf_store_f16_callback);
     } else if (tensor->type == GGUF_TYPE_Q8_0) {
         gguf_q8_0_to_float(tensor->weights_data, f16, tensor->num_weights, gguf_store_f16_callback);
+    } else if (tensor->type == GGUF_TYPE_Q5_0) {
+        gguf_q5_0_to_float(tensor->weights_data, f16, tensor->num_weights, gguf_store_f16_callback);
+    } else if (tensor->type == GGUF_TYPE_Q5_1) {
+        gguf_q5_1_to_float(tensor->weights_data, f16, tensor->num_weights, gguf_store_f16_callback);
+    } else if (tensor->type == GGUF_TYPE_Q3_K) {
+        gguf_q3_k_to_float(tensor->weights_data, f16, tensor->num_weights, gguf_store_f16_callback);
+    } else if (tensor->type == GGUF_TYPE_Q5_K) {
+        gguf_q5_k_to_float(tensor->weights_data, f16, tensor->num_weights, gguf_store_f16_callback);
+    } else if (tensor->type == GGUF_TYPE_Q8_K) {
+        gguf_q8_k_to_float(tensor->weights_data, f16, tensor->num_weights, gguf_store_f16_callback);
     } else if (tensor->type == GGUF_TYPE_Q4_K) {
         gguf_q4_k_to_float(tensor->weights_data, f16, tensor->num_weights, gguf_store_f16_callback);
     } else if (tensor->type == GGUF_TYPE_Q6_K) {
@@ -998,6 +1184,16 @@ int16_t *gguf_tensor_to_bf16(gguf_tensor *tensor) {
         memcpy(f16, tensor->weights_data, tensor->num_weights*sizeof(int16_t));
     } else if (tensor->type == GGUF_TYPE_Q8_0) {
         gguf_q8_0_to_float(tensor->weights_data, f16, tensor->num_weights, gguf_store_bf16_callback);
+    } else if (tensor->type == GGUF_TYPE_Q5_0) {
+        gguf_q5_0_to_float(tensor->weights_data, f16, tensor->num_weights, gguf_store_bf16_callback);
+    } else if (tensor->type == GGUF_TYPE_Q5_1) {
+        gguf_q5_1_to_float(tensor->weights_data, f16, tensor->num_weights, gguf_store_bf16_callback);
+    } else if (tensor->type == GGUF_TYPE_Q3_K) {
+        gguf_q3_k_to_float(tensor->weights_data, f16, tensor->num_weights, gguf_store_bf16_callback);
+    } else if (tensor->type == GGUF_TYPE_Q5_K) {
+        gguf_q5_k_to_float(tensor->weights_data, f16, tensor->num_weights, gguf_store_bf16_callback);
+    } else if (tensor->type == GGUF_TYPE_Q8_K) {
+        gguf_q8_k_to_float(tensor->weights_data, f16, tensor->num_weights, gguf_store_bf16_callback);
     } else if (tensor->type == GGUF_TYPE_Q4_K) {
         gguf_q4_k_to_float(tensor->weights_data, f16, tensor->num_weights, gguf_store_bf16_callback);
     } else if (tensor->type == GGUF_TYPE_Q6_K) {

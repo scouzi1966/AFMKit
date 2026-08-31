@@ -82,7 +82,9 @@ diff --git a/vendor/MLX/mlx-swift/Source/Cmlx/mlx/mlx/io/gguf.cpp b/vendor/MLX/m
 index 6c27c46..dbe6dbd 100644
 --- a/vendor/MLX/mlx-swift/Source/Cmlx/mlx/mlx/io/gguf.cpp
 +++ b/vendor/MLX/mlx-swift/Source/Cmlx/mlx/mlx/io/gguf.cpp
-@@ -5,0 +6 @@
+@@ -3,0 +4 @@
++#include <cstdlib>
+@@ -5,0 +7 @@
 +#include <limits>
 @@ -49,0 +51,9 @@ std::optional<Dtype> gguf_type_to_dtype(const uint32_t& gguf_type) {
 +[[noreturn]] void tensor_error(
@@ -108,7 +110,36 @@ index 6c27c46..dbe6dbd 100644
 +    }
 +    num_weights *= dim;
 +    shape.push_back(dim);
-@@ -81 +101,4 @@ std::tuple<allocator::Buffer, Dtype> extract_tensor_data(gguf_tensor* tensor) {
+@@ -78 +99,29 @@ std::tuple<allocator::Buffer, Dtype> extract_tensor_data(gguf_tensor* tensor) {
+-  // TODO: Add other dequantization options.
++  // This compatibility path is deliberately opt-in: it faithfully decodes
++  // the GGUF values, but expands the tensor to FP16 and can materially raise
++  // load time and peak memory compared with a native packed MLX kernel.
++  switch (tensor->type) {
++    case GGUF_TYPE_Q5_0:
++    case GGUF_TYPE_Q5_1:
++    case GGUF_TYPE_Q2_K:
++    case GGUF_TYPE_Q3_K:
++    case GGUF_TYPE_Q4_K:
++    case GGUF_TYPE_Q5_K:
++    case GGUF_TYPE_Q6_K:
++    case GGUF_TYPE_Q8_K: {
++      const char* enabled = std::getenv("AFM_EXPERIMENTAL_GGUF_QUANTS");
++      if (enabled == nullptr || std::string(enabled) != "1") {
++        std::string name(tensor->name, tensor->namelen);
++        throw std::runtime_error(
++            "[load_gguf] Tensor '" + name + "' uses GGUF type " +
++            std::to_string(tensor->type) +
++            "; set AFM_EXPERIMENTAL_GGUF_QUANTS=1 to enable faithful "
++            "FP16 compatibility decoding (experimental; higher load time "
++            "and peak memory)");
++      }
++      break;
++    }
++    default:
++      break;
++  }
+@@ -81 +127,4 @@ std::tuple<allocator::Buffer, Dtype> extract_tensor_data(gguf_tensor* tensor) {
 -    throw std::runtime_error("[load_gguf] gguf_tensor_to_f16 failed");
 +    std::string name(tensor->name, tensor->namelen);
 +    throw std::runtime_error(

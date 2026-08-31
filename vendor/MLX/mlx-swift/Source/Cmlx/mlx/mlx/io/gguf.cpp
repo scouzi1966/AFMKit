@@ -1,6 +1,7 @@
 // Copyright © 2023-2024 Apple Inc.
 
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <limits>
@@ -95,7 +96,33 @@ std::tuple<allocator::Buffer, Dtype> extract_tensor_data(gguf_tensor* tensor) {
     return {buffer, equivalent_dtype.value()};
   }
   // Otherwise, we convert to float16.
-  // TODO: Add other dequantization options.
+  // This compatibility path is deliberately opt-in: it faithfully decodes
+  // the GGUF values, but expands the tensor to FP16 and can materially raise
+  // load time and peak memory compared with a native packed MLX kernel.
+  switch (tensor->type) {
+    case GGUF_TYPE_Q5_0:
+    case GGUF_TYPE_Q5_1:
+    case GGUF_TYPE_Q2_K:
+    case GGUF_TYPE_Q3_K:
+    case GGUF_TYPE_Q4_K:
+    case GGUF_TYPE_Q5_K:
+    case GGUF_TYPE_Q6_K:
+    case GGUF_TYPE_Q8_K: {
+      const char* enabled = std::getenv("AFM_EXPERIMENTAL_GGUF_QUANTS");
+      if (enabled == nullptr || std::string(enabled) != "1") {
+        std::string name(tensor->name, tensor->namelen);
+        throw std::runtime_error(
+            "[load_gguf] Tensor '" + name + "' uses GGUF type " +
+            std::to_string(tensor->type) +
+            "; set AFM_EXPERIMENTAL_GGUF_QUANTS=1 to enable faithful "
+            "FP16 compatibility decoding (experimental; higher load time "
+            "and peak memory)");
+      }
+      break;
+    }
+    default:
+      break;
+  }
   int16_t* data = gguf_tensor_to_f16(tensor);
   if (data == NULL) {
     std::string name(tensor->name, tensor->namelen);

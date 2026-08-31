@@ -396,14 +396,14 @@ public enum AFMMLXQwen35GGUFAdapter {
         return result
     }
 
-    /// Constructs the existing dense Qwen3.5 graph and installs Q8_0 GGUF
+    /// Constructs the existing dense Qwen3.5 graph and installs GGUF
     /// parameters. This stops at a model object; tokenizer construction and
     /// AFM routing are separate POC stages.
-    public static func loadQ8Model(url: URL) throws -> Qwen3_5MoEModel {
-        try loadQ8ModelWithDescriptor(url: url).model
+    public static func loadModel(url: URL) throws -> Qwen3_5MoEModel {
+        try loadModelWithDescriptor(url: url).model
     }
 
-    public static func loadQ8ModelWithDescriptor(
+    public static func loadModelWithDescriptor(
         url: URL
     ) throws -> AFMMLXQwen35GGUFLoadedModel {
         let checkpoint = try MLX.loadGGUF(url: url)
@@ -413,14 +413,26 @@ public enum AFMMLXQwen35GGUFAdapter {
             Qwen3_5MoEConfiguration.self, from: descriptor.configurationJSON())
         let model = Qwen3_5MoEModel(configuration)
 
-        try validateQ8Geometry(weights)
+        let quantizationBits = try quantizationBits(in: weights)
         quantize(model: model, filter: { path, _ in
-            weights["\(path).scales"] == nil ? nil : (groupSize: 32, bits: 8, mode: .affine)
+            quantizationBits[path].map { (groupSize: 32, bits: $0, mode: .affine) }
         })
         try model.update(
             parameters: ModuleParameters.unflattened(weights),
             verify: [.noUnusedKeys, .allModelKeysSet])
         return AFMMLXQwen35GGUFLoadedModel(model: model, descriptor: descriptor)
+    }
+
+    @available(*, deprecated, renamed: "loadModel(url:)")
+    public static func loadQ8Model(url: URL) throws -> Qwen3_5MoEModel {
+        try loadModel(url: url)
+    }
+
+    @available(*, deprecated, renamed: "loadModelWithDescriptor(url:)")
+    public static func loadQ8ModelWithDescriptor(
+        url: URL
+    ) throws -> AFMMLXQwen35GGUFLoadedModel {
+        try loadModelWithDescriptor(url: url)
     }
 
     private static func inverseValueHeadOrder(
@@ -458,17 +470,26 @@ public enum AFMMLXQwen35GGUFAdapter {
         return Int(name[name.index(name.startIndex, offsetBy: 4) ..< separator])
     }
 
-    private static func validateQ8Geometry(_ weights: [String: MLXArray]) throws {
+    static func quantizationBits(in weights: [String: MLXArray]) throws -> [String: Int] {
+        var result: [String: Int] = [:]
         for (name, scales) in weights where name.hasSuffix(".scales") {
             let base = String(name.dropLast(".scales".count))
             guard let weight = weights["\(base).weight"],
                   weight.ndim == scales.ndim,
                   weight.ndim > 0,
                   scales.dim(-1) > 0,
-                  weight.dim(-1) == scales.dim(-1) * 8
+                  weight.dim(-1) % scales.dim(-1) == 0
             else {
                 throw AFMMLXQwen35GGUFAdapterError.invalidTensorShape(name, scales.shape)
             }
+            let bits = weight.dim(-1) / scales.dim(-1)
+            guard bits == 4 || bits == 8,
+                  weights["\(base).biases"]?.shape == scales.shape
+            else {
+                throw AFMMLXQwen35GGUFAdapterError.invalidTensorShape(name, scales.shape)
+            }
+            result[base] = bits
         }
+        return result
     }
 }

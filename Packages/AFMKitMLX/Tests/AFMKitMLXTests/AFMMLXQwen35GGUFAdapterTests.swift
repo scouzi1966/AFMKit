@@ -6,6 +6,22 @@ import Testing
 
 @Suite("Qwen3.5 GGUF adapter")
 struct AFMMLXQwen35GGUFAdapterTests {
+    @Test("infers packed MLX quantization geometry per tensor")
+    func infersMixedQuantizationGeometry() throws {
+        let weights: [String: MLXArray] = [
+            "four.weight": MLXArray.zeros([2, 16], type: UInt32.self),
+            "four.scales": MLXArray.zeros([2, 4], type: Float16.self),
+            "four.biases": MLXArray.zeros([2, 4], type: Float16.self),
+            "eight.weight": MLXArray.zeros([2, 32], type: UInt32.self),
+            "eight.scales": MLXArray.zeros([2, 4], type: Float16.self),
+            "eight.biases": MLXArray.zeros([2, 4], type: Float16.self),
+            "plain.weight": MLXArray.zeros([2, 32]),
+        ]
+
+        let bits = try AFMMLXQwen35GGUFAdapter.quantizationBits(in: weights)
+        #expect(bits == ["four": 4, "eight": 8])
+    }
+
     @Test("builds an MLXLLM configuration from validated GGUF metadata")
     func buildsConfiguration() throws {
         let descriptor = try AFMMLXQwen35GGUFDescriptor(metadata: metadata())
@@ -72,7 +88,7 @@ struct AFMMLXQwen35GGUFAdapterTests {
         guard let path = ProcessInfo.processInfo.environment["AFMKIT_QWEN35_GGUF_MODEL"] else {
             return
         }
-        let model = try AFMMLXQwen35GGUFAdapter.loadQ8Model(
+        let model = try AFMMLXQwen35GGUFAdapter.loadModel(
             url: URL(fileURLWithPath: path))
         #expect(model.vocabularySize > 0)
     }
@@ -82,7 +98,7 @@ struct AFMMLXQwen35GGUFAdapterTests {
         guard let path = ProcessInfo.processInfo.environment["AFMKIT_QWEN35_GGUF_FIRST_TOKEN"] else {
             return
         }
-        let model = try AFMMLXQwen35GGUFAdapter.loadQ8Model(
+        let model = try AFMMLXQwen35GGUFAdapter.loadModel(
             url: URL(fileURLWithPath: path))
         let logits = model(MLXArray(Int32(1)).reshaped(1, 1), cache: nil)
         let token = MLX.argMax(logits[0, -1, 0...], axis: -1).item(Int.self)
