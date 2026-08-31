@@ -18,6 +18,7 @@ public struct AFMMLXRuntimeConfiguration: Sendable {
     public var kvBits: Int?
     public var enablePrefixCaching: Bool
     public var kernelEngine: AFMMLXKernelEngine
+    public var qwenNGramMmapEnabled: Bool
     public var mtpEnabled: Bool
     public var mtpDepth: Int
     public var mtpModelID: String?
@@ -42,6 +43,7 @@ public struct AFMMLXRuntimeConfiguration: Sendable {
         kvBits: Int? = nil,
         enablePrefixCaching: Bool = true,
         kernelEngine: AFMMLXKernelEngine = .native,
+        qwenNGramMmapEnabled: Bool = false,
         mtpEnabled: Bool = false,
         mtpDepth: Int = 3,
         mtpModelID: String? = nil,
@@ -65,6 +67,7 @@ public struct AFMMLXRuntimeConfiguration: Sendable {
         self.kvBits = kvBits
         self.enablePrefixCaching = enablePrefixCaching
         self.kernelEngine = kernelEngine
+        self.qwenNGramMmapEnabled = qwenNGramMmapEnabled
         self.mtpEnabled = mtpEnabled
         self.mtpDepth = mtpDepth
         self.mtpModelID = mtpModelID
@@ -100,6 +103,9 @@ public struct AFMMLXRuntimeConfiguration: Sendable {
         }
         if let value = configuration.string("mlxKernels") ?? configuration.string("kernelEngine") {
             kernelEngine = AFMMLXKernelEngine(configuredValue: value)
+        }
+        if let value = configuration.bool("qwenNGramMmapEnabled") {
+            qwenNGramMmapEnabled = value
         }
         if let value = configuration.bool("mtpEnabled") {
             mtpEnabled = value
@@ -161,6 +167,7 @@ public struct AFMMLXRuntimeConfiguration: Sendable {
         service.kvBits = kvBits
         service.enablePrefixCaching = enablePrefixCaching
         service.kernelEngine = kernelEngine
+        service.qwenNGramMmapEnabled = qwenNGramMmapEnabled
         service.mtpEnabled = mtpEnabled
         service.mtpDepth = mtpDepth
         service.mtpModelID = mtpModelID

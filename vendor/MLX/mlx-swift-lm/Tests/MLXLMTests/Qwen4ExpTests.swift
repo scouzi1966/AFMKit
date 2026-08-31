@@ -1360,6 +1360,95 @@ final class Qwen4ExpTests: XCTestCase {
         XCTAssertEqual(tokenLogits.shape, [1, 1, 32])
     }
 
+    func testMappedNGramTableDequantizesRequestedRows() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("qwen-ngram-\(UUID().uuidString).bin")
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        var header = Data(
+            #"{"__metadata__":{"format":"mlx-serve-ngram","bits":"4","group_size":"4"},"weight":{"dtype":"U32","shape":[2,1],"data_offsets":[0,8]},"scales":{"dtype":"BF16","shape":[2,2],"data_offsets":[8,16]},"biases":{"dtype":"BF16","shape":[2,2],"data_offsets":[16,24]}}"#.utf8)
+        while header.count % 8 != 0 { header.append(0x20) }
+
+        var file = Data()
+        appendLittleEndian(UInt64(header.count), to: &file)
+        file.append(header)
+        appendLittleEndian(packNibbles([0, 1, 2, 3, 4, 5, 6, 7]), to: &file)
+        appendLittleEndian(packNibbles([8, 9, 10, 11, 12, 13, 14, 15]), to: &file)
+        for value: Float in [1, 2, 0.5, 1] {
+            appendLittleEndian(bfloat16(value), to: &file)
+        }
+        for value: Float in [0, -1, 1, 0] {
+            appendLittleEndian(bfloat16(value), to: &file)
+        }
+        try file.write(to: url)
+
+        let table = try Qwen4ExpMappedNGramTable(
+            url: url,
+            expectedRows: 2,
+            expectedDimensions: 8,
+            expectedBits: 4,
+            expectedGroupSize: 4)
+        let output = try table.gather(
+            MLXArray([Int64(0), Int64(1)]).reshaped(1, 2))
+        eval(output)
+
+        XCTAssertEqual(output.shape, [1, 2, 8])
+        XCTAssertEqual(
+            output.asArray(Float.self),
+            [0, 1, 2, 3, 7, 9, 11, 13, 5, 5.5, 6, 6.5, 12, 13, 14, 15])
+    }
+
+    func testMappedNGramHostHashRespectsHistoryAndEOSBoundaries() {
+        let result = qwen4MappedNGramRowIDs(
+            previous: [31, 31],
+            input: [1, 2, 31, 3],
+            batchSize: 1,
+            inputLength: 4,
+            contextLength: 2,
+            ngramSize: 3,
+            headsPerNgram: 2,
+            eosTokenID: 31,
+            headSizes: [11, 13, 17, 19],
+            headOffsets: [0, 11, 24, 41],
+            multipliers: [3, 5, 7])
+
+        XCTAssertEqual(
+            result.rowIDs,
+            [9, 20, 38, 49, 3, 14, 38, 50, 10, 20, 36, 45, 3, 14, 31, 59])
+        XCTAssertEqual(result.nextHistory, [31, 3])
+    }
+
+    func testMappedNGramTableRejectsQuantizationMismatch() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("qwen-ngram-\(UUID().uuidString).bin")
+        defer { try? FileManager.default.removeItem(at: url) }
+        var header = Data(
+            #"{"__metadata__":{"format":"mlx-serve-ngram","bits":"4","group_size":"4"},"weight":{"dtype":"U32","shape":[1,1],"data_offsets":[0,4]},"scales":{"dtype":"BF16","shape":[1,2],"data_offsets":[4,8]},"biases":{"dtype":"BF16","shape":[1,2],"data_offsets":[8,12]}}"#.utf8)
+        while header.count % 8 != 0 { header.append(0x20) }
+        var file = Data()
+        appendLittleEndian(UInt64(header.count), to: &file)
+        file.append(header)
+        file.append(Data(repeating: 0, count: 12))
+        try file.write(to: url)
+
+        XCTAssertThrowsError(
+            try Qwen4ExpMappedNGramTable(
+                url: url,
+                expectedRows: 1,
+                expectedDimensions: 8,
+                expectedBits: 8,
+                expectedGroupSize: 4)
+        ) { error in
+            XCTAssertEqual(
+                error as? Qwen4ExpMappedNGramTableError,
+                .incompatible(
+                    expectedBits: 8,
+                    actualBits: 4,
+                    expectedGroupSize: 4,
+                    actualGroupSize: 4))
+        }
+    }
+
     func testStrictQSAPathBeyondTokenBudgetMatchesSequentialGreedyDecisions() async throws {
         let qsaConfiguration = minimalConfiguration
             .replacingOccurrences(of: "\"indexer_budget\": 2048", with: "\"indexer_budget\": 8")
@@ -1400,5 +1489,23 @@ final class Qwen4ExpTests: XCTestCase {
         XCTAssertEqual(
             blockTokens.asArray(Int32.self),
             sequentialTokens.asArray(Int32.self))
+    }
+
+    private func appendLittleEndian<T: FixedWidthInteger>(
+        _ value: T,
+        to data: inout Data
+    ) {
+        var littleEndian = value.littleEndian
+        Swift.withUnsafeBytes(of: &littleEndian) { data.append(contentsOf: $0) }
+    }
+
+    private func packNibbles(_ values: [UInt32]) -> UInt32 {
+        values.enumerated().reduce(0) { result, item in
+            result | ((item.element & 0xF) << UInt32(item.offset * 4))
+        }
+    }
+
+    private func bfloat16(_ value: Float) -> UInt16 {
+        UInt16(truncatingIfNeeded: value.bitPattern >> 16)
     }
 }
