@@ -191,6 +191,7 @@ var products: [Product] = [
     .library(name: "AFMKitServices", targets: ["AFMKitServices"]),
     .library(name: "AFMEvalKit", targets: ["AFMEvalKit"]),
     .library(name: "AFMKitMLX", targets: ["AFMKitMLX"]),
+    .library(name: "AFMKitMLXImage", targets: ["AFMKitMLXImage"]),
     .library(name: "AFMKitMLXAudio", targets: ["AFMKitMLXAudio"]),
     .library(name: "AFMKitDwarfStar", targets: ["AFMKitDwarfStar"])
 ]
@@ -384,6 +385,19 @@ var targets: [Target] = [
         ],
         path: "Packages/AFMKitMLXAudio/Sources/AFMKitMLXAudio",
         linkerSettings: [.linkedFramework("AVFoundation")]
+    ),
+    .target(
+        name: "AFMKitMLXImage",
+        dependencies: [
+            "AFMKitCore", "MLX", "MLXNN", "MLXFast", "MLXRandom", "MLXLMCommon",
+            .product(name: "Tokenizers", package: "swift-transformers")
+        ],
+        path: "Packages/AFMKitMLXImage/Sources/AFMKitMLXImage",
+        linkerSettings: [
+            .linkedFramework("CoreGraphics"),
+            .linkedFramework("ImageIO"),
+            .linkedFramework("UniformTypeIdentifiers")
+        ]
     ),
     .target(
         name: "CDwarfStar",
