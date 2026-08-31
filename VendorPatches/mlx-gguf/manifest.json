@@ -1,0 +1,20 @@
+{
+  "name": "mlx-swift-gguf-poc",
+  "base_afmkit_revision": "685660b13faf89a352481095aff7d078ede3e8be",
+  "mlx_version": "0.32.2",
+  "mlx_swift_version": "0.31.6",
+  "gguf_tools_revision": "8fa6eb65236618e28fd7710a0fba565f7faa1848",
+  "upstream_security_commits": [
+    "a4a2c1eb5c354332e5215cda05d1f295f814dad8",
+    "678233247a299ab050594a44c3330d44356b7000"
+  ],
+  "patch": "mlx-swift-gguf.patch",
+  "applied_sha256": {
+    "vendor/MLX/mlx-swift/Source/Cmlx/include/mlx/c/io.h": "92b285dd948968fd787cf3532013e8fc5709e832e62c38555dc98d464414116a",
+    "vendor/MLX/mlx-swift/Source/Cmlx/mlx-c/mlx/c/io.cpp": "7c4f4affa2104098d485f6696084f24d110471c05b175f92b6da5afb7315fc6f",
+    "vendor/MLX/mlx-swift/Source/Cmlx/mlx-c/mlx/c/io.h": "92b285dd948968fd787cf3532013e8fc5709e832e62c38555dc98d464414116a",
+    "vendor/MLX/mlx-swift/Source/Cmlx/mlx/mlx/io/gguf.cpp": "fd7d74d27cead33b7eb7dc2785df3d7821215e8d2e282d4ac2ebd7a4539d8121",
+    "vendor/MLX/mlx-swift/Source/Cmlx/mlx/mlx/io/gguf_quants.cpp": "0fd0ce5da615388905310269a3c189ac7e8714c0f47daf478e109f33a00321b3",
+    "vendor/MLX/mlx-swift/Source/MLX/IO.swift": "5a9799aff464d6ab9843ef37e4b9852667a3e43a505044728ee64322744d2ec0"
+  }
+}

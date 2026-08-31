@@ -8,6 +8,19 @@ public enum LoadSaveError: Error {
     case unknownExtension(String)
 }
 
+/// Values carried by the GGUF metadata table. Numeric scalars and numeric
+/// arrays are represented as MLX arrays to preserve their source type.
+public enum GGUFMetadataValue {
+    case array(MLXArray)
+    case string(String)
+    case strings([String])
+}
+
+public struct GGUFLoadResult {
+    public let arrays: [String: MLXArray]
+    public let metadata: [String: GGUFMetadataValue]
+}
+
 extension LoadSaveError: LocalizedError {
     public var errorDescription: String? {
         switch self {
@@ -84,6 +97,45 @@ public func save(
     }
 }
 
+/// Load tensors and typed metadata from a GGUF v3 file using MLX's native
+/// loader. Q4_0, Q4_1, and Q8_0 remain packed; other recognized types are
+/// converted by MLX according to its GGUF implementation.
+public func loadGGUF(url: URL, stream: StreamOrDevice = .cpu) throws -> GGUFLoadResult {
+    precondition(url.isFileURL)
+    guard url.pathExtension.lowercased() == "gguf" else {
+        throw LoadSaveError.unknownExtension(url.pathExtension)
+    }
+
+    var arrays = mlx_map_string_to_array_new()
+    var arrayMetadata = mlx_map_string_to_array_new()
+    var stringMetadata = mlx_map_string_to_string_new()
+    defer {
+        mlx_map_string_to_array_free(arrays)
+        mlx_map_string_to_array_free(arrayMetadata)
+        mlx_map_string_to_string_free(stringMetadata)
+    }
+
+    let path = url.path(percentEncoded: false)
+    _ = try withError {
+        mlx_load_gguf(
+            &arrays, &arrayMetadata, &stringMetadata,
+            path.cString(using: .utf8), stream.ctx)
+    }
+
+    var metadata = mlx_map_array_values(arrayMetadata).mapValues(GGUFMetadataValue.array)
+    for (key, value) in mlx_map_string_values(stringMetadata) {
+        if value.first == "[",
+            let data = value.data(using: .utf8),
+            let decoded = try? JSONDecoder().decode([String].self, from: data)
+        {
+            metadata[key] = .strings(decoded)
+        } else {
+            metadata[key] = .string(value)
+        }
+    }
+    return GGUFLoadResult(arrays: mlx_map_array_values(arrays), metadata: metadata)
+}
+
 /// Load array from a binary file in `.npy` format.
 ///
 /// - Parameters:
@@ -127,6 +179,8 @@ public func loadArrays(url: URL, stream: StreamOrDevice = .cpu) throws -> [Strin
     let path = url.path(percentEncoded: false)
 
     switch url.pathExtension {
+    case "gguf":
+        return try loadGGUF(url: url, stream: stream).arrays
     case "safetensors":
         var r0 = mlx_map_string_to_array_new()
         var r1 = mlx_map_string_to_string_new()
