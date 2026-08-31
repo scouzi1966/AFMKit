@@ -550,6 +550,7 @@ actor BatchScheduler {
         _inFlightCount.withLock { $0 = max(0, $0 - removed.count) }
         for request in removed {
             clearCancellation(request.id)
+            request.constraintRuntimeConfig?.matcherHandle?.release()
             request.continuation.finish(throwing: CancellationError())
             StatsAggregator.shared.requestSucceeded(reason: "abort")
             StatsAggregator.shared.requestCompleted()
@@ -750,7 +751,11 @@ actor BatchScheduler {
             let result = q; q.removeAll(); return result
         }
         for req in pending {
+            clearCancellation(req.id)
+            req.constraintRuntimeConfig?.matcherHandle?.release()
             req.continuation.finish(throwing: MLXServiceError.serviceShuttingDown)
+            StatsAggregator.shared.requestSucceeded(reason: "abort")
+            StatsAggregator.shared.requestCompleted()
         }
 
         if let task = loopTask {
@@ -824,6 +829,8 @@ actor BatchScheduler {
             if Task.isCancelled || _isShutdown.withLock({ $0 }) {
                 for req in newRequests {
                     _inFlightCount.withLock { $0 = max(0, $0 - 1) }
+                    clearCancellation(req.id)
+                    req.constraintRuntimeConfig?.matcherHandle?.release()
                     req.continuation.finish(
                         throwing: MLXServiceError.serviceShuttingDown)
                     StatsAggregator.shared.requestSucceeded(reason: "abort")
@@ -842,6 +849,7 @@ actor BatchScheduler {
                     if isCancellationRequested(req.id) {
                         clearCancellation(req.id)
                         _inFlightCount.withLock { $0 = max(0, $0 - 1) }
+                        req.constraintRuntimeConfig?.matcherHandle?.release()
                         req.continuation.finish(throwing: CancellationError())
                         StatsAggregator.shared.requestSucceeded(reason: "abort")
                         StatsAggregator.shared.requestCompleted()
@@ -1542,6 +1550,15 @@ actor BatchScheduler {
         cacheTruncateTime: Double?,
         logitProcessor: LogitProcessor?, logitSampler: LogitSampler
     ) {
+        // `submit()` consumes a reservation before this fallback is selected.
+        // Unlike normal batched slots, this request is never appended to
+        // `slots`, so finishSlot(at:) cannot release its capacity or matcher.
+        defer {
+            clearCancellation(req.id)
+            req.constraintRuntimeConfig?.matcherHandle?.release()
+            _inFlightCount.withLock { $0 = max($0 - 1, 0) }
+        }
+
         // Emit cached token count
         if cachedTokens > 0 {
             req.continuation.yield(StreamChunk(text: "", cachedTokens: cachedTokens))
@@ -1565,8 +1582,14 @@ actor BatchScheduler {
         let maxTokens = req.parameters.maxTokens ?? 4096
         var detokenizer = NaiveStreamingDetokenizer(tokenizer: tokenizer)
         let genStart = Date()
+        var terminalDisposition: TokenDisposition = .stop
+        var wasCancelled = false
 
         while true {
+            if isCancellationRequested(req.id) {
+                wasCancelled = true
+                break
+            }
             let tokenId = currentToken.item(Int.self)
             let disposition = Self.tokenDisposition(
                 tokenCount: tokenCount,
@@ -1578,7 +1601,10 @@ actor BatchScheduler {
                 consecutiveSuppressedEndOfSequenceTokens:
                     consecutiveSuppressedEndOfSequenceTokens
             )
-            if disposition == .stop || disposition == .length { break }
+            if disposition == .stop || disposition == .length {
+                terminalDisposition = disposition
+                break
+            }
 
             if disposition == .suppress {
                 consecutiveSuppressedEndOfSequenceTokens += 1
@@ -1606,6 +1632,35 @@ actor BatchScheduler {
 
         let generateTime = Date().timeIntervalSince(genStart)
         print("[\(batchTs())] [BatchScheduler] Serial cache generation done: \(tokenCount) tokens, \(String(format: "%.1f", Double(tokenCount) / generateTime)) tok/s")
+
+        let completedAt = Date()
+        StatsAggregator.shared.observeRequest(
+            StatsAggregator.RequestObservation(
+                queuedAt: req.queuedAt.timeIntervalSince1970,
+                startedAt: prefillStart.timeIntervalSince1970,
+                firstTokenAt: tokenCount > 0 ? genStart.timeIntervalSince1970 : nil,
+                completedAt: completedAt.timeIntervalSince1970,
+                promptTokens: inputTokens.count,
+                generationTokens: tokenCount
+            )
+        )
+        let suffixPromptTokens = max(0, inputTokens.count - cachedTokens)
+        StatsAggregator.shared.addPromptTokens(suffixPromptTokens)
+        StatsAggregator.shared.addGenTokens(tokenCount)
+        if cachedTokens > 0 {
+            StatsAggregator.shared.cacheHit()
+        } else {
+            StatsAggregator.shared.cacheMiss()
+        }
+        StatsAggregator.shared.requestSucceeded(reason: wasCancelled
+            ? "abort"
+            : (terminalDisposition == .length ? "length" : "stop"))
+        StatsAggregator.shared.requestCompleted()
+
+        if wasCancelled {
+            req.continuation.finish(throwing: CancellationError())
+            return
+        }
 
         // Signal completion
         req.continuation.yield(StreamChunk(
