@@ -34,6 +34,7 @@ ALLOWED_PREFIXES = (
     "Packages/AFMKitMLX/Tests/",
     "Packages/AFMKitMLXAudio/Sources/",
     "Packages/AFMKitMLXAudio/Tests/",
+    "Packages/AFMKitMLXImage/Sources/",
     "vendor/MLX/",
     "docs/api-baselines/",
 )
@@ -133,6 +134,7 @@ def main() -> int:
         "Packages/AFMKitDwarfStar/Tests/AFMKitFoundationModelsDwarfStarTests/DwarfStarFoundationLanguageModelTests.swift",
         "Packages/AFMKitMLX/Sources/AFMKitMLX/AFMMLXProvider.swift",
         "Packages/AFMKitMLXAudio/Sources/AFMKitMLXAudio/AFMMLXAudioRuntime.swift",
+        "Packages/AFMKitMLXImage/Sources/AFMKitMLXImage/FluxKleinImageService.swift",
         "vendor/MLX/README.md",
         "vendor/MLX/mlx-swift/Package.swift",
         "vendor/MLX/mlx-swift/LICENSE",
@@ -154,6 +156,7 @@ def main() -> int:
         "docs/api-baselines/AFMKitFoundationModelsDwarfStar.symbols.json",
         "docs/api-baselines/AFMKitMLX.symbols.json",
         "docs/api-baselines/AFMKitMLXAudio.symbols.json",
+        "docs/api-baselines/AFMKitMLXImage.symbols.json",
     }
     missing = required - seen
     if missing:

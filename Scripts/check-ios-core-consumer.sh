@@ -54,6 +54,7 @@ unsupported_modules=(
     AFMKitFoundationModelsMLX
     AFMKitMLX
     AFMKitMLXAudio
+    AFMKitMLXImage
     AFMKitServices
     AFMKitSpeech
     AFMKitSpeechSynthesis
