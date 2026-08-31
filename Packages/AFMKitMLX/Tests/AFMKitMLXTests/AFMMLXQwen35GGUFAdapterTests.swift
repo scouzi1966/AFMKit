@@ -13,6 +13,7 @@ struct AFMMLXQwen35GGUFAdapterTests {
         #expect(descriptor.architecture == "qwen35")
         #expect(descriptor.hiddenLayerCount == 4)
         #expect(descriptor.nextnPredictLayerCount == 1)
+        #expect(descriptor.eosTokenID == 31)
         #expect(descriptor.linearValueHeadDimension == 2)
         #expect(descriptor.partialRotaryFactor == 0.5)
 
@@ -42,7 +43,7 @@ struct AFMMLXQwen35GGUFAdapterTests {
                 == "language_model.model.layers.0.linear_attn.in_proj_qkv.scales")
         #expect(
             try AFMMLXQwen35GGUFAdapter.plan(for: "output_norm.weight").transform
-                == .subtractOne)
+                == .identity)
         #expect(throws: AFMMLXQwen35GGUFAdapterError.unsupportedTensor("blk.0.unknown")) {
             _ = try AFMMLXQwen35GGUFAdapter.plan(for: "blk.0.unknown")
         }
@@ -115,7 +116,7 @@ struct AFMMLXQwen35GGUFAdapterTests {
         ])
     }
 
-    @Test("reverses QKV slicing, recurrence decay, convolution shape, and norm offset")
+    @Test("reverses QKV slicing, recurrence decay, and convolution shape while preserving shifted norms")
     func reversesConverterTransforms() throws {
         let descriptor = try AFMMLXQwen35GGUFDescriptor(metadata: metadata())
 
@@ -145,7 +146,7 @@ struct AFMMLXQwen35GGUFAdapterTests {
         let normPlan = try AFMMLXQwen35GGUFAdapter.plan(for: "blk.0.attn_norm.weight")
         let norm = try AFMMLXQwen35GGUFAdapter.apply(
             normPlan, to: MLXArray([Float](repeating: 2, count: 8)), descriptor: descriptor)
-        #expect(norm.asArray(Float.self) == [Float](repeating: 1, count: 8))
+        #expect(norm.asArray(Float.self) == [Float](repeating: 2, count: 8))
     }
 
     private func metadata() -> [String: GGUFMetadataValue] {
@@ -169,6 +170,7 @@ struct AFMMLXQwen35GGUFAdapterTests {
             "qwen35.rope.freq_base": scalar(10_000_000),
             "qwen35.rope.dimension_count": scalar(2),
             "tokenizer.ggml.tokens": .strings((0 ..< 32).map { "token-\($0)" }),
+            "tokenizer.ggml.eos_token_id": scalar(31),
         ]
     }
 

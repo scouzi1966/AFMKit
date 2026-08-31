@@ -1857,6 +1857,15 @@ public final class MLXModelService:
             return cached.0
         }
 
+        let localModelURL = URL(fileURLWithPath: modelID)
+        if localModelURL.pathExtension.lowercased() == "gguf",
+           FileManager.default.fileExists(atPath: localModelURL.path) {
+            return try await ensureGGUFLoaded(
+                modelID: modelID,
+                modelURL: localModelURL,
+                stage: stage)
+        }
+
         // Loading priority:
         // 1. Absolute/relative path — use directly (no cache or download)
         // 2. Any complete local cache snapshot (AFM or Hugging Face)
@@ -2456,6 +2465,135 @@ public final class MLXModelService:
             try registry.registerModel(modelID)
             stage?(.ready)
             return modelID
+        } catch {
+            throw MLXServiceError.loadFailed("\(modelID): \(error.localizedDescription)")
+        }
+    }
+
+    private func ensureGGUFLoaded(
+        modelID: String,
+        modelURL: URL,
+        stage: (@Sendable (MLXLoadStage) -> Void)?
+    ) async throws -> String {
+        do {
+            guard !forceVLM else {
+                throw MLXServiceError.loadFailed("GGUF POC supports text-only loading")
+            }
+            guard !mtpEnabled else {
+                throw MLXServiceError.loadFailed("GGUF POC does not yet load the appended MTP head")
+            }
+
+            let tokenizerDirectory = try AFMMLXGGUFTokenizerResolver.resolve(modelURL: modelURL)
+            let architecture = AFMMLXModelArchitecturePreflight(
+                modelID: modelID,
+                modelType: "qwen3_5",
+                canonicalModelType: "qwen3_5",
+                isVisionConfiguration: false,
+                requiresVisionModelFactory: false)
+            try ensureGPUConfigured(for: architecture)
+            stage?(.loadingModel)
+            print("[\(ts())] [GGUF] tokenizer assets: \(tokenizerDirectory.path)")
+            print("[\(ts())] [GGUF] loading Q8_0 model: \(modelURL.path)")
+
+            var configuration = ModelConfiguration(directory: tokenizerDirectory)
+            var detectedFormat = inferToolCallFormat(directory: tokenizerDirectory)
+            if let parser = toolCallParser {
+                if Self.isToolCallParserDisabled(parser) {
+                    detectedFormat = nil
+                } else if ["qwen3_xml", "afm_adaptive_xml"].contains(parser) {
+                    detectedFormat = .xmlFunction
+                } else if ["hermes", "llama3_json", "mistral"].contains(parser) {
+                    detectedFormat = .json
+                }
+            }
+            configuration.toolCallFormat = detectedFormat
+
+            let tokenizerConfiguration = configuration
+            async let tokenizerTask = loadTokenizer(
+                configuration: tokenizerConfiguration,
+                hub: HubApi())
+            let loaded = try AFMMLXQwen35GGUFAdapter.loadQ8ModelWithDescriptor(url: modelURL)
+            if let eosTokenID = loaded.descriptor.eosTokenID {
+                configuration.eosTokenIds.insert(eosTokenID)
+            }
+            let tokenizer = try await tokenizerTask
+            let processor = AFMMLXGGUFUserInputProcessor(
+                tokenizer: tokenizer,
+                model: loaded.model)
+            let container = ModelContainer(context: ModelContext(
+                configuration: configuration,
+                model: loaded.model,
+                processor: processor,
+                tokenizer: tokenizer))
+
+            let qualification = AFMMLXVisionAssetQualification(
+                snapshotIdentity: modelURL.path,
+                modelType: "qwen3_5",
+                canonicalModelType: "qwen3_5",
+                isConditionalGeneration: false,
+                declaresVision: false,
+                processorClass: nil,
+                visionTensorCount: 0,
+                missingAssets: [])
+            let descriptor = AFMModelDescriptor(
+                providerID: AFMMLXProviderFactory.providerID,
+                modelID: AFMModelID(rawValue: modelID),
+                displayName: modelURL.deletingPathExtension().lastPathComponent,
+                capabilities: [
+                    .text, .streaming, .structuredOutput, .prefixCaching,
+                    .reasoning, .toolCalling,
+                ],
+                contextWindow: loaded.descriptor.contextLength,
+                privacyBoundary: .device,
+                requiresNetwork: false,
+                metadata: [
+                    "runtime": .string("mlx-swift-gguf"),
+                    "quantization": .string("Q8_0"),
+                    "defaultMaximumResponseTokens": .integer(8_192),
+                ])
+
+            withStateLock {
+                currentContainer = container
+                currentModelID = modelID
+                currentModelArchitecture = architecture
+                currentVisionQualification = qualification
+                currentModelFactory = .llm
+                currentRuntimeDescriptor = descriptor
+                currentToolCallFormat = detectedFormat
+                currentMTPBinding = nil
+            }
+
+            thinkStartTag = "<think>"
+            thinkEndTag = "</think>"
+            harmonyChannels = false
+            responseChannelFormat = .none
+            builtinChatTemplate = nil
+            nativeToolJSONChatTemplate = Self.nativeToolJSONChatTemplate(
+                directory: tokenizerDirectory)
+            implicitStopSequences = []
+            structuralStripTags = []
+            forceSerialGeneration = true
+
+            radixCache?.invalidateAll()
+            if enablePrefixCaching {
+                radixCache = RadixTreeCache(
+                    modelID: modelID,
+                    maxEntries: 64,
+                    debugLogging: debugLogging)
+            } else {
+                radixCache = nil
+            }
+            let maxWorkingSetBytes = GPU.deviceInfo().maxRecommendedWorkingSetSize
+            StatsAggregator.shared.registerGpuCacheUsageReader {
+                guard maxWorkingSetBytes > 0 else { return 0 }
+                return min(1.0, Double(Memory.activeMemory) / Double(maxWorkingSetBytes))
+            }
+            try registry.registerModel(modelID)
+            print("[\(ts())] [GGUF] Qwen model and tokenizer ready")
+            stage?(.ready)
+            return modelID
+        } catch let error as MLXServiceError {
+            throw error
         } catch {
             throw MLXServiceError.loadFailed("\(modelID): \(error.localizedDescription)")
         }

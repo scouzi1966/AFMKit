@@ -53,6 +53,7 @@ public struct AFMMLXQwen35GGUFDescriptor: Sendable, Equatable {
     public let rmsNormEpsilon: Float
     public let ropeTheta: Float
     public let partialRotaryFactor: Float
+    public let eosTokenID: Int?
 
     public init(metadata: [String: GGUFMetadataValue]) throws {
         let architecture = try Self.string(metadata, key: "general.architecture")
@@ -113,6 +114,8 @@ public struct AFMMLXQwen35GGUFDescriptor: Sendable, Equatable {
             throw AFMMLXQwen35GGUFAdapterError.missingMetadata("tokenizer.ggml.tokens")
         }
         self.vocabularySize = tokens.count
+        self.eosTokenID = try Self.optionalNonnegativeInt(
+            metadata, key: "tokenizer.ggml.eos_token_id")
     }
 
     /// A config payload accepted by `Qwen3_5MoEConfiguration` without changing
@@ -199,12 +202,28 @@ public struct AFMMLXQwen35GGUFDescriptor: Sendable, Equatable {
         }
         return result
     }
+
+    private static func optionalNonnegativeInt(
+        _ metadata: [String: GGUFMetadataValue], key: String
+    ) throws -> Int? {
+        guard metadata[key] != nil else { return nil }
+        return try nonnegativeInt(metadata, key: key, default: 0)
+    }
+}
+
+public struct AFMMLXQwen35GGUFLoadedModel {
+    public let model: Qwen3_5MoEModel
+    public let descriptor: AFMMLXQwen35GGUFDescriptor
+
+    public init(model: Qwen3_5MoEModel, descriptor: AFMMLXQwen35GGUFDescriptor) {
+        self.model = model
+        self.descriptor = descriptor
+    }
 }
 
 public struct AFMMLXQwen35GGUFTensorPlan: Sendable, Equatable {
     public enum Transform: Sendable, Equatable {
         case identity
-        case subtractOne
         case inverseQKVValueRows
         case inverseValueRows
         case inverseValueVector
@@ -241,7 +260,10 @@ public enum AFMMLXQwen35GGUFAdapter {
             return .init(sourceName: sourceName, targetName: "language_model.lm_head.biases", transform: .identity)
         }
         if sourceName == "output_norm.weight" {
-            return .init(sourceName: sourceName, targetName: "language_model.model.norm.weight", transform: .subtractOne)
+            // llama.cpp's Qwen3.5 converter has already shifted the model's
+            // zero-centered RMSNorm weight by +1. MLXLLM uses conventional
+            // RMSNorm here, so the GGUF value is the value its graph expects.
+            return .init(sourceName: sourceName, targetName: "language_model.model.norm.weight", transform: .identity)
         }
 
         guard sourceName.hasPrefix("blk."),
@@ -254,8 +276,8 @@ public enum AFMMLXQwen35GGUFAdapter {
         let prefix = "language_model.model.layers.\(layer)."
 
         let mappings: [(String, String, AFMMLXQwen35GGUFTensorPlan.Transform)] = [
-            ("attn_norm.weight", "input_layernorm.weight", .subtractOne),
-            ("post_attention_norm.weight", "post_attention_layernorm.weight", .subtractOne),
+            ("attn_norm.weight", "input_layernorm.weight", .identity),
+            ("post_attention_norm.weight", "post_attention_layernorm.weight", .identity),
             ("attn_q.weight", "self_attn.q_proj.weight", .identity),
             ("attn_q.scales", "self_attn.q_proj.scales", .identity),
             ("attn_q.biases", "self_attn.q_proj.biases", .identity),
@@ -268,8 +290,8 @@ public enum AFMMLXQwen35GGUFAdapter {
             ("attn_output.weight", "self_attn.o_proj.weight", .identity),
             ("attn_output.scales", "self_attn.o_proj.scales", .identity),
             ("attn_output.biases", "self_attn.o_proj.biases", .identity),
-            ("attn_q_norm.weight", "self_attn.q_norm.weight", .subtractOne),
-            ("attn_k_norm.weight", "self_attn.k_norm.weight", .subtractOne),
+            ("attn_q_norm.weight", "self_attn.q_norm.weight", .identity),
+            ("attn_k_norm.weight", "self_attn.k_norm.weight", .identity),
             ("ffn_gate.weight", "mlp.gate_proj.weight", .identity),
             ("ffn_gate.scales", "mlp.gate_proj.scales", .identity),
             ("ffn_gate.biases", "mlp.gate_proj.biases", .identity),
@@ -314,8 +336,6 @@ public enum AFMMLXQwen35GGUFAdapter {
         switch plan.transform {
         case .identity:
             return array
-        case .subtractOne:
-            return array - 1
         case .inverseQKVValueRows:
             let qkRows = 2 * descriptor.linearKeyHeadCount * descriptor.linearKeyHeadDimension
             guard array.ndim >= 1, array.dim(0) > qkRows else {
@@ -380,6 +400,12 @@ public enum AFMMLXQwen35GGUFAdapter {
     /// parameters. This stops at a model object; tokenizer construction and
     /// AFM routing are separate POC stages.
     public static func loadQ8Model(url: URL) throws -> Qwen3_5MoEModel {
+        try loadQ8ModelWithDescriptor(url: url).model
+    }
+
+    public static func loadQ8ModelWithDescriptor(
+        url: URL
+    ) throws -> AFMMLXQwen35GGUFLoadedModel {
         let checkpoint = try MLX.loadGGUF(url: url)
         let descriptor = try AFMMLXQwen35GGUFDescriptor(metadata: checkpoint.metadata)
         let weights = try adaptedWeights(checkpoint.arrays, descriptor: descriptor)
@@ -394,7 +420,7 @@ public enum AFMMLXQwen35GGUFAdapter {
         try model.update(
             parameters: ModuleParameters.unflattened(weights),
             verify: [.noUnusedKeys, .allModelKeysSet])
-        return model
+        return AFMMLXQwen35GGUFLoadedModel(model: model, descriptor: descriptor)
     }
 
     private static func inverseValueHeadOrder(
