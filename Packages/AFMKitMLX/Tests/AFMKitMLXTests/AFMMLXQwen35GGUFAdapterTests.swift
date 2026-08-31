@@ -76,6 +76,19 @@ struct AFMMLXQwen35GGUFAdapterTests {
         #expect(model.vocabularySize > 0)
     }
 
+    @Test("evaluates one real Q8 token when explicitly enabled")
+    func evaluatesIntegrationToken() throws {
+        guard let path = ProcessInfo.processInfo.environment["AFMKIT_QWEN35_GGUF_FIRST_TOKEN"] else {
+            return
+        }
+        let model = try AFMMLXQwen35GGUFAdapter.loadQ8Model(
+            url: URL(fileURLWithPath: path))
+        let logits = model(MLXArray(Int32(1)).reshaped(1, 1), cache: nil)
+        let token = MLX.argMax(logits[0, -1, 0...], axis: -1).item(Int.self)
+        #expect(token >= 0)
+        #expect(token < model.vocabularySize)
+    }
+
     @Test("reverses llama.cpp value-head tiling on rows and columns")
     func reversesValueHeadTiling() throws {
         let descriptor = try AFMMLXQwen35GGUFDescriptor(metadata: metadata())

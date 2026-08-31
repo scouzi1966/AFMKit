@@ -61,3 +61,9 @@ constructs successfully as an MLXLLM Qwen3.5 model. The next slice is tokenizer
 construction (preferably from colocated standard tokenizer assets first), AFM
 model routing, and first-token parity. This ordering keeps tokenizer behavior
 and HTTP integration independent from checkpoint-layout correctness.
+
+An even slower, explicit graph-evaluation check is available with
+`AFMKIT_QWEN35_GGUF_FIRST_TOKEN` and the test filter
+`AFMMLXQwen35GGUFAdapterTests.evaluatesIntegrationToken`. It evaluates a single
+token without involving tokenizer or HTTP behavior. The Qwen 3.8 27B Q8_0
+reference completed this check successfully in 232.8 seconds on a cold run.
