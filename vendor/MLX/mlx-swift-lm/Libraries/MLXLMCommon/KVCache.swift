@@ -1239,7 +1239,7 @@ public class ChunkedKVCache: KVCacheSimple {
 }
 
 /// Base cache for array-based state storage
-public class ArraysCache: BaseKVCache {
+open class ArraysCache: BaseKVCache {
     private var cache: [MLXArray?]
     private var leftPadding: MLXArray?
 

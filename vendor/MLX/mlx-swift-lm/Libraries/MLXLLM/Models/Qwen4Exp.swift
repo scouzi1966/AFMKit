@@ -241,19 +241,39 @@ private final class Qwen4ExpGatedResidual: Module {
         }
     }
 
-    func mix(_ input: MLXArray) -> (MLXArray, MLXArray, MLXArray) {
+    func mix(
+        _ input: MLXArray,
+        verificationPolicy: MTPVerificationPolicy? = nil
+    ) -> (MLXArray, MLXArray, MLXArray) {
         let normalized = hcNorm(input)
-        let weights = sigmoid(inputMixWeightUp(silu(inputMixWeightDown(normalized) / Float(hcCount))))
+        let down = VerifyWidthLinear.call(
+            inputMixWeightDown, normalized, verificationPolicy: verificationPolicy,
+            role: .hyperConnection)
+        let weights = sigmoid(VerifyWidthLinear.call(
+            inputMixWeightUp, silu(down / Float(hcCount)),
+            verificationPolicy: verificationPolicy,
+            role: .hyperConnection))
         let shape = Array(input.shape.dropLast())
         let mixed = (weights.reshaped(shape + [hcCount, hiddenSize])
             * normalized.reshaped(shape + [hcCount, hiddenSize])).mean(axis: -2)
-        let injection = 2 * sigmoid(blockInjectWeight!(normalized) / Float(hcCount))
+        let injection = 2 * sigmoid(VerifyWidthLinear.call(
+            blockInjectWeight!, normalized, verificationPolicy: verificationPolicy,
+            role: .hyperConnection) / Float(hcCount))
         return (mixed, input, injection)
     }
 
-    func combine(_ input: MLXArray) -> MLXArray {
+    func combine(
+        _ input: MLXArray,
+        verificationPolicy: MTPVerificationPolicy? = nil
+    ) -> MLXArray {
         let normalized = hcNorm(input)
-        let weights = sigmoid(inputMixWeightUp(silu(inputMixWeightDown(normalized) / Float(hcCount))))
+        let down = VerifyWidthLinear.call(
+            inputMixWeightDown, normalized, verificationPolicy: verificationPolicy,
+            role: .hyperConnection)
+        let weights = sigmoid(VerifyWidthLinear.call(
+            inputMixWeightUp, silu(down / Float(hcCount)),
+            verificationPolicy: verificationPolicy,
+            role: .hyperConnection))
         let shape = Array(input.shape.dropLast())
         return (weights.reshaped(shape + [hcCount, hiddenSize])
             * normalized.reshaped(shape + [hcCount, hiddenSize])).mean(axis: -2)
@@ -320,10 +340,27 @@ private final class Qwen4ExpAttentionCache: KVCache {
     var offset = 0
     var offsetArray: MLXArray? { nil }
     var maxSize: Int? { nil }
+    private(set) var mtpVerificationStartOffset: Int?
+    private(set) var mtpVerificationWidth: Int?
     private var keys: MLXArray?
     private var values: MLXArray?
     private var indexKeys: MLXArray?
     private var indexPositionIDs: MLXArray?
+
+    func beginMTPVerification(width: Int) {
+        mtpVerificationStartOffset = offset
+        mtpVerificationWidth = width
+    }
+
+    func hasCompleteMTPVerification(width: Int) -> Bool {
+        mtpVerificationWidth == width
+            && mtpVerificationStartOffset.map { offset == $0 + width } == true
+    }
+
+    func clearMTPVerification() {
+        mtpVerificationStartOffset = nil
+        mtpVerificationWidth = nil
+    }
 
     func updateIndexKeys(_ newKeys: MLXArray, positionIDs: MLXArray) -> (MLXArray, MLXArray) {
         indexKeys = indexKeys.map { concatenated([$0, newKeys], axis: 1) } ?? newKeys
@@ -394,6 +431,116 @@ private final class Qwen4ExpAttentionCache: KVCache {
     }
 }
 
+/// Per-layer recurrent cache metadata used to commit a partially accepted
+/// MTP verification window without replaying the complete transformer.
+///
+/// The arrays are lazy, zero-copy references to the pre-verification state
+/// and already-computed projection inputs. A rejected suffix therefore only
+/// reruns the small Gated Delta state transition and PLE rolling buffers.
+private final class Qwen4ExpLayerCache: ArraysCache {
+    struct GatedDeltaRollback {
+        let convolutionState: MLXArray
+        let recurrentState: MLXArray
+        let projectedQKV: MLXArray
+        let queries: MLXArray
+        let keys: MLXArray
+        let values: MLXArray
+        let projectedA: MLXArray
+        let projectedB: MLXArray
+        let explicitGating: Bool
+    }
+
+    struct PLERollback {
+        let convolutionState: MLXArray
+        let tokenHistory: MLXArray
+        let convolutionInputs: MLXArray
+        let inputIDs: MLXArray
+    }
+
+    var gatedDeltaRollback: GatedDeltaRollback?
+    var pleRollback: PLERollback?
+    private(set) var mtpVerificationWidth: Int?
+
+    init() {
+        super.init(size: 4)
+    }
+
+    func beginMTPVerification(width: Int) {
+        clearMTPRollback()
+        mtpVerificationWidth = width
+    }
+
+    func clearMTPRollback() {
+        gatedDeltaRollback = nil
+        pleRollback = nil
+        mtpVerificationWidth = nil
+    }
+}
+
+func qwen4ExpTargetVerifyAttention(
+    queries: MLXArray,
+    keys: MLXArray,
+    values: MLXArray,
+    prefixLength: Int,
+    scale: Float,
+    mask: MLXFast.ScaledDotProductAttentionMaskMode,
+    chunkSize requestedChunkSize: Int = VerifyWidthLinear.exactAttentionChunkSize
+) -> MLXArray {
+    let width = queries.dim(2)
+    precondition(width > 1)
+
+    func rowMask(_ row: Int, visibleLength: Int)
+        -> MLXFast.ScaledDotProductAttentionMaskMode
+    {
+        let array: MLXArray?
+        switch mask {
+        case .array(let value):
+            array = value
+        case .arrays(let values):
+            array = values.first
+        case .none, .causal:
+            array = nil
+        }
+        guard let array else { return .none }
+        switch array.ndim {
+        case 4:
+            return .array(array[0..., 0..., row ..< (row + 1), ..<visibleLength])
+        case 3:
+            return .array(array[0..., row ..< (row + 1), ..<visibleLength])
+        case 2:
+            return .array(array[row ..< (row + 1), ..<visibleLength])
+        default:
+            return .array(array)
+        }
+    }
+
+    let hasExplicitMask: Bool
+    switch mask {
+    case .array, .arrays:
+        hasExplicitMask = true
+    case .none, .causal:
+        hasExplicitMask = false
+    }
+    let chunkSize = hasExplicitMask ? 1 : max(1, min(2, requestedChunkSize))
+    var outputs = [MLXArray]()
+    var row = 0
+    while row < width {
+        let end = min(width, row + chunkSize)
+        let visibleLength = prefixLength + end
+        let chunkMask: MLXFast.ScaledDotProductAttentionMaskMode = end - row > 1
+            ? .causal
+            : rowMask(row, visibleLength: visibleLength)
+        outputs.append(MLXFast.scaledDotProductAttention(
+            queries: queries[0..., 0..., row ..< end, 0...],
+            keys: keys[0..., 0..., ..<visibleLength, 0...],
+            values: values[0..., 0..., ..<visibleLength, 0...],
+            scale: scale,
+            mask: chunkMask))
+        row = end
+    }
+    return concatenated(outputs, axis: 2)
+}
+
 private final class Qwen4ExpQSAIndexer: Module {
     let heads: Int
     let kvHeads: Int
@@ -430,14 +577,17 @@ private final class Qwen4ExpQSAIndexer: Module {
     func callAsFunction(
         _ hidden: MLXArray,
         positionIDs providedPositionIDs: MLXArray?,
-        cache: Qwen4ExpAttentionCache?
+        cache: Qwen4ExpAttentionCache?,
+        verificationPolicy: MTPVerificationPolicy? = nil
     ) -> MLXArray? {
         let (batch, length) = (hidden.dim(0), hidden.dim(1))
         let previousOffset = cache?.offset ?? 0
         let positionIDs = providedPositionIDs ?? tiled(
             MLXArray(Int32(previousOffset) ..< Int32(previousOffset + length))[.newAxis, 0...],
             repetitions: [batch, 1])
-        let qk = indexQKProj(hidden)
+        let qk = VerifyWidthLinear.call(
+            indexQKProj, hidden, verificationPolicy: verificationPolicy,
+            role: .indexer)
         let splitPoint = heads * headDim
         let parts = MLX.split(qk, indices: [splitPoint], axis: -1)
         var queries = qLayerNorm(parts[0].reshaped(batch, length, heads, headDim))
@@ -533,7 +683,8 @@ private final class Qwen4ExpAttention: Module {
         _ x: MLXArray,
         mask: MLXFast.ScaledDotProductAttentionMaskMode,
         positionIDs providedPositionIDs: MLXArray?,
-        cache: KVCache?
+        cache: KVCache?,
+        verificationPolicy: MTPVerificationPolicy? = nil
     ) -> MLXArray {
         let (b, l) = (x.dim(0), x.dim(1))
         let offset = cache?.offset ?? 0
@@ -541,20 +692,58 @@ private final class Qwen4ExpAttention: Module {
             MLXArray(Int32(offset) ..< Int32(offset + l))[.newAxis, 0...],
             repetitions: [b, 1])
         let qsaMask = indexer(
-            x, positionIDs: positionIDs, cache: cache as? Qwen4ExpAttentionCache)
-        let qParts = MLX.split(qProj(x).reshaped(b, l, heads, headDim * 2), parts: 2, axis: -1)
+            x, positionIDs: positionIDs, cache: cache as? Qwen4ExpAttentionCache,
+            verificationPolicy: verificationPolicy)
+        let qParts = MLX.split(
+            VerifyWidthLinear.call(
+                qProj, x, verificationPolicy: verificationPolicy,
+                role: .attention)
+                .reshaped(b, l, heads, headDim * 2),
+            parts: 2,
+            axis: -1)
         var q = qNorm(qParts[0]).transposed(0, 2, 1, 3)
         let gate = qParts[1].reshaped(b, l, -1)
-        var k = kNorm(kProj(x).reshaped(b, l, kvHeads, headDim)).transposed(0, 2, 1, 3)
-        let v = vProj(x).reshaped(b, l, kvHeads, headDim).transposed(0, 2, 1, 3)
+        var k = kNorm(VerifyWidthLinear.call(
+            kProj, x, verificationPolicy: verificationPolicy, role: .attention)
+            .reshaped(b, l, kvHeads, headDim)).transposed(0, 2, 1, 3)
+        let v = VerifyWidthLinear.call(
+            vProj, x, verificationPolicy: verificationPolicy, role: .attention)
+            .reshaped(b, l, kvHeads, headDim).transposed(0, 2, 1, 3)
         q = rope.apply(q, positionIDs: positionIDs)
         k = rope.apply(k, positionIDs: positionIDs)
-        var output = attentionWithCacheUpdate(
-            queries: q, keys: k, values: v, cache: cache, scale: scale,
-            mask: qsaMask.map { .array($0) } ?? mask)
+        let effectiveMask = qsaMask.map {
+            MLXFast.ScaledDotProductAttentionMaskMode.array($0)
+        } ?? mask
+        let outputHeads: MLXArray
+        if verificationPolicy == .strictSingletonEquivalent, l > 1 {
+            let prefixLength = cache?.offset ?? 0
+            let cached: (MLXArray, MLXArray)
+            if let cache {
+                cached = cache.update(keys: k, values: v)
+            } else {
+                cached = (k, v)
+            }
+            outputHeads = qwen4ExpTargetVerifyAttention(
+                queries: q,
+                keys: cached.0,
+                values: cached.1,
+                prefixLength: prefixLength,
+                scale: scale,
+                mask: effectiveMask,
+                chunkSize: VerifyWidthLinear.exactAttentionEnabled
+                    ? VerifyWidthLinear.exactAttentionChunkSize
+                    : 1)
+        } else {
+            outputHeads = attentionWithCacheUpdate(
+                queries: q, keys: k, values: v, cache: cache, scale: scale,
+                mask: effectiveMask)
+        }
+        var output = outputHeads
             .transposed(0, 2, 1, 3).reshaped(b, l, -1)
         output = output * sigmoid(gate)
-        return oProj(output)
+        return VerifyWidthLinear.call(
+            oProj, output, verificationPolicy: verificationPolicy,
+            role: .attention)
     }
 }
 
@@ -601,29 +790,252 @@ private final class Qwen4ExpGatedDeltaNet: Module {
         _outProj.wrappedValue = Linear(valueDim, config.hiddenSize, bias: false)
     }
 
-    func callAsFunction(_ x: MLXArray, cache: ArraysCache?) -> MLXArray {
+    func callAsFunction(
+        _ x: MLXArray,
+        cache: ArraysCache?,
+        verificationPolicy: MTPVerificationPolicy? = nil
+    ) -> MLXArray {
+        if verificationPolicy != nil,
+           x.dim(1) > 1,
+           ProcessInfo.processInfo.environment[
+               "AFM_QWEN_VERIFY_LINEAR_SEQUENTIAL"
+           ] == "1"
+        {
+            return concatenated(
+                (0 ..< x.dim(1)).map { position in
+                    callSingle(
+                        x[0..., position ..< (position + 1), 0...],
+                        cache: cache,
+                        verificationPolicy: verificationPolicy)
+                },
+                axis: 1)
+        }
+        return callSingle(
+            x, cache: cache, verificationPolicy: verificationPolicy)
+    }
+
+    private func callSingle(
+        _ x: MLXArray,
+        cache: ArraysCache?,
+        verificationPolicy: MTPVerificationPolicy?
+    ) -> MLXArray {
         let (b, l) = (x.dim(0), x.dim(1))
-        let projected = inProjQKV(x)
-        let prior = cache?[0] ?? MLXArray.zeros(
+        let projected = VerifyWidthLinear.call(
+            inProjQKV, x, verificationPolicy: verificationPolicy,
+            role: .gatedDelta)
+        let initialConvolutionState = cache?[0] ?? MLXArray.zeros(
             [b, convKernel - 1, keyDim * 2 + valueDim], dtype: x.dtype)
-        let convInput = concatenated([prior, projected], axis: 1)
-        cache?[0] = convInput[0..., (convInput.dim(1) - convKernel + 1)...]
-        let mixed = silu(conv1d(convInput))
-        let pieces = MLX.split(mixed, indices: [keyDim, keyDim * 2], axis: -1)
-        var q = pieces[0].reshaped(b, l, keyHeads, keyHeadDim)
-        var k = pieces[1].reshaped(b, l, keyHeads, keyHeadDim)
-        let v = pieces[2].reshaped(b, l, valueHeads, valueHeadDim)
-        q = q * rsqrt((q * q).sum(axis: -1, keepDims: true) + 1e-6)
-            * pow(Float(keyHeadDim), -0.5)
-        k = k * rsqrt((k * k).sum(axis: -1, keepDims: true) + 1e-6)
-        let (output, state) = gatedDeltaUpdate(
-            q: q, k: k, v: v,
-            a: inProjA(x), b: inProjB(x),
-            ALog: aLog, dtBias: dtBias,
-            state: cache?[1], useKernel: true)
+        var prior = initialConvolutionState
+        let forceSequentialConvolution = verificationPolicy != nil && l > 1
+            && ProcessInfo.processInfo.environment[
+                "AFM_QWEN_VERIFY_CONV_SEQUENTIAL"
+            ] == "1"
+        let fusedPrework = verificationPolicy != nil && l > 1
+            && !forceSequentialConvolution
+            ? Qwen4ExpGatedDeltaPrework.call(
+                projected: projected,
+                prior: prior,
+                convolutionWeight: conv1d.weight,
+                keyHeads: keyHeads,
+                valueHeads: valueHeads,
+                keyHeadDimension: keyHeadDim,
+                valueHeadDimension: valueHeadDim,
+                convolutionKernel: convKernel)
+            : nil
+
+        let q: MLXArray
+        let k: MLXArray
+        let v: MLXArray
+        if let fusedPrework {
+            q = fusedPrework.queries
+            k = fusedPrework.keys
+            v = fusedPrework.values
+            prior = fusedPrework.convolutionState
+            cache?[0] = prior
+        } else {
+            let mixed: MLXArray
+            if l > 1,
+               forceSequentialConvolution
+                    || verificationPolicy == .strictSingletonEquivalent
+            {
+                var rows = [MLXArray]()
+                rows.reserveCapacity(l)
+                for position in 0 ..< l {
+                    let convInput = concatenated([
+                        prior,
+                        projected[0..., position ..< (position + 1), 0...],
+                    ], axis: 1)
+                    prior = convInput[
+                        0..., (convInput.dim(1) - convKernel + 1)...]
+                    rows.append(silu(conv1d(convInput)))
+                }
+                cache?[0] = prior
+                mixed = concatenated(rows, axis: 1)
+            } else {
+                let convInput = concatenated([prior, projected], axis: 1)
+                cache?[0] = convInput[0..., (convInput.dim(1) - convKernel + 1)...]
+                mixed = silu(conv1d(convInput))
+            }
+            let pieces = MLX.split(mixed, indices: [keyDim, keyDim * 2], axis: -1)
+            var normalizedQueries = pieces[0].reshaped(b, l, keyHeads, keyHeadDim)
+            var normalizedKeys = pieces[1].reshaped(b, l, keyHeads, keyHeadDim)
+            v = pieces[2].reshaped(b, l, valueHeads, valueHeadDim)
+            normalizedQueries = normalizedQueries
+                * rsqrt((normalizedQueries * normalizedQueries).sum(
+                    axis: -1, keepDims: true) + 1e-6)
+                * pow(Float(keyHeadDim), -0.5)
+            normalizedKeys = normalizedKeys
+                * rsqrt((normalizedKeys * normalizedKeys).sum(
+                    axis: -1, keepDims: true) + 1e-6)
+            q = normalizedQueries
+            k = normalizedKeys
+        }
+        // Keep the recurrent state in FP32. Decode updates one token at a time,
+        // while target verification updates several candidate positions in one
+        // kernel. A low-precision state would be rounded between decode calls
+        // but only after the whole verifier block, changing greedy decisions.
+        // FP32 makes the two schedules numerically equivalent without forcing
+        // the verifier back to one backbone invocation per token.
+        let recurrentState = cache?[1] ?? MLXArray.zeros(
+            [b, valueHeads, valueHeadDim, keyHeadDim], dtype: .float32)
+        let a = VerifyWidthLinear.call(
+            inProjA, x, verificationPolicy: verificationPolicy,
+            role: .gatedDelta)
+        let rawB = VerifyWidthLinear.call(
+            inProjB, x, verificationPolicy: verificationPolicy,
+            role: .gatedDelta)
+        let useExplicitGating = ProcessInfo.processInfo.environment[
+            "AFM_QWEN_EXPLICIT_GATING"
+        ] == "1" || (
+            verificationPolicy != nil && l > 1
+                && ProcessInfo.processInfo.environment[
+                    "AFM_QWEN_VERIFY_EXPLICIT_GATING"
+                ] == "1"
+        )
+        if verificationPolicy != nil,
+           l > 1,
+           let layerCache = cache as? Qwen4ExpLayerCache
+        {
+            layerCache.gatedDeltaRollback = .init(
+                convolutionState: initialConvolutionState,
+                recurrentState: recurrentState,
+                projectedQKV: projected,
+                queries: q,
+                keys: k,
+                values: v,
+                projectedA: a,
+                projectedB: rawB,
+                explicitGating: useExplicitGating)
+        }
+        let output: MLXArray
+        let state: MLXArray
+        if verificationPolicy != nil,
+           l > 1,
+           ProcessInfo.processInfo.environment[
+               "AFM_QWEN_VERIFY_DELTA_SEQUENTIAL"
+           ] == "1"
+        {
+            var currentState = recurrentState
+            var rows = [MLXArray]()
+            rows.reserveCapacity(l)
+            for position in 0 ..< l {
+                let result = gatedDeltaUpdate(
+                    q: q[0..., position ..< (position + 1), 0..., 0...],
+                    k: k[0..., position ..< (position + 1), 0..., 0...],
+                    v: v[0..., position ..< (position + 1), 0..., 0...],
+                    a: a[0..., position ..< (position + 1), 0...],
+                    b: rawB[0..., position ..< (position + 1), 0...],
+                    ALog: aLog, dtBias: dtBias,
+                    state: currentState, useKernel: true)
+                rows.append(result.0)
+                currentState = result.1
+            }
+            output = concatenated(rows, axis: 1)
+            state = currentState
+        } else if useExplicitGating {
+            (output, state) = gatedDeltaKernel(
+                q: q, k: k, v: v,
+                g: computeGFloat32(aLog, a, dtBias),
+                beta: sigmoid(rawB),
+                state: recurrentState)
+        } else {
+            (output, state) = gatedDeltaUpdate(
+                q: q, k: k, v: v,
+                a: a, b: rawB,
+                ALog: aLog, dtBias: dtBias,
+                state: recurrentState, useKernel: true)
+        }
         cache?[1] = state
-        let z = inProjZ(x).reshaped(b, l, valueHeads, valueHeadDim)
-        return outProj(norm(output, gate: z).reshaped(b, l, valueDim))
+        let z = VerifyWidthLinear.call(
+            inProjZ, x, verificationPolicy: verificationPolicy,
+            role: .gatedDelta)
+            .reshaped(b, l, valueHeads, valueHeadDim)
+        return VerifyWidthLinear.call(
+            outProj,
+            norm(output, gate: z).reshaped(b, l, valueDim),
+            verificationPolicy: verificationPolicy,
+            role: .gatedDelta)
+    }
+
+    /// Restore the recurrent cache to the committed prefix of a target
+    /// verification window. All large affine projections were already
+    /// computed by the verifier; only convolution normalization and the
+    /// recurrent state transition are replayed.
+    func rollbackTargetVerification(
+        cache: Qwen4ExpLayerCache,
+        keeping keep: Int
+    ) {
+        precondition(canRollbackTargetVerification(cache: cache, keeping: keep))
+        let rollback = cache.gatedDeltaRollback!
+
+        let convolutionHistory = concatenated([
+            rollback.convolutionState,
+            rollback.projectedQKV[0..., ..<keep, 0...],
+        ], axis: 1)
+        let convolutionState = convolutionHistory[
+            0..., (convolutionHistory.dim(1) - convKernel + 1)..., 0...]
+        let projectedA = rollback.projectedA[0..., ..<keep, 0...]
+        let projectedB = rollback.projectedB[0..., ..<keep, 0...]
+        let queries = rollback.queries[0..., ..<keep, 0..., 0...]
+        let keys = rollback.keys[0..., ..<keep, 0..., 0...]
+        let values = rollback.values[0..., ..<keep, 0..., 0...]
+        let state: MLXArray
+        if rollback.explicitGating {
+            state = gatedDeltaKernel(
+                q: queries,
+                k: keys,
+                v: values,
+                g: computeGFloat32(aLog, projectedA, dtBias),
+                beta: sigmoid(projectedB),
+                state: rollback.recurrentState).1
+        } else {
+            state = gatedDeltaUpdate(
+                q: queries,
+                k: keys,
+                v: values,
+                a: projectedA,
+                b: projectedB,
+                ALog: aLog,
+                dtBias: dtBias,
+                state: rollback.recurrentState,
+                useKernel: true).1
+        }
+        cache[0] = convolutionState
+        cache[1] = state
+        cache.gatedDeltaRollback = nil
+    }
+
+    func canRollbackTargetVerification(
+        cache: Qwen4ExpLayerCache,
+        keeping keep: Int
+    ) -> Bool {
+        guard let rollback = cache.gatedDeltaRollback, keep > 0 else { return false }
+        return keep <= rollback.projectedQKV.dim(1)
+            && keep <= rollback.queries.dim(1)
+            && keep <= rollback.keys.dim(1)
+            && keep <= rollback.values.dim(1)
+            && keep <= rollback.projectedA.dim(1)
+            && keep <= rollback.projectedB.dim(1)
     }
 }
 
@@ -641,7 +1053,20 @@ private final class Qwen4ExpMLP: Module, UnaryLayer {
     }
 
     func callAsFunction(_ x: MLXArray) -> MLXArray {
-        downProj(silu(gateProj(x)) * upProj(x))
+        callAsFunction(x, verificationPolicy: nil)
+    }
+
+    func callAsFunction(
+        _ x: MLXArray,
+        verificationPolicy: MTPVerificationPolicy?
+    ) -> MLXArray {
+        let gate = VerifyWidthLinear.call(
+            gateProj, x, verificationPolicy: verificationPolicy, role: .expert)
+        let up = VerifyWidthLinear.call(
+            upProj, x, verificationPolicy: verificationPolicy, role: .expert)
+        return VerifyWidthLinear.call(
+            downProj, silu(gate) * up,
+            verificationPolicy: verificationPolicy, role: .expert)
     }
 }
 
@@ -668,13 +1093,28 @@ private final class Qwen4ExpSparseMoE: Module, UnaryLayer {
     }
 
     func callAsFunction(_ x: MLXArray) -> MLXArray {
-        let logits = gate(x)
+        callAsFunction(x, verificationPolicy: nil)
+    }
+
+    func callAsFunction(
+        _ x: MLXArray,
+        verificationPolicy: MTPVerificationPolicy?
+    ) -> MLXArray {
+        let logits = VerifyWidthLinear.call(
+            gate, x, verificationPolicy: verificationPolicy, role: .expert)
         let probabilities = MLX.softmax(logits, axis: -1, precise: true)
         let indices = MLX.argPartition(-probabilities, kth: topK - 1, axis: -1)[.ellipsis, ..<topK]
         var scores = MLX.takeAlong(probabilities, indices, axis: -1)
         if normalize { scores = scores / scores.sum(axis: -1, keepDims: true) }
-        let routed = (switchMLP(x, indices) * scores[.ellipsis, .newAxis]).sum(axis: -2)
-        return routed + sigmoid(sharedExpertGate(x)) * sharedExpert(x)
+        let routedExperts = verificationPolicy == .strictSingletonEquivalent
+            ? switchMLP.targetVerifyPreservingSingletonRows(x, indices)
+            : switchMLP(x, indices)
+        let routed = (routedExperts * scores[.ellipsis, .newAxis]).sum(axis: -2)
+        let sharedGate = VerifyWidthLinear.call(
+            sharedExpertGate, x, verificationPolicy: verificationPolicy,
+            role: .expert)
+        return routed + sigmoid(sharedGate)
+            * sharedExpert(x, verificationPolicy: verificationPolicy)
     }
 }
 
@@ -711,32 +1151,6 @@ private func qwen4NthPrime(after start: Int, count: Int) -> Int {
     return result
 }
 
-private final class Qwen4ExpShardedEmbedding: Module {
-    let rowsPerShard: Int
-    @ModuleInfo var shards: [Embedding]
-
-    init(rows: Int, dimensions: Int, parts: Int) {
-        precondition(rows % parts == 0)
-        let shardRows = rows / parts
-        rowsPerShard = shardRows
-        _shards.wrappedValue = (0 ..< parts).map { _ in
-            Embedding(embeddingCount: shardRows, dimensions: dimensions)
-        }
-    }
-
-    func callAsFunction(_ ids: MLXArray) -> MLXArray {
-        let shardIDs = ids.floorDivide(rowsPerShard)
-        let localIDs = ids % rowsPerShard
-        var result: MLXArray?
-        for (index, shard) in shards.enumerated() {
-            let safeIDs = which(shardIDs .== index, localIDs, 0)
-            let values = shard(safeIDs) * (shardIDs .== index)[.ellipsis, .newAxis]
-            result = result.map { $0 + values } ?? values
-        }
-        return result!
-    }
-}
-
 private final class Qwen4ExpNGramEmbedding: Module {
     let ngramSize: Int
     let headsPerNgram: Int
@@ -745,7 +1159,7 @@ private final class Qwen4ExpNGramEmbedding: Module {
     let headSizes: MLXArray
     let headOffsets: MLXArray
     @ParameterInfo(key: "layer_multipliers") var layerMultipliers: MLXArray
-    @ModuleInfo(key: "ngram_embedding") var ngramEmbedding: Qwen4ExpShardedEmbedding
+    @ModuleInfo(key: "ngram_embedding") var ngramEmbedding: SelectiveShardedEmbedding
 
     init(_ config: Qwen4ExpTextConfiguration, pleLayerIndex: Int) {
         ngramSize = config.ngramSize
@@ -775,7 +1189,7 @@ private final class Qwen4ExpNGramEmbedding: Module {
             return Int64(2 * (qwen4SplitMix64(value) % bound) + 1)
         }
         _layerMultipliers.wrappedValue = MLXArray(multipliers)
-        _ngramEmbedding.wrappedValue = Qwen4ExpShardedEmbedding(
+        _ngramEmbedding.wrappedValue = SelectiveShardedEmbedding(
             rows: padded,
             dimensions: config.pleEmbedDim / heads,
             parts: config.splitNgramParts)
@@ -865,16 +1279,78 @@ private final class Qwen4ExpPLE: Module {
         return silu(conv1d(input))
     }
 
-    func callAsFunction(_ hidden: MLXArray, inputIDs: MLXArray, cache: ArraysCache?) -> MLXArray {
+    func callAsFunction(
+        _ hidden: MLXArray,
+        inputIDs: MLXArray,
+        cache: ArraysCache?,
+        verificationPolicy: MTPVerificationPolicy? = nil
+    ) -> MLXArray {
+        let initialTokenHistory = cache?[3] ?? MLXArray.full(
+            [inputIDs.dim(0), pleEmbedding.contextLength],
+            values: MLXArray(pleEmbedding.eosTokenID),
+            dtype: .int64)
         let embedding = pleEmbedding(inputIDs, cache: cache)
         let shape = Array(hidden.shape.dropLast())
-        let key = normKey(keyProj(embedding)).reshaped(shape + [hcCount, hiddenSize])
+        let key = normKey(VerifyWidthLinear.call(
+            keyProj, embedding, verificationPolicy: verificationPolicy,
+            role: .positionalEmbedding))
+            .reshaped(shape + [hcCount, hiddenSize])
         let query = normQuery(hidden).reshaped(shape + [hcCount, hiddenSize])
         var gate = (key * query).sum(axis: -1, keepDims: true) / sqrt(Float(hiddenSize))
         gate = sign(gate) * sqrt(maximum(abs(gate), 1e-6))
-        let value = expandedDimensions(valueProj(embedding), axis: -2)
+        let value = expandedDimensions(
+            VerifyWidthLinear.call(
+                valueProj, embedding, verificationPolicy: verificationPolicy,
+                role: .positionalEmbedding),
+            axis: -2)
         let gated = (sigmoid(gate) * value).reshaped(shape + [hcCount * hiddenSize])
-        return gated + shortConv(normConv(gated), cache: cache)
+        let convolutionInputs = normConv(gated)
+        if verificationPolicy != nil,
+           hidden.dim(1) > 1,
+           let layerCache = cache as? Qwen4ExpLayerCache
+        {
+            let initialConvolutionState = cache?[2] ?? MLXArray.zeros(
+                [hidden.dim(0), shortStateLength, convolutionInputs.dim(2)],
+                dtype: convolutionInputs.dtype)
+            layerCache.pleRollback = .init(
+                convolutionState: initialConvolutionState,
+                tokenHistory: initialTokenHistory,
+                convolutionInputs: convolutionInputs,
+                inputIDs: inputIDs.asType(.int64))
+        }
+        return gated + shortConv(convolutionInputs, cache: cache)
+    }
+
+    func rollbackTargetVerification(
+        cache: Qwen4ExpLayerCache,
+        keeping keep: Int
+    ) {
+        precondition(canRollbackTargetVerification(cache: cache, keeping: keep))
+        let rollback = cache.pleRollback!
+
+        let convolutionHistory = concatenated([
+            rollback.convolutionState,
+            rollback.convolutionInputs[0..., ..<keep, 0...],
+        ], axis: 1)
+        cache[2] = convolutionHistory[
+            0..., (convolutionHistory.dim(1) - shortStateLength)..., 0...]
+
+        let tokenHistory = concatenated([
+            rollback.tokenHistory,
+            rollback.inputIDs[0..., ..<keep],
+        ], axis: 1)
+        cache[3] = tokenHistory[
+            0..., (tokenHistory.dim(1) - pleEmbedding.contextLength)...]
+        cache.pleRollback = nil
+    }
+
+    func canRollbackTargetVerification(
+        cache: Qwen4ExpLayerCache,
+        keeping keep: Int
+    ) -> Bool {
+        guard let rollback = cache.pleRollback, keep > 0 else { return false }
+        return keep <= rollback.convolutionInputs.dim(1)
+            && keep <= rollback.inputIDs.dim(1)
     }
 }
 
@@ -889,12 +1365,17 @@ private final class Qwen4ExpDecoderLayer: Module {
     @ModuleInfo(key: "attn_hyper_connection") var attentionHyperConnection: Qwen4ExpGatedResidual
     @ModuleInfo(key: "mlp_hyper_connection") var mlpHyperConnection: Qwen4ExpGatedResidual
 
-    init(_ config: Qwen4ExpTextConfiguration, layerIndex: Int) {
-        isLinear = config.layerTypes[layerIndex] == "linear_attention"
+    init(
+        _ config: Qwen4ExpTextConfiguration,
+        layerIndex: Int,
+        forceFullAttention: Bool = false,
+        disablePLE: Bool = false
+    ) {
+        isLinear = !forceFullAttention && config.layerTypes[layerIndex] == "linear_attention"
         if isLinear { _linearAttention.wrappedValue = Qwen4ExpGatedDeltaNet(config) }
         else { _selfAttention.wrappedValue = Qwen4ExpAttention(config) }
         _mlp.wrappedValue = Qwen4ExpSparseMoE(config)
-        if let pleIndex = config.pleLayerIDs.firstIndex(of: layerIndex + 1) {
+        if !disablePLE, let pleIndex = config.pleLayerIDs.firstIndex(of: layerIndex + 1) {
             _ple.wrappedValue = Qwen4ExpPLE(config, pleLayerIndex: pleIndex)
         }
         _attentionHyperConnection.wrappedValue = Qwen4ExpGatedResidual(config)
@@ -906,22 +1387,35 @@ private final class Qwen4ExpDecoderLayer: Module {
         inputIDs: MLXArray,
         attentionMask: MLXFast.ScaledDotProductAttentionMaskMode,
         positionIDs: MLXArray?,
-        cache: KVCache?
+        cache: KVCache?,
+        verificationPolicy: MTPVerificationPolicy? = nil
     ) -> MLXArray {
         let arrayCache = cache as? ArraysCache
         var hidden = input
-        if let ple { hidden = hidden + ple(hidden, inputIDs: inputIDs, cache: arrayCache) }
+        if let ple {
+            hidden = hidden + ple(
+                hidden, inputIDs: inputIDs, cache: arrayCache,
+                verificationPolicy: verificationPolicy)
+        }
         var mixed: MLXArray
         var residual: MLXArray
         var injection: MLXArray
-        (mixed, residual, injection) = attentionHyperConnection.mix(hidden)
+        (mixed, residual, injection) = attentionHyperConnection.mix(
+            hidden, verificationPolicy: verificationPolicy)
         let attended = isLinear
-            ? linearAttention!(mixed, cache: arrayCache)
+            ? linearAttention!(
+                mixed, cache: arrayCache,
+                verificationPolicy: verificationPolicy)
             : selfAttention!(
-                mixed, mask: attentionMask, positionIDs: positionIDs, cache: cache)
+                mixed, mask: attentionMask, positionIDs: positionIDs, cache: cache,
+                verificationPolicy: verificationPolicy)
         hidden = attentionHyperConnection.inject(attended, residual: residual, weights: injection)
-        (mixed, residual, injection) = mlpHyperConnection.mix(hidden)
-        return mlpHyperConnection.inject(mlp(mixed), residual: residual, weights: injection)
+        (mixed, residual, injection) = mlpHyperConnection.mix(
+            hidden, verificationPolicy: verificationPolicy)
+        return mlpHyperConnection.inject(
+            mlp(mixed, verificationPolicy: verificationPolicy),
+            residual: residual,
+            weights: injection)
     }
 }
 
@@ -939,11 +1433,12 @@ private final class Qwen4ExpModelInner: Module {
         _hyperConnectionMixer.wrappedValue = Qwen4ExpGatedResidual(config, useCombine: false)
     }
 
-    func callAsFunction(
+    func forwardStream(
         _ inputIDs: MLXArray,
         inputEmbeddings: MLXArray? = nil,
         positionIDs: MLXArray? = nil,
-        cache: [KVCache]?
+        cache: [KVCache]?,
+        verificationPolicy: MTPVerificationPolicy? = nil
     ) -> MLXArray {
         var hidden = MLX.tiled(
             inputEmbeddings ?? embedTokens(inputIDs),
@@ -954,13 +1449,194 @@ private final class Qwen4ExpModelInner: Module {
         for (index, layer) in layers.enumerated() {
             hidden = layer(
                 hidden, inputIDs: inputIDs,
-                attentionMask: mask, positionIDs: positionIDs, cache: layerCaches[index])
+                attentionMask: mask, positionIDs: positionIDs, cache: layerCaches[index],
+                verificationPolicy: verificationPolicy)
         }
-        return hyperConnectionMixer.combine(hidden)
+        return hidden
+    }
+
+    func callAsFunction(
+        _ inputIDs: MLXArray,
+        inputEmbeddings: MLXArray? = nil,
+        positionIDs: MLXArray? = nil,
+        cache: [KVCache]?,
+        verificationPolicy: MTPVerificationPolicy? = nil
+    ) -> MLXArray {
+        hyperConnectionMixer.combine(
+            forwardStream(
+                inputIDs,
+                inputEmbeddings: inputEmbeddings,
+                positionIDs: positionIDs,
+                cache: cache,
+                verificationPolicy: verificationPolicy
+            ),
+            verificationPolicy: verificationPolicy
+        )
+    }
+
+    func combineStream(
+        _ stream: MLXArray,
+        verificationPolicy: MTPVerificationPolicy? = nil
+    ) -> MLXArray {
+        hyperConnectionMixer.combine(
+            stream, verificationPolicy: verificationPolicy)
+    }
+}
+
+// MARK: - Native MTP head
+
+/// Qwen3.8-Flash-Next's one-layer native multi-token-prediction head.
+///
+/// Unlike the earlier Qwen MTP head, `fc_hidden` is shared across each of the
+/// four hyper-connection streams. The head then runs a complete QSA + sparse
+/// MoE decoder layer and its own final hyper-connection mixer.
+public final class Qwen4ExpMTPHead: Module {
+    @ModuleInfo(key: "pre_fc_norm_embedding") private var preFcNormEmbedding: RMSNorm
+    @ModuleInfo(key: "pre_fc_norm_hidden") private var preFcNormHidden: RMSNorm
+    @ModuleInfo(key: "fc_embedding") private var fcEmbedding: Linear
+    @ModuleInfo(key: "fc_hidden") private var fcHidden: Linear
+    @ModuleInfo private var layers: [Qwen4ExpDecoderLayer]
+    @ModuleInfo(key: "hyper_connection_mixer") private var hyperConnectionMixer: Qwen4ExpGatedResidual
+
+    private let hiddenSize: Int
+    private let hcCount: Int
+
+    fileprivate init(_ config: Qwen4ExpTextConfiguration) {
+        hiddenSize = config.hiddenSize
+        hcCount = config.hcCount
+        _preFcNormEmbedding.wrappedValue = RMSNorm(
+            dimensions: config.hiddenSize, eps: config.rmsNormEps)
+        _preFcNormHidden.wrappedValue = RMSNorm(
+            dimensions: config.hiddenSize * config.hcCount, eps: config.rmsNormEps)
+        _fcEmbedding.wrappedValue = Linear(
+            config.hiddenSize, config.hiddenSize, bias: false)
+        _fcHidden.wrappedValue = Linear(
+            config.hiddenSize, config.hiddenSize, bias: false)
+        _layers.wrappedValue = [
+            Qwen4ExpDecoderLayer(
+                config,
+                layerIndex: 0,
+                forceFullAttention: true,
+                disablePLE: true
+            )
+        ]
+        _hyperConnectionMixer.wrappedValue = Qwen4ExpGatedResidual(
+            config, useCombine: false)
+    }
+
+    public struct Output {
+        public let stream: MLXArray
+        public let hidden: MLXArray
+    }
+
+    public func callAsFunction(
+        hiddenStream: MLXArray,
+        tokenEmbeddings: MLXArray,
+        tokenIDs: MLXArray,
+        positionIDs: MLXArray,
+        cache: [KVCache]
+    ) -> Output {
+        let shape = Array(hiddenStream.shape.dropLast())
+        let normalizedEmbedding = preFcNormEmbedding(tokenEmbeddings)
+        let normalizedHidden = preFcNormHidden(hiddenStream)
+            .reshaped(shape + [hcCount, hiddenSize])
+        let projectedHidden = fcHidden(normalizedHidden)
+        let projectedEmbedding = expandedDimensions(
+            fcEmbedding(normalizedEmbedding), axis: -2)
+        var stream = (projectedHidden + projectedEmbedding)
+            .reshaped(shape + [hcCount * hiddenSize])
+        let mask = createAttentionMask(h: stream, cache: cache[0])
+        stream = layers[0](
+            stream,
+            inputIDs: tokenIDs,
+            attentionMask: mask,
+            positionIDs: positionIDs,
+            cache: cache[0]
+        )
+        return Output(
+            stream: stream,
+            hidden: hyperConnectionMixer.combine(stream)
+        )
+    }
+
+    public func newCache() -> [KVCache] {
+        [Qwen4ExpAttentionCache()]
+    }
+
+    static func prepareCheckpointWeights(_ raw: [String: MLXArray]) -> [String: MLXArray] {
+        var weights: [String: MLXArray] = [:]
+        let zeroCenteredNormSuffixes = [
+            ".hc_norm.weight",
+            ".q_norm.weight",
+            ".k_norm.weight",
+            ".q_layernorm.weight",
+            ".k_layernorm.weight",
+        ]
+        let standardNormRawZeroCenteredKeys = [
+            "pre_fc_norm_embedding.weight",
+            "pre_fc_norm_hidden.weight",
+        ]
+
+        for (originalKey, value) in raw {
+            var key = originalKey.hasPrefix("mtp.")
+                ? String(originalKey.dropFirst("mtp.".count))
+                : originalKey
+            switch key {
+            case "layers.0.mlp.experts.gate_up_proj":
+                let parts = MLX.split(value, parts: 2, axis: 1)
+                weights["layers.0.mlp.switch_mlp.gate_proj.weight"] = parts[0]
+                weights["layers.0.mlp.switch_mlp.up_proj.weight"] = parts[1]
+                continue
+            case "layers.0.mlp.experts.down_proj":
+                key = "layers.0.mlp.switch_mlp.down_proj.weight"
+            default:
+                break
+            }
+            if standardNormRawZeroCenteredKeys.contains(key) {
+                // The published MTP sidecar stores these two ordinary RMSNorm
+                // weights in torch's zero-centered convention.
+                weights[key] = value + 1
+            } else if zeroCenteredNormSuffixes.contains(where: key.hasSuffix) {
+                // The raw torch-layout MTP sidecar already stores the delta
+                // consumed by Qwen's zero-centered `1 + weight` norms. Keep
+                // that value unchanged; subtracting one here applies the
+                // convention conversion twice and distorts proposal logits.
+                weights[key] = value
+            } else {
+                weights[key] = value
+            }
+        }
+        return weights
+    }
+
+    fileprivate static func load(
+        sidecarPath: String,
+        config: Qwen4ExpTextConfiguration,
+        groupSize: Int,
+        bits: Int,
+        mode: QuantizationMode
+    ) throws -> Qwen4ExpMTPHead {
+        let head = Qwen4ExpMTPHead(config)
+        let raw = try MLX.loadArrays(url: URL(fileURLWithPath: sidecarPath))
+        let weights = prepareCheckpointWeights(raw)
+
+        try head.update(parameters: ModuleParameters.unflattened(weights), verify: [.all])
+        // The published sidecar preserves the MTP layer in FP16 torch layout.
+        // Quantize only after assigning the real tensors so no random placeholder
+        // is quantized and no 5.2 GB FP16 expert layer remains on the decode path.
+        quantize(model: head, groupSize: groupSize, bits: bits, mode: mode)
+        eval(head)
+        return head
     }
 }
 
 public final class Qwen4ExpModel: Module, LLMModel, KVCacheDimensionProvider {
+    /// Qwen Next's native predictor is precision-sensitive. Quantizing the
+    /// raw sidecar below q8 materially reduces draft acceptance, so every
+    /// public loading path uses this floor unless a higher precision is
+    /// requested explicitly.
+    public static let defaultMTPHeadBits = 8
+
     public let vocabularySize: Int
     public let kvHeads: [Int]
     @ModuleInfo(key: "model") private var model: Qwen4ExpModelInner
@@ -987,6 +1663,106 @@ public final class Qwen4ExpModel: Module, LLMModel, KVCacheDimensionProvider {
         model.embedTokens(inputIDs)
     }
 
+    public func projectLMHead(
+        _ hidden: MLXArray,
+        verificationPolicy: MTPVerificationPolicy? = nil
+    ) -> MLXArray {
+        if let lmHead {
+            return VerifyWidthLinear.call(
+                lmHead, hidden, verificationPolicy: verificationPolicy,
+                role: .lmHead)
+        }
+        guard verificationPolicy == .strictSingletonEquivalent,
+              hidden.ndim == 3,
+              hidden.dim(1) > 1
+        else {
+            return model.embedTokens.asLinear(hidden)
+        }
+        return VerifyWidthLinear.singletonRows(
+            hidden, transform: model.embedTokens.asLinear)
+    }
+
+    public func projectLMHeadArgmax(
+        _ hidden: MLXArray,
+        verificationPolicy: MTPVerificationPolicy? = nil
+    ) -> MLXArray {
+        if let lmHead,
+           let exact = VerifyWidthLinear.argmax(
+               lmHead, hidden,
+               verificationPolicy: verificationPolicy,
+               role: .lmHead)
+        {
+            return exact
+        }
+        return MLX.argMax(projectLMHead(
+            hidden, verificationPolicy: verificationPolicy), axis: -1)
+    }
+
+    public func forwardStreamState(
+        inputIDs: MLXArray,
+        inputEmbeddings: MLXArray? = nil,
+        positionIDs: MLXArray? = nil,
+        cache: [KVCache]?,
+        verificationPolicy: MTPVerificationPolicy? = nil
+    ) -> (stream: MLXArray, hidden: MLXArray) {
+        if verificationPolicy != nil, let cache {
+            let width = inputIDs.dim(1)
+            for cacheEntry in cache {
+                if let layerCache = cacheEntry as? Qwen4ExpLayerCache {
+                    layerCache.beginMTPVerification(width: width)
+                } else if let attentionCache = cacheEntry as? Qwen4ExpAttentionCache {
+                    attentionCache.beginMTPVerification(width: width)
+                }
+            }
+        }
+        let stream = model.forwardStream(
+            inputIDs,
+            inputEmbeddings: inputEmbeddings,
+            positionIDs: positionIDs,
+            cache: cache,
+            verificationPolicy: verificationPolicy
+        )
+        return (
+            stream,
+            model.combineStream(
+                stream, verificationPolicy: verificationPolicy))
+    }
+
+    public func forwardStreamHidden(
+        inputIDs: MLXArray,
+        inputEmbeddings: MLXArray? = nil,
+        positionIDs: MLXArray? = nil,
+        cache: [KVCache]?,
+        verificationPolicy: MTPVerificationPolicy? = nil
+    ) -> (stream: MLXArray, hidden: MLXArray, logits: MLXArray) {
+        let state = forwardStreamState(
+            inputIDs: inputIDs,
+            inputEmbeddings: inputEmbeddings,
+            positionIDs: positionIDs,
+            cache: cache,
+            verificationPolicy: verificationPolicy)
+        return (
+            state.stream,
+            state.hidden,
+            projectLMHead(
+                state.hidden, verificationPolicy: verificationPolicy))
+    }
+
+    public func loadMTPHead(
+        sidecarPath: String,
+        groupSize: Int = 64,
+        bits: Int = Qwen4ExpModel.defaultMTPHeadBits,
+        mode: QuantizationMode = .affine
+    ) throws -> Qwen4ExpMTPHead {
+        try Qwen4ExpMTPHead.load(
+            sidecarPath: sidecarPath,
+            config: configuration,
+            groupSize: groupSize,
+            bits: bits,
+            mode: mode
+        )
+    }
+
     public func forward(
         inputIDs: MLXArray,
         inputEmbeddings: MLXArray? = nil,
@@ -999,10 +1775,91 @@ public final class Qwen4ExpModel: Module, LLMModel, KVCacheDimensionProvider {
         return lmHead?(hidden) ?? model.embedTokens.asLinear(hidden)
     }
 
+    /// Commit the accepted prefix of an MTP target-verification window.
+    /// Full-attention layers trim their rejected KV suffix. Hybrid recurrent
+    /// layers rebuild only their fixed-size state from verifier intermediates,
+    /// avoiding a second full-backbone forward on every rejection. With the
+    /// explicitly requested approximate batched verifier those intermediates
+    /// follow its normal multi-token reduction schedule; the conformant strict
+    /// verifier matches independent decode calls byte-for-byte.
+    func finishMTPVerification(
+        cache: [KVCache],
+        acceptedDrafts: Int,
+        draftedTokens: Int
+    ) -> Bool {
+        guard cache.count == model.layers.count,
+              acceptedDrafts >= 0,
+              acceptedDrafts <= draftedTokens
+        else { return false }
+
+        let verificationWidth = draftedTokens + 1
+        for (layer, cacheEntry) in zip(model.layers, cache) {
+            if layer.isLinear {
+                guard let layerCache = cacheEntry as? Qwen4ExpLayerCache,
+                      layerCache.mtpVerificationWidth == verificationWidth
+                else { return false }
+                if verificationWidth > 1 {
+                    guard let gated = layerCache.gatedDeltaRollback,
+                          gated.projectedQKV.dim(1) == verificationWidth,
+                          layer.ple == nil || (
+                              layerCache.pleRollback?.convolutionInputs.dim(1)
+                                  == verificationWidth
+                                  && layerCache.pleRollback?.inputIDs.dim(1)
+                                  == verificationWidth)
+                    else { return false }
+                }
+            } else {
+                guard let attentionCache = cacheEntry as? Qwen4ExpAttentionCache,
+                      attentionCache.hasCompleteMTPVerification(
+                          width: verificationWidth)
+                else { return false }
+            }
+        }
+
+        let rejectedDrafts = draftedTokens - acceptedDrafts
+        if rejectedDrafts == 0 {
+            for cacheEntry in cache {
+                (cacheEntry as? Qwen4ExpLayerCache)?.clearMTPRollback()
+                (cacheEntry as? Qwen4ExpAttentionCache)?.clearMTPVerification()
+            }
+            return true
+        }
+
+        let keep = acceptedDrafts + 1
+        for (layer, cacheEntry) in zip(model.layers, cache) {
+            if layer.isLinear {
+                guard let layerCache = cacheEntry as? Qwen4ExpLayerCache,
+                      layer.linearAttention!.canRollbackTargetVerification(
+                          cache: layerCache, keeping: keep),
+                      layer.ple == nil || layer.ple!.canRollbackTargetVerification(
+                          cache: layerCache, keeping: keep)
+                else { return false }
+            } else if !cacheEntry.isTrimmable {
+                return false
+            }
+        }
+
+        for (layer, cacheEntry) in zip(model.layers, cache) {
+            if layer.isLinear {
+                let layerCache = cacheEntry as! Qwen4ExpLayerCache
+                layer.linearAttention!.rollbackTargetVerification(
+                    cache: layerCache, keeping: keep)
+                if let ple = layer.ple {
+                    ple.rollbackTargetVerification(cache: layerCache, keeping: keep)
+                }
+                layerCache.clearMTPRollback()
+            } else {
+                precondition(cacheEntry.trim(rejectedDrafts) == rejectedDrafts)
+                (cacheEntry as? Qwen4ExpAttentionCache)?.clearMTPVerification()
+            }
+        }
+        return true
+    }
+
     public func newCache(parameters: GenerateParameters?) -> [KVCache] {
         configuration.layerTypes.map { layerType -> KVCache in
             if layerType == "linear_attention" {
-                return ArraysCache(size: 4)
+                return Qwen4ExpLayerCache()
             }
             return Qwen4ExpAttentionCache()
         }
@@ -1021,11 +1878,28 @@ public final class Qwen4ExpModel: Module, LLMModel, KVCacheDimensionProvider {
             ".k_layernorm.weight",
         ]
         for (originalKey, value) in weights {
-            guard originalKey.hasPrefix("language_model.") else { continue }
-            var key = String(originalKey.dropFirst("language_model.".count))
-            guard !key.hasPrefix("mtp.") else { continue }
-            guard !key.hasSuffix(".ngram_heads_offsets"),
-                  !key.hasSuffix(".ngram_heads_vocab_sizes") else { continue }
+            let normalizedKey: String
+            if originalKey.hasPrefix("language_model.") {
+                normalizedKey = String(originalKey.dropFirst("language_model.".count))
+            } else {
+                // Text-only Qwen Next conversions publish the language-model
+                // namespace directly instead of wrapping it in
+                // `language_model.*`.
+                normalizedKey = originalKey
+            }
+
+            // Keep this list aligned with Qwen4ExpModel's actual text module
+            // tree. A broad `model.*` check would also accept nested visual,
+            // MTP, or unknown provider-owned subtrees from multimodal bundles.
+            let isTextWeight =
+                normalizedKey.hasPrefix("model.embed_tokens.")
+                || normalizedKey.hasPrefix("model.layers.")
+                || normalizedKey.hasPrefix("model.hyper_connection_mixer.")
+                || normalizedKey.hasPrefix("lm_head.")
+            guard isTextWeight else { continue }
+            guard !normalizedKey.hasSuffix(".ngram_heads_offsets"),
+                  !normalizedKey.hasSuffix(".ngram_heads_vocab_sizes") else { continue }
+            var key = normalizedKey
             if key.contains(".ple.ple_embedding.ngram_embedding.shard_") {
                 key = key.replacingOccurrences(
                     of: ".ple.ple_embedding.ngram_embedding.shard_",
@@ -1035,6 +1909,274 @@ public final class Qwen4ExpModel: Module, LLMModel, KVCacheDimensionProvider {
         }
         if configuration.tieWordEmbeddings { result["lm_head.weight"] = nil }
         return result
+    }
+}
+
+/// Greedy self-speculative decoding for Qwen3.8-Flash-Next's native MTP head.
+/// Draft-head history is rebuilt from verifier streams after every round. The
+/// conformant verifier reproduces independent greedy decode. Ordinary batched
+/// target operators remain available as an explicitly approximate throughput
+/// experiment because their reduction schedule can change greedy decisions.
+struct Qwen4ExpMTPCycleDecision: Equatable {
+    let targetTokens: [Int]
+    let draftTokens: [Int]
+    let acceptedDraftCount: Int
+
+    var nextPrimary: Int { targetTokens[acceptedDraftCount] }
+
+    static func resolve(
+        targetTokenIDs: MLXArray,
+        draftTokenIDs: MLXArray,
+        materialize: (MLXArray) -> [Int32] = { $0.asArray(Int32.self) }
+    ) -> Self {
+        let targetCount = targetTokenIDs.size
+        let draftCount = draftTokenIDs.size
+        precondition(targetCount == draftCount + 1)
+
+        // Keep every draft dependency lazy until the verifier has been built,
+        // then cross the host boundary once for the complete cycle decision.
+        let payload = concatenated([
+            targetTokenIDs.asType(.int32).reshaped(-1),
+            draftTokenIDs.asType(.int32).reshaped(-1),
+        ])
+        let values = materialize(payload)
+        precondition(values.count == targetCount + draftCount)
+        let targets = values[..<targetCount].map(Int.init)
+        let drafts = values[targetCount...].map(Int.init)
+
+        var accepted = 0
+        while accepted < drafts.count, targets[accepted] == drafts[accepted] {
+            accepted += 1
+        }
+        return Self(
+            targetTokens: targets,
+            draftTokens: drafts,
+            acceptedDraftCount: accepted)
+    }
+}
+
+public final class Qwen4ExpMTPGenerator {
+    private let model: Qwen4ExpModel
+    private let head: Qwen4ExpMTPHead
+    public let depth: Int
+    public let verificationPolicy: MTPVerificationPolicy
+
+    public init(
+        model: Qwen4ExpModel,
+        head: Qwen4ExpMTPHead,
+        depth: Int = 3,
+        verificationPolicy: MTPVerificationPolicy = .strictSingletonEquivalent
+    ) {
+        self.model = model
+        self.head = head
+        self.depth = max(1, depth)
+        self.verificationPolicy = verificationPolicy
+    }
+
+    private static func tokens(_ ids: [Int]) -> MLXArray {
+        MLXArray(ids.map(Int32.init)).reshaped([1, ids.count])
+    }
+
+    private static func positions(_ range: Range<Int>) -> MLXArray {
+        MLXArray(range.map(Int32.init)).reshaped([1, range.count])
+    }
+
+    public func generate(
+        promptIds: [Int],
+        maxTokens: Int,
+        eosIds: Set<Int> = [],
+        onToken: ((Int) -> Bool)? = nil
+    ) -> [Int] {
+        guard !promptIds.isEmpty, maxTokens > 0 else { return [] }
+        let targetCache = model.newCache(parameters: nil)
+        let mtpCache = head.newCache()
+        let prompt = Self.tokens(promptIds)
+        let initial = model.forwardStreamState(inputIDs: prompt, cache: targetCache)
+        var primary = model.projectLMHeadArgmax(
+            initial.hidden[0..., (initial.hidden.dim(1) - 1)..., 0...]
+        ).item(Int.self)
+        var primaryStream = initial.stream[0..., (initial.stream.dim(1) - 1)..., 0...]
+        var primaryPosition = promptIds.count
+
+        // Prime the head with true target streams for the shifted prompt pairs:
+        // stream[p] + token[p+1] predicts token[p+2].
+        if promptIds.count > 1 {
+            let historyCount = promptIds.count - 1
+            _ = head(
+                hiddenStream: initial.stream[0..., ..<historyCount, 0...],
+                tokenEmbeddings: model.embedTokens(Self.tokens(Array(promptIds.dropFirst()))),
+                tokenIDs: Self.tokens(Array(promptIds.dropFirst())),
+                positionIDs: Self.positions(1 ..< promptIds.count),
+                cache: mtpCache
+            )
+        }
+
+        var output: [Int] = []
+        var totalCycles = 0
+        var totalDrafted = 0
+        var totalAccepted = 0
+        var totalReplays = 0
+        var totalBackboneReplayFallbacks = 0
+        var acceptedByDepth = [Int](repeating: 0, count: depth)
+        defer {
+            if ProcessInfo.processInfo.environment["AFM_DEBUG"] == "1" {
+                let acceptance = totalDrafted > 0
+                    ? Double(totalAccepted) / Double(totalDrafted)
+                    : 0
+                let tokensPerCycle = totalCycles > 0
+                    ? Double(output.count) / Double(totalCycles)
+                    : 0
+                let depthCounts = acceptedByDepth.enumerated()
+                    .map { "d\($0.offset + 1)=\($0.element)" }
+                    .joined(separator: ",")
+                let message = String(
+                    format:
+                        "[MTP][QwenNext] %d tok in %d cycles — %.2f tok/cycle, accept %.1f%% (%d/%d), replays %d, backbone fallbacks %d, %@\n",
+                    output.count,
+                    totalCycles,
+                    tokensPerCycle,
+                    acceptance * 100,
+                    totalAccepted,
+                    totalDrafted,
+                    totalReplays,
+                    totalBackboneReplayFallbacks,
+                    depthCounts
+                )
+                FileHandle.standardError.write(Data(message.utf8))
+            }
+        }
+        func emit(_ token: Int) -> Bool {
+            output.append(token)
+            if let onToken, !onToken(token) { return false }
+            return output.count < maxTokens && !eosIds.contains(token)
+        }
+
+        while true {
+            if !emit(primary) { break }
+            totalCycles += 1
+
+            let roundHeadOffset = mtpCache[0].offset
+            var draftTokens: [MLXArray] = []
+            draftTokens.reserveCapacity(depth)
+            var chainStream = primaryStream
+            var chainToken = Self.tokens([primary])
+            for index in 0 ..< depth {
+                let draftOutput = head(
+                    hiddenStream: chainStream,
+                    tokenEmbeddings: model.embedTokens(chainToken),
+                    tokenIDs: chainToken,
+                    positionIDs: Self.positions(
+                        (primaryPosition + index) ..< (primaryPosition + index + 1)),
+                    cache: mtpCache
+                )
+                let draft = model.projectLMHeadArgmax(draftOutput.hidden)
+                    .asType(.int32)
+                    .reshaped([1, 1])
+                draftTokens.append(draft)
+                chainStream = draftOutput.stream
+                chainToken = draft
+            }
+            totalDrafted += draftTokens.count
+
+            let draftTokenIDs = concatenated(draftTokens, axis: 1)
+            // Dispatch the complete lazy draft chain without crossing the
+            // host boundary. The verifier consumes the same array and the
+            // cycle decision performs the only GPU-to-CPU materialization.
+            asyncEval(draftTokenIDs)
+            let verifyTokenIDs = concatenated(
+                [Self.tokens([primary]), draftTokenIDs], axis: 1)
+            let targetSnapshot = Qwen3MTPCacheSnapshot.capture(targetCache)
+            let verifiedStream: MLXArray
+            let targetTokenIDs: MLXArray
+            let usedSequentialVerifier = ProcessInfo.processInfo.environment[
+                "AFM_QWEN_VERIFY_SEQUENTIAL"
+            ] == "1"
+            if usedSequentialVerifier {
+                var streams: [MLXArray] = []
+                var targetTokens: [MLXArray] = []
+                let verifyInputs = [Self.tokens([primary])] + draftTokens
+                for token in verifyInputs {
+                    let state = model.forwardStreamState(
+                        inputIDs: token, cache: targetCache)
+                    streams.append(state.stream)
+                    targetTokens.append(model.projectLMHeadArgmax(state.hidden))
+                }
+                verifiedStream = concatenated(streams, axis: 1)
+                targetTokenIDs = concatenated(targetTokens, axis: 1)
+            } else {
+                let verified = model.forwardStreamState(
+                    inputIDs: verifyTokenIDs, cache: targetCache,
+                    verificationPolicy: verificationPolicy)
+                verifiedStream = verified.stream
+                targetTokenIDs = model.projectLMHeadArgmax(
+                    verified.hidden,
+                    verificationPolicy: verificationPolicy)[0, 0...]
+            }
+            let decision = Qwen4ExpMTPCycleDecision.resolve(
+                targetTokenIDs: targetTokenIDs,
+                draftTokenIDs: draftTokenIDs)
+            for index in 0 ..< decision.acceptedDraftCount {
+                acceptedByDepth[index] += 1
+            }
+            totalAccepted += decision.acceptedDraftCount
+            let targetCacheCommitted = !usedSequentialVerifier
+                && model.finishMTPVerification(
+                    cache: targetCache,
+                    acceptedDrafts: decision.acceptedDraftCount,
+                    draftedTokens: decision.draftTokens.count)
+
+            for token in decision.draftTokens.prefix(decision.acceptedDraftCount) {
+                if !emit(token) { return output }
+            }
+
+            // Discard every speculative head row and rebuild only the committed
+            // shifted pairs from the target model's true residual streams.
+            let speculativeRows = mtpCache[0].offset - roundHeadOffset
+            if speculativeRows > 0 { _ = mtpCache[0].trim(speculativeRows) }
+            let committedTokens = [primary]
+                + Array(decision.draftTokens.prefix(decision.acceptedDraftCount))
+            let committedStreams: MLXArray
+            if decision.acceptedDraftCount == 0 {
+                committedStreams = primaryStream
+            } else {
+                committedStreams = concatenated([
+                    primaryStream,
+                    verifiedStream[
+                        0..., 0 ..< decision.acceptedDraftCount, 0...],
+                ], axis: 1)
+            }
+            let committedTokenArray = Self.tokens(committedTokens)
+            _ = head(
+                hiddenStream: committedStreams,
+                tokenEmbeddings: model.embedTokens(committedTokenArray),
+                tokenIDs: committedTokenArray,
+                positionIDs: Self.positions(
+                    primaryPosition ..< (primaryPosition + committedTokens.count)),
+                cache: mtpCache
+            )
+
+            if decision.acceptedDraftCount != decision.draftTokens.count {
+                totalReplays += 1
+            }
+            if !targetCacheCommitted {
+                totalBackboneReplayFallbacks += 1
+                Qwen3MTPCacheSnapshot.restore(targetSnapshot, into: targetCache)
+                _ = model.forwardStreamState(
+                    inputIDs: committedTokenArray, cache: targetCache,
+                    verificationPolicy: verificationPolicy)
+                _ = model.finishMTPVerification(
+                    cache: targetCache,
+                    acceptedDrafts: max(0, committedTokens.count - 1),
+                    draftedTokens: max(0, committedTokens.count - 1))
+            }
+
+            primary = decision.nextPrimary
+            primaryStream = verifiedStream[
+                0..., decision.acceptedDraftCount ..< (decision.acceptedDraftCount + 1),
+                0...]
+            primaryPosition += decision.acceptedDraftCount + 1
+        }
+        return output
     }
 }
 

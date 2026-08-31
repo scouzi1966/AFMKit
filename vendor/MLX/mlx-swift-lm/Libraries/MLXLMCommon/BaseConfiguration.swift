@@ -125,6 +125,21 @@ public struct BaseConfiguration: Codable, Sendable {
             func addWithAttentionAlias(_ value: String) {
                 add(value)
 
+                // Qwen Next stores each PLE embedding shard as `shard_N` in
+                // checkpoint metadata, while SelectiveShardedEmbedding exposes
+                // the same leaf module as `shards.N`. Preserve per-shard group
+                // sizes across that structural rename; otherwise the 160-wide
+                // PLE shards incorrectly inherit the group-64 default.
+                let checkpointShard = ".ngram_embedding.shard_"
+                let runtimeShard = ".ngram_embedding.shards."
+                if value.contains(runtimeShard) {
+                    add(value.replacingOccurrences(
+                        of: runtimeShard, with: checkpointShard))
+                } else if value.contains(checkpointShard) {
+                    add(value.replacingOccurrences(
+                        of: checkpointShard, with: runtimeShard))
+                }
+
                 // DeepseekV4Model.sanitize structurally renames the dense
                 // shared expert's w1/w2/w3 checkpoint leaves to the runtime's
                 // gate/down/up projections. Preserve exact quantization

@@ -176,10 +176,13 @@ public struct AFMMLXSpeculativeModelCompatibility: Equatable, Sendable {
 
         return topLevelType.hasPrefix("qwen3_5")
             || topLevelType.hasPrefix("qwen3_6")
+            || topLevelType == "qwen4_exp"
             || textType.hasPrefix("qwen3_5")
             || textType.hasPrefix("qwen3_6")
+            || textType == "qwen4_exp_text"
             || architecture.contains("qwen3_5")
             || architecture.contains("qwen3_6")
+            || architecture.contains("qwen4exp")
             || architecture.contains("qwen3.5")
             || architecture.contains("qwen3.6")
     }

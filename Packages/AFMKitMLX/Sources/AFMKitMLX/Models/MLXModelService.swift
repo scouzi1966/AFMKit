@@ -40,6 +40,7 @@ private extension Dictionary where Key == String, Value == AnyCodable {
 private enum MTPGeneratorRuntime: @unchecked Sendable {
     case llm(Qwen3_5MoEMTPGenerator)
     case vlm(MTPGenerator)
+    case qwenNext(Qwen4ExpMTPGenerator)
     case glm(GLM5NextMTPGenerator)
 
     func generate(
@@ -57,6 +58,13 @@ private enum MTPGeneratorRuntime: @unchecked Sendable {
                 onToken: onToken
             )
         case .vlm(let generator):
+            generator.generate(
+                promptIds: promptIds,
+                maxTokens: maxTokens,
+                eosIds: eosIds,
+                onToken: onToken
+            )
+        case .qwenNext(let generator):
             generator.generate(
                 promptIds: promptIds,
                 maxTokens: maxTokens,
@@ -2125,6 +2133,40 @@ public final class MLXModelService:
                                 return MTPGeneratorBinding(
                                     modelID: modelID,
                                     generator: .vlm(generator)
+                                )
+                            case .qwenNextText:
+                                guard let qwen = context.model as? Qwen4ExpModel else {
+                                    throw MLXServiceError.loadFailed(
+                                        "Qwen Next MTP selected, but loaded \(type(of: context.model))"
+                                    )
+                                }
+                                let head = try qwen.loadMTPHead(
+                                    sidecarPath: sidecar,
+                                    groupSize: quantization.groupSize,
+                                    bits: AFMMLXMTPRuntimePolicy.qwenNextMTPHeadBits(
+                                        configuredBits: quantization.bits
+                                    ),
+                                    mode: quantization.mode
+                                )
+                                let verificationPolicy =
+                                    AFMMLXMTPRuntimePolicy.qwenNextVerificationPolicy()
+                                let generator = Qwen4ExpMTPGenerator(
+                                    model: qwen,
+                                    head: head,
+                                    depth: mtpDepth,
+                                    verificationPolicy: verificationPolicy
+                                )
+                                let verificationLabel = verificationPolicy
+                                    == .strictSingletonEquivalent
+                                    ? "strict-singleton-equivalent"
+                                    : "batched"
+                                print("[\(ts())] [MTP] Qwen Next native head loaded — self-speculative decoding enabled (depth \(mtpDepth), verifier \(verificationLabel))")
+                                if maxConcurrent >= 2 {
+                                    print("[\(ts())] [MTP] concurrent/batch scheduler uses AR decode; serial requests use MTP")
+                                }
+                                return MTPGeneratorBinding(
+                                    modelID: modelID,
+                                    generator: .qwenNext(generator)
                                 )
                             case .glmEmbedded:
                                 throw MLXServiceError.loadFailed(

@@ -14,8 +14,8 @@
 #
 # The shipped metallib is the MLX "JIT-on" minimal precompiled set. Everything else
 # (softmax, quantized, AFM's qmv_fast_wide, ...) is JIT-compiled at runtime, so it is
-# NOT in the metallib and must NOT be added here. The exact translation-unit set was
-# recovered from the shipped binary and is pinned in METAL_TUS below.
+# NOT in the metallib and must NOT be added here. METAL_TUS stays synchronized with
+# MLX's always-built JIT translation units, plus steel_attention.
 #
 # Recipe mirrors mlx/backend/metal/kernels/CMakeLists.txt:
 #   xcrun -sdk macosx metal <FLAGS> -c <kernel>.metal -I<MLXROOT> -o <kernel>.air
@@ -27,6 +27,7 @@
 # Usage:
 #   ./Scripts/rebuild-mlx-metallib.sh            # build + verify symbol parity + install
 #   ./Scripts/rebuild-mlx-metallib.sh --check    # only check toolchain availability
+#   ./Scripts/rebuild-mlx-metallib.sh --verify   # verify the committed metallib
 #   ./Scripts/rebuild-mlx-metallib.sh --no-install  # build under .build, verify, do NOT replace the committed metallib
 set -euo pipefail
 
@@ -38,8 +39,9 @@ OSX_MIN="26.0"            # matches `apple-macosx26.0.0` baked into the shipped 
 mkdir -p "$ROOT_DIR/.build"
 BUILD_DIR="$(mktemp -d "$ROOT_DIR/.build/afm-metallib.XXXXXX")"
 
-# Exact translation-unit set found in the shipped metallib (the MLX JIT-on always-built
-# set + steel_attention). Paths are relative to $KDIR. Do NOT add JIT-only kernels here.
+# MLX JIT-on always-built translation-unit set + steel_attention. Paths are relative
+# to $KDIR. Keep this synchronized with MLX's kernels/CMakeLists.txt; do not add the
+# broader JIT-only kernel set here.
 # NOTE: `random` is REQUIRED — it provides the `rbitsc`/`rbits` RNG kernels used by any
 # temperature>0 (sampled) generation. Omitting it builds a metallib that loads fine and
 # works for greedy (temp=0) decode but FATAL-errors ("Unable to load kernel rbitsc") on the
@@ -48,6 +50,8 @@ BUILD_DIR="$(mktemp -d "$ROOT_DIR/.build/afm-metallib.XXXXXX")"
 METAL_TUS=(
   arg_reduce
   conv
+  dot
+  fence
   gemv
   layer_norm
   random
@@ -70,8 +74,11 @@ check_toolchain(){
   # Xcode, etc.). Treat ANY failure as unavailable so build.sh takes its fallback path instead
   # of skipping it and then failing in the real compile.
   local out status
-  out="$(echo 'kernel void _afm_probe(){}' | xcrun -sdk macosx metal -x metal -c - -o /dev/null 2>&1)"
-  status=$?
+  if out="$(echo 'kernel void _afm_probe(){}' | xcrun -sdk macosx metal -x metal -c - -o /dev/null 2>&1)"; then
+    status=0
+  else
+    status=$?
+  fi
   if [ "$status" -ne 0 ]; then
     if echo "$out" | grep -qi "missing Metal Toolchain"; then
       err "Metal Toolchain is NOT installed. Install it once with:"
@@ -87,6 +94,27 @@ check_toolchain(){
     warn "metal probe emitted output (continuing):"; echo "$out" >&2
   fi
   info "Metal Toolchain available."
+
+  # MLX 0.32.2 always builds fence.metal when Metal 3.2 is available. AFMKit's
+  # canonical precompiled library includes that translation unit, so fail with
+  # a clear compatibility error instead of reaching the full build on an older
+  # compiler that cannot express system-scope fences.
+  if [ ! -f "$KDIR/fence.metal" ]; then
+    err "MLX 0.32.2 fence source is missing: $KDIR/fence.metal"
+    return 1
+  fi
+  if out="$(xcrun -sdk macosx metal -x metal -c "$KDIR/fence.metal" \
+      -I"$MLXROOT" -mmacosx-version-min="$OSX_MIN" -o /dev/null 2>&1)"; then
+    status=0
+  else
+    status=$?
+  fi
+  if [ "$status" -ne 0 ]; then
+    err "MLX 0.32.2 requires a Metal 3.2-capable compiler for fence.metal:"
+    echo "$out" >&2
+    return 1
+  fi
+  info "Metal 3.2 fence support available."
   return 0
 }
 
@@ -95,11 +123,42 @@ check_toolchain(){
 # produced for an older OS target even though Metal loads that AIR correctly.
 kernel_symbols(){ LC_ALL=C grep -aoE '[a-z_]+(_[a-z0-9]+)*_(float|float16_t|bfloat16_t)(_[0-9]+)+' "$1" | sort -u; }
 
+verify_metallib(){
+  local metallib="$1" label="$2" targets target target_version target_major req n
+  [ -f "$metallib" ] || { err "$label not found: $metallib"; return 1; }
+
+  targets="$(LC_ALL=C grep -aoE 'air64(_v[0-9]+)?-apple-macosx[0-9]+(\.[0-9]+){2}' "$metallib" | sort -u || true)"
+  if [ -z "$targets" ]; then
+    err "$label contains no readable macOS deployment target."
+    return 1
+  fi
+  while IFS= read -r target; do
+    target_version="${target##*macosx}"
+    target_major="${target_version%%.*}"
+    if [ "$target_major" -gt "${OSX_MIN%%.*}" ]; then
+      err "$label targets $target_version, newer than required macOS $OSX_MIN."
+      return 1
+    fi
+  done <<< "$targets"
+  info "$label deployment target OK: $(echo "$targets" | tr '\n' ' ')"
+
+  for req in rbits dot_product_float32_it32_tg512_sg16 fence_update; do
+    n=$(LC_ALL=C grep -aoc "$req" "$metallib" || true)
+    if [ "${n:-0}" -eq 0 ]; then
+      err "$label is MISSING required kernel '$req'."
+      err "Check METAL_TUS: random provides rbits, dot provides dot_product, and fence provides fence_update."
+      return 1
+    fi
+  done
+  info "$label contains all required random, dot, and fence kernels."
+}
+
 MODE="build"
 ALLOW_KERNEL_CHANGE=0
 for arg in "$@"; do
   case "$arg" in
     --check) check_toolchain; exit $? ;;
+    --verify) verify_metallib "$TARGET_METALLIB" "Committed metallib"; exit $? ;;
     --no-install) MODE="no-install" ;;
     --allow-kernel-change) ALLOW_KERNEL_CHANGE=1 ;;  # permit a changed kernel-symbol set
     "") ;;
@@ -135,36 +194,7 @@ info "Built: $(du -h "$NEW_METALLIB" | cut -f1) ($NEW_METALLIB)"
 
 # Inspect the binary directly rather than using `strings`: Xcode 27's strings
 # rejects some valid Xcode 26 AIR triples before it can print their metadata.
-METAL_TARGETS="$(LC_ALL=C grep -aoE 'air64(_v[0-9]+)?-apple-macosx[0-9]+(\.[0-9]+){2}' "$NEW_METALLIB" | sort -u || true)"
-if [ -z "$METAL_TARGETS" ]; then
-  err "Built metallib contains no readable macOS deployment target."
-  exit 1
-fi
-while IFS= read -r target; do
-  target_version="${target##*macosx}"
-  target_major="${target_version%%.*}"
-  if [ "$target_major" -gt "${OSX_MIN%%.*}" ]; then
-    err "Built metallib targets $target_version, newer than required macOS $OSX_MIN."
-    exit 1
-  fi
-done <<< "$METAL_TARGETS"
-info "Metal deployment target OK: $(echo "$METAL_TARGETS" | tr '\n' ' ')"
-
-# Required-kernel guard: catch whole-TU omissions that the name-pattern parity check below
-# can miss (e.g. the RNG kernels have no `*_float_NxN` symbol). A metallib missing `rbits`
-# loads fine and works for greedy decode but FATAL-errors on the first sampled (temp>0)
-# request — exactly the failure that motivated this guard. Refuse to install if absent.
-for req in rbits; do
-  # Count matches without `grep -q`: -q closes the pipe on first hit, which SIGPIPEs `strings`
-  # → non-zero → `set -o pipefail` would make this read as "missing" even when present.
-  # `grep -c` consumes all input, so the pipeline exits cleanly.
-  n=$(LC_ALL=C grep -aoc "$req" "$NEW_METALLIB" || true)
-  if [ "${n:-0}" -eq 0 ]; then
-    err "Built metallib is MISSING required kernel '$req' — a translation unit is absent from METAL_TUS."
-    err "(Most likely 'random'.) This would FATAL on sampled generation. Refusing to install."
-    exit 1
-  fi
-done
+verify_metallib "$NEW_METALLIB" "Built metallib"
 
 # Parity check: a kernel-internal change (e.g. BN/blocks constexpr) must NOT change the
 # set of exported kernel symbols. A mismatch means the TU set is wrong or the edit added/

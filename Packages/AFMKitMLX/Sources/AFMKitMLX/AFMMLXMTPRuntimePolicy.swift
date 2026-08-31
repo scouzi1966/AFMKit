@@ -1,8 +1,11 @@
 import Foundation
+import MLXLLM
+import MLXLMCommon
 
 enum AFMMLXMTPRuntimeModelKind: Equatable, Sendable {
     case qwenText
     case qwenVision
+    case qwenNextText
     case glmEmbedded
 }
 
@@ -10,6 +13,32 @@ enum AFMMLXMTPRuntimeModelKind: Equatable, Sendable {
 /// Keeping these rules independent of MLX objects makes failure/retry and
 /// model-switch behavior deterministic and directly testable.
 enum AFMMLXMTPRuntimePolicy {
+    /// Resolve the Qwen Next verifier once at runtime construction, then keep
+    /// it immutable for the lifetime of the generator. Singleton-equivalent
+    /// verification is the conformant default. The faster batched reduction
+    /// schedule is explicitly opt-in because it can change greedy decisions.
+    static func qwenNextVerificationPolicy(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> MTPVerificationPolicy {
+        switch environment["AFM_QWEN_MTP_VERIFICATION_POLICY"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        {
+        case "batched", "fast", "approximate":
+            return .batched
+        default:
+            return .strictSingletonEquivalent
+        }
+    }
+
+    /// Qwen Next's raw MTP sidecar is precision-sensitive: quantizing its
+    /// proposal layer to the trunk's q4 default lowers draft acceptance and
+    /// makes speculative decoding slower. Keep the head at a q8 floor while
+    /// the target model retains the checkpoint's own quantization.
+    static func qwenNextMTPHeadBits(configuredBits: Int) -> Int {
+        max(Qwen4ExpModel.defaultMTPHeadBits, configuredBits)
+    }
+
     static func loadingFactory(
         selected: AFMMLXModelFactoryKind,
         mtpEnabled: Bool,
@@ -30,6 +59,9 @@ enum AFMMLXMTPRuntimePolicy {
         guard mtpEnabled else { return nil }
         if canonicalModelType == "glm5_next" {
             return .glmEmbedded
+        }
+        if canonicalModelType == "qwen4_exp" {
+            return factory == .llm ? .qwenNextText : nil
         }
         guard canonicalModelType == "qwen3_5" || canonicalModelType == "qwen3_5_moe"
         else { return nil }

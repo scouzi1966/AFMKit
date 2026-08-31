@@ -1102,6 +1102,32 @@ public class SwitchGLU: Module, SwitchGLULayer {
         callAsFunction(x, indices, preDownScores: nil)
     }
 
+    /// Runs every verify token as an independent routed M=1 row.
+    ///
+    /// Verify-width execution must retain the same expert projection order as
+    /// ordinary autoregressive decode. This path intentionally bypasses the
+    /// fused gate/up cache and sorting heuristics used by the general batched
+    /// implementation while keeping all rows in one lazy graph.
+    package func targetVerifyPreservingSingletonRows(
+        _ input: MLXArray,
+        _ indices: MLXArray
+    ) -> MLXArray {
+        guard input.ndim == 3, input.dim(1) > 1 else {
+            return callAsFunction(input, indices)
+        }
+
+        let batches = (0 ..< input.dim(0)).map { batch in
+            concatenated(
+                (0 ..< input.dim(1)).map { token in
+                    callAsFunction(
+                        input[batch ..< (batch + 1), token ..< (token + 1), 0...],
+                        indices[batch ..< (batch + 1), token ..< (token + 1), 0...])
+                },
+                axis: 1)
+        }
+        return concatenated(batches, axis: 0)
+    }
+
     /// Decode-only DeepSeek V4 experiment that keeps route selection and the
     /// routed MXFP4 kernels in one primitive. Metadata gates the exact tensor
     /// contract; all other model geometries and quantizations return `nil`.

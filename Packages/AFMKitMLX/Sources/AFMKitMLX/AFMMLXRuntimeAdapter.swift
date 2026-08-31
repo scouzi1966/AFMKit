@@ -10,13 +10,14 @@ public enum AFMMLXSpeculativeRuntime {
     case none
     case mtpLLM(Qwen3_5MoEMTPGenerator)
     case mtpVLM(MTPGenerator)
+    case qwenNextMTP(Qwen4ExpMTPGenerator)
     case glmMTP(GLM5NextMTPGenerator)
     case eagle3(Gemma4Eagle3Drafter)
 
     public var kind: AFMMLXSpeculativeRuntimeKind {
         switch self {
         case .none: return .none
-        case .mtpLLM, .mtpVLM, .glmMTP: return .mtp
+        case .mtpLLM, .mtpVLM, .qwenNextMTP, .glmMTP: return .mtp
         case .eagle3: return .eagle3
         }
     }
@@ -443,11 +444,18 @@ public struct AFMMLXRuntimeAdapter: Sendable {
         }
     }
 
+    /// Creates a sidecar-backed speculative runtime. `depth` configures the
+    /// Qwen Next verifier; legacy Qwen text and vision runtimes retain their
+    /// independently qualified depths.
     @MainActor public func makeMTPRuntime(
         container: ModelContainer,
-        sidecarPath: String
+        sidecarPath: String,
+        depth: Int = 3
     ) async throws -> AFMMLXSpeculativeRuntime? {
-        try await makeMTPRuntime(container: container, optionalSidecarPath: sidecarPath)
+        try await makeMTPRuntime(
+            container: container,
+            optionalSidecarPath: sidecarPath,
+            qwenDepth: depth)
     }
 
     /// Creates a self-speculative runtime from a qualified head embedded in
@@ -455,23 +463,45 @@ public struct AFMMLXRuntimeAdapter: Sendable {
     @MainActor public func makeEmbeddedMTPRuntime(
         container: ModelContainer
     ) async throws -> AFMMLXSpeculativeRuntime? {
-        try await makeMTPRuntime(container: container, optionalSidecarPath: nil)
+        try await makeMTPRuntime(
+            container: container,
+            optionalSidecarPath: nil,
+            qwenDepth: 3)
     }
 
     @MainActor private func makeMTPRuntime(
         container: ModelContainer,
-        optionalSidecarPath sidecarPath: String?
+        optionalSidecarPath sidecarPath: String?,
+        qwenDepth: Int
     ) async throws -> AFMMLXSpeculativeRuntime? {
         try await container.perform { context -> AFMMLXSpeculativeRuntime? in
             if let qwen = context.model as? Qwen3_5MoEModel {
                 guard let sidecarPath else { return nil }
                 let head = try qwen.loadMTPHead(sidecarPath: sidecarPath)
+                // Preserve the legacy Qwen text contract. Its verifier is
+                // qualified at one draft token and does not share Qwen Next's
+                // configurable multi-token verification window.
                 return .mtpLLM(Qwen3_5MoEMTPGenerator(model: qwen, head: head, depth: 1))
             }
             if let qwen = context.model as? Qwen3_5MoEVL {
                 guard let sidecarPath else { return nil }
                 let head = try qwen.loadMTPHead(sidecarPath: sidecarPath)
+                // Likewise retain the previously qualified vision depth.
                 return .mtpVLM(MTPGenerator(model: qwen, head: head, depth: 3))
+            }
+            if let qwen = context.model as? Qwen4ExpModel {
+                guard let sidecarPath else { return nil }
+                let head = try qwen.loadMTPHead(
+                    sidecarPath: sidecarPath,
+                    bits: Qwen4ExpModel.defaultMTPHeadBits
+                )
+                return .qwenNextMTP(
+                    Qwen4ExpMTPGenerator(
+                        model: qwen,
+                        head: head,
+                        depth: qwenDepth,
+                        verificationPolicy:
+                            AFMMLXMTPRuntimePolicy.qwenNextVerificationPolicy()))
             }
             if let glm = context.model as? GLM5NextModel,
                let generator = GLM5NextMTPGenerator(model: glm)
@@ -531,6 +561,8 @@ public struct AFMMLXRuntimeAdapter: Sendable {
             case .mtpLLM(let generator):
                 _ = generator.generate(promptIds: promptIds, maxTokens: maxTokens, eosIds: eos, onToken: emit)
             case .mtpVLM(let generator):
+                _ = generator.generate(promptIds: promptIds, maxTokens: maxTokens, eosIds: eos, onToken: emit)
+            case .qwenNextMTP(let generator):
                 _ = generator.generate(promptIds: promptIds, maxTokens: maxTokens, eosIds: eos, onToken: emit)
             case .glmMTP(let generator):
                 _ = generator.generate(promptIds: promptIds, maxTokens: maxTokens, eosIds: eos, onToken: emit)
