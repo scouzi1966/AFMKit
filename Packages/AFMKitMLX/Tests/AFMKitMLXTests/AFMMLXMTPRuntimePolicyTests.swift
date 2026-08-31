@@ -1,9 +1,36 @@
 import Foundation
 @testable import AFMKitMLX
 import MLXLLM
+import MLXLMCommon
 import XCTest
 
 final class AFMMLXMTPRuntimePolicyTests: XCTestCase {
+    func testQwenNextVerificationDefaultsToStrictAndRequiresExplicitBatchedMode() {
+        XCTAssertEqual(
+            AFMMLXMTPRuntimePolicy.qwenNextVerificationPolicy(environment: [:]),
+            .strictSingletonEquivalent)
+        XCTAssertEqual(
+            AFMMLXMTPRuntimePolicy.qwenNextVerificationPolicy(environment: [
+                "AFM_QWEN_MTP_VERIFICATION_POLICY": "batched"
+            ]),
+            .batched)
+        XCTAssertEqual(
+            AFMMLXMTPRuntimePolicy.qwenNextVerificationPolicy(environment: [
+                "AFM_QWEN_MTP_VERIFICATION_POLICY": "fast"
+            ]),
+            .batched)
+        XCTAssertEqual(
+            AFMMLXMTPRuntimePolicy.qwenNextVerificationPolicy(environment: [
+                "AFM_QWEN_MTP_VERIFICATION_POLICY": "strict-singleton-equivalent"
+            ]),
+            .strictSingletonEquivalent)
+        XCTAssertEqual(
+            AFMMLXMTPRuntimePolicy.qwenNextVerificationPolicy(environment: [
+                "AFM_QWEN_MTP_VERIFICATION_POLICY": "unknown"
+            ]),
+            .strictSingletonEquivalent)
+    }
+
     func testQwenNextMTPHeadUsesEightBitPrecisionFloor() {
         XCTAssertEqual(Qwen4ExpModel.defaultMTPHeadBits, 8)
         XCTAssertEqual(AFMMLXMTPRuntimePolicy.qwenNextMTPHeadBits(configuredBits: 4), 8)

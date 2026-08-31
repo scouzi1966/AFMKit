@@ -19,6 +19,17 @@ func computeG(_ ALog: MLXArray, _ a: MLXArray, _ dtBias: MLXArray) -> MLXArray {
     return result.asType(ALog.dtype)
 }
 
+/// Compute the scalar forget gate with an FP32 result while preserving the
+/// input model's rounding for `a + dtBias` and `softplus`.  Hybrid recurrent
+/// models use this form when a multi-token target-verification pass must agree
+/// with repeated single-token decode updates.
+func computeGFloat32(
+    _ ALog: MLXArray, _ a: MLXArray, _ dtBias: MLXArray
+) -> MLXArray {
+    let softplusValue = softplus(a + dtBias).asType(.float32)
+    return MLX.exp(-MLX.exp(ALog.asType(.float32)) * softplusValue)
+}
+
 /// Compute the bounded GLM-5.3 decay used by Kimi Delta Attention.
 /// `lowerBound` is a negative log-decay floor (the published checkpoint uses -5).
 func computeGSafe(
@@ -159,7 +170,7 @@ private func makeGatedDeltaKernel(hasMask: Bool, vectorized: Bool, fuseGating: B
         }
         for (int i = 0; i < n_per_t; ++i) {
           auto s_idx = n_per_t * dk_idx + i;
-          o_state[s_idx] = static_cast<InT>(state[i]);
+          o_state[s_idx] = static_cast<StT>(state[i]);
         }
     """
 
@@ -307,7 +318,7 @@ func gatedDeltaOps(
     }
 
     let y = MLX.stacked(ys, axis: 1)
-    return (y, currentState)
+    return (y.asType(q.dtype), currentState)
 }
 
 // MARK: - Metal Kernel Dispatch
@@ -323,6 +334,7 @@ func gatedDeltaKernel(
     let Hv = v.dim(2)
     let Dv = v.dim(3)
     let inputType = q.dtype
+    let stateType = state.dtype
 
     let kernel: MLXFast.MLXFastKernel?
     var inputs: [MLXArray]
@@ -355,6 +367,7 @@ func gatedDeltaKernel(
         inputs,
         template: [
             ("InT", inputType),
+            ("StT", stateType),
             ("Dk", Dk),
             ("Dv", Dv),
             ("Hk", Hk),
@@ -363,7 +376,7 @@ func gatedDeltaKernel(
         grid: (32, Dv, B * Hv),
         threadGroup: (32, 4, 1),
         outputShapes: [[B, T, Hv, Dv], state.shape],
-        outputDTypes: [inputType, inputType]
+        outputDTypes: [inputType, stateType]
     )
 
     return (outputs[0], outputs[1])
@@ -383,6 +396,7 @@ func gatedDeltaKernelFused(
     let Hv = v.dim(2)
     let Dv = v.dim(3)
     let inputType = q.dtype
+    let stateType = state.dtype
 
     let kernel: MLXFast.MLXFastKernel?
     var inputs: [MLXArray] = [q, k, v, a, b, ALog, dtBias, state, MLXArray(T)]
@@ -401,6 +415,7 @@ func gatedDeltaKernelFused(
         inputs,
         template: [
             ("InT", inputType),
+            ("StT", stateType),
             ("Dk", Dk),
             ("Dv", Dv),
             ("Hk", Hk),
@@ -409,7 +424,7 @@ func gatedDeltaKernelFused(
         grid: (32, Dv, B * Hv),
         threadGroup: (32, 4, 1),
         outputShapes: [[B, T, Hv, Dv], state.shape],
-        outputDTypes: [inputType, inputType]
+        outputDTypes: [inputType, stateType]
     )
 
     return (outputs[0], outputs[1])
