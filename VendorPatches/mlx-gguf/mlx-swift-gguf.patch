@@ -1,0 +1,244 @@
+diff --git a/vendor/MLX/mlx-swift/Source/Cmlx/include/mlx/c/io.h b/vendor/MLX/mlx-swift/Source/Cmlx/include/mlx/c/io.h
+index 6eb205c..3319c61 100644
+--- a/vendor/MLX/mlx-swift/Source/Cmlx/include/mlx/c/io.h
++++ b/vendor/MLX/mlx-swift/Source/Cmlx/include/mlx/c/io.h
+@@ -45,0 +46,6 @@ int mlx_load_safetensors(
++int mlx_load_gguf(
++    mlx_map_string_to_array* arrays,
++    mlx_map_string_to_array* array_metadata,
++    mlx_map_string_to_string* string_metadata,
++    const char* file,
++    const mlx_stream s);
+diff --git a/vendor/MLX/mlx-swift/Source/Cmlx/mlx-c/mlx/c/io.cpp b/vendor/MLX/mlx-swift/Source/Cmlx/mlx-c/mlx/c/io.cpp
+index 9ba7063..031f729 100644
+--- a/vendor/MLX/mlx-swift/Source/Cmlx/mlx-c/mlx/c/io.cpp
++++ b/vendor/MLX/mlx-swift/Source/Cmlx/mlx-c/mlx/c/io.cpp
+@@ -5,0 +6,2 @@
++#include <algorithm>
++
+@@ -68,0 +71,50 @@ extern "C" int mlx_load_safetensors(
++extern "C" int mlx_load_gguf(
++    mlx_map_string_to_array* arrays,
++    mlx_map_string_to_array* array_metadata,
++    mlx_map_string_to_string* string_metadata,
++    const char* file,
++    const mlx_stream s) {
++  try {
++    auto [loaded_arrays, loaded_metadata] =
++        mlx::core::load_gguf(std::string(file), mlx_stream_get_(s));
++    std::unordered_map<std::string, mlx::core::array> metadata_arrays;
++    std::unordered_map<std::string, std::string> metadata_strings;
++    for (auto& [key, value] : loaded_metadata) {
++      if (auto* array = std::get_if<mlx::core::array>(&value)) {
++        metadata_arrays.emplace(key, std::move(*array));
++      } else if (auto* string = std::get_if<std::string>(&value)) {
++        metadata_strings.emplace(key, *string);
++      } else if (auto* strings = std::get_if<std::vector<std::string>>(&value)) {
++        // Preserve string arrays losslessly without adding a new C map ABI.
++        size_t encoded_size = 2 + (strings->empty() ? 0 : strings->size() - 1);
++        for (const auto& string : *strings) {
++          encoded_size += 2 + string.size();
++          encoded_size += std::count_if(
++              string.begin(), string.end(), [](char character) {
++                return character == '\\' || character == '\"';
++              });
++        }
++        std::string encoded = "[";
++        encoded.reserve(encoded_size);
++        for (size_t index = 0; index < strings->size(); ++index) {
++          if (index) encoded += ",";
++          encoded += "\"";
++          for (char character : strings->at(index)) {
++            if (character == '\\' || character == '\"') encoded += '\\';
++            encoded += character;
++          }
++          encoded += "\"";
++        }
++        encoded += "]";
++        metadata_strings.emplace(key, std::move(encoded));
++      }
++    }
++    mlx_map_string_to_array_set_(*arrays, loaded_arrays);
++    mlx_map_string_to_array_set_(*array_metadata, metadata_arrays);
++    mlx_map_string_to_string_set_(*string_metadata, metadata_strings);
++  } catch (std::exception& e) {
++    mlx_error(e.what());
++    return 1;
++  }
++  return 0;
++}
+diff --git a/vendor/MLX/mlx-swift/Source/Cmlx/mlx-c/mlx/c/io.h b/vendor/MLX/mlx-swift/Source/Cmlx/mlx-c/mlx/c/io.h
+index 6eb205c..3319c61 100644
+--- a/vendor/MLX/mlx-swift/Source/Cmlx/mlx-c/mlx/c/io.h
++++ b/vendor/MLX/mlx-swift/Source/Cmlx/mlx-c/mlx/c/io.h
+@@ -45,0 +46,6 @@ int mlx_load_safetensors(
++int mlx_load_gguf(
++    mlx_map_string_to_array* arrays,
++    mlx_map_string_to_array* array_metadata,
++    mlx_map_string_to_string* string_metadata,
++    const char* file,
++    const mlx_stream s);
+diff --git a/vendor/MLX/mlx-swift/Source/Cmlx/mlx/mlx/io/gguf.cpp b/vendor/MLX/mlx-swift/Source/Cmlx/mlx/mlx/io/gguf.cpp
+index 6c27c46..dbe6dbd 100644
+--- a/vendor/MLX/mlx-swift/Source/Cmlx/mlx/mlx/io/gguf.cpp
++++ b/vendor/MLX/mlx-swift/Source/Cmlx/mlx/mlx/io/gguf.cpp
+@@ -3,0 +4 @@
++#include <cstdlib>
+@@ -5,0 +7 @@
++#include <limits>
+@@ -49,0 +51,9 @@ std::optional<Dtype> gguf_type_to_dtype(const uint32_t& gguf_type) {
++[[noreturn]] void tensor_error(
++    const gguf_tensor& tensor,
++    const std::string& what) {
++  std::ostringstream msg;
++  msg << "[load_gguf] Tensor '" << std::string(tensor.name, tensor.namelen)
++      << "' " << what << ". Perhaps an incomplete download or corrupt file?";
++  throw std::runtime_error(msg.str());
++}
++
+@@ -51,0 +62 @@ Shape get_shape(const gguf_tensor& tensor) {
++  uint64_t num_weights = 1;
+@@ -54 +65,10 @@ Shape get_shape(const gguf_tensor& tensor) {
+-    shape.push_back(tensor.dim[i]);
++    auto dim = tensor.dim[i];
++    if (dim > std::numeric_limits<ShapeElem>::max()) {
++      tensor_error(tensor, "has a dimension that is too large");
++    }
++    if (dim != 0 && num_weights > std::numeric_limits<uint64_t>::max() / dim) {
++      tensor_error(
++          tensor, "has a dimension product that does not fit in 64 bits");
++    }
++    num_weights *= dim;
++    shape.push_back(dim);
+@@ -78 +99,29 @@ std::tuple<allocator::Buffer, Dtype> extract_tensor_data(gguf_tensor* tensor) {
+-  // TODO: Add other dequantization options.
++  // This compatibility path is deliberately opt-in: it faithfully decodes
++  // the GGUF values, but expands the tensor to FP16 and can materially raise
++  // load time and peak memory compared with a native packed MLX kernel.
++  switch (tensor->type) {
++    case GGUF_TYPE_Q5_0:
++    case GGUF_TYPE_Q5_1:
++    case GGUF_TYPE_Q2_K:
++    case GGUF_TYPE_Q3_K:
++    case GGUF_TYPE_Q4_K:
++    case GGUF_TYPE_Q5_K:
++    case GGUF_TYPE_Q6_K:
++    case GGUF_TYPE_Q8_K: {
++      const char* enabled = std::getenv("AFM_EXPERIMENTAL_GGUF_QUANTS");
++      if (enabled == nullptr || std::string(enabled) != "1") {
++        std::string name(tensor->name, tensor->namelen);
++        throw std::runtime_error(
++            "[load_gguf] Tensor '" + name + "' uses GGUF type " +
++            std::to_string(tensor->type) +
++            "; set AFM_EXPERIMENTAL_GGUF_QUANTS=1 to enable faithful "
++            "FP16 compatibility decoding (experimental; higher load time "
++            "and peak memory)");
++      }
++      break;
++    }
++    default:
++      break;
++  }
+@@ -81 +127,4 @@ std::tuple<allocator::Buffer, Dtype> extract_tensor_data(gguf_tensor* tensor) {
+-    throw std::runtime_error("[load_gguf] gguf_tensor_to_f16 failed");
++    std::string name(tensor->name, tensor->namelen);
++    throw std::runtime_error(
++        "[load_gguf] Tensor '" + name + "' uses unsupported GGUF type " +
++        std::to_string(tensor->type) + " (gguf_tensor_to_f16 failed)");
+@@ -306,6 +328,0 @@ void check_tensor_in_file(const gguf_ctx* ctx, const gguf_tensor& tensor) {
+-  auto fail = [&tensor](const std::string& what) {
+-    std::ostringstream msg;
+-    msg << "[load_gguf] Tensor '" << std::string(tensor.name, tensor.namelen)
+-        << "' " << what << ". Perhaps an incomplete download or corrupt file?";
+-    throw std::runtime_error(msg.str());
+-  };
+@@ -313 +330 @@ void check_tensor_in_file(const gguf_ctx* ctx, const gguf_tensor& tensor) {
+-    fail("has a data offset that overflows the data section");
++    tensor_error(tensor, "has a data offset that overflows the data section");
+@@ -316 +333 @@ void check_tensor_in_file(const gguf_ctx* ctx, const gguf_tensor& tensor) {
+-    fail("has a data offset past the end of the file");
++    tensor_error(tensor, "has a data offset past the end of the file");
+@@ -319 +336 @@ void check_tensor_in_file(const gguf_ctx* ctx, const gguf_tensor& tensor) {
+-    fail("extends past the end of the file");
++    tensor_error(tensor, "extends past the end of the file");
+diff --git a/vendor/MLX/mlx-swift/Source/Cmlx/mlx/mlx/io/gguf_quants.cpp b/vendor/MLX/mlx-swift/Source/Cmlx/mlx/mlx/io/gguf_quants.cpp
+index 83dfe1f..1717be5 100644
+--- a/vendor/MLX/mlx-swift/Source/Cmlx/mlx/mlx/io/gguf_quants.cpp
++++ b/vendor/MLX/mlx-swift/Source/Cmlx/mlx/mlx/io/gguf_quants.cpp
+@@ -114,0 +115,5 @@ void gguf_load_quantized(
++  if (shape.empty()) {
++    std::ostringstream msg;
++    msg << "[load_gguf] quantized tensor " << name << " has no dimensions";
++    throw std::runtime_error(msg.str());
++  }
+@@ -128 +133 @@ void gguf_load_quantized(
+-                      1,
++                      size_t{1},
+@@ -135,2 +140,4 @@ void gguf_load_quantized(
+-  auto sb_nbytes = float16.size() *
+-      std::accumulate(shape.begin(), shape.end(), 1, std::multiplies<size_t>());
++  auto sb_nbytes =
++      float16.size() *
++      std::accumulate(
++          shape.begin(), shape.end(), size_t{1}, std::multiplies<size_t>());
+diff --git a/vendor/MLX/mlx-swift/Source/MLX/IO.swift b/vendor/MLX/mlx-swift/Source/MLX/IO.swift
+index aee73a5..1f97ee8 100644
+--- a/vendor/MLX/mlx-swift/Source/MLX/IO.swift
++++ b/vendor/MLX/mlx-swift/Source/MLX/IO.swift
+@@ -10,0 +11,13 @@ public enum LoadSaveError: Error {
++/// Values carried by the GGUF metadata table. Numeric scalars and numeric
++/// arrays are represented as MLX arrays to preserve their source type.
++public enum GGUFMetadataValue {
++    case array(MLXArray)
++    case string(String)
++    case strings([String])
++}
++
++public struct GGUFLoadResult {
++    public let arrays: [String: MLXArray]
++    public let metadata: [String: GGUFMetadataValue]
++}
++
+@@ -86,0 +100,39 @@ public func save(
++/// Load tensors and typed metadata from a GGUF v3 file using MLX's native
++/// loader. Q4_0, Q4_1, and Q8_0 remain packed; other recognized types are
++/// converted by MLX according to its GGUF implementation.
++public func loadGGUF(url: URL, stream: StreamOrDevice = .cpu) throws -> GGUFLoadResult {
++    precondition(url.isFileURL)
++    guard url.pathExtension.lowercased() == "gguf" else {
++        throw LoadSaveError.unknownExtension(url.pathExtension)
++    }
++
++    var arrays = mlx_map_string_to_array_new()
++    var arrayMetadata = mlx_map_string_to_array_new()
++    var stringMetadata = mlx_map_string_to_string_new()
++    defer {
++        mlx_map_string_to_array_free(arrays)
++        mlx_map_string_to_array_free(arrayMetadata)
++        mlx_map_string_to_string_free(stringMetadata)
++    }
++
++    let path = url.path(percentEncoded: false)
++    _ = try withError {
++        mlx_load_gguf(
++            &arrays, &arrayMetadata, &stringMetadata,
++            path.cString(using: .utf8), stream.ctx)
++    }
++
++    var metadata = mlx_map_array_values(arrayMetadata).mapValues(GGUFMetadataValue.array)
++    for (key, value) in mlx_map_string_values(stringMetadata) {
++        if value.first == "[",
++            let data = value.data(using: .utf8),
++            let decoded = try? JSONDecoder().decode([String].self, from: data)
++        {
++            metadata[key] = .strings(decoded)
++        } else {
++            metadata[key] = .string(value)
++        }
++    }
++    return GGUFLoadResult(arrays: mlx_map_array_values(arrays), metadata: metadata)
++}
++
+@@ -129,0 +182,2 @@ public func loadArrays(url: URL, stream: StreamOrDevice = .cpu) throws -> [Strin
++    case "gguf":
++        return try loadGGUF(url: url, stream: stream).arrays

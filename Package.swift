@@ -45,8 +45,19 @@ let mlxPlatformExcludes = [
     "mlx/mlx/backend/cpu/gemms/simd_bf16.cpp"
 ] + mlxNoCudaExcludes
 
+// MLX's GGUF reader delegates format parsing to antirez/gguf-tools. Keep this
+// small C dependency pinned in-tree so SwiftPM builds remain reproducible.
+let ggufLibTarget = Target.target(
+    name: "GGUFLib",
+    path: "vendor/gguflib",
+    sources: ["fp16.c", "gguflib.c"],
+    publicHeadersPath: ".",
+    cSettings: [.unsafeFlags(["-UNDEBUG"])]
+)
+
 let mlxCTarget = Target.target(
     name: "Cmlx",
+    dependencies: ["GGUFLib"],
     path: "vendor/MLX/mlx-swift/Source/Cmlx",
     exclude: mlxPlatformExcludes + [
         "vendor-README.md",
@@ -77,8 +88,7 @@ let mlxCTarget = Target.target(
         "mlx/setup.py",
         "mlx/tests",
         "mlx/mlx/io/no_safetensors.cpp",
-        "mlx/mlx/io/gguf.cpp",
-        "mlx/mlx/io/gguf_quants.cpp",
+        "mlx/mlx/io/no_gguf.cpp",
         "mlx/mlx/backend/metal/kernels",
         "mlx/mlx/backend/metal/nojit_kernels.cpp",
         "mlx/mlx/distributed/mpi/mpi.cpp",
@@ -208,6 +218,7 @@ var targets: [Target] = [
         dependencies: [.target(name: "encuda")],
         path: "vendor/MLX/mlx-swift/Plugins/CudaBuild"
     ),
+    ggufLibTarget,
     mlxCTarget,
     .target(
         name: "MLX",
@@ -434,7 +445,7 @@ var targets: [Target] = [
         name: "AFMKitMLXTests",
         dependencies: [
             "AFMKitMLX", "AFMKitCore", "AFMKitServices", "AFMOpenAICompat",
-            "MLXLMCommon", "MLXLLM", "MLXVLM", "MLX", "MLXNN"
+            "MLXLMCommon", "MLXLLM", "MLXVLM", "MLX", "MLXNN", "GGUFLib"
         ],
         path: "Packages/AFMKitMLX/Tests/AFMKitMLXTests"
     ),
