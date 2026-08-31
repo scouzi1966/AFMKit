@@ -152,6 +152,42 @@ final class MLXGenerationAdmissionTests: XCTestCase {
         occupied.release()
     }
 
+    func testSerialAdmissionDrainSignalResumesAfterRelease() async throws {
+        let service = MLXModelService(
+            resolver: MLXCacheResolver(),
+            telemetryObserver: InferenceTelemetryCollector()
+        )
+        XCTAssertTrue(service.tryReserveSerialSlot())
+        let waiter = Task {
+            try await service.waitForSerialAdmissionsToDrain()
+        }
+
+        try await Task.sleep(for: .milliseconds(20))
+        service.releaseSerialAdmissionState()
+        try await waiter.value
+    }
+
+    func testCancelledSerialAdmissionDrainSignalDoesNotRequireRelease() async throws {
+        let service = MLXModelService(
+            resolver: MLXCacheResolver(),
+            telemetryObserver: InferenceTelemetryCollector()
+        )
+        XCTAssertTrue(service.tryReserveSerialSlot())
+        let waiter = Task {
+            try await service.waitForSerialAdmissionsToDrain()
+        }
+
+        try await Task.sleep(for: .milliseconds(20))
+        waiter.cancel()
+        do {
+            try await waiter.value
+            XCTFail("cancelled drain waiter must throw")
+        } catch is CancellationError {
+            // Expected: cancellation removes and resumes the stored continuation.
+        }
+        service.releaseSerialAdmissionState()
+    }
+
     private func waitForState(
         _ collector: InferenceTelemetryCollector,
         predicate: (AFMInferenceMetricsSnapshot) -> Bool
