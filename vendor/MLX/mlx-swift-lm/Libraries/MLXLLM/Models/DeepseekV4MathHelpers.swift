@@ -83,6 +83,17 @@ public enum DeepseekV4Math {
     public static let fusedHCNormEnabled =
         ProcessInfo.processInfo.environment["VMLX_DSV4_FUSED_HC_NORM"] == "1"
 
+    static func supportsFusedHCActivationStorage(_ dtype: DType) -> Bool {
+        dtype == .bfloat16 || dtype == .float16 || dtype == .float32
+    }
+
+    static func supportsFusedHCExpansion(
+        blockOut: MLXArray, residual: MLXArray
+    ) -> Bool {
+        blockOut.dtype == residual.dtype
+            && supportsFusedHCActivationStorage(blockOut.dtype)
+    }
+
     private static let dsparkHeadFP32Kernel = MLXFast.metalKernel(
         name: "deepseek_v4_dspark_head_fp32",
         inputNames: ["input", "weight"],
@@ -675,7 +686,7 @@ public enum DeepseekV4Math {
                 value += static_cast<float>(x[D + d]) * pre_shared[1];
                 value += static_cast<float>(x[2 * D + d]) * pre_shared[2];
                 value += static_cast<float>(x[3 * D + d]) * pre_shared[3];
-                y[d] = value;
+                y[d] = static_cast<ACT_T>(value);
             }
         """)
 
@@ -849,7 +860,7 @@ public enum DeepseekV4Math {
                 value += static_cast<float>(c[4 + dst]) * r1;
                 value += static_cast<float>(c[8 + dst]) * r2;
                 value += static_cast<float>(c[12 + dst]) * r3;
-                y[dst * D + d] = value;
+                y[dst * D + d] = static_cast<ACT_T>(value);
             }
         """)
 
@@ -956,6 +967,10 @@ public enum DeepseekV4Math {
         iters: Int = 20,
         eps: Float = 1e-6
     ) -> (collapsed: MLXArray, post: MLXArray, comb: MLXArray) {
+        // Keep the residual and collapsed activation in the model's storage
+        // dtype. The Metal body still converts each element to float before
+        // accumulation; only the kernel boundary avoids redundant full-tensor
+        // casts during decode.
         let leadShape = Array(mixes.shape.dropLast())
         let rows = mixes.size / 24
         let outputs = hcSplitSinkhornCollapse4Kernel(
@@ -963,10 +978,13 @@ public enum DeepseekV4Math {
                 mixes.asType(.float32),
                 scale.asType(.float32),
                 base.asType(.float32),
-                residual.asType(.float32),
+                contiguous(residual),
                 scalarArray(eps),
             ],
-            template: [("D", hiddenSize), ("ITERS", iters)],
+            template: [
+                ("D", hiddenSize), ("ITERS", iters),
+                ("ACT_T", residual.dtype),
+            ],
             grid: (rows * 256, 1, 1),
             threadGroup: (256, 1, 1),
             outputShapes: [
@@ -974,7 +992,7 @@ public enum DeepseekV4Math {
                 leadShape + [4, 4],
                 leadShape + [hiddenSize],
             ],
-            outputDTypes: [.float32, .float32, .float32])
+            outputDTypes: [.float32, .float32, residual.dtype])
         return (collapsed: outputs[2], post: outputs[0], comb: outputs[1])
     }
 
@@ -1025,19 +1043,21 @@ public enum DeepseekV4Math {
         comb: MLXArray,
         hiddenSize: Int
     ) -> MLXArray {
+        // post/comb and all arithmetic remain FP32 inside the kernel. Preserve
+        // the matching activation dtype only for block/residual I/O.
         let rows = blockOut.size / hiddenSize
         return hcExpand4Kernel(
             [
-                contiguous(blockOut.asType(.float32)),
-                contiguous(residual.asType(.float32)),
+                contiguous(blockOut),
+                contiguous(residual),
                 contiguous(post.asType(.float32)),
                 contiguous(comb.asType(.float32)),
             ],
-            template: [("D", hiddenSize)],
+            template: [("D", hiddenSize), ("ACT_T", blockOut.dtype)],
             grid: (rows * hiddenSize, 1, 1),
             threadGroup: (256, 1, 1),
             outputShapes: [residual.shape],
-            outputDTypes: [.float32])[0]
+            outputDTypes: [blockOut.dtype])[0]
     }
 
 

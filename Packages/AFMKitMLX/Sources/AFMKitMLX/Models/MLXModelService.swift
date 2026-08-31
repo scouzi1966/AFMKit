@@ -2160,12 +2160,19 @@ public final class MLXModelService:
                                     ),
                                     mode: quantization.mode
                                 )
+                                let verificationPolicy =
+                                    AFMMLXMTPRuntimePolicy.qwenNextVerificationPolicy()
                                 let generator = Qwen4ExpMTPGenerator(
                                     model: qwen,
                                     head: head,
-                                    depth: mtpDepth
+                                    depth: mtpDepth,
+                                    verificationPolicy: verificationPolicy
                                 )
-                                print("[\(ts())] [MTP] Qwen Next native head loaded — self-speculative decoding enabled (depth \(mtpDepth))")
+                                let verificationLabel = verificationPolicy
+                                    == .strictSingletonEquivalent
+                                    ? "strict-singleton-equivalent"
+                                    : "batched"
+                                print("[\(ts())] [MTP] Qwen Next native head loaded — self-speculative decoding enabled (depth \(mtpDepth), verifier \(verificationLabel))")
                                 if maxConcurrent >= 2 {
                                     print("[\(ts())] [MTP] concurrent/batch scheduler uses AR decode; serial requests use MTP")
                                 }
