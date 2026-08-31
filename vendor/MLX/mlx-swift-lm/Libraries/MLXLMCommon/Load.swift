@@ -17,6 +17,44 @@ private let checkpointVisionPrefixes = [
     "model.visual.", "vision_model.", "vision_tower.", "visual.",
 ]
 
+enum ModelWeightLoadError: LocalizedError {
+    case noCheckpointWeights(modelDirectory: URL)
+    case noCompatibleWeights(modelDirectory: URL, checkpointWeightCount: Int)
+
+    var errorDescription: String? {
+        switch self {
+        case .noCheckpointWeights(let modelDirectory):
+            return """
+                Model checkpoint at \(modelDirectory.path) contained no loadable \
+                safetensor weights.
+                """
+        case .noCompatibleWeights(let modelDirectory, let checkpointWeightCount):
+            return """
+                Model checkpoint at \(modelDirectory.path) contained \
+                \(checkpointWeightCount) candidate weights, but the model \
+                sanitizer recognized none. Refusing to materialize initialized \
+                parameters; verify the model architecture and checkpoint namespace.
+                """
+        }
+    }
+}
+
+func validateSanitizedModelWeights(
+    checkpointWeightCount: Int,
+    sanitizedWeightCount: Int,
+    modelDirectory: URL
+) throws {
+    guard checkpointWeightCount > 0 else {
+        throw ModelWeightLoadError.noCheckpointWeights(
+            modelDirectory: modelDirectory)
+    }
+    guard sanitizedWeightCount > 0 else {
+        throw ModelWeightLoadError.noCompatibleWeights(
+            modelDirectory: modelDirectory,
+            checkpointWeightCount: checkpointWeightCount)
+    }
+}
+
 func languageModelHasVisionParameters(_ keys: Set<String>) -> Bool {
     keys.contains { key in
         key.hasPrefix("vision_model.") || key.hasPrefix("vision_tower.")
@@ -128,10 +166,18 @@ public func loadWeights(
         return weights["\(base).weight"] != nil
     }
 
-    // per-model cleanup
+    // Per-model cleanup. Never continue into module quantization or eval(model)
+    // when sanitization rejected every checkpoint parameter. The model still
+    // owns its lazily initialized parameters at this point; evaluating those
+    // can materialize a full-precision model instead of failing the load.
+    let checkpointWeightCount = weights.count
     deepseekV4LoadTrace("sanitize begin")
     weights = model.sanitize(weights: weights)
     deepseekV4LoadTrace("sanitize complete")
+    try validateSanitizedModelWeights(
+        checkpointWeightCount: checkpointWeightCount,
+        sanitizedWeightCount: weights.count,
+        modelDirectory: modelDirectory)
     let usesSymmetricQ8 =
         (model as? DeepseekV4SymmetricQ8Model)?.usesDeepseekV4SymmetricQ8 == true
     let usesQ80 =
