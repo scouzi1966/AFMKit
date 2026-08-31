@@ -651,7 +651,13 @@ public final class MLXModelService:
 
     /// Number of in-flight batch operations (for auto-teardown).
     private let _activeBatchCount = OSAllocatedUnfairLock(initialState: 0)
-    private let _serialAdmissionRunning = OSAllocatedUnfairLock(initialState: 0)
+    private struct SerialAdmissionState {
+        var running = 0
+        var drainWaiters: [UUID: CheckedContinuation<Void, Never>] = [:]
+    }
+    private let _serialAdmissionState = OSAllocatedUnfairLock(
+        initialState: SerialAdmissionState()
+    )
     private let _serialAdmissionWaiting = OSAllocatedUnfairLock(initialState: 0)
 
     /// Whether a promotion is currently in progress (prevents races).
@@ -662,21 +668,43 @@ public final class MLXModelService:
 
     /// Atomically reserve an execution slot.
     public func tryReserveSlot() -> Bool {
-        scheduler?.tryReserve() ?? tryReserveSerialSlot()
+        withStateLock {
+            if let scheduler {
+                return scheduler.tryReserve()
+            }
+            // Once promotion starts, new callers must wait for the scheduler.
+            // Existing serial work is allowed to drain before installation.
+            guard !promotionInProgress else { return false }
+            return tryReserveSerialSlot()
+        }
     }
     /// Wait for an execution slot with timeout.
     public func waitForSlot(timeout: TimeInterval = 30) async -> Bool {
-        guard let sched = scheduler else {
-            return await waitForSerialSlot(timeout: timeout)
+        if Task.isCancelled || withStateLock({ isShuttingDown }) { return false }
+        if tryReserveSlot() { return true }
+
+        let deadline = ContinuousClock.now + .seconds(timeout)
+        var delay: UInt64 = 10_000_000
+        while ContinuousClock.now < deadline {
+            if Task.isCancelled || withStateLock({ isShuttingDown }) { return false }
+            try? await Task.sleep(nanoseconds: delay)
+            if Task.isCancelled || withStateLock({ isShuttingDown }) { return false }
+            // Re-read the current runtime on every attempt. An idle scheduler
+            // may be retired while this request waits, and promotion may replace
+            // serial admission with a scheduler before capacity becomes free.
+            if tryReserveSlot() { return true }
+            delay = min(delay * 2, 500_000_000)
         }
-        return await sched.waitForSlot(timeout: timeout)
+        return false
     }
     /// Release a reserved slot (call if request fails before generation starts).
     public func releaseSlot() {
-        if let scheduler {
-            scheduler.releaseReservation()
-        } else {
-            releaseSerialSlot()
+        withStateLock {
+            if let scheduler {
+                scheduler.releaseReservation()
+            } else {
+                releaseSerialSlot()
+            }
         }
     }
 
@@ -823,10 +851,10 @@ public final class MLXModelService:
         }
     }
 
-    private func tryReserveSerialSlot() -> Bool {
-        _serialAdmissionRunning.withLock { running in
-            guard running == 0 else { return false }
-            running = 1
+    func tryReserveSerialSlot() -> Bool {
+        _serialAdmissionState.withLock { state in
+            guard state.running == 0 else { return false }
+            state.running = 1
             return true
         }
     }
@@ -849,8 +877,42 @@ public final class MLXModelService:
     }
 
     private func releaseSerialSlot() {
-        _serialAdmissionRunning.withLock { $0 = max(0, $0 - 1) }
+        releaseSerialAdmissionState()
         publishAdmissionProviderState()
+    }
+
+    func releaseSerialAdmissionState() {
+        let waiters = _serialAdmissionState.withLock { state -> [CheckedContinuation<Void, Never>] in
+            state.running = max(0, state.running - 1)
+            guard state.running == 0 else { return [] }
+            let waiters = Array(state.drainWaiters.values)
+            state.drainWaiters.removeAll()
+            return waiters
+        }
+        for waiter in waiters { waiter.resume() }
+    }
+
+    func waitForSerialAdmissionsToDrain() async throws {
+        try Task.checkCancellation()
+        let waiterID = UUID()
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                let resumeImmediately = _serialAdmissionState.withLock { state in
+                    if state.running == 0 || Task.isCancelled {
+                        return true
+                    }
+                    state.drainWaiters[waiterID] = continuation
+                    return false
+                }
+                if resumeImmediately { continuation.resume() }
+            }
+        } onCancel: {
+            let continuation = self._serialAdmissionState.withLock {
+                $0.drainWaiters.removeValue(forKey: waiterID)
+            }
+            continuation?.resume()
+        }
+        try Task.checkCancellation()
     }
 
     private static func timeInterval(_ duration: Duration) -> TimeInterval {
@@ -860,7 +922,7 @@ public final class MLXModelService:
     }
 
     private func publishAdmissionProviderState() {
-        let admissionRunning = _serialAdmissionRunning.withLock { $0 }
+        let admissionRunning = _serialAdmissionState.withLock { $0.running }
         let waiting = _serialAdmissionWaiting.withLock { $0 }
         let maximumWorkingSet = GPU.deviceInfo().maxRecommendedWorkingSetSize
         let memoryUsage: Double? = maximumWorkingSet > 0
@@ -2654,12 +2716,16 @@ public final class MLXModelService:
             _activeBatchCount.withLock { $0 += 1 }
             return
         }
-        // Fast path: scheduler already exists
-        if withStateLock({ scheduler != nil }) {
+        // Fast path: acquire the batch reference in the same critical section
+        // that proves the scheduler still exists. Teardown uses the identical
+        // lock order, so it cannot detach the scheduler between those actions.
+        if withStateLock({ () -> Bool in
+            guard scheduler != nil else { return false }
             _activeBatchCount.withLock { $0 += 1 }
-            // Cancel any pending teardown
             teardownWorkItem?.cancel()
             teardownWorkItem = nil
+            return true
+        }) {
             return
         }
 
@@ -2676,11 +2742,16 @@ public final class MLXModelService:
             while withStateLock({ promotionInProgress && scheduler == nil }) {
                 try await Task.sleep(nanoseconds: 10_000_000) // 10ms
             }
-            // Verify scheduler was actually installed — promotion may have failed
-            guard withStateLock({ scheduler != nil }) else {
+            // Acquire the reference atomically with observing the scheduler
+            // installed by the other promotion caller.
+            let acquired = withStateLock { () -> Bool in
+                guard scheduler != nil else { return false }
+                _activeBatchCount.withLock { $0 += 1 }
+                return true
+            }
+            guard acquired else {
                 throw MLXServiceError.noModelLoaded
             }
-            _activeBatchCount.withLock { $0 += 1 }
             return
         }
 
@@ -2705,11 +2776,23 @@ public final class MLXModelService:
             )
         }
 
+        // Prevent a serial reservation from being routed into the new scheduler.
+        // promotionInProgress blocks new serial admissions; wait only for the
+        // reservation that existed before promotion began to drain.
+        do {
+            try await waitForSerialAdmissionsToDrain()
+        } catch {
+            withStateLock {
+                self.maxConcurrent = 0
+                self.promotionInProgress = false
+            }
+            throw error
+        }
         withStateLock {
             self.scheduler = sched
             self.promotionInProgress = false
+            _activeBatchCount.withLock { $0 += 1 }
         }
-        _activeBatchCount.withLock { $0 += 1 }
         print("[\(ts())] Auto-promoted to batch mode: \(limit) concurrent slots (prefix caching enabled)")
     }
 
@@ -2737,18 +2820,23 @@ public final class MLXModelService:
 
     /// Tear down auto-promoted scheduler if no active slots or batches.
     private func performTeardownIfIdle() async {
-        let shouldTeardown = _activeBatchCount.withLock { $0 == 0 }
-        guard shouldTeardown else { return }
-
-        // Check scheduler has no active slots
-        if let sched = withStateLock({ scheduler }) {
-            guard sched.activeSlotCount == 0 else { return }
-        }
-
-        withStateLock {
+        // Slot reservation and scheduler detachment share stateLock. Without
+        // this atomic boundary, a request can reserve the batch scheduler
+        // after the idle check but execute after `scheduler` becomes nil,
+        // splitting admission and generation across different runtimes.
+        let retiringScheduler = withStateLock { () -> BatchScheduler? in
+            guard _activeBatchCount.withLock({ $0 == 0 }) else {
+                return nil
+            }
+            guard let scheduler, scheduler.activeSlotCount == 0 else {
+                return nil
+            }
             self.scheduler = nil
             self.maxConcurrent = 0
+            return scheduler
         }
+        guard let retiringScheduler else { return }
+        await retiringScheduler.shutdown()
         print("[\(ts())] Auto-teardown: returned to serial mode")
     }
 
