@@ -93,9 +93,17 @@ MACAFM_MLX_MODEL_CACHE=/path/to/model-cache \
 The tokenizer directory must contain at least `tokenizer.json` and
 `tokenizer_config.json`; `chat_template.jinja` is used when present. The model
 identifier exposed by the server is the exact GGUF path supplied on startup.
+The tested GGUF also embeds `tokenizer.chat_template`, but this POC does not yet
+construct its tokenizer or template from GGUF metadata. It therefore validates
+the paired standard-tokenizer path, not fully self-contained GGUF startup.
 
-The Qwen 3.8 27B Q8_0 reference was also exercised through the release server
-with llmprobe 0.6.0. Its quick suite reported Core 6/6 and 100% engine
-conformance (models 4/4, chat 29/29), including SSE streaming and tool-call
-serialization. Missing Responses/Anthropic endpoints in that report describe
-the consumer API surface and are independent of GGUF loading.
+The Qwen 3.8 27B Q8_0 reference was exercised through the release server with
+llmprobe 0.6.0. The quick suite reported Core 6/6 and 100% engine conformance
+(models 4/4, chat 29/29), including SSE streaming and tool-call serialization.
+The default suite then processed 36,118 tokens in 31m27s and reported Core 9/9,
+97.2% conformance on implemented surfaces, 100% model capability, 3/3 agentic
+tasks, and 100% engine fidelity. Its two conformance failures were existing
+consumer-contract behavior: `n > 1` silently returns one choice, and `stop`
+does not accept the OpenAI-compatible bare-string form. Missing Responses,
+Anthropic, vision, and frontier endpoints describe the consumer API surface
+and are independent of GGUF loading.
