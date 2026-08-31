@@ -5,12 +5,13 @@ manifest. No provider mirror repositories or coordinated secondary tags exist.
 
 ## Published product set
 
-The single `AFMKit` tag exposes all fifteen public products:
+The single `AFMKit` tag exposes all sixteen public products:
 
 - Core: `AFMKitCore`, `AFMOpenAICompat`, `AFMKitInference`, `AFMEvalKit`
 - Apple: `AFMKitApple`, `AFMKitEmbeddings`, `AFMKitSpeech`,
   `AFMKitSpeechSynthesis`, `AFMKitVision`, `AFMKitServices`
-- MLX: `AFMKitMLX`, `AFMKitMLXAudio`, `AFMKitFoundationModelsMLX`
+- MLX: `AFMKitMLX`, `AFMKitMLXAudio`, `AFMKitMLXImage`,
+  `AFMKitFoundationModelsMLX`
 - DwarfStar: `AFMKitDwarfStar`, `AFMKitFoundationModelsDwarfStar`
 
 Provider source remains organized under `Packages/`, but those directories are
@@ -64,7 +65,7 @@ The command performs these operations in order:
    default-branch commit.
 3. `Scripts/validate-release.sh` validates the root manifest and lock, all
    fifteen API baselines, Release tests, workflow/security regressions, and a
-   fresh downstream build of all fifteen products from one staged root tag.
+   fresh downstream build of all sixteen products from one staged root tag.
 4. Recheck the local commit and worktrees. Only then record the immutable
    publication-intent ref, create or recover the annotated AFMKit tag, and create
    or recover the GitHub release.

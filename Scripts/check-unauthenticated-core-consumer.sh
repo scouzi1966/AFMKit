@@ -84,6 +84,7 @@ expected = {
     "AFMKitCore", "AFMOpenAICompat", "AFMKitInference", "AFMKitApple",
     "AFMKitEmbeddings", "AFMKitSpeech", "AFMKitSpeechSynthesis",
     "AFMKitVision", "AFMKitServices", "AFMEvalKit", "AFMKitMLX", "AFMKitMLXAudio",
+    "AFMKitMLXImage",
     "AFMKitFoundationModelsMLX", "AFMKitDwarfStar",
     "AFMKitFoundationModelsDwarfStar",
 }

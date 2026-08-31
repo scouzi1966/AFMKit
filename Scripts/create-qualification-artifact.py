@@ -36,6 +36,7 @@ ARCHIVE_ROOTS = (
     "Packages/AFMKitMLX/Tests",
     "Packages/AFMKitMLXAudio/Sources",
     "Packages/AFMKitMLXAudio/Tests",
+    "Packages/AFMKitMLXImage/Sources",
     "vendor/MLX",
     "docs/api-baselines",
 )

@@ -10,19 +10,19 @@ decisions are in [`Architecture/`](Architecture/README.md).
 
 ## Package architecture
 
-Fifteen public modules are published from one Swift package and one tag:
+Sixteen public modules are published from one Swift package and one tag:
 
 | Area | Public products | Dependency boundary |
 | --- | --- | --- |
 | Core and Apple | `AFMKitCore`, `AFMOpenAICompat`, `AFMKitInference`, `AFMEvalKit`, `AFMKitApple`, `AFMKitEmbeddings`, `AFMKitSpeech`, `AFMKitSpeechSynthesis`, `AFMKitVision`, `AFMKitServices` | Provider-neutral contracts and independently selectable Apple services. |
 | DwarfStar | `AFMKitDwarfStar`, `AFMKitFoundationModelsDwarfStar` | Exact-pinned Hub/Xet dependencies, the AFM-owned ds4 adapter/resources, and an Xcode 27-only `LanguageModel` bridge. |
-| MLX | `AFMKitMLX`, `AFMKitMLXAudio`, `AFMKitFoundationModelsMLX` | The exact AFM-compatible MLX graph, provider-neutral local audio synthesis, and the Xcode 27 bridge. |
+| MLX | `AFMKitMLX`, `AFMKitMLXAudio`, `AFMKitMLXImage`, `AFMKitFoundationModelsMLX` | The exact AFM-compatible MLX graph, provider-neutral local audio and image generation, and the Xcode 27 bridge. |
 
 The root manifest uses Swift tools 6.1, keeps a macOS 26 deployment floor, and
 declares an iOS 16 deployment floor for the basic provider-neutral layer.
 With Xcode 26 (Swift 6.3), the root package exposes `AFMKitCore`,
 `AFMOpenAICompat`, `AFMKitInference`, `AFMEvalKit`, the five service products,
-`AFMKitMLX`, and `AFMKitMLXAudio`. Xcode 27 (Swift 6.4)
+`AFMKitMLX`, `AFMKitMLXAudio`, and `AFMKitMLXImage`. Xcode 27 (Swift 6.4)
 also exposes `AFMKitApple`, `AFMKitFoundationModelsMLX`, and
 `AFMKitFoundationModelsDwarfStar`; those products import
 macOS 27 Foundation Models APIs and remain runtime-gated to macOS 27. CI checks
@@ -31,7 +31,7 @@ both product matrices with `Scripts/check-sdk-product-exposure.sh`.
 The supported iOS surface is intentionally narrow: `AFMKitCore`,
 `AFMOpenAICompat`, and `AFMKitInference`. An arm64 iOS Simulator consumer
 compiles these three products in CI without compiling any concrete provider or
-service module. Speech, Vision, MLXAudio, Services, DwarfStar, MLX, Apple
+service module. Speech, Vision, MLXAudio, MLXImage, Services, DwarfStar, MLX, Apple
 Foundation Models, and their bridges have not completed independent iOS audits
 and must not yet be selected by iOS targets. Their macOS behavior is unchanged.
 Broader iOS work is tracked in
@@ -115,7 +115,7 @@ all other dependencies remain exact public HTTPS pins.
 
 The checked-in API baselines use Xcode 27 build `27A5228h`, macOS SDK 27.0
 build `26A5388f`, and the compiler identity in
-`docs/api-baselines/toolchain.env`. Baseline coverage discovers all fifteen modules
+`docs/api-baselines/toolchain.env`. Baseline coverage discovers all sixteen modules
 from the root manifest. The current DwarfStar baseline contains 42 normalized
 public symbols.
 
@@ -133,7 +133,7 @@ Candidate scripts and plugins never run there. Compiled products, caches, and th
 downloaded candidate artifact are destroyed before the job exits.
 
 Full release validation runs all package/API/security gates, the root Release
-tests, and fresh downstream builds for all fifteen products:
+tests, and fresh downstream builds for all sixteen products:
 
 ```bash
 Scripts/validate-release.sh
