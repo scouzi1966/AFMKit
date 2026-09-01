@@ -998,6 +998,13 @@ private final class Qwen4ExpAttention: Module {
 // MARK: - Gated DeltaNet
 
 private final class Qwen4ExpGatedDeltaNet: Module {
+    /// Diagnostic parity switch for the reference engine's recurrent-state
+    /// storage policy. The reference stores the GDN state as BF16 between
+    /// decode calls; AFM defaults to FP32 so multi-token MTP verification can
+    /// reproduce repeated singleton updates. Keep this opt-in until both the
+    /// throughput gain and the numerical/verification tradeoff are qualified.
+    private static let useBF16RecurrentState =
+        ProcessInfo.processInfo.environment["AFM_QWEN_BF16_RECURRENT_STATE"] == "1"
     private static let explicitGating =
         ProcessInfo.processInfo.environment["AFM_QWEN_EXPLICIT_GATING"] == "1"
     private static let verifyExplicitGating =
@@ -1154,15 +1161,17 @@ private final class Qwen4ExpGatedDeltaNet: Module {
             q = normalizedQueries
             k = normalizedKeys
         }
-        // Keep the recurrent state in FP32. Decode updates one token at a time,
-        // while target verification updates several candidate positions in one
-        // kernel. A low-precision state would be rounded between decode calls
-        // but only after the whole verifier block, changing greedy decisions.
-        // FP32 makes the two schedules numerically equivalent without forcing
-        // the verifier back to one backbone invocation per token.
+        // Keep the recurrent state in FP32 by default. Decode updates one token
+        // at a time, while target verification updates several candidate
+        // positions in one kernel. A low-precision state would be rounded
+        // between decode calls but only after the whole verifier block, changing
+        // greedy decisions. FP32 makes the two schedules numerically equivalent
+        // without forcing the verifier back to one backbone invocation per
+        // token. The BF16 diagnostic arm matches the reference engine's storage
+        // traffic for an isolated no-MTP performance comparison.
         let recurrentState = cache?[1] ?? MLXArray.zeros(
             [b, valueHeads, valueHeadDim, keyHeadDim],
-            dtype: .float32)
+            dtype: Self.useBF16RecurrentState ? .bfloat16 : .float32)
         let useExplicitGating = Self.explicitGating || (
             verificationPolicy != nil && l > 1
                 && Self.verifyExplicitGating
