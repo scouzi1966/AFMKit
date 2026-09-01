@@ -18,19 +18,19 @@ The performance gap is real, reproducible, and now localized.
   **844.79 prefill tok/s** through the reference engine.
 - AFMKit's initial comparable no-MTP run reached approximately **39.5 decode
   tok/s** and **850 prefill tok/s**.
-- The current experimental AFMKit path reaches **51.20 decode tok/s** and
-  **851.03 prefill tok/s**.
+- The best current experimental AFMKit path reaches **52.10 decode tok/s** and
+  **867.46 prefill tok/s** with deferred inter-layer hyper-connection writes.
 - Prefill is already within the 10% target. Decode improved by approximately
-  29.6%, but remains 22.4% below the reproduced reference and 13.8% below the
+  31.9%, but remains 21.1% below the reproduced reference and 12.3% below the
   minimum acceptable 59.4 tok/s target.
 - Profiling shows that the remaining gap is primarily per-token Swift lazy-graph
   construction and dispatch preparation, not a lack of GPU arithmetic
   throughput. The GPU portion of the measured token loop is already close to
   the reference's complete token time.
 
-At 51.20 tok/s, AFMKit spends 19.53 ms per generated token. The reproduced
+At 52.10 tok/s, AFMKit spends 19.20 ms per generated token. The reproduced
 reference spends 15.15 ms. Meeting the 10% threshold requires no more than
-16.84 ms/token, so approximately 2.69 ms/token still must be removed from the
+16.84 ms/token, so approximately 2.36 ms/token still must be removed from the
 current path.
 
 ## Qualification boundary
@@ -85,6 +85,8 @@ three-run method. Full CSV files are retained outside the Git checkout under
 | Borrowed `mlx-c` config descriptor | 721.52 warm | 50.63 | 19.75 | rejected (decode and prefill regression) |
 | Prepared Swift HC launch plans | 739.24 | 51.56 | 19.39 | rejected (+0.7% decode; prefill below floor) |
 | Reused immutable Qwen epsilon scalars | 755.04 | 50.91 | 19.64 | rejected (no decode gain; prefill below floor) |
+| Deferred inter-layer HC write | 867.46 | 52.10 | 19.20 | +31.9% |
+| Fused shared-expert merge | 715.74 | 49.55 | 20.18 | rejected (decode and prefill regression) |
 | Reproduced reference | 844.79 | 65.99 | 15.15 | +67.1% over initial |
 | AFMKit 10% acceptance floor | 760.31 | 59.39 | 16.84 | required |
 
@@ -109,9 +111,9 @@ the remaining gap.
 ```mermaid
 xychart-beta
     title "Qwen3.8 Flash Next decode throughput (0.5K, no MTP)"
-    x-axis ["Initial", "Host PLE", "Static flags", "Config cache", "10% floor", "Reference"]
+    x-axis ["Initial", "Host PLE", "Static flags", "Config cache", "Deferred HC", "10% floor", "Reference"]
     y-axis "tokens/second" 0 --> 70
-    bar [39.5, 45.51, 49.09, 51.20, 59.39, 65.99]
+    bar [39.5, 45.51, 49.09, 51.20, 52.10, 59.39, 65.99]
 ```
 
 ## What the token loop is doing
@@ -234,7 +236,7 @@ dictionary lookup and cached-template code; most sampled cost below
 `MLXFastKernel.callAsFunction` remained in `mlx_fast_metal_kernel_apply`, MLX
 graph-node creation, signature construction, and C/Swift value conversion. A
 prepared immutable configuration handle by itself is therefore unlikely to
-recover the remaining 2.69 ms/token. The next candidate must remove a larger
+recover the remaining 2.36 ms/token. The next candidate must remove a larger
 repeated graph-construction boundary, not merely replace the cache key lookup.
 
 ### 4. The unfused hyper-connection graph dominated decode
@@ -277,6 +279,21 @@ while Swift `model()` construction rose from approximately 4.6 to 5.1 ms/token.
 This locates most of the benefit in fewer/smaller graph execution boundaries,
 with a secondary host-construction benefit. The fused path is enabled by
 default; the environment switch remains a diagnostic escape hatch.
+
+### 5. Deferring the final hyper-connection write removes one layer boundary
+
+The reference carries a pending hyper-connection write into the next layer and
+materializes it at the next read or before a PLE boundary. AFMKit now has an
+opt-in equivalent scheduler for ordinary single-sequence decode. The pending
+value is request-local and is always flushed before a PLE layer, so the change
+does not move mutable state into a shared kernel or model object.
+
+The exact-checkpoint A/B reached 867.46 prefill and 52.10 decode tok/s. Focused
+tests cover both an ordinary two-layer boundary and the required PLE flush. The
+path remains opt-in while full-model numerical tolerance, cache restoration,
+batching, and concurrency are qualified: changing the graph's evaluation and
+reduction boundaries can accumulate BF16 rounding differences even when each
+local operation is numerically equivalent.
 
 ## Reference implementation mapping
 
@@ -335,6 +352,7 @@ correctness remains defensible.
 | Borrow the retained `mlx-c` config descriptor instead of copying it at apply | 50.63 versus 51.20 tok/s; warm prefill fell to 721.52 tok/s | Reject and revert; the value copy is not the remaining bottleneck and changing its call semantics regresses both paths |
 | Retain immutable, shape-keyed HC launch plans in Swift and call them with typed `MLXArray` inputs | 51.56 versus 51.20 tok/s; best prefill fell to 739.24 tok/s | Reject and revert; bypassing the Swift config-key lock and `ScalarOrArray` conversion is noise-level for decode and regresses prefill below the acceptance floor |
 | Reuse one immutable epsilon `MLXArray` across HC, Q/K norm-RoPE, and GDN norm/gate calls | 50.91 versus 51.20 tok/s; best prefill reached 755.04 tok/s | Reject and revert; eliminating approximately 144 scalar-array constructions per token did not reduce the dominant GPU-evaluation or graph-submission cost |
+| Fuse `routed + sigmoid(shared_gate) * shared` into one decode-width Metal call | 49.55 versus the 52.10 deferred-HC base; best prefill fell to 715.74 tok/s | Reject and revert; two fewer elementwise graph nodes per layer did not repay the custom-call overhead and regressed both acceptance metrics |
 | Larger structural compilation without ownership analysis | Can hide cache mutation or serialize requests | Rejected as unsafe |
 
 Older A/B values are not directly comparable with the current 51.2 tok/s path
@@ -444,9 +462,12 @@ with the reference engine's 8 GiB cap on the 512 GiB M3 Ultra. The best 0.5K
 no-MTP results were 850.0 prefill / 51.12 decode tok/s at 1 GiB and 878.59
 prefill / 51.14 decode tok/s at 8 GiB. The 0.04% decode difference is noise,
 while the larger pool increased observed peak host memory. The override seam was
-therefore removed and the existing automatic memory policy retained.
+therefore removed and the existing automatic memory policy retained. A later
+shared-expert merge experiment reached only 715.74 prefill / 49.55 decode
+tok/s, showing that replacing three inexpensive elementwise nodes with another
+custom Metal boundary is also counterproductive on this path.
 
-1. Profile the current 51.2 tok/s build without sampling the GPU throughput
+1. Profile the current 52.1 tok/s build without sampling the GPU throughput
    result itself. Use samples to identify host call counts, then benchmark
    separately without the profiler.
 2. Compare graph-node counts and calls per token with the reference's direct MLX
@@ -471,7 +492,7 @@ therefore removed and the existing automatic memory policy retained.
 
 ```mermaid
 flowchart LR
-    A[51.2 tok/s current] --> B[Remove repeated Swift launch construction]
+    A[52.1 tok/s current] --> B[Remove repeated Swift launch construction]
     B --> C{At least 59.4 tok/s?}
     C -- no --> D[Profile next dominant host boundary]
     D --> B

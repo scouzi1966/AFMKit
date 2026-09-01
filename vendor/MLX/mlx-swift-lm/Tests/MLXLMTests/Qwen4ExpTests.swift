@@ -8,21 +8,6 @@ import MLXNN
 import XCTest
 
 final class Qwen4ExpTests: XCTestCase {
-    func testFusedSharedExpertMergeMatchesStockBF16Path() throws {
-        MLXRandom.seed(204)
-        let routed = MLXRandom.normal([1, 1, 2560]).asType(.bfloat16)
-        let shared = MLXRandom.normal([1, 1, 2560]).asType(.bfloat16)
-        let gate = MLXRandom.normal([1, 1, 1]).asType(.bfloat16)
-        let expected = routed + sigmoid(gate) * shared
-        let actual = try XCTUnwrap(Qwen4ExpSharedExpertMerge.callForTesting(
-            routed: routed,
-            shared: shared,
-            gate: gate))
-        MLX.eval(expected, actual)
-
-        XCTAssertEqual(actual.asArray(Float.self), expected.asArray(Float.self))
-    }
-
     func testQwenFusedGatedNormMatchesComposedBF16Path() throws {
         let previous = getenv("AFM_QWEN_FUSED_GDN_NORM_GATE")
             .map { String(cString: $0) }

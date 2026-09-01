@@ -1396,14 +1396,6 @@ private final class Qwen4ExpSparseMoE: Module, UnaryLayer {
             sharedExpertGate, x, verificationPolicy: verificationPolicy,
             role: .expert)
         let shared = sharedExpert(x, verificationPolicy: verificationPolicy)
-        if verificationPolicy == nil,
-           let merged = Qwen4ExpSharedExpertMerge.call(
-               routed: routed,
-               shared: shared,
-               gate: sharedGate)
-        {
-            return merged
-        }
         return routed + sigmoid(sharedGate) * shared
     }
 }
