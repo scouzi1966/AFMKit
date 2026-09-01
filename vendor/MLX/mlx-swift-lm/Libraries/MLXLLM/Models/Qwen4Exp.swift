@@ -1973,6 +1973,87 @@ final class Qwen4ExpForwardProfiler {
     }
 }
 
+/// Opt-in profiler for Swift-side lazy-graph construction. Unlike
+/// ``Qwen4ExpForwardProfiler``, this never evaluates an array or synchronizes
+/// the GPU, so it isolates the host work performed before `asyncEval` walks
+/// and submits the graph. Totals are reported every 32 single-token forwards
+/// to keep diagnostic I/O out of the measured hot path.
+final class Qwen4ExpHostProfiler {
+    enum Block: Int, CaseIterable {
+        case ple
+        case hyperConnectionRead
+        case gatedDelta
+        case attention
+        case mlp
+        case finalWrite
+
+        var label: String {
+            switch self {
+            case .ple: "ple"
+            case .hyperConnectionRead: "hcRead"
+            case .gatedDelta: "gdn"
+            case .attention: "attn"
+            case .mlp: "mlp"
+            case .finalWrite: "finalWrite"
+            }
+        }
+    }
+
+    private static let reportInterval = 32
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var forwards = 0
+    nonisolated(unsafe) private static var accumulated = Array(
+        repeating: UInt64(0), count: Block.allCases.count)
+    nonisolated(unsafe) private static var accumulatedTotal: UInt64 = 0
+
+    private var mark = DispatchTime.now().uptimeNanoseconds
+    private let start = DispatchTime.now().uptimeNanoseconds
+    private var blockNanoseconds = Array(
+        repeating: UInt64(0), count: Block.allCases.count)
+
+    static func make(sequenceLength: Int) -> Qwen4ExpHostProfiler? {
+        guard sequenceLength == 1,
+              ProcessInfo.processInfo.environment["AFM_QWEN_PROFILE_HOST"] == "all"
+        else { return nil }
+        return Qwen4ExpHostProfiler()
+    }
+
+    func lap(_ block: Block) {
+        let now = DispatchTime.now().uptimeNanoseconds
+        blockNanoseconds[block.rawValue] += now - mark
+        mark = now
+    }
+
+    func report() {
+        let total = DispatchTime.now().uptimeNanoseconds - start
+        Self.lock.withLock {
+            Self.forwards += 1
+            Self.accumulatedTotal += total
+            for block in Block.allCases {
+                Self.accumulated[block.rawValue] += blockNanoseconds[block.rawValue]
+            }
+            guard Self.forwards.isMultiple(of: Self.reportInterval) else { return }
+
+            let divisor = Double(Self.reportInterval) * 1_000_000
+            func milliseconds(_ nanoseconds: UInt64) -> String {
+                String(format: "%.3f", Double(nanoseconds) / divisor)
+            }
+            let stages = Block.allCases.map { block in
+                "\(block.label) \(milliseconds(Self.accumulated[block.rawValue]))"
+            }.joined(separator: " ")
+            let stageTotal = Self.accumulated.reduce(0, +)
+            let unclassified = Self.accumulatedTotal > stageTotal
+                ? Self.accumulatedTotal - stageTotal : 0
+            print(
+                "[qwen4-host-prof] avg-ms/forward \(stages) "
+                    + "other \(milliseconds(unclassified)) "
+                    + "total \(milliseconds(Self.accumulatedTotal))")
+            Self.accumulated = Array(repeating: 0, count: Block.allCases.count)
+            Self.accumulatedTotal = 0
+        }
+    }
+}
+
 /// A final hyper-connection write whose stream update can be folded into the
 /// next layer's fused read. This mirrors mlx-serve's `HcPending` scheduling;
 /// the arrays remain request-owned and are never retained by the model.
@@ -2156,7 +2237,8 @@ final class Qwen4ExpDecoderLayer: Module {
         hostTokenIDs: [Int]?,
         attentionMask: MLXFast.ScaledDotProductAttentionMaskMode,
         positionIDs: MLXArray?,
-        cache: KVCache?
+        cache: KVCache?,
+        hostProfiler: Qwen4ExpHostProfiler? = nil
     ) -> (stream: MLXArray, pending: Qwen4ExpPendingHyperConnectionWrite) {
         let arrayCache = cache as? ArraysCache
         var hidden = input
@@ -2176,6 +2258,7 @@ final class Qwen4ExpDecoderLayer: Module {
                 hidden, inputIDs: inputIDs, cache: arrayCache,
                 hostTokenIDs: hostTokenIDs,
                 verificationPolicy: nil)
+            hostProfiler?.lap(.ple)
         }
 
         let attentionRead: (MLXArray, MLXArray, MLXArray)
@@ -2189,18 +2272,22 @@ final class Qwen4ExpDecoderLayer: Module {
             attentionRead = attentionHyperConnection.mix(
                 hidden, verificationPolicy: nil)
         }
+        hostProfiler?.lap(.hyperConnectionRead)
 
         let attended = isLinear
             ? linearAttention!(attentionRead.0, cache: arrayCache, verificationPolicy: nil)
             : selfAttention!(
                 attentionRead.0, mask: attentionMask, positionIDs: positionIDs,
                 cache: cache, verificationPolicy: nil)
+        hostProfiler?.lap(isLinear ? .gatedDelta : .attention)
         let mlpRead = mlpHyperConnection.mixAfterInjection(
             output: attended,
             residual: attentionRead.1,
             weights: attentionRead.2,
             verificationPolicy: nil)
+        hostProfiler?.lap(.hyperConnectionRead)
         let mlpOutput = mlp(mlpRead.0, verificationPolicy: nil)
+        hostProfiler?.lap(.mlp)
         return (
             mlpRead.1,
             Qwen4ExpPendingHyperConnectionWrite(
@@ -2286,6 +2373,7 @@ private final class Qwen4ExpModelInner: Module {
             && verificationPolicy == nil
             && hidden.dim(1) == 1
         let profiler = Qwen4ExpForwardProfiler.make(sequenceLength: hidden.dim(1))
+        let hostProfiler = Qwen4ExpHostProfiler.make(sequenceLength: hidden.dim(1))
         profiler?.start(hidden)
         var pending: Qwen4ExpPendingHyperConnectionWrite?
         for (index, layer) in layers.enumerated() {
@@ -2297,7 +2385,8 @@ private final class Qwen4ExpModelInner: Module {
                     hostTokenIDs: hostTokenIDs,
                     attentionMask: mask,
                     positionIDs: positionIDs,
-                    cache: layerCaches[index])
+                    cache: layerCaches[index],
+                    hostProfiler: hostProfiler)
                 hidden = result.stream
                 pending = result.pending
             } else {
@@ -2311,8 +2400,10 @@ private final class Qwen4ExpModelInner: Module {
         }
         if let pending, let finalLayer = layers.last {
             hidden = finalLayer.materializeFinalInjection(pending)
+            hostProfiler?.lap(.finalWrite)
         }
         profiler?.report()
+        hostProfiler?.report()
         return hidden
     }
 
