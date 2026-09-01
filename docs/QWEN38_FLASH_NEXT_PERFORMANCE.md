@@ -347,7 +347,7 @@ correctness remains defensible.
 | Compile a broad per-layer tail | 51.31 versus 51.20 tok/s after other fixes; cold prefill regressed | Do not enable |
 | Shared SwiGLU fusion | Approximately 36.8 versus 37.2 tok/s in its contemporaneous A/B | Reject |
 | GDN norm/gate fusion alone | Results were neutral or negative in contemporaneous runs | Keep experimental/off unless a later combined profile proves value |
-| BF16 GDN state | Approximately 39.5 tok/s; no meaningful decode gain | Do not treat as a speed solution |
+| BF16 GDN state | On the current retained stack, 53.57 versus 52.96 tok/s decode and 879.01 versus 877.29 tok/s prefill; only a 1.15% decode gain, while BF16 storage changes multi-token MTP verification rounding relative to repeated singleton decode | Reject; retain FP32 recurrent state for schedule-equivalent verification |
 | Spin before parking PLE workers | 50.78 versus 51.20 tok/s; prefill 841.82 tok/s | Reject; scheduling wake-up is not the missing decode time |
 | Replace `new_mlx_vector_array`'s temporary mapped handle array with scoped stack storage | 51.12 versus 51.20 tok/s; best prefill 867.98 tok/s | Reject and revert; eliminating this Swift allocation does not remove the decode bottleneck |
 | Borrow the retained `mlx-c` config descriptor instead of copying it at apply | 50.63 versus 51.20 tok/s; warm prefill fell to 721.52 tok/s | Reject and revert; the value copy is not the remaining bottleneck and changing its call semantics regresses both paths |
@@ -355,9 +355,11 @@ correctness remains defensible.
 | Reuse one immutable epsilon `MLXArray` across HC, Q/K norm-RoPE, and GDN norm/gate calls | 50.91 versus 51.20 tok/s; best prefill reached 755.04 tok/s | Reject and revert; eliminating approximately 144 scalar-array constructions per token did not reduce the dominant GPU-evaluation or graph-submission cost |
 | Fuse `routed + sigmoid(shared_gate) * shared` into one decode-width Metal call | 49.55 versus the 52.10 deferred-HC base; best prefill fell to 715.74 tok/s | Reject and revert; two fewer elementwise graph nodes per layer did not repay the custom-call overhead and regressed both acceptance metrics |
 | Keep attention output and its gate as 4-D strided views until after their decode-width multiply | Feature-on reached 53.17 tok/s decode and 772.83 tok/s prefill; the immediate same-binary feature-off control reached 53.44 tok/s decode and 725.46 tok/s prefill | Reject and revert; the feature did not cause the decode result, and restructuring the gate graph produced unstable, substantially lower prefill than the retained 867.46 tok/s path |
+| Port the reference engine's exact BF16 shared-expert SwiGLU lookup kernel | The focused 8192-wide bit-for-bit test passed, but the current-stack A/B reached 52.92 versus 52.96 tok/s decode and 864.32 versus 877.29 tok/s prefill | Reject and revert; Swift's lazy graph already fuses the expression, while the custom call adds a dispatch boundary |
+| Enable the generic `MLXFastKernel` configuration cache for both GatedDelta kernels | Focused sequential, fused-prework, and legacy-state tests passed; the current-stack A/B reached 52.91 versus 52.96 tok/s decode and 877.75 versus 877.29 tok/s prefill | Reject and revert; the underlying configuration is already reused effectively enough that this wrapper cache is noise-level |
 | Larger structural compilation without ownership analysis | Can hide cache mutation or serialize requests | Rejected as unsafe |
 
-Older A/B values are not directly comparable with the current 51.2 tok/s path
+Older A/B values are not directly comparable with the current 52.96 tok/s path
 because later host and launch-config fixes changed the base. They remain useful
 for rejecting large regressions, but any candidate reconsidered now must be
 rerun against the current base.
