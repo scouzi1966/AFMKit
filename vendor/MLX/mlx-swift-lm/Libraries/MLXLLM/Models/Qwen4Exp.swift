@@ -468,6 +468,10 @@ private final class Qwen4ExpAttentionCache: KVCache {
         return (indexKeys!, indexPositionIDs!)
     }
 
+    fileprivate var indexStateForProfiling: [MLXArray] {
+        [indexKeys, indexPositionIDs].compactMap { $0 }
+    }
+
     func update(keys newKeys: MLXArray, values newValues: MLXArray)
         -> (MLXArray, MLXArray)
     {
@@ -645,6 +649,29 @@ func qwen4ExpTargetVerifyAttention(
 private enum Qwen4ExpQSASelection {
     case mask(MLXArray)
     case blocks(MLXArray)
+}
+
+/// Opt-in synchronization profiler for the full-attention graph. This is
+/// intentionally separate from the whole-forward profiler so an attention
+/// regression can be attributed to projection, QK preparation, cache/SDPA,
+/// or the gated output tail. It has no normal-path effect.
+private final class Qwen4ExpAttentionProfiler {
+    static func make(sequenceLength: Int) -> Qwen4ExpAttentionProfiler? {
+        guard sequenceLength == 1,
+              ProcessInfo.processInfo.environment["AFM_QWEN_PROFILE_ATTN"] == "all"
+        else { return nil }
+        _ = Stream.gpu.commandBufferProfileSinceReport()
+        return Qwen4ExpAttentionProfiler()
+    }
+
+    func lap(_ arrays: [MLXArray], stage: String) {
+        guard !arrays.isEmpty else { return }
+        eval(arrays)
+        let profile = Stream.gpu.commandBufferProfileSinceReport()
+        print(
+            "[qwen4-attn-prof] \(stage) buffers=\(profile.buffers) "
+                + "ops=\(profile.operations) bytes=\(profile.bytes)")
+    }
 }
 
 private final class Qwen4ExpQSAIndexer: Module {
@@ -881,9 +908,11 @@ private final class Qwen4ExpAttention: Module {
         mask: MLXFast.ScaledDotProductAttentionMaskMode,
         positionIDs providedPositionIDs: MLXArray?,
         cache: KVCache?,
-        verificationPolicy: MTPVerificationPolicy? = nil
+        verificationPolicy: MTPVerificationPolicy? = nil,
+        fusedQKAngles sharedFusedQKAngles: MLXArray? = nil
     ) -> MLXArray {
         let (b, l) = (x.dim(0), x.dim(1))
+        let attentionProfiler = Qwen4ExpAttentionProfiler.make(sequenceLength: l)
         let offset = cache?.offset ?? 0
         let positionIDs = providedPositionIDs ?? tiled(
             MLXArray(Int32(offset) ..< Int32(offset + l))[.newAxis, 0...],
@@ -891,6 +920,9 @@ private final class Qwen4ExpAttention: Module {
         let qsaSelection = indexer(
             x, positionIDs: positionIDs, cache: cache as? Qwen4ExpAttentionCache,
             verificationPolicy: verificationPolicy)
+        if let indexState = (cache as? Qwen4ExpAttentionCache)?.indexStateForProfiling {
+            attentionProfiler?.lap(indexState, stage: "indexer")
+        }
         let qParts = MLX.split(
             VerifyWidthLinear.call(
                 qProj, x, verificationPolicy: verificationPolicy,
@@ -906,6 +938,7 @@ private final class Qwen4ExpAttention: Module {
         let v = VerifyWidthLinear.call(
             vProj, x, verificationPolicy: verificationPolicy, role: .attention)
             .reshaped(b, l, kvHeads, headDim).transposed(0, 2, 1, 3)
+        attentionProfiler?.lap([qInput, gate, kInput, v], stage: "projections")
         let fusedQK = verificationPolicy == nil
             && Qwen4ExpQKNormRoPEFusion.enabled
             ? Qwen4ExpQKNormRoPEFusion.call(
@@ -913,7 +946,7 @@ private final class Qwen4ExpAttention: Module {
                 k: kInput,
                 qWeight: qNorm.weight,
                 kWeight: kNorm.weight,
-                angles: rope.fusedAngleTable(
+                angles: sharedFusedQKAngles ?? rope.fusedAngleTable(
                     positionIDs: positionIDs, dtype: qInput.dtype),
                 epsilon: qNorm.eps,
                 qHeads: heads,
@@ -933,6 +966,7 @@ private final class Qwen4ExpAttention: Module {
                 kNorm(kInput).transposed(0, 2, 1, 3),
                 positionIDs: positionIDs)
         }
+        attentionProfiler?.lap([q, k, v], stage: "qk-rope")
         let effectiveMask: MLXFast.ScaledDotProductAttentionMaskMode
         if case let .some(.mask(qsaMask)) = qsaSelection {
             effectiveMask = .array(qsaMask)
@@ -986,12 +1020,15 @@ private final class Qwen4ExpAttention: Module {
                 queries: q, keys: k, values: v, cache: cache, scale: scale,
                 mask: effectiveMask)
         }
+        attentionProfiler?.lap([outputHeads], stage: "cache-sdpa")
         var output = outputHeads
             .transposed(0, 2, 1, 3).reshaped(b, l, -1)
         output = output * sigmoid(gate)
-        return VerifyWidthLinear.call(
+        let result = VerifyWidthLinear.call(
             oProj, output, verificationPolicy: verificationPolicy,
             role: .attention)
+        attentionProfiler?.lap([result], stage: "gated-output")
+        return result
     }
 }
 
