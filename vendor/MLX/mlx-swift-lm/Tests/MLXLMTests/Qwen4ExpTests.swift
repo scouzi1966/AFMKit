@@ -8,29 +8,6 @@ import MLXNN
 import XCTest
 
 final class Qwen4ExpTests: XCTestCase {
-    func testStridedAttentionGateTailMatchesFlattenedBF16Path() {
-        MLXRandom.seed(205)
-        let heads = 8
-        let headDimension = 256
-        let packed = MLXRandom.normal([1, 1, heads, headDimension * 2])
-            .asType(.bfloat16)
-        let gate = MLX.split(packed, parts: 2, axis: -1)[1]
-        let outputHeads = MLXRandom.normal([1, heads, 1, headDimension])
-            .asType(.bfloat16)
-        let expected = outputHeads
-            .transposed(0, 2, 1, 3)
-            .reshaped(1, 1, -1)
-            * sigmoid(gate.reshaped(1, 1, -1))
-        let actual = Qwen4ExpAttentionGateTail.call(
-            outputHeads: outputHeads,
-            gate: gate,
-            batch: 1,
-            sequenceLength: 1)
-        MLX.eval(expected, actual)
-
-        XCTAssertEqual(actual.asArray(Float.self), expected.asArray(Float.self))
-    }
-
     func testQwenFusedGatedNormMatchesComposedBF16Path() throws {
         let previous = getenv("AFM_QWEN_FUSED_GDN_NORM_GATE")
             .map { String(cString: $0) }

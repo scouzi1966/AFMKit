@@ -87,6 +87,7 @@ three-run method. Full CSV files are retained outside the Git checkout under
 | Reused immutable Qwen epsilon scalars | 755.04 | 50.91 | 19.64 | rejected (no decode gain; prefill below floor) |
 | Deferred inter-layer HC write | 867.46 | 52.10 | 19.20 | +31.9% |
 | Fused shared-expert merge | 715.74 | 49.55 | 20.18 | rejected (decode and prefill regression) |
+| Strided attention-gate tail, decode only | 772.83 | 53.17 | 18.81 | rejected (flag-off control reached 53.44) |
 | Reproduced reference | 844.79 | 65.99 | 15.15 | +67.1% over initial |
 | AFMKit 10% acceptance floor | 760.31 | 59.39 | 16.84 | required |
 
@@ -353,6 +354,7 @@ correctness remains defensible.
 | Retain immutable, shape-keyed HC launch plans in Swift and call them with typed `MLXArray` inputs | 51.56 versus 51.20 tok/s; best prefill fell to 739.24 tok/s | Reject and revert; bypassing the Swift config-key lock and `ScalarOrArray` conversion is noise-level for decode and regresses prefill below the acceptance floor |
 | Reuse one immutable epsilon `MLXArray` across HC, Q/K norm-RoPE, and GDN norm/gate calls | 50.91 versus 51.20 tok/s; best prefill reached 755.04 tok/s | Reject and revert; eliminating approximately 144 scalar-array constructions per token did not reduce the dominant GPU-evaluation or graph-submission cost |
 | Fuse `routed + sigmoid(shared_gate) * shared` into one decode-width Metal call | 49.55 versus the 52.10 deferred-HC base; best prefill fell to 715.74 tok/s | Reject and revert; two fewer elementwise graph nodes per layer did not repay the custom-call overhead and regressed both acceptance metrics |
+| Keep attention output and its gate as 4-D strided views until after their decode-width multiply | Feature-on reached 53.17 tok/s decode and 772.83 tok/s prefill; the immediate same-binary feature-off control reached 53.44 tok/s decode and 725.46 tok/s prefill | Reject and revert; the feature did not cause the decode result, and restructuring the gate graph produced unstable, substantially lower prefill than the retained 867.46 tok/s path |
 | Larger structural compilation without ownership analysis | Can hide cache mutation or serialize requests | Rejected as unsafe |
 
 Older A/B values are not directly comparable with the current 51.2 tok/s path
@@ -465,7 +467,12 @@ while the larger pool increased observed peak host memory. The override seam was
 therefore removed and the existing automatic memory policy retained. A later
 shared-expert merge experiment reached only 715.74 prefill / 49.55 decode
 tok/s, showing that replacing three inexpensive elementwise nodes with another
-custom Metal boundary is also counterproductive on this path.
+custom Metal boundary is also counterproductive on this path. Keeping the
+attention output and gate as strided 4-D views was rejected as well: its
+decode-only A/B was 53.17 tok/s with the feature on versus 53.44 tok/s off, and
+both source-layout runs showed materially worse prefill than the retained
+867.46 tok/s graph. That reference implementation detail does not transfer as a
+standalone optimization through the current MLX Swift graph builder.
 
 1. Profile the current 52.1 tok/s build without sampling the GPU throughput
    result itself. Use samples to identify host call counts, then benchmark
