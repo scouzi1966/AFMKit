@@ -1873,6 +1873,8 @@ final class Qwen4ExpForwardProfiler {
     private var attentionNanoseconds: UInt64 = 0
     private var gatedDeltaLayers = 0
     private var attentionLayers = 0
+    private var blockCommandBuffers = Array(repeating: UInt64(0), count: Block.allCases.count)
+    private var blockOperations = Array(repeating: UInt64(0), count: Block.allCases.count)
 
     static func make(sequenceLength: Int) -> Qwen4ExpForwardProfiler? {
         guard sequenceLength == 1,
@@ -1883,11 +1885,15 @@ final class Qwen4ExpForwardProfiler {
 
     func start(_ array: MLXArray) {
         eval(array)
+        _ = Stream.gpu.commandBufferProfileSinceReport()
         mark = DispatchTime.now().uptimeNanoseconds
     }
 
     func lap(_ array: MLXArray, block: Block) {
         eval(array)
+        let profile = Stream.gpu.commandBufferProfileSinceReport()
+        blockCommandBuffers[block.rawValue] += profile.buffers
+        blockOperations[block.rawValue] += profile.operations
         let now = DispatchTime.now().uptimeNanoseconds
         let elapsed = now - mark
         mark = now
@@ -1919,6 +1925,14 @@ final class Qwen4ExpForwardProfiler {
                 + "(\(gatedDeltaLayers) layers) attn \(String(format: "%.2f", milliseconds(attentionNanoseconds))) ms "
                 + "(\(attentionLayers) layers) ple-layer \(String(format: "%.2f", milliseconds(pleLayerNanoseconds))) ms")
         print("[qwen4-prof] blocks (ms, whole forward): \(blocks)")
+        let commandBuffers = Block.allCases.map {
+            "\($0.label) \(blockCommandBuffers[$0.rawValue])"
+        }.joined(separator: " ")
+        let operations = Block.allCases.map {
+            "\($0.label) \(blockOperations[$0.rawValue])"
+        }.joined(separator: " ")
+        print("[qwen4-prof] command buffers: \(commandBuffers)")
+        print("[qwen4-prof] GPU ops: \(operations)")
     }
 }
 
