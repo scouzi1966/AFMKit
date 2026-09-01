@@ -845,6 +845,31 @@ private final class Qwen4ExpQSAIndexer: Module {
     }
 }
 
+/// Applies Qwen's per-head output gate before flattening the attention heads.
+///
+/// Keeping both the split gate and transposed attention output as 4-D strided
+/// views avoids materializing two intermediate copies. The operation order is
+/// adapted from ddalcu/mlx-serve's `gatedAttnTail` (MIT; see
+/// `LICENSE-mlx-serve`), while this remains a native MLX Swift graph.
+enum Qwen4ExpAttentionGateTail {
+    static let enabled =
+        ProcessInfo.processInfo.environment[
+            "AFM_QWEN_STRIDED_ATTN_GATE_TAIL"
+        ] == "1"
+
+    static func call(
+        outputHeads: MLXArray,
+        gate: MLXArray,
+        batch: Int,
+        sequenceLength: Int
+    ) -> MLXArray {
+        precondition(outputHeads.ndim == 4)
+        precondition(gate.ndim == 4)
+        let gated = outputHeads.transposed(0, 2, 1, 3) * sigmoid(gate)
+        return gated.reshaped(batch, sequenceLength, -1)
+    }
+}
+
 private final class Qwen4ExpAttention: Module {
     let heads: Int
     let kvHeads: Int
@@ -899,7 +924,7 @@ private final class Qwen4ExpAttention: Module {
             parts: 2,
             axis: -1)
         let qInput = qParts[0]
-        let gate = qParts[1].reshaped(b, l, -1)
+        let gate = qParts[1]
         let kInput = VerifyWidthLinear.call(
             kProj, x, verificationPolicy: verificationPolicy, role: .attention)
             .reshaped(b, l, kvHeads, headDim)
@@ -986,9 +1011,18 @@ private final class Qwen4ExpAttention: Module {
                 queries: q, keys: k, values: v, cache: cache, scale: scale,
                 mask: effectiveMask)
         }
-        var output = outputHeads
-            .transposed(0, 2, 1, 3).reshaped(b, l, -1)
-        output = output * sigmoid(gate)
+        let output: MLXArray
+        if verificationPolicy == nil && Qwen4ExpAttentionGateTail.enabled {
+            output = Qwen4ExpAttentionGateTail.call(
+                outputHeads: outputHeads,
+                gate: gate,
+                batch: b,
+                sequenceLength: l)
+        } else {
+            let flattenedOutput = outputHeads
+                .transposed(0, 2, 1, 3).reshaped(b, l, -1)
+            output = flattenedOutput * sigmoid(gate.reshaped(b, l, -1))
+        }
         return VerifyWidthLinear.call(
             oProj, output, verificationPolicy: verificationPolicy,
             role: .attention)
