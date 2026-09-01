@@ -154,6 +154,11 @@ public enum PrepareResult {
 /// - the ``TokenIterator`` accumulates this information into a ``GenerateResult``
 public protocol LanguageModel: Module {
 
+    /// Whether decode benefits from receiving the already materialized host
+    /// token ID. Models backed by host-side lookup tables can use this to
+    /// avoid an otherwise unnecessary device-wide synchronization.
+    var consumesHostTokenIDs: Bool { get }
+
     /// Prepare the cache state and consume the ``LMInput``.
     ///
     /// This can return:
@@ -164,6 +169,15 @@ public protocol LanguageModel: Module {
     /// Primary entry point to produce a step (single token) from the model
     func callAsFunction(_ input: LMInput.Text, cache: [KVCache]?, state: LMOutput.State?)
         -> LMOutput
+
+    /// Host-token-aware decode entry point. The default implementation keeps
+    /// existing models on the fully lazy device path.
+    func callAsFunction(
+        _ input: LMInput.Text,
+        cache: [KVCache]?,
+        state: LMOutput.State?,
+        hostTokenIDs: [Int]?
+    ) -> LMOutput
 
     /// Models may implement this simplified interface if they do not produce any ``LMOutput/State``
     func callAsFunction(_ inputs: MLXArray, cache: [KVCache]?) -> MLXArray
@@ -186,11 +200,22 @@ public protocol LanguageModelWeightFilter {
 }
 
 extension LanguageModel {
+    public var consumesHostTokenIDs: Bool { false }
+
     public func callAsFunction(_ input: LMInput.Text, cache: [KVCache]?, state: LMOutput.State?)
         -> LMOutput
     {
         let logits = callAsFunction(input.tokens, cache: cache)
         return .init(logits: logits)
+    }
+
+    public func callAsFunction(
+        _ input: LMInput.Text,
+        cache: [KVCache]?,
+        state: LMOutput.State?,
+        hostTokenIDs: [Int]?
+    ) -> LMOutput {
+        callAsFunction(input, cache: cache, state: state)
     }
 
     public func callAsFunction(_ inputs: MLXArray, cache: [KVCache]?) -> MLXArray {

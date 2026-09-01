@@ -545,7 +545,11 @@ public final class LLMModelFactory: ModelFactory {
                 configurationURL.lastPathComponent, configuration.name, error)
         }
 
-        if let tableURL = configuration.qwenNGramTableURL {
+        let qwenNGramTableURL = try resolveQwenNGramTableURL(
+            configurationData: configData,
+            modelDirectory: modelDirectory,
+            explicitURL: configuration.qwenNGramTableURL)
+        if let tableURL = qwenNGramTableURL {
             guard let qwen = model as? Qwen4ExpModel else {
                 throw ModelFactoryError.unsupportedModelType(
                     "external Qwen n-gram table for \(baseConfig.modelType)")

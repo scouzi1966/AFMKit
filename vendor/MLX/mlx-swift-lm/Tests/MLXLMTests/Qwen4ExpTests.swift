@@ -8,6 +8,309 @@ import MLXNN
 import XCTest
 
 final class Qwen4ExpTests: XCTestCase {
+    func testFusedSharedExpertMergeMatchesStockBF16Path() throws {
+        MLXRandom.seed(204)
+        let routed = MLXRandom.normal([1, 1, 2560]).asType(.bfloat16)
+        let shared = MLXRandom.normal([1, 1, 2560]).asType(.bfloat16)
+        let gate = MLXRandom.normal([1, 1, 1]).asType(.bfloat16)
+        let expected = routed + sigmoid(gate) * shared
+        let actual = try XCTUnwrap(Qwen4ExpSharedExpertMerge.callForTesting(
+            routed: routed,
+            shared: shared,
+            gate: gate))
+        MLX.eval(expected, actual)
+
+        XCTAssertEqual(actual.asArray(Float.self), expected.asArray(Float.self))
+    }
+
+    func testQwenFusedGatedNormMatchesComposedBF16Path() throws {
+        let previous = getenv("AFM_QWEN_FUSED_GDN_NORM_GATE")
+            .map { String(cString: $0) }
+        setenv("AFM_QWEN_FUSED_GDN_NORM_GATE", "1", 1)
+        defer {
+            if let previous {
+                setenv("AFM_QWEN_FUSED_GDN_NORM_GATE", previous, 1)
+            } else {
+                unsetenv("AFM_QWEN_FUSED_GDN_NORM_GATE")
+            }
+        }
+
+        MLXRandom.seed(193)
+        let values = MLXRandom.normal([1, 3, 48, 128]).asType(.bfloat16)
+        let gate = MLXRandom.normal([1, 3, 48, 128]).asType(.bfloat16)
+        let weight = MLXRandom.uniform(low: 0.9, high: 1.1, [128])
+            .asType(.bfloat16)
+
+        for sigmoidGate in [true, false] {
+            let normalized = MLXFast.rmsNorm(
+                values, weight: weight, eps: 1e-6)
+            let expected = normalized
+                * (sigmoidGate ? sigmoid(gate) : silu(gate))
+            let actual = try XCTUnwrap(Qwen4ExpGatedNormFusion.call(
+                values: values,
+                gate: gate,
+                weight: weight,
+                epsilon: 1e-6,
+                sigmoidGate: sigmoidGate))
+            MLX.eval(expected, actual)
+            XCTAssertEqual(
+                actual.asArray(Float.self), expected.asArray(Float.self),
+                "gate=\(sigmoidGate ? "sigmoid" : "silu")")
+        }
+    }
+
+    func testQwenFusedQKNormRoPEMatchesComposedBF16Path() throws {
+        let previous = getenv("AFM_QWEN_FUSED_QK_NORM_ROPE")
+            .map { String(cString: $0) }
+        setenv("AFM_QWEN_FUSED_QK_NORM_ROPE", "1", 1)
+        defer {
+            if let previous {
+                setenv("AFM_QWEN_FUSED_QK_NORM_ROPE", previous, 1)
+            } else {
+                unsetenv("AFM_QWEN_FUSED_QK_NORM_ROPE")
+            }
+        }
+
+        MLXRandom.seed(91)
+        let q = MLXRandom.normal([1, 1, 24, 256]).asType(.bfloat16)
+        let k = MLXRandom.normal([1, 1, 2, 256]).asType(.bfloat16)
+        let qWeight = MLXRandom.uniform(low: -0.1, high: 0.1, [256])
+            .asType(.bfloat16)
+        let kWeight = MLXRandom.uniform(low: -0.1, high: 0.1, [256])
+            .asType(.bfloat16)
+        let positionIDs = MLXArray([Int32(37)]).reshaped(1, 1)
+        let rope = Qwen4ExpMultimodalRoPE(
+            dimensions: 64, base: 10_000_000, mropeSection: [11, 11, 10])
+        let angles = rope.fusedAngleTable(
+            positionIDs: positionIDs, dtype: .bfloat16)
+
+        func normalized(_ value: MLXArray, weight: MLXArray) -> MLXArray {
+            MLXFast.rmsNorm(value, weight: weight + 1, eps: 1e-6)
+        }
+        let expectedQ = rope.apply(
+            normalized(q, weight: qWeight).transposed(0, 2, 1, 3),
+            positionIDs: positionIDs)
+        let expectedK = rope.apply(
+            normalized(k, weight: kWeight).transposed(0, 2, 1, 3),
+            positionIDs: positionIDs)
+        let fused = try XCTUnwrap(Qwen4ExpQKNormRoPEFusion.call(
+            q: q,
+            k: k,
+            qWeight: qWeight,
+            kWeight: kWeight,
+            angles: angles,
+            epsilon: 1e-6,
+            qHeads: 24,
+            kvHeads: 2,
+            rotaryDimensions: 64))
+        MLX.eval(expectedQ, expectedK, fused.q, fused.k)
+
+        func assertExact(
+            _ actual: MLXArray, _ expected: MLXArray, label: String,
+            file: StaticString = #filePath, line: UInt = #line
+        ) {
+            let actualValues = actual.asArray(Float.self)
+            let expectedValues = expected.asArray(Float.self)
+            let mismatches = zip(actualValues, expectedValues).enumerated()
+                .filter { $0.element.0 != $0.element.1 }
+            let maximum = zip(actualValues, expectedValues)
+                .map { abs($0 - $1) }.max() ?? 0
+            XCTAssertTrue(
+                mismatches.isEmpty,
+                "\(label): \(mismatches.count)/\(actualValues.count) mismatches, "
+                    + "max=\(maximum), first=\(mismatches.prefix(8).map { "\($0.offset):\($0.element.0)/\($0.element.1)" })",
+                file: file, line: line)
+        }
+        assertExact(fused.q, expectedQ, label: "q")
+        assertExact(fused.k, expectedK, label: "k")
+    }
+
+    func testQwenFusedSoftmaxRouterMatchesStockBF16Chain() throws {
+        let previous = getenv("AFM_QWEN_FUSED_MOE_ROUTER").map { String(cString: $0) }
+        setenv("AFM_QWEN_FUSED_MOE_ROUTER", "1", 1)
+        defer {
+            if let previous { setenv("AFM_QWEN_FUSED_MOE_ROUTER", previous, 1) }
+            else { unsetenv("AFM_QWEN_FUSED_MOE_ROUTER") }
+        }
+
+        MLXRandom.seed(73)
+        let logits = MLXRandom.normal([1, 1, 512]).asType(.bfloat16)
+        let probabilities = MLX.softmax(logits, axis: -1, precise: true)
+        let expectedIndices = MLX.argPartition(
+            -probabilities, kth: 9, axis: -1)[.ellipsis, ..<10]
+        var expectedScores = MLX.takeAlong(
+            probabilities, expectedIndices, axis: -1)
+        expectedScores = expectedScores
+            / expectedScores.sum(axis: -1, keepDims: true)
+
+        let fused = try XCTUnwrap(qwenFusedSoftmaxTopK(logits: logits, topK: 10))
+        MLX.eval(expectedIndices, expectedScores, fused.indices, fused.scores)
+
+        XCTAssertEqual(fused.indices.asArray(Int.self), expectedIndices.asArray(Int.self))
+        XCTAssertEqual(fused.scores.asArray(Float.self), expectedScores.asArray(Float.self))
+    }
+
+    func testQwenCheckpointResolvesDeclaredNGramSidecarByDefault() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("qwen-ngram-resolver-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(
+            at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let tableURL = directory.appendingPathComponent("ngram_table.bin")
+        try Data([0]).write(to: tableURL)
+        let configuration = Data(
+            #"{"model_type":"qwen4_exp","ngram_table":{"file":"ngram_table.bin"}}"#.utf8)
+
+        XCTAssertEqual(
+            try resolveQwenNGramTableURL(
+                configurationData: configuration,
+                modelDirectory: directory,
+                explicitURL: nil),
+            tableURL.standardizedFileURL)
+    }
+
+    func testQwenCheckpointRejectsEscapingNGramSidecarPath() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("qwen-ngram-resolver-\(UUID().uuidString)")
+        let configuration = Data(
+            #"{"model_type":"qwen4_exp","ngram_table":{"file":"../outside.bin"}}"#.utf8)
+
+        XCTAssertThrowsError(try resolveQwenNGramTableURL(
+            configurationData: configuration,
+            modelDirectory: directory,
+            explicitURL: nil)) { error in
+            XCTAssertEqual(
+                error as? QwenNGramTableResolutionError,
+                .unsafePath("../outside.bin"))
+        }
+    }
+
+    private func qwenHyperConnectionReference(
+        input: MLXArray,
+        normWeight: MLXArray,
+        down: Linear,
+        up: Linear,
+        inject: Linear,
+        hcCount: Int,
+        hiddenSize: Int,
+        epsilon: Float
+    ) -> Qwen4ExpHyperConnectionFusionOutput {
+        let originalShape = input.shape
+        let grouped = input.reshaped(Array(originalShape.dropLast()) + [-1, hiddenSize])
+            .asType(.float32)
+        let normalized = grouped * rsqrt(
+            (grouped * grouped).mean(axis: -1, keepDims: true) + epsilon)
+        let groupedWeight = (normWeight + 1).asType(.float32).reshaped(-1, hiddenSize)
+        let normalizedInput = (normalized * groupedWeight).asType(input.dtype)
+            .reshaped(originalShape)
+        let weights = sigmoid(up(silu(down(normalizedInput) / Float(hcCount))))
+        let leadingShape = Array(input.shape.dropLast())
+        let mixed = (weights.reshaped(leadingShape + [hcCount, hiddenSize])
+            * normalizedInput.reshaped(leadingShape + [hcCount, hiddenSize]))
+            .mean(axis: -2)
+        let injection = (2 * sigmoid(inject(normalizedInput) / Float(hcCount)))
+            .reshaped(leadingShape + [hcCount])
+        return Qwen4ExpHyperConnectionFusionOutput(
+            mixed: mixed,
+            injection: injection,
+            stream: input)
+    }
+
+    private func maximumAbsoluteDifference(_ lhs: MLXArray, _ rhs: MLXArray) -> Float {
+        eval(lhs, rhs)
+        return zip(
+            lhs.asType(.float32).asArray(Float.self),
+            rhs.asType(.float32).asArray(Float.self)
+        ).map { abs($0 - $1) }.max() ?? 0
+    }
+
+    func testOfficialTinyOracleLayerStreams() async throws {
+        let environment = ProcessInfo.processInfo.environment
+        guard let packPath = environment["QWEN4_ORACLE_PACK"],
+              let fixturePath = environment["QWEN4_ORACLE_FIXTURE"]
+        else {
+            throw XCTSkip("Set QWEN4_ORACLE_PACK and QWEN4_ORACLE_FIXTURE")
+        }
+
+        let context = try await loadModel(directory: URL(fileURLWithPath: packPath))
+        let qwen = try XCTUnwrap(context.model as? Qwen4ExpModel)
+        let fixture = try MLX.loadArrays(url: URL(fileURLWithPath: fixturePath))
+        let inputIDs = try XCTUnwrap(fixture["input_ids"])
+            .asType(.int32).reshaped(1, -1)
+        let streams = qwen.layerStreamsForTesting(inputIDs: inputIDs)
+        XCTAssertEqual(streams.count, 10)
+
+        let comparisons: [(String, MLXArray)] = (0 ... 7).map {
+            ("stream_\($0)", streams[$0][0])
+        } + [
+            ("stream_pre_mixer", streams[8][0]),
+            ("stream_8", streams[9][0]),
+        ]
+        for (name, actual) in comparisons {
+            let expected = try XCTUnwrap(fixture[name])
+            let difference = maximumAbsoluteDifference(actual, expected)
+            let tolerance: Float = name == "stream_2" || name == "stream_3" ? 0.5 : 0.05
+            XCTAssertLessThan(
+                difference, tolerance,
+                "\(name) max absolute difference \(difference)")
+        }
+
+        let logits = qwen.projectLMHead(streams[9])[0]
+        let expectedLogits = try XCTUnwrap(fixture["logits_full"])
+        XCTAssertLessThan(
+            maximumAbsoluteDifference(logits, expectedLogits), 0.1)
+        XCTAssertEqual(
+            MLX.argMax(logits, axis: -1).asArray(Int32.self),
+            MLX.argMax(expectedLogits, axis: -1).asArray(Int32.self))
+    }
+
+    func testExactCheckpointLayerCapture() async throws {
+        let environment = ProcessInfo.processInfo.environment
+        guard let modelPath = environment["QWEN4_EXACT_CAPTURE_MODEL"],
+              let outputPath = environment["QWEN4_EXACT_CAPTURE_OUT"]
+        else {
+            throw XCTSkip(
+                "Set QWEN4_EXACT_CAPTURE_MODEL and QWEN4_EXACT_CAPTURE_OUT")
+        }
+
+        let context = try await loadModel(directory: URL(fileURLWithPath: modelPath))
+        let qwen = try XCTUnwrap(context.model as? Qwen4ExpModel)
+        let inputIDs = MLXArray([
+            Int32(248_045), 846, 198, 20_206, 440, 6_681, 25, 36_410, 1_537,
+            248_046, 198, 248_045, 74_455, 198, 248_068, 271, 248_069, 271,
+        ]).reshaped(1, -1)
+        let streams = qwen.layerStreamsForTesting(inputIDs: inputIDs)
+        var arrays = [String: MLXArray]()
+        for index in 1 ..< streams.count - 1 {
+            arrays["layer_\(index - 1)"] = streams[index]
+        }
+        arrays["pre_mixer"] = streams[streams.count - 2]
+        arrays["logits"] = qwen.projectLMHead(streams[streams.count - 1])
+        let pleTrace = try XCTUnwrap(
+            qwen.firstPLETraceForTesting(inputIDs: inputIDs))
+        arrays["ple_embedding"] = pleTrace.embedding
+        arrays["ple_output"] = pleTrace.output
+        arrays["ngram_row_ids"] = try XCTUnwrap(
+            qwen.firstPLERowIDsForTesting(inputIDs))
+        eval(Array(arrays.values))
+        try save(arrays: arrays, url: URL(fileURLWithPath: outputPath))
+    }
+
+    func testSanitizeAppliesCheckpointNGramMultipliersToMappedLookupPath() async throws {
+        let loaded = try await LLMTypeRegistry.shared.createModel(
+            configuration: Data(pleConfiguration.utf8),
+            modelType: "qwen4_exp")
+        let qwen = try XCTUnwrap(loaded as? Qwen4ExpModel)
+        let expected: [Int64] = [23_703_573_157_769, 20_109_073_645_365, 8_052_911_324_071]
+
+        _ = qwen.sanitize(weights: [
+            "language_model.model.layers.1.ple.ple_embedding.layer_multipliers":
+                MLXArray(expected),
+        ])
+
+        XCTAssertEqual(qwen.hostNGramMultipliersForTesting, [expected])
+    }
+
     private let minimalConfiguration = """
         {
           "model_type": "qwen4_exp",
@@ -66,6 +369,241 @@ final class Qwen4ExpTests: XCTestCase {
 
     func testToolCallFormatUsesQwenXMLProtocol() {
         XCTAssertEqual(ToolCallFormat.infer(from: "qwen4_exp"), .xmlFunction)
+    }
+
+    func testDecodeWidthHyperConnectionFusionMatchesStockGraph() throws {
+        let hcCount = 4
+        let hiddenSize = 256
+        let width = hcCount * hiddenSize
+        let rank = 64
+        let groupSize = 64
+        let epsilon: Float = 1e-6
+        let normWeight = MLXArray((0 ..< width).map {
+            Float(($0 % 31) - 15) / 1_024
+        }).asType(.bfloat16)
+        let downWeight = MLXArray((0 ..< (rank * width)).map {
+            Float(($0 % 43) - 21) / 256
+        }).reshaped(rank, width).asType(.bfloat16)
+        let upWeight = MLXArray((0 ..< (width * rank)).map {
+            Float(($0 % 37) - 18) / 256
+        }).reshaped(width, rank).asType(.bfloat16)
+        let injectWeight = MLXArray((0 ..< (hcCount * width)).map {
+            Float(($0 % 29) - 14) / 256
+        }).reshaped(hcCount, width).asType(.bfloat16)
+        let down = QuantizedLinear(
+            weight: downWeight, bias: nil, groupSize: groupSize, bits: 4, mode: .affine)
+        let up = QuantizedLinear(
+            weight: upWeight, bias: nil, groupSize: groupSize, bits: 4, mode: .affine)
+        let inject = Linear(weight: injectWeight)
+
+        for rows in [1, 4] {
+            let input = MLXArray((0 ..< (rows * width)).map {
+                Float(($0 % 47) - 23) / 64
+            }).reshaped(1, rows, width).asType(.bfloat16)
+            let actual = try XCTUnwrap(Qwen4ExpHyperConnectionFusion.call(
+                input: input,
+                normWeight: normWeight,
+                down: down,
+                up: up,
+                inject: inject,
+                hcCount: hcCount,
+                hiddenSize: hiddenSize,
+                epsilon: epsilon))
+            let expected = qwenHyperConnectionReference(
+                input: input,
+                normWeight: normWeight,
+                down: down,
+                up: up,
+                inject: inject,
+                hcCount: hcCount,
+                hiddenSize: hiddenSize,
+                epsilon: epsilon)
+
+            XCTAssertLessThanOrEqual(
+                maximumAbsoluteDifference(actual.mixed, expected.mixed),
+                0.02,
+                "mixed rows=\(rows)")
+            XCTAssertLessThanOrEqual(
+                maximumAbsoluteDifference(actual.injection, expected.injection),
+                0.02,
+                "injection rows=\(rows)")
+
+            let output = MLXArray((0 ..< (rows * hiddenSize)).map {
+                Float(($0 % 41) - 20) / 128
+            }).reshaped(1, rows, hiddenSize).asType(.bfloat16)
+            let fusedWrite = try XCTUnwrap(Qwen4ExpHyperConnectionFusion.inject(
+                output: output,
+                residual: input,
+                weights: actual.injection,
+                hcCount: hcCount,
+                hiddenSize: hiddenSize))
+            let expectedWrite = input + (
+                expandedDimensions(output, axis: -2)
+                    * expandedDimensions(actual.injection, axis: -1)
+            ).reshaped(input.shape)
+            XCTAssertLessThanOrEqual(
+                maximumAbsoluteDifference(fusedWrite, expectedWrite),
+                0.002,
+                "write rows=\(rows)")
+
+            let pending = try XCTUnwrap(Qwen4ExpHyperConnectionFusion.call(
+                input: input,
+                normWeight: normWeight,
+                down: down,
+                up: up,
+                inject: inject,
+                hcCount: hcCount,
+                hiddenSize: hiddenSize,
+                epsilon: epsilon,
+                pendingOutput: output,
+                pendingWeights: actual.injection))
+            let expectedPending = qwenHyperConnectionReference(
+                input: expectedWrite,
+                normWeight: normWeight,
+                down: down,
+                up: up,
+                inject: inject,
+                hcCount: hcCount,
+                hiddenSize: hiddenSize,
+                epsilon: epsilon)
+            let expectedFusedPending = try XCTUnwrap(Qwen4ExpHyperConnectionFusion.call(
+                input: expectedWrite,
+                normWeight: normWeight,
+                down: down,
+                up: up,
+                inject: inject,
+                hcCount: hcCount,
+                hiddenSize: hiddenSize,
+                epsilon: epsilon))
+            XCTAssertLessThanOrEqual(
+                maximumAbsoluteDifference(pending.stream, expectedWrite),
+                0.002,
+                "pending stream rows=\(rows)")
+            XCTAssertLessThanOrEqual(
+                maximumAbsoluteDifference(pending.mixed, expectedFusedPending.mixed),
+                0.002,
+                "pending fused mixed rows=\(rows)")
+            XCTAssertLessThanOrEqual(
+                maximumAbsoluteDifference(pending.mixed, expectedPending.mixed),
+                0.15,
+                "pending stock mixed rows=\(rows)")
+            XCTAssertLessThanOrEqual(
+                maximumAbsoluteDifference(pending.injection, expectedPending.injection),
+                0.02,
+                "pending injection rows=\(rows)")
+        }
+    }
+
+    func testDecodeWidthHyperConnectionFusionRejectsIneligibleInputs() {
+        let hcCount = 4
+        let hiddenSize = 256
+        let width = hcCount * hiddenSize
+        let rank = 64
+        let normWeight = MLXArray.zeros([width]).asType(.bfloat16)
+        let down = QuantizedLinear(
+            weight: MLXArray.zeros([rank, width]).asType(.bfloat16),
+            bias: nil,
+            groupSize: 64,
+            bits: 4,
+            mode: .affine)
+        let up = QuantizedLinear(
+            weight: MLXArray.zeros([width, rank]).asType(.bfloat16),
+            bias: nil,
+            groupSize: 64,
+            bits: 4,
+            mode: .affine)
+        let inject = Linear(
+            weight: MLXArray.zeros([hcCount, width]).asType(.bfloat16))
+
+        XCTAssertNil(Qwen4ExpHyperConnectionFusion.call(
+            input: MLXArray.zeros([1, 17, width]).asType(.bfloat16),
+            normWeight: normWeight,
+            down: down,
+            up: up,
+            inject: inject,
+            hcCount: hcCount,
+            hiddenSize: hiddenSize,
+            epsilon: 1e-6))
+        XCTAssertNil(Qwen4ExpHyperConnectionFusion.call(
+            input: MLXArray.zeros([1, 1, width]),
+            normWeight: normWeight,
+            down: down,
+            up: up,
+            inject: inject,
+            hcCount: hcCount,
+            hiddenSize: hiddenSize,
+            epsilon: 1e-6))
+    }
+
+    func testDeferredHyperConnectionWriteMatchesEagerAcrossLayerBoundary() throws {
+        try assertDeferredHyperConnectionWriteMatchesEager(pleLayerIDs: [])
+    }
+
+    func testDeferredHyperConnectionWriteFlushesBeforePLEBoundary() throws {
+        try assertDeferredHyperConnectionWriteMatchesEager(pleLayerIDs: [2])
+    }
+
+    private func assertDeferredHyperConnectionWriteMatchesEager(
+        pleLayerIDs: [Int],
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) throws {
+        var configuration = try JSONDecoder().decode(
+            Qwen4ExpConfiguration.self,
+            from: Data(minimalConfiguration.utf8)
+        ).textConfig
+        configuration.pleLayerIDs = pleLayerIDs
+        configuration.pleEmbedDim = configuration.hiddenSize
+        configuration.pleConvKernelSize = 2
+        configuration.ngramSize = 3
+        configuration.headsPerNgram = 2
+        configuration.ngramVocabularySizeBase = 101
+        configuration.ngramVocabularyDivisor = 4
+        configuration.splitNgramParts = 4
+
+        let layers = (0 ..< configuration.hiddenLayers).map {
+            Qwen4ExpDecoderLayer(configuration, layerIndex: $0)
+        }
+        let input = MLXArray((0 ..< (configuration.hcCount * configuration.hiddenSize)).map {
+            Float(($0 % 47) - 23) / 128
+        }).reshaped(1, 1, -1).asType(.bfloat16)
+        let inputIDs = MLXArray([Int32(7)]).reshaped(1, 1)
+
+        var eager = input
+        for layer in layers {
+            eager = layer(
+                eager,
+                inputIDs: inputIDs,
+                attentionMask: .none,
+                positionIDs: nil,
+                cache: nil)
+        }
+
+        var deferred = input
+        var pending: Qwen4ExpPendingHyperConnectionWrite?
+        for layer in layers {
+            let result = layer.callDeferringFinalInjection(
+                deferred,
+                precedingPending: pending,
+                inputIDs: inputIDs,
+                hostTokenIDs: nil,
+                attentionMask: .none,
+                positionIDs: nil,
+                cache: nil)
+            deferred = result.stream
+            pending = result.pending
+        }
+        deferred = try XCTUnwrap(layers.last).materializeFinalInjection(
+            try XCTUnwrap(pending))
+
+        MLX.eval(eager, deferred)
+        XCTAssertEqual(eager.shape, deferred.shape, file: file, line: line)
+        XCTAssertLessThanOrEqual(
+            maximumAbsoluteDifference(deferred, eager),
+            0.01,
+            "PLE layers: \(pleLayerIDs)",
+            file: file,
+            line: line)
     }
 
     func testRegistryCreatesQwen4ExpModelFromNestedConfig() async throws {
@@ -862,6 +1400,41 @@ final class Qwen4ExpTests: XCTestCase {
         XCTAssertEqual(actual.asArray(Float.self), expected.asArray(Float.self))
     }
 
+    func testQwenAffineDecodeFusesRoutedExpertsWithinBF16Tolerance() throws {
+        let prior = getenv("AFM_QWEN_FUSED_AFFINE_MOE").map { String(cString: $0) }
+        setenv("AFM_QWEN_FUSED_AFFINE_MOE", "1", 1)
+        defer {
+            if let prior {
+                setenv("AFM_QWEN_FUSED_AFFINE_MOE", prior, 1)
+            } else {
+                unsetenv("AFM_QWEN_FUSED_AFFINE_MOE")
+            }
+        }
+
+        let layer = SwitchGLU(
+            inputDims: 64,
+            hiddenDims: 64,
+            numExperts: 4)
+        quantize(model: layer, groupSize: 64, bits: 4)
+        let input = MLXArray((0 ..< 64).map {
+            Float(($0 % 11) - 5) / 16
+        }).asType(.bfloat16).reshaped(1, 1, 64)
+        let indices = MLXArray([Int32(1), 3]).reshaped(1, 1, 2)
+        let scores = MLXArray([Float(0.625), 0.375])
+            .asType(.bfloat16).reshaped(1, 1, 2)
+
+        layer.prepareQwenAffineDecode()
+        let actual = try XCTUnwrap(layer.qwenAffineDecode(
+            input, indices: indices, scores: scores))
+        let experts = layer(input, indices)
+        let expected = (experts * scores[.ellipsis, .newAxis]).sum(axis: -2)
+        eval(actual, expected)
+
+        let difference = MLX.abs(
+            actual.asType(.float32) - expected.asType(.float32)).max().item(Float.self)
+        XCTAssertLessThanOrEqual(difference, 0.02)
+    }
+
     func testTargetVerifyAttentionUsesEachRowsCausalPrefix() {
         let queryValues: [Float] = (0 ..< (2 * 3 * 8)).map {
             Float(($0 % 11) - 5) / 8
@@ -1017,27 +1590,39 @@ final class Qwen4ExpTests: XCTestCase {
     }
 
     func testFusedGatedDeltaPreworkMatchesStockGraphExactly() throws {
-        let verifyWidth = 2
         let keyHeads = 1
         let valueHeads = 2
         let headDimension = 128
         let convolutionKernel = 4
         let channels = (2 * keyHeads + valueHeads) * headDimension
-        let projected = MLXArray((0 ..< (verifyWidth * channels)).map {
-            Float(($0 % 41) - 20) / 32
-        }).reshaped(1, verifyWidth, channels).asType(.bfloat16)
         let prior = MLXArray((0 ..< ((convolutionKernel - 1) * channels)).map {
             Float(($0 % 37) - 18) / 64
         }).reshaped(1, convolutionKernel - 1, channels).asType(.bfloat16)
         let convolutionWeight = MLXArray((0 ..< (channels * convolutionKernel)).map {
             Float(($0 % 23) - 11) / 128
         }).reshaped(channels, convolutionKernel, 1).asType(.bfloat16)
+        let aLog = MLXArray([Float(-1.25), -0.5]).asType(.bfloat16)
+        let dtBias = MLXArray([Float(0.25), -0.125]).asType(.bfloat16)
         let inverseRootDimension = pow(Float(headDimension), -0.5)
 
-        let actual = try XCTUnwrap(Qwen4ExpGatedDeltaPrework.call(
+        for verifyWidth in [1, 2] {
+            let projected = MLXArray((0 ..< (verifyWidth * channels)).map {
+                Float(($0 % 41) - 20) / 32
+            }).reshaped(1, verifyWidth, channels).asType(.bfloat16)
+            let projectedA = MLXArray((0 ..< (verifyWidth * valueHeads)).map {
+                Float(($0 % 7) - 3) / 8
+            }).reshaped(1, verifyWidth, valueHeads).asType(.bfloat16)
+            let projectedB = MLXArray((0 ..< (verifyWidth * valueHeads)).map {
+                Float(($0 % 5) - 2) / 4
+            }).reshaped(1, verifyWidth, valueHeads).asType(.bfloat16)
+            let actual = try XCTUnwrap(Qwen4ExpGatedDeltaPrework.call(
             projected: projected,
             prior: prior,
             convolutionWeight: convolutionWeight,
+            projectedA: projectedA,
+            projectedB: projectedB,
+            aLog: aLog,
+            dtBias: dtBias,
             keyHeads: keyHeads,
             valueHeads: valueHeads,
             keyHeadDimension: headDimension,
@@ -1068,10 +1653,14 @@ final class Qwen4ExpTests: XCTestCase {
                 axis: -1, keepDims: true) + 1e-6)
         let expectedPrior = convolutionInput[
             0..., (convolutionInput.dim(1) - convolutionKernel + 1)...]
+        let expectedGate = computeG(aLog, projectedA, dtBias)
+        let expectedBeta = sigmoid(projectedB)
 
         eval(
             actual.queries, actual.keys, actual.values, actual.convolutionState,
-            expectedQueries, expectedKeys, expectedValues, expectedPrior)
+            actual.gate, actual.beta,
+            expectedQueries, expectedKeys, expectedValues, expectedPrior,
+            expectedGate, expectedBeta)
 
         func assertExact(_ actual: MLXArray, _ expected: MLXArray, label: String) {
             let actualValues = actual.asType(.float32).asArray(Float.self)
@@ -1095,11 +1684,18 @@ final class Qwen4ExpTests: XCTestCase {
                 "\(label): first \(firstMismatch); mismatches \(mismatchCount); max abs \(maximumDifference)")
         }
 
-        assertExact(actual.queries, expectedQueries, label: "queries")
-        assertExact(actual.keys, expectedKeys, label: "keys")
-        assertExact(actual.values, expectedValues, label: "values")
-        assertExact(actual.convolutionState, expectedPrior, label: "convolution state")
+            assertExact(actual.queries, expectedQueries, label: "queries width=\(verifyWidth)")
+            assertExact(actual.keys, expectedKeys, label: "keys width=\(verifyWidth)")
+            assertExact(actual.values, expectedValues, label: "values width=\(verifyWidth)")
+            assertExact(
+                actual.convolutionState,
+                expectedPrior,
+                label: "convolution state width=\(verifyWidth)")
+            assertExact(actual.gate, expectedGate, label: "gate width=\(verifyWidth)")
+            assertExact(actual.beta, expectedBeta, label: "beta width=\(verifyWidth)")
+        }
     }
+
 
     func testMultimodalRoPEInterleavesUnequalSectionsIndependently() {
         let rope = Qwen4ExpMultimodalRoPE(
@@ -1390,12 +1986,43 @@ final class Qwen4ExpTests: XCTestCase {
             expectedGroupSize: 4)
         let output = try table.gather(
             MLXArray([Int64(0), Int64(1)]).reshaped(1, 2))
-        eval(output)
+        let hostOutput = try table.gather([0, 1], shape: [1, 2])
+        eval(output, hostOutput)
 
         XCTAssertEqual(output.shape, [1, 2, 8])
+        XCTAssertEqual(hostOutput.shape, output.shape)
         XCTAssertEqual(
             output.asArray(Float.self),
             [0, 1, 2, 3, 7, 9, 11, 13, 5, 5.5, 6, 6.5, 12, 13, 14, 15])
+        XCTAssertEqual(
+            hostOutput.asArray(Float.self),
+            output.asArray(Float.self))
+    }
+
+    func testExactMappedNGramRowsMatchReferenceDequantization() throws {
+        let environment = ProcessInfo.processInfo.environment
+        guard let tablePath = environment["QWEN4_EXACT_NGRAM_TABLE"],
+              let fixturePath = environment["QWEN4_EXACT_NGRAM_FIXTURE"]
+        else {
+            throw XCTSkip(
+                "Set QWEN4_EXACT_NGRAM_TABLE and QWEN4_EXACT_NGRAM_FIXTURE")
+        }
+
+        let fixture = try MLX.loadArrays(url: URL(fileURLWithPath: fixturePath))
+        let rowIDs = try XCTUnwrap(fixture["row_ids"]).asType(.int64)
+        let expected = try XCTUnwrap(fixture["expected"]).asType(.bfloat16)
+        let table = try Qwen4ExpMappedNGramTable(
+            url: URL(fileURLWithPath: tablePath),
+            expectedRows: 320_001_536,
+            expectedDimensions: 160,
+            expectedBits: 4,
+            expectedGroupSize: 32)
+
+        let actual = try table.gather(rowIDs)
+        eval(actual, expected)
+        XCTAssertEqual(actual.shape, expected.shape)
+        XCTAssertLessThanOrEqual(
+            maximumAbsoluteDifference(actual, expected), 1e-6)
     }
 
     func testMappedNGramHostHashRespectsHistoryAndEOSBoundaries() {
@@ -1489,6 +2116,94 @@ final class Qwen4ExpTests: XCTestCase {
         XCTAssertEqual(
             blockTokens.asArray(Int32.self),
             sequentialTokens.asArray(Int32.self))
+    }
+
+    func testQSABlockMaskIncludesSelectedBlocksAndIncompleteCausalTail() {
+        let sentinel = Int32.max
+        let selected = MLXArray([
+            0, 1, 2, sentinel, sentinel,
+            0, 1, 2, 3, sentinel,
+            0, 1, 2, 3, sentinel,
+            0, 1, 2, 3, sentinel,
+        ]).reshaped(1, 4, 5)
+        let mask = Qwen4ExpQSAGather.maskFromBlocks(
+            selected, keyLength: 18, compressionRatio: 4)
+        eval(mask)
+
+        XCTAssertEqual(mask.shape, [1, 1, 4, 18])
+        let rows = mask.reshaped(4, 18).asArray(Bool.self)
+        for row in 0 ..< 4 {
+            let visibleLength = 15 + row
+            for key in 0 ..< 18 {
+                XCTAssertEqual(
+                    rows[row * 18 + key],
+                    key < visibleLength,
+                    "row \(row), key \(key)")
+            }
+        }
+    }
+
+    func testQSADirectGatherMatchesDenseMaskForBatchedSelections() throws {
+        let batch = 2
+        let queryHeads = 24
+        let keyHeads = 2
+        let queryLength = 16
+        let keyLength = 8_192
+        let headDimension = 256
+        let compressionRatio = 4
+        let scale = pow(Float(headDimension), -0.5)
+        let randomState = MLXRandom.RandomState(seed: 42)
+        let queries = withRandomState(randomState) {
+            MLXRandom.normal(
+                [batch, queryHeads, queryLength, headDimension])
+                .asType(.bfloat16)
+        }
+        let keys = withRandomState(randomState) {
+            MLXRandom.normal(
+                [batch, keyHeads, keyLength, headDimension])
+                .asType(.bfloat16)
+        }
+        let values = withRandomState(randomState) {
+            MLXRandom.normal(
+                [batch, keyHeads, keyLength, headDimension])
+                .asType(.bfloat16)
+        }
+        let firstPattern: [Int32] = [0, 7, 31, 127]
+        let secondPattern: [Int32] = [3, 19, 63, 255]
+        let firstBatch = Array(repeating: firstPattern, count: queryLength)
+            .flatMap { $0 }
+        let secondBatch = Array(repeating: secondPattern, count: queryLength)
+            .flatMap { $0 }
+        let selected = MLXArray(firstBatch + secondBatch)
+            .reshaped(batch, queryLength, 4)
+        let mask = Qwen4ExpQSAGather.maskFromBlocks(
+            selected,
+            keyLength: keyLength,
+            compressionRatio: compressionRatio)
+        let expected = MLXFast.scaledDotProductAttention(
+            queries: queries,
+            keys: keys,
+            values: values,
+            scale: scale,
+            mask: .array(mask))
+        let actual = try XCTUnwrap(Qwen4ExpQSAGather.call(
+            queries: queries,
+            keys: keys,
+            values: values,
+            scale: scale,
+            selectedBlocks: selected,
+            compressionRatio: compressionRatio))
+        eval(actual, expected)
+
+        let actualValues = actual.asType(.float32).asArray(Float.self)
+        let expectedValues = expected.asType(.float32).asArray(Float.self)
+        XCTAssertEqual(actualValues.count, expectedValues.count)
+        let maximumDifference = zip(actualValues, expectedValues)
+            .map { abs($0 - $1) }
+            .max() ?? 0
+        XCTAssertLessThanOrEqual(
+            maximumDifference, 0.02,
+            "direct QSA gather max abs difference \(maximumDifference)")
     }
 
     private func appendLittleEndian<T: FixedWidthInteger>(

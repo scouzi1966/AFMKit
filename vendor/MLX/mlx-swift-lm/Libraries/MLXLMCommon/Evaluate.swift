@@ -797,11 +797,17 @@ public struct TokenIterator: Sequence, IteratorProtocol {
     }
 
     /// Evaluate the next token and return the new token (y), updating cache state
-    mutating func step(previous: LMInput.Text) -> MLXArray {
+    mutating func step(
+        previous: LMInput.Text,
+        hostTokenIDs: [Int]? = nil
+    ) -> MLXArray {
         let t0: UInt64 = Self.perfEnabled ? DispatchTime.now().uptimeNanoseconds : 0
 
-        let result = model(
-            previous[text: .newAxis], cache: cache.isEmpty ? nil : cache, state: state)
+        let result = model.callAsFunction(
+            previous[text: .newAxis],
+            cache: cache.isEmpty ? nil : cache,
+            state: state,
+            hostTokenIDs: hostTokenIDs)
         self.state = result.state
         let logits = result.logits
 
@@ -843,8 +849,18 @@ public struct TokenIterator: Sequence, IteratorProtocol {
         // step() corresponds to the token we are about to return (previousY).
         lastLogprobInfo = pendingLogprobInfo
 
+        // Host-backed model tables need the selected token value before they
+        // can address the next row. Materialize it once here and pass it down,
+        // instead of letting a model-side `asArray` synchronize the entire MLX
+        // stream while the next graph is being assembled.
+        let hostTokenID = model.consumesHostTokenIDs
+            ? previousY.tokens.item(Int.self)
+            : nil
+
         // compute the next state and async eval the next token
-        let token = step(previous: previousY)
+        let token = step(
+            previous: previousY,
+            hostTokenIDs: hostTokenID.map { [$0] })
         y = .init(tokens: token)
 
         let tEval0: UInt64 = Self.perfEnabled ? DispatchTime.now().uptimeNanoseconds : 0
@@ -863,7 +879,7 @@ public struct TokenIterator: Sequence, IteratorProtocol {
         }
 
         let tItem0: UInt64 = Self.perfEnabled ? DispatchTime.now().uptimeNanoseconds : 0
-        let result = previousY.tokens.item(Int.self)
+        let result = hostTokenID ?? previousY.tokens.item(Int.self)
         let tItem1: UInt64 = Self.perfEnabled ? DispatchTime.now().uptimeNanoseconds : 0
 
         if Self.perfEnabled {

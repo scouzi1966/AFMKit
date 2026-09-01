@@ -449,23 +449,31 @@ final class Qwen4ExpMappedNGramTable: @unchecked Sendable {
 
     func gather(_ rowIDs: MLXArray) throws -> MLXArray {
         let ids = rowIDs.asType(.int64).reshaped(-1).asArray(Int64.self)
+        return try gather(ids, shape: rowIDs.shape)
+    }
+
+    /// Gather row IDs that were already computed on the host. The mapped PLE
+    /// path computes its n-gram hashes from the generation token IDs on the
+    /// CPU, so wrapping those IDs in an MLX array and synchronizing them back
+    /// here only adds a needless host/device boundary to every decode token.
+    func gather(_ ids: [Int64], shape: [Int]) throws -> MLXArray {
         guard let invalid = ids.first(where: { $0 < 0 || $0 >= Int64(rows) }) else {
             let count = try Self.checkedMultiply(ids.count, dimensions)
             let output = OutputBuffer(count: count)
-            if ids.count <= parallelReadLimit,
-               !gatherWithPositionalReads(ids, output: output)
-            {
-                // A regular-file pread can be interrupted or fail after the
-                // sidecar was opened. The already validated read-only mapping
-                // is the safe in-process fallback for this generation step.
-                gatherFromMapping(ids, output: output)
+            if ids.count <= parallelReadLimit {
+                if !gatherWithPositionalReads(ids, output: output) {
+                    // A regular-file pread can be interrupted or fail after the
+                    // sidecar was opened. The already validated read-only mapping
+                    // is the safe in-process fallback for this generation step.
+                    gatherFromMapping(ids, output: output)
+                }
             } else {
                 gatherFromMapping(ids, output: output)
             }
             let data = Data(
                 bytes: output.pointer,
                 count: try Self.checkedMultiply(count, 2))
-            return MLXArray(data, rowIDs.shape + [dimensions], dtype: .bfloat16)
+            return MLXArray(data, shape + [dimensions], dtype: .bfloat16)
         }
         throw Qwen4ExpMappedNGramTableError.rowOutOfRange(invalid)
     }

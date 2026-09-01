@@ -9,14 +9,18 @@ struct Qwen4ExpGatedDeltaPreworkOutput {
     let keys: MLXArray
     let values: MLXArray
     let convolutionState: MLXArray
+    let gate: MLXArray
+    let beta: MLXArray
 }
 
-/// Fuses the short target-verification prework used by Qwen's gated-delta
-/// layers. The kernel deliberately has a narrow, fail-closed eligibility
-/// envelope; unsupported shapes continue through the stock MLX graph.
+/// Fuses decode and short target-verification prework used by Qwen's
+/// gated-delta layers. The packed gate/beta extension follows the MIT-licensed
+/// mlx-serve implementation in `src/transformer.zig`; see
+/// `LICENSE-mlx-serve`. The kernel deliberately has a narrow, fail-closed
+/// eligibility envelope; unsupported shapes continue through the stock graph.
 enum Qwen4ExpGatedDeltaPrework {
     private static let SIMDWidth = 32
-    private static let minimumVerifyWidth = 2
+    private static let minimumWidth = 1
 
     private static let enabled =
         ProcessInfo.processInfo.environment["AFM_QWEN_FUSED_GDN_PREWORK"] != "0"
@@ -25,8 +29,11 @@ enum Qwen4ExpGatedDeltaPrework {
         name: "qwen4_exp_gated_delta_verify_prework",
         inputNames: [
             "projected", "prior", "convolution_weight",
+            "projected_a", "projected_b", "a_log", "dt_bias",
         ],
-        outputNames: ["queries", "keys", "values", "next_prior"],
+        outputNames: [
+            "queries", "keys", "values", "next_prior", "gate", "beta",
+        ],
         source: """
             const uint lane = thread_position_in_threadgroup.x;
             const uint token = threadgroup_position_in_grid.y;
@@ -112,6 +119,33 @@ enum Qwen4ExpGatedDeltaPrework {
                 for (uint element = 0; element < values_per_lane; ++element) {
                     values[output_base + element] = activated[element];
                 }
+
+                if (lane == 0) {
+                    // Compute each scalar gate once per value head instead of
+                    // repeating it across every recurrence-state row. These
+                    // are the same model-dtype rounding points as the stock
+                    // computeG/sigmoid graph and mlx-serve's packed prework.
+                    const uint scalar_index = token * uint(VALUE_HEADS) + head;
+                    const T beta_input = projected_b[scalar_index];
+                    const T sigmoid_tail = T(1) /
+                        (T(1) + metal::exp(metal::abs(beta_input)));
+                    beta[scalar_index] = beta_input < T(0)
+                        ? sigmoid_tail
+                        : T(1) - sigmoid_tail;
+
+                    const T biased_a = T(
+                        float(projected_a[scalar_index]) + float(dt_bias[head]));
+                    const float exp_a = metal::precise::exp(float(biased_a));
+                    const float plus_one = 1.0f + exp_a;
+                    const float softplus = plus_one == 1.0f
+                        ? exp_a
+                        : (plus_one == metal::numeric_limits<float>::max()
+                            ? metal::numeric_limits<float>::max()
+                            : exp_a * (metal::log(plus_one) / (plus_one - 1.0f)));
+                    const float decay = metal::precise::exp(float(a_log[head]));
+                    gate[scalar_index] = T(
+                        metal::precise::exp(-(decay * softplus)));
+                }
             }
 
             // Only token zero writes the next rolling convolution state. Each
@@ -137,6 +171,10 @@ enum Qwen4ExpGatedDeltaPrework {
         projected: MLXArray,
         prior: MLXArray,
         convolutionWeight: MLXArray,
+        projectedA: MLXArray,
+        projectedB: MLXArray,
+        aLog: MLXArray,
+        dtBias: MLXArray,
         keyHeads: Int,
         valueHeads: Int,
         keyHeadDimension: Int,
@@ -152,7 +190,7 @@ enum Qwen4ExpGatedDeltaPrework {
               Device.defaultDevice().deviceType == .gpu,
               projected.ndim == 3,
               projected.dim(0) == 1,
-              verifyWidth >= minimumVerifyWidth,
+              verifyWidth >= minimumWidth,
               keyHeads > 0,
               valueHeads > 0,
               keyHeadDimension == valueHeadDimension,
@@ -161,15 +199,26 @@ enum Qwen4ExpGatedDeltaPrework {
               projected.dim(2) == channels,
               prior.shape == [1, convolutionKernel - 1, channels],
               convolutionWeight.shape == [channels, convolutionKernel, 1],
+              projectedA.shape == [1, verifyWidth, valueHeads],
+              projectedB.shape == [1, verifyWidth, valueHeads],
+              aLog.shape == [valueHeads],
+              dtBias.shape == [valueHeads],
               supportedType,
               prior.dtype == projected.dtype,
-              convolutionWeight.dtype == projected.dtype
+              convolutionWeight.dtype == projected.dtype,
+              projectedA.dtype == projected.dtype,
+              projectedB.dtype == projected.dtype,
+              aLog.dtype == projected.dtype,
+              dtBias.dtype == projected.dtype
         else {
             return nil
         }
 
         let outputs = kernel(
-            [projected, prior, convolutionWeight],
+            [
+                projected, prior, convolutionWeight,
+                projectedA, projectedB, aLog, dtBias,
+            ],
             template: [
                 ("T", projected.dtype),
                 ("KEY_HEADS", keyHeads),
@@ -187,13 +236,18 @@ enum Qwen4ExpGatedDeltaPrework {
                 [1, verifyWidth, keyHeads, keyHeadDimension],
                 [1, verifyWidth, valueHeads, valueHeadDimension],
                 [1, convolutionKernel - 1, channels],
+                [1, verifyWidth, valueHeads],
+                [1, verifyWidth, valueHeads],
             ],
-            outputDTypes: Array(repeating: projected.dtype, count: 4))
+            outputDTypes: Array(repeating: projected.dtype, count: 6),
+            cacheConfiguration: true)
 
         return Qwen4ExpGatedDeltaPreworkOutput(
             queries: outputs[0],
             keys: outputs[1],
             values: outputs[2],
-            convolutionState: outputs[3])
+            convolutionState: outputs[3],
+            gate: outputs[4],
+            beta: outputs[5])
     }
 }

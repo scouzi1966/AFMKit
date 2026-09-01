@@ -1,6 +1,7 @@
 // Copyright © 2024 Apple Inc.
 
 import Cmlx
+import Foundation
 
 /// Marker protocol for types that can be used in the `template` of a kernel call.
 ///
@@ -43,8 +44,39 @@ extension DType: KernelTemplateArg {}
         /// let out = kernel([a])
         /// ```
         final public class MLXFastKernel: @unchecked Sendable {
+            private enum CachedTemplateValue: Hashable {
+                case bool(Bool)
+                case int(Int)
+                case dtype(DType)
+            }
+
+            private struct CachedTemplateArgument: Hashable {
+                let name: String
+                let value: CachedTemplateValue
+            }
+
+            private struct LaunchSize: Hashable {
+                let x: Int
+                let y: Int
+                let z: Int
+            }
+
+            private struct ConfigurationKey: Hashable {
+                let template: [CachedTemplateArgument]
+                let grid: LaunchSize
+                let threadGroup: LaunchSize
+                let outputShapes: [[Int]]
+                let outputDTypes: [DType]
+                let initValue: Float?
+                let verbose: Bool
+            }
+
             let kernel: mlx_fast_metal_kernel
             public let outputNames: [String]
+            private let configurationLock = NSLock()
+            private var configurationCache: [
+                ConfigurationKey: mlx_fast_metal_kernel_config
+            ] = [:]
 
             init(
                 name: String, inputNames: some Sequence<String>, outputNames: some Sequence<String>,
@@ -75,7 +107,81 @@ extension DType: KernelTemplateArg {}
             }
 
             deinit {
+                for config in configurationCache.values {
+                    mlx_fast_metal_kernel_config_free(config)
+                }
                 mlx_fast_metal_kernel_free(kernel)
+            }
+
+            private func makeConfiguration(
+                template: [(String, any KernelTemplateArg)]?,
+                grid: (Int, Int, Int),
+                threadGroup: (Int, Int, Int),
+                outputShapes: [[Int]],
+                outputDTypes: [DType],
+                initValue: Float?,
+                verbose: Bool
+            ) -> mlx_fast_metal_kernel_config {
+                let config = mlx_fast_metal_kernel_config_new()
+
+                if let template {
+                    for (name, arg) in template {
+                        switch arg {
+                        case let value as Bool:
+                            mlx_fast_metal_kernel_config_add_template_arg_bool(
+                                config, name, value)
+                        case let value as Int:
+                            mlx_fast_metal_kernel_config_add_template_arg_int(
+                                config, name, Int32(value))
+                        case let value as DType:
+                            mlx_fast_metal_kernel_config_add_template_arg_dtype(
+                                config, name, value.cmlxDtype)
+                        default:
+                            fatalError(
+                                "Unable to handle KernelTemplateArg \(name) with type: \(type(of: arg))."
+                            )
+                        }
+                    }
+                }
+
+                mlx_fast_metal_kernel_config_set_grid(
+                    config, grid.0.int32, grid.1.int32, grid.2.int32)
+                mlx_fast_metal_kernel_config_set_thread_group(
+                    config, threadGroup.0.int32, threadGroup.1.int32,
+                    threadGroup.2.int32)
+
+                for (shape, dtype) in zip(outputShapes, outputDTypes) {
+                    mlx_fast_metal_kernel_config_add_output_arg(
+                        config, shape.map { Int32($0) }, shape.count,
+                        dtype.cmlxDtype)
+                }
+                if let initValue {
+                    mlx_fast_metal_kernel_config_set_init_value(config, initValue)
+                }
+                mlx_fast_metal_kernel_config_set_verbose(config, verbose)
+                return config
+            }
+
+            private func cachedTemplate(
+                _ template: [(String, any KernelTemplateArg)]?
+            ) -> [CachedTemplateArgument] {
+                (template ?? []).map { name, arg in
+                    let cachedValue: CachedTemplateValue
+                    switch arg {
+                    case let argument as Bool:
+                        cachedValue = .bool(argument)
+                    case let argument as Int:
+                        cachedValue = .int(argument)
+                    case let argument as DType:
+                        cachedValue = .dtype(argument)
+                    default:
+                        fatalError(
+                            "Unable to handle KernelTemplateArg \(name) with type: \(type(of: arg))."
+                        )
+                    }
+                    return CachedTemplateArgument(
+                        name: name, value: cachedValue)
+                }
             }
 
             /// Call the prepared metal kernel.
@@ -104,48 +210,49 @@ extension DType: KernelTemplateArg {}
                 outputDTypes: some Sequence<DType>,
                 initValue: Float? = nil,
                 verbose: Bool = false,
+                cacheConfiguration: Bool = false,
                 stream: StreamOrDevice = .default
             ) -> [MLXArray] {
-                let config = mlx_fast_metal_kernel_config_new()
-                defer { mlx_fast_metal_kernel_config_free(config) }
-
-                if let template {
-                    for (name, arg) in template {
-                        switch arg {
-                        case let value as Bool:
-                            mlx_fast_metal_kernel_config_add_template_arg_bool(config, name, value)
-
-                        case let value as Int:
-                            mlx_fast_metal_kernel_config_add_template_arg_int(
-                                config, name, Int32(value))
-
-                        case let value as DType:
-                            mlx_fast_metal_kernel_config_add_template_arg_dtype(
-                                config, name, value.cmlxDtype)
-
-                        default:
-                            fatalError(
-                                "Unable to handle KernelTemplateArg \(name) with type: \(type(of: arg))."
-                            )
+                let outputShapes = Array(outputShapes)
+                let outputDTypes = Array(outputDTypes)
+                let config: mlx_fast_metal_kernel_config
+                if cacheConfiguration {
+                    let key = ConfigurationKey(
+                        template: cachedTemplate(template),
+                        grid: LaunchSize(x: grid.0, y: grid.1, z: grid.2),
+                        threadGroup: LaunchSize(
+                            x: threadGroup.0, y: threadGroup.1,
+                            z: threadGroup.2),
+                        outputShapes: outputShapes,
+                        outputDTypes: outputDTypes,
+                        initValue: initValue,
+                        verbose: verbose)
+                    config = configurationLock.withLock {
+                        if let cached = configurationCache[key] {
+                            return cached
                         }
+                        let created = makeConfiguration(
+                            template: template, grid: grid,
+                            threadGroup: threadGroup,
+                            outputShapes: outputShapes,
+                            outputDTypes: outputDTypes,
+                            initValue: initValue, verbose: verbose)
+                        configurationCache[key] = created
+                        return created
+                    }
+                } else {
+                    config = makeConfiguration(
+                        template: template, grid: grid,
+                        threadGroup: threadGroup,
+                        outputShapes: outputShapes,
+                        outputDTypes: outputDTypes,
+                        initValue: initValue, verbose: verbose)
+                }
+                defer {
+                    if !cacheConfiguration {
+                        mlx_fast_metal_kernel_config_free(config)
                     }
                 }
-
-                mlx_fast_metal_kernel_config_set_grid(
-                    config, grid.0.int32, grid.1.int32, grid.2.int32)
-                mlx_fast_metal_kernel_config_set_thread_group(
-                    config, threadGroup.0.int32, threadGroup.1.int32, threadGroup.2.int32)
-
-                for (shape, dtype) in zip(outputShapes, outputDTypes) {
-                    mlx_fast_metal_kernel_config_add_output_arg(
-                        config, shape.map { Int32($0) }, shape.count, dtype.cmlxDtype)
-                }
-
-                if let initValue {
-                    mlx_fast_metal_kernel_config_set_init_value(config, initValue)
-                }
-
-                mlx_fast_metal_kernel_config_set_verbose(config, verbose)
 
                 let inputs = new_mlx_vector_array(inputs.map { $0.asMLXArray(dtype: nil) })
                 defer { mlx_vector_array_free(inputs) }
@@ -215,10 +322,12 @@ extension DType: KernelTemplateArg {}
                 outputDTypes: some Sequence<DType>,
                 initValue: Float? = nil,
                 verbose: Bool = false,
+                cacheConfiguration: Bool = false,
                 stream: StreamOrDevice = .default
             ) -> [MLXArray] {
                 fatalError("MLXFastKernel is not available without Metal")
             }
+
         }
 
         public static func metalKernel(

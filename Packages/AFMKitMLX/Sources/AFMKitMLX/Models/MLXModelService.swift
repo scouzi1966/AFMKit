@@ -372,7 +372,10 @@ public final class MLXModelService:
     var hasInitializedGPU: Bool { withStateLock { gpuInitialized } }
     private var radixCache: RadixTreeCache?
     private var currentToolCallFormat: ToolCallFormat?
-    public var prefillStepSize: Int = 1024
+    private var prefillStepSizeIsExplicit = false
+    public var prefillStepSize: Int = AFMMLXPrefillPolicy.defaultStepSize {
+        didSet { prefillStepSizeIsExplicit = true }
+    }
     public var toolCallParser: String?
     public var fixToolArgs: Bool = false
     public var forceVLM: Bool = false
@@ -388,6 +391,15 @@ public final class MLXModelService:
     public var mtpEnabled: Bool = false
     public var mtpDepth: Int = 3
     public var mtpModelID: String?
+
+    private var resolvedPrefillStepSize: Int {
+        AFMMLXPrefillPolicy.resolve(
+            configuredStepSize: prefillStepSize,
+            isExplicit: prefillStepSizeIsExplicit,
+            canonicalModelType: withStateLock {
+                currentModelArchitecture?.canonicalModelType
+            })
+    }
     /// EAGLE3 speculative decoding (--eagle3 <drafter-path>). Activates only when the loaded model
     /// is a dense Gemma4 verifier and a drafter loads from the given path; otherwise falls back to AR.
     public var eagle3DrafterPath: String?
@@ -2942,7 +2954,7 @@ public final class MLXModelService:
                 computeLogprobs: false,
                 topLogprobsCount: 0,
                 ignoreEndOfSequence: ignoreEndOfSequence,
-                prefillStepSize: self.prefillStepSize
+                prefillStepSize: self.resolvedPrefillStepSize
             )
             params.extraProcessor = nil
 
@@ -3140,7 +3152,7 @@ public final class MLXModelService:
                 computeLogprobs: wantLogprobs,
                 topLogprobsCount: wantLogprobs ? min(max(topLogprobs ?? 0, 0), 20) : 0,
                 ignoreEndOfSequence: ignoreEndOfSequence,
-                prefillStepSize: self.prefillStepSize
+                prefillStepSize: self.resolvedPrefillStepSize
             )
             var collectedLogprobs = [TokenLogprobData]()
             var resolvedLogprobs: [ResolvedLogprob]? = nil
@@ -3804,7 +3816,7 @@ public final class MLXModelService:
             computeLogprobs: wantLogprobs,
             topLogprobsCount: wantLogprobs ? min(max(topLogprobs ?? 0, 0), 20) : 0,
             ignoreEndOfSequence: ignoreEndOfSequence,
-            prefillStepSize: self.prefillStepSize
+            prefillStepSize: self.resolvedPrefillStepSize
         )
 
         // --- Concurrent path: bypass container.perform lock, route through BatchScheduler ---
@@ -4084,7 +4096,7 @@ public final class MLXModelService:
                             computeLogprobs: wantLogprobs,
                             topLogprobsCount: wantLogprobs ? min(max(topLogprobs ?? 0, 0), 20) : 0,
                             ignoreEndOfSequence: ignoreEndOfSequence,
-                            prefillStepSize: self.prefillStepSize
+                            prefillStepSize: self.resolvedPrefillStepSize
                         )
                         // Grammar constraint setup — see non-streaming path for details.
                         let constrainedDecoding = self.setupConstrainedDecodingProcessor(
@@ -7206,9 +7218,14 @@ public final class MLXModelService:
         }
         flushSystemParts()
 
-        // Align with Vesta behavior: always include a base system instruction
-        // when callers don't explicitly provide one.
-        if !hasSystemMessage {
+        // Preserve the Qwen Next model-owned prompt exactly. Its published
+        // reference path does not synthesize a system turn, and adding one
+        // changes both the token sequence and the model's first-token logits.
+        // Keep the established compatibility default for existing families.
+        let promptModelType = withStateLock {
+            currentModelArchitecture?.canonicalModelType
+        }
+        if !hasSystemMessage, promptModelType != "qwen4_exp" {
             chatMessages.insert(.system("You are a helpful assistant!"), at: 0)
         }
 
