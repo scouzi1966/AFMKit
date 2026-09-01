@@ -1840,6 +1840,88 @@ private final class Qwen4ExpPLE: Module {
 
 // MARK: - Decoder and model
 
+/// Opt-in, synchronization-heavy Qwen Next forward profiler used to compare
+/// block costs with the reference implementation. It is deliberately absent
+/// from normal execution because every `lap` materializes the current block.
+/// Enable only for diagnostics with `AFM_QWEN_PROFILE_FWD=all`.
+final class Qwen4ExpForwardProfiler {
+    enum Block: Int, CaseIterable {
+        case ple
+        case hyperConnectionRead
+        case gatedDelta
+        case attention
+        case hyperConnectionWrite
+        case mlp
+
+        var label: String {
+            switch self {
+            case .ple: "ple"
+            case .hyperConnectionRead: "hcRead"
+            case .gatedDelta: "gdn"
+            case .attention: "attn"
+            case .hyperConnectionWrite: "hcWrite"
+            case .mlp: "mlp"
+            }
+        }
+    }
+
+    private var mark = DispatchTime.now().uptimeNanoseconds
+    private var blockNanoseconds = Array(repeating: UInt64(0), count: Block.allCases.count)
+    private var layerNanoseconds: UInt64 = 0
+    private var pleLayerNanoseconds: UInt64 = 0
+    private var gatedDeltaNanoseconds: UInt64 = 0
+    private var attentionNanoseconds: UInt64 = 0
+    private var gatedDeltaLayers = 0
+    private var attentionLayers = 0
+
+    static func make(sequenceLength: Int) -> Qwen4ExpForwardProfiler? {
+        guard sequenceLength == 1,
+              ProcessInfo.processInfo.environment["AFM_QWEN_PROFILE_FWD"] == "all"
+        else { return nil }
+        return Qwen4ExpForwardProfiler()
+    }
+
+    func start(_ array: MLXArray) {
+        eval(array)
+        mark = DispatchTime.now().uptimeNanoseconds
+    }
+
+    func lap(_ array: MLXArray, block: Block) {
+        eval(array)
+        let now = DispatchTime.now().uptimeNanoseconds
+        let elapsed = now - mark
+        mark = now
+        blockNanoseconds[block.rawValue] += elapsed
+        layerNanoseconds += elapsed
+    }
+
+    func endLayer(hasPLE: Bool, isLinear: Bool) {
+        if hasPLE {
+            pleLayerNanoseconds += layerNanoseconds
+        } else if isLinear {
+            gatedDeltaNanoseconds += layerNanoseconds
+        } else {
+            attentionNanoseconds += layerNanoseconds
+        }
+        if isLinear { gatedDeltaLayers += 1 } else { attentionLayers += 1 }
+        layerNanoseconds = 0
+    }
+
+    func report() {
+        func milliseconds(_ nanoseconds: UInt64) -> Double {
+            Double(nanoseconds) / 1_000_000
+        }
+        let blocks = Block.allCases.map {
+            "\($0.label) \(String(format: "%.2f", milliseconds(blockNanoseconds[$0.rawValue])))"
+        }.joined(separator: " ")
+        print(
+            "[qwen4-prof] S=1 gdn \(String(format: "%.2f", milliseconds(gatedDeltaNanoseconds))) ms "
+                + "(\(gatedDeltaLayers) layers) attn \(String(format: "%.2f", milliseconds(attentionNanoseconds))) ms "
+                + "(\(attentionLayers) layers) ple-layer \(String(format: "%.2f", milliseconds(pleLayerNanoseconds))) ms")
+        print("[qwen4-prof] blocks (ms, whole forward): \(blocks)")
+    }
+}
+
 /// A final hyper-connection write whose stream update can be folded into the
 /// next layer's fused read. This mirrors mlx-serve's `HcPending` scheduling;
 /// the arrays remain request-owned and are never retained by the model.
@@ -1939,7 +2021,8 @@ final class Qwen4ExpDecoderLayer: Module {
         attentionMask: MLXFast.ScaledDotProductAttentionMaskMode,
         positionIDs: MLXArray?,
         cache: KVCache?,
-        verificationPolicy: MTPVerificationPolicy? = nil
+        verificationPolicy: MTPVerificationPolicy? = nil,
+        profiler: Qwen4ExpForwardProfiler? = nil
     ) -> MLXArray {
         let arrayCache = cache as? ArraysCache
         var hidden = input
@@ -1948,12 +2031,14 @@ final class Qwen4ExpDecoderLayer: Module {
                 hidden, inputIDs: inputIDs, cache: arrayCache,
                 hostTokenIDs: hostTokenIDs,
                 verificationPolicy: verificationPolicy)
+            profiler?.lap(hidden, block: .ple)
         }
         var mixed: MLXArray
         var residual: MLXArray
         var injection: MLXArray
         (mixed, residual, injection) = attentionHyperConnection.mix(
             hidden, verificationPolicy: verificationPolicy)
+        profiler?.lap(mixed, block: .hyperConnectionRead)
         let attended = isLinear
             ? linearAttention!(
                 mixed, cache: arrayCache,
@@ -1961,6 +2046,22 @@ final class Qwen4ExpDecoderLayer: Module {
             : selfAttention!(
                 mixed, mask: attentionMask, positionIDs: positionIDs, cache: cache,
                 verificationPolicy: verificationPolicy)
+        profiler?.lap(attended, block: isLinear ? .gatedDelta : .attention)
+        if let profiler {
+            let injected = attentionHyperConnection.inject(
+                attended, residual: residual, weights: injection)
+            profiler.lap(injected, block: .hyperConnectionWrite)
+            (mixed, residual, injection) = mlpHyperConnection.mix(
+                injected, verificationPolicy: verificationPolicy)
+            profiler.lap(mixed, block: .hyperConnectionRead)
+            let mlpOutput = mlp(mixed, verificationPolicy: verificationPolicy)
+            profiler.lap(mlpOutput, block: .mlp)
+            let output = mlpHyperConnection.inject(
+                mlpOutput, residual: residual, weights: injection)
+            profiler.lap(output, block: .hyperConnectionWrite)
+            profiler.endLayer(hasPLE: ple != nil, isLinear: isLinear)
+            return output
+        }
         if Self.compileLayerTailDecode,
            verificationPolicy == nil,
            input.dim(1) == 1
@@ -2133,9 +2234,11 @@ private final class Qwen4ExpModelInner: Module {
         let deferInterLayerWrite = Self.deferInterLayerHyperConnectionWriteDecode
             && verificationPolicy == nil
             && hidden.dim(1) == 1
+        let profiler = Qwen4ExpForwardProfiler.make(sequenceLength: hidden.dim(1))
+        profiler?.start(hidden)
         var pending: Qwen4ExpPendingHyperConnectionWrite?
         for (index, layer) in layers.enumerated() {
-            if deferInterLayerWrite {
+            if deferInterLayerWrite, profiler == nil {
                 let result = layer.callDeferringFinalInjection(
                     hidden,
                     precedingPending: pending,
@@ -2151,12 +2254,14 @@ private final class Qwen4ExpModelInner: Module {
                     hidden, inputIDs: inputIDs,
                     hostTokenIDs: hostTokenIDs,
                     attentionMask: mask, positionIDs: positionIDs, cache: layerCaches[index],
-                    verificationPolicy: verificationPolicy)
+                    verificationPolicy: verificationPolicy,
+                    profiler: profiler)
             }
         }
         if let pending, let finalLayer = layers.last {
             hidden = finalLayer.materializeFinalInjection(pending)
         }
+        profiler?.report()
         return hidden
     }
 
