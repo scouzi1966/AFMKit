@@ -2,7 +2,7 @@ import Foundation
 
 public enum AFMMLXPrefillPolicy {
     public static let defaultStepSize = 1_024
-    public static let throughputOptimizedStepSize = 4_096
+    public static let throughputOptimizedStepSize = 8_192
 
     // Keep architecture recommendations centralized so a measured optimum can
     // be reused by future model families without branching in the runtime.

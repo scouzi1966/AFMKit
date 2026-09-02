@@ -78,6 +78,21 @@ extension DType: KernelTemplateArg {}
                 ConfigurationKey: mlx_fast_metal_kernel_config
             ] = [:]
 
+            /// An immutable launch configuration that can be shared by a
+            /// compound Metal-kernel graph plan. It owns the C configuration
+            /// while the plan keeps this object alive.
+            final public class PreparedConfiguration: @unchecked Sendable {
+                fileprivate let config: mlx_fast_metal_kernel_config
+
+                fileprivate init(_ config: mlx_fast_metal_kernel_config) {
+                    self.config = config
+                }
+
+                deinit {
+                    mlx_fast_metal_kernel_config_free(config)
+                }
+            }
+
             init(
                 name: String, inputNames: some Sequence<String>, outputNames: some Sequence<String>,
                 source: String, header: String = "",
@@ -160,6 +175,28 @@ extension DType: KernelTemplateArg {}
                 }
                 mlx_fast_metal_kernel_config_set_verbose(config, verbose)
                 return config
+            }
+
+            /// Prepare a fixed launch configuration once for repeated or
+            /// compound lazy-graph construction. This avoids rebuilding and
+            /// hashing the same Swift launch description on every token.
+            public func prepare(
+                template: [(String, any KernelTemplateArg)]? = nil,
+                grid: (Int, Int, Int),
+                threadGroup: (Int, Int, Int),
+                outputShapes: some Sequence<[Int]>,
+                outputDTypes: some Sequence<DType>,
+                initValue: Float? = nil,
+                verbose: Bool = false
+            ) -> PreparedConfiguration {
+                PreparedConfiguration(makeConfiguration(
+                    template: template,
+                    grid: grid,
+                    threadGroup: threadGroup,
+                    outputShapes: Array(outputShapes),
+                    outputDTypes: Array(outputDTypes),
+                    initValue: initValue,
+                    verbose: verbose))
             }
 
             private func cachedTemplate(
@@ -261,6 +298,139 @@ extension DType: KernelTemplateArg {}
                 mlx_fast_metal_kernel_apply(&result, kernel, inputs, config, stream.ctx)
                 defer { mlx_vector_array_free(result) }
 
+                return mlx_vector_array_values(result)
+            }
+        }
+
+        /// A reusable sequence of custom Metal kernels that constructs one
+        /// lazy graph below the Swift/C boundary. Stage inputs may bind to an
+        /// external array or to an output from an earlier stage. The kernels
+        /// are still separate MLX graph nodes and retain normal scheduling,
+        /// batching, and stream semantics.
+        final public class MetalKernelChain: @unchecked Sendable {
+            private static let externalSource: Int32 = -1
+
+            public enum Input: Sendable {
+                case external(Int)
+                case stageOutput(stage: Int, output: Int)
+            }
+
+            public struct Stage: Sendable {
+                let kernel: MLXFastKernel
+                let configuration: MLXFastKernel.PreparedConfiguration
+                let inputs: [Input]
+
+                public init(
+                    kernel: MLXFastKernel,
+                    configuration: MLXFastKernel.PreparedConfiguration,
+                    inputs: [Input]
+                ) {
+                    self.kernel = kernel
+                    self.configuration = configuration
+                    self.inputs = inputs
+                }
+            }
+
+            public struct Output: Sendable {
+                let stage: Int
+                let output: Int
+
+                public init(stage: Int, output: Int) {
+                    self.stage = stage
+                    self.output = output
+                }
+            }
+
+            private let stages: [Stage]
+            private let chain: mlx_fast_metal_kernel_chain
+
+            public init(stages: [Stage], outputs: [Output]) {
+                precondition(!stages.isEmpty, "A Metal kernel chain needs a stage")
+                precondition(!outputs.isEmpty, "A Metal kernel chain needs an output")
+
+                var kernels: [mlx_fast_metal_kernel] = []
+                var configurations: [mlx_fast_metal_kernel_config] = []
+                var stageInputOffsets: [Int32] = [0]
+                var inputSources: [Int32] = []
+                var inputIndices: [Int32] = []
+
+                kernels.reserveCapacity(stages.count)
+                configurations.reserveCapacity(stages.count)
+                stageInputOffsets.reserveCapacity(stages.count + 1)
+                for (stageIndex, stage) in stages.enumerated() {
+                    kernels.append(stage.kernel.kernel)
+                    configurations.append(stage.configuration.config)
+                    for input in stage.inputs {
+                        switch input {
+                        case .external(let index):
+                            precondition(index >= 0)
+                            inputSources.append(Self.externalSource)
+                            inputIndices.append(Int32(index))
+                        case .stageOutput(let sourceStage, let output):
+                            precondition(sourceStage >= 0 && sourceStage < stageIndex)
+                            precondition(output >= 0)
+                            inputSources.append(Int32(sourceStage))
+                            inputIndices.append(Int32(output))
+                        }
+                    }
+                    stageInputOffsets.append(Int32(inputSources.count))
+                }
+
+                var outputSources: [Int32] = []
+                var outputIndices: [Int32] = []
+                outputSources.reserveCapacity(outputs.count)
+                outputIndices.reserveCapacity(outputs.count)
+                for output in outputs {
+                    precondition(output.stage >= 0 && output.stage < stages.count)
+                    precondition(output.output >= 0)
+                    outputSources.append(Int32(output.stage))
+                    outputIndices.append(Int32(output.output))
+                }
+
+                let created = kernels.withUnsafeBufferPointer { kernels in
+                    configurations.withUnsafeBufferPointer { configurations in
+                        stageInputOffsets.withUnsafeBufferPointer { offsets in
+                            inputSources.withUnsafeBufferPointer { sources in
+                                inputIndices.withUnsafeBufferPointer { indices in
+                                    outputSources.withUnsafeBufferPointer { outputSources in
+                                        outputIndices.withUnsafeBufferPointer { outputIndices in
+                                            mlx_fast_metal_kernel_chain_new(
+                                                kernels.baseAddress,
+                                                configurations.baseAddress,
+                                                stages.count,
+                                                offsets.baseAddress,
+                                                sources.baseAddress,
+                                                indices.baseAddress,
+                                                outputSources.baseAddress,
+                                                outputIndices.baseAddress,
+                                                outputs.count)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                precondition(created.ctx != nil, "Unable to create Metal kernel chain")
+                self.stages = stages
+                self.chain = created
+            }
+
+            deinit {
+                mlx_fast_metal_kernel_chain_free(chain)
+            }
+
+            public func callAsFunction(
+                _ inputs: [MLXArray],
+                stream: StreamOrDevice = .default
+            ) -> [MLXArray] {
+                let externalInputs = new_mlx_vector_array(inputs)
+                defer { mlx_vector_array_free(externalInputs) }
+                var result = mlx_vector_array_new()
+                let status = mlx_fast_metal_kernel_chain_apply(
+                    &result, chain, externalInputs, stream.ctx)
+                precondition(status == 0, "Unable to apply Metal kernel chain")
+                defer { mlx_vector_array_free(result) }
                 return mlx_vector_array_values(result)
             }
         }

@@ -289,7 +289,10 @@ final class Qwen4ExpTests: XCTestCase {
         let expected: [Int64] = [23_703_573_157_769, 20_109_073_645_365, 8_052_911_324_071]
 
         _ = qwen.sanitize(weights: [
-            "language_model.model.layers.1.ple.ple_embedding.layer_multipliers":
+            // Synthetic `pleConfiguration` places one-based PLE id 1 on
+            // zero-based decoder layer 0. Production checkpoints use the
+            // same one-based-to-zero-based mapping (for example id 2/layer 1).
+            "language_model.model.layers.0.ple.ple_embedding.layer_multipliers":
                 MLXArray(expected),
         ])
 
@@ -356,6 +359,40 @@ final class Qwen4ExpTests: XCTestCase {
         XCTAssertEqual(ToolCallFormat.infer(from: "qwen4_exp"), .xmlFunction)
     }
 
+    func testGroupedZeroCenteredRMSNormMatchesExplicitReference() {
+        setenv("AFM_QWEN_FUSED_HC_PREFILL_NORM", "1", 1)
+        let hcCount = 4
+        let hiddenSize = 2_560
+        let width = hcCount * hiddenSize
+        let rows = 128
+        let epsilon: Float = 1e-6
+        let norm = Qwen4ExpZeroCenteredRMSNorm(
+            dimensions: width,
+            groupSize: hiddenSize,
+            eps: epsilon)
+        let normWeight = MLXArray((0 ..< width).map {
+            Float(($0 % 31) - 15) / 1_024
+        }).asType(.bfloat16)
+        var parameters = ModuleParameters()
+        parameters["weight"] = .value(normWeight)
+        norm.update(parameters: parameters)
+        let input = MLXArray((0 ..< (rows * width)).map {
+            Float(($0 % 47) - 23) / 64
+        }).reshaped(1, rows, width).asType(.bfloat16)
+
+        let grouped = input.reshaped(1, rows, hcCount, hiddenSize).asType(.float32)
+        let variance = mean(grouped * grouped, axis: -1, keepDims: true)
+        let normalized = grouped * rsqrt(variance + epsilon)
+        let groupedWeight = (normWeight + 1).asType(.float32)
+            .reshaped(1, 1, hcCount, hiddenSize)
+        let expected = (normalized * groupedWeight)
+            .reshaped(input.shape)
+            .asType(input.dtype)
+        let actual = norm(input)
+
+        XCTAssertLessThanOrEqual(maximumAbsoluteDifference(actual, expected), 0.01)
+    }
+
     func testDecodeWidthHyperConnectionFusionMatchesStockGraph() throws {
         let hcCount = 4
         let hiddenSize = 256
@@ -413,6 +450,20 @@ final class Qwen4ExpTests: XCTestCase {
                 0.02,
                 "injection rows=\(rows)")
 
+            let finalMixer = try XCTUnwrap(Qwen4ExpHyperConnectionFusion.call(
+                input: input,
+                normWeight: normWeight,
+                down: down,
+                up: up,
+                inject: nil,
+                hcCount: hcCount,
+                hiddenSize: hiddenSize,
+                epsilon: epsilon))
+            XCTAssertLessThanOrEqual(
+                maximumAbsoluteDifference(finalMixer.mixed, expected.mixed),
+                0.02,
+                "final mixer rows=\(rows)")
+
             let output = MLXArray((0 ..< (rows * hiddenSize)).map {
                 Float(($0 % 41) - 20) / 128
             }).reshaped(1, rows, hiddenSize).asType(.bfloat16)
@@ -430,6 +481,32 @@ final class Qwen4ExpTests: XCTestCase {
                 maximumAbsoluteDifference(fusedWrite, expectedWrite),
                 0.002,
                 "write rows=\(rows)")
+
+            let finalPending = try XCTUnwrap(Qwen4ExpHyperConnectionFusion.call(
+                input: input,
+                normWeight: normWeight,
+                down: down,
+                up: up,
+                inject: nil,
+                hcCount: hcCount,
+                hiddenSize: hiddenSize,
+                epsilon: epsilon,
+                pendingOutput: output,
+                pendingWeights: actual.injection))
+            let expectedFinalPending = qwenHyperConnectionReference(
+                input: expectedWrite,
+                normWeight: normWeight,
+                down: down,
+                up: up,
+                inject: inject,
+                hcCount: hcCount,
+                hiddenSize: hiddenSize,
+                epsilon: epsilon)
+            XCTAssertLessThanOrEqual(
+                maximumAbsoluteDifference(
+                    finalPending.mixed, expectedFinalPending.mixed),
+                0.15,
+                "final pending mixer rows=\(rows)")
 
             let pending = try XCTUnwrap(Qwen4ExpHyperConnectionFusion.call(
                 input: input,
@@ -823,6 +900,79 @@ final class Qwen4ExpTests: XCTestCase {
 
         XCTAssertEqual(attention.offset, 2)
         XCTAssertEqual(recurrent[0]?.item(Float.self), 1)
+    }
+
+    func testAttentionCacheRestoresDerivedQSABlockKeys() {
+        let cache = Qwen4ExpAttentionCache(indexerCompressRatio: 4)
+        _ = cache.update(
+            keys: MLXArray.zeros([1, 1, 10, 4]),
+            values: MLXArray.zeros([1, 1, 10, 4]))
+        _ = cache.updateIndexKeys(
+            MLXArray.zeros([1, 10, 4]),
+            positionIDs: MLXArray(Int32(0) ..< Int32(10)).reshaped(1, 10))
+        let expected = MLXArray((0 ..< 8).map(Float.init))
+            .reshaped(1, 2, 4)
+        _ = cache.appendPooledIndexKeys(expected)
+
+        let restored = Qwen4ExpAttentionCache(indexerCompressRatio: 4)
+        restored.state = cache.state
+        let actual = restored.pooledIndexKeys(completeBlockCount: 2)
+
+        XCTAssertEqual(restored.offset, 10)
+        XCTAssertEqual(restored.state.count, 5)
+        XCTAssertEqual(actual?.shape, [1, 2, 4])
+        MLX.eval(expected, actual!)
+        XCTAssertEqual(actual!.asArray(Float.self), expected.asArray(Float.self))
+    }
+
+    func testAttentionCacheDefersSequentialQSAPositionsUntilRequested() {
+        let cache = Qwen4ExpAttentionCache(indexerCompressRatio: 4)
+        _ = cache.update(
+            keys: MLXArray.zeros([1, 1, 3, 4]),
+            values: MLXArray.zeros([1, 1, 3, 4]))
+        _ = cache.updateIndexKeys(
+            MLXArray.zeros([1, 3, 4]),
+            positionIDs: nil)
+
+        // Dense QSA stores only the raw key history. Position state is
+        // synthesized if and when the sparse threshold is crossed.
+        XCTAssertEqual(cache.state.count, 3)
+        let initialPositions = cache.ensureSequentialIndexPositionIDs(batchSize: 1)
+        MLX.eval(initialPositions)
+        XCTAssertEqual(initialPositions.asArray(Int32.self), [0, 1, 2])
+        XCTAssertEqual(cache.state.count, 4)
+
+        _ = cache.update(
+            keys: MLXArray.zeros([1, 1, 2, 4]),
+            values: MLXArray.zeros([1, 1, 2, 4]))
+        _ = cache.updateIndexKeys(
+            MLXArray.zeros([1, 2, 4]),
+            positionIDs: nil)
+
+        let extendedPositions = cache.ensureSequentialIndexPositionIDs(batchSize: 1)
+        MLX.eval(extendedPositions)
+        XCTAssertEqual(extendedPositions.asArray(Int32.self), [0, 1, 2, 3, 4])
+    }
+
+    func testAttentionCacheTrimDropsIncompleteQSABlockSuffix() throws {
+        let cache = Qwen4ExpAttentionCache(indexerCompressRatio: 4)
+        _ = cache.update(
+            keys: MLXArray.zeros([1, 1, 10, 4]),
+            values: MLXArray.zeros([1, 1, 10, 4]))
+        _ = cache.updateIndexKeys(
+            MLXArray.zeros([1, 10, 4]),
+            positionIDs: MLXArray(Int32(0) ..< Int32(10)).reshaped(1, 10))
+        _ = cache.appendPooledIndexKeys(
+            MLXArray((0 ..< 8).map(Float.init)).reshaped(1, 2, 4))
+
+        XCTAssertEqual(cache.trim(3), 3)
+
+        let pooled = try XCTUnwrap(
+            cache.pooledIndexKeys(completeBlockCount: cache.offset / 4))
+        XCTAssertEqual(cache.offset, 7)
+        XCTAssertEqual(pooled.shape, [1, 1, 4])
+        MLX.eval(pooled)
+        XCTAssertEqual(pooled.asArray(Float.self), [0, 1, 2, 3])
     }
 
     func testPartialMTPRollbackMatchesCommittedTargetVerifyPrefix() async throws {
@@ -1387,12 +1537,20 @@ final class Qwen4ExpTests: XCTestCase {
 
     func testQwenAffineDecodeFusesRoutedExpertsWithinBF16Tolerance() throws {
         let prior = getenv("AFM_QWEN_FUSED_AFFINE_MOE").map { String(cString: $0) }
+        let priorNativeChain = getenv("AFM_QWEN_AFFINE_MOE_NATIVE_CHAIN")
+            .map { String(cString: $0) }
         setenv("AFM_QWEN_FUSED_AFFINE_MOE", "1", 1)
+        setenv("AFM_QWEN_AFFINE_MOE_NATIVE_CHAIN", "1", 1)
         defer {
             if let prior {
                 setenv("AFM_QWEN_FUSED_AFFINE_MOE", prior, 1)
             } else {
                 unsetenv("AFM_QWEN_FUSED_AFFINE_MOE")
+            }
+            if let priorNativeChain {
+                setenv("AFM_QWEN_AFFINE_MOE_NATIVE_CHAIN", priorNativeChain, 1)
+            } else {
+                unsetenv("AFM_QWEN_AFFINE_MOE_NATIVE_CHAIN")
             }
         }
 
@@ -1945,23 +2103,7 @@ final class Qwen4ExpTests: XCTestCase {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("qwen-ngram-\(UUID().uuidString).bin")
         defer { try? FileManager.default.removeItem(at: url) }
-
-        var header = Data(
-            #"{"__metadata__":{"format":"mlx-serve-ngram","bits":"4","group_size":"4"},"weight":{"dtype":"U32","shape":[2,1],"data_offsets":[0,8]},"scales":{"dtype":"BF16","shape":[2,2],"data_offsets":[8,16]},"biases":{"dtype":"BF16","shape":[2,2],"data_offsets":[16,24]}}"#.utf8)
-        while header.count % 8 != 0 { header.append(0x20) }
-
-        var file = Data()
-        appendLittleEndian(UInt64(header.count), to: &file)
-        file.append(header)
-        appendLittleEndian(packNibbles([0, 1, 2, 3, 4, 5, 6, 7]), to: &file)
-        appendLittleEndian(packNibbles([8, 9, 10, 11, 12, 13, 14, 15]), to: &file)
-        for value: Float in [1, 2, 0.5, 1] {
-            appendLittleEndian(bfloat16(value), to: &file)
-        }
-        for value: Float in [0, -1, 1, 0] {
-            appendLittleEndian(bfloat16(value), to: &file)
-        }
-        try file.write(to: url)
+        try writeTinyMappedNGramTable(to: url)
 
         let table = try Qwen4ExpMappedNGramTable(
             url: url,
@@ -1982,6 +2124,74 @@ final class Qwen4ExpTests: XCTestCase {
         XCTAssertEqual(
             hostOutput.asArray(Float.self),
             output.asArray(Float.self))
+    }
+
+    func testNativeMappedNGramGatherExactlyMatchesMappedFallback() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("qwen-ngram-native-\(UUID().uuidString).bin")
+        defer { try? FileManager.default.removeItem(at: url) }
+        try writeTinyMappedNGramTable(to: url)
+
+        let previousNative = getenv("AFM_QWEN_PLE_NATIVE_READS")
+            .map { String(cString: $0) }
+        let previousWorkers = getenv("AFM_QWEN_PLE_NATIVE_WORKERS")
+            .map { String(cString: $0) }
+        defer {
+            if let previousNative {
+                setenv("AFM_QWEN_PLE_NATIVE_READS", previousNative, 1)
+            } else {
+                unsetenv("AFM_QWEN_PLE_NATIVE_READS")
+            }
+            if let previousWorkers {
+                setenv("AFM_QWEN_PLE_NATIVE_WORKERS", previousWorkers, 1)
+            } else {
+                unsetenv("AFM_QWEN_PLE_NATIVE_WORKERS")
+            }
+        }
+
+        setenv("AFM_QWEN_PLE_NATIVE_READS", "0", 1)
+        let mapped = try Qwen4ExpMappedNGramTable(
+            url: url,
+            expectedRows: 2,
+            expectedDimensions: 8,
+            expectedBits: 4,
+            expectedGroupSize: 4)
+        let expected = try mapped.gather([1, 0, 1], shape: [1, 3])
+
+        setenv("AFM_QWEN_PLE_NATIVE_READS", "1", 1)
+        setenv("AFM_QWEN_PLE_NATIVE_WORKERS", "4", 1)
+        let native = try Qwen4ExpMappedNGramTable(
+            url: url,
+            expectedRows: 2,
+            expectedDimensions: 8,
+            expectedBits: 4,
+            expectedGroupSize: 4)
+        let actual = try native.gather([1, 0, 1], shape: [1, 3])
+        eval(expected, actual)
+
+        XCTAssertEqual(actual.shape, expected.shape)
+        XCTAssertEqual(
+            actual.asArray(Float.self),
+            expected.asArray(Float.self))
+    }
+
+    private func writeTinyMappedNGramTable(to url: URL) throws {
+        var header = Data(
+            #"{"__metadata__":{"format":"mlx-serve-ngram","bits":"4","group_size":"4"},"weight":{"dtype":"U32","shape":[2,1],"data_offsets":[0,8]},"scales":{"dtype":"BF16","shape":[2,2],"data_offsets":[8,16]},"biases":{"dtype":"BF16","shape":[2,2],"data_offsets":[16,24]}}"#.utf8)
+        while header.count % 8 != 0 { header.append(0x20) }
+
+        var file = Data()
+        appendLittleEndian(UInt64(header.count), to: &file)
+        file.append(header)
+        appendLittleEndian(packNibbles([0, 1, 2, 3, 4, 5, 6, 7]), to: &file)
+        appendLittleEndian(packNibbles([8, 9, 10, 11, 12, 13, 14, 15]), to: &file)
+        for value: Float in [1, 2, 0.5, 1] {
+            appendLittleEndian(bfloat16(value), to: &file)
+        }
+        for value: Float in [0, -1, 1, 0] {
+            appendLittleEndian(bfloat16(value), to: &file)
+        }
+        try file.write(to: url)
     }
 
     func testExactMappedNGramRowsMatchReferenceDequantization() throws {
@@ -2189,6 +2399,210 @@ final class Qwen4ExpTests: XCTestCase {
         XCTAssertLessThanOrEqual(
             maximumDifference, 0.02,
             "direct QSA gather max abs difference \(maximumDifference)")
+    }
+
+    func testQSADecodeScoresMatchComposedFP32Definition() throws {
+        let randomState = MLXRandom.RandomState(seed: 314)
+        let queries = withRandomState(randomState) {
+            MLXRandom.normal([2, 4, 1, 128]).asType(.bfloat16)
+        }
+        let blockKeys = withRandomState(randomState) {
+            MLXRandom.normal([2, 600, 128]).asType(.bfloat16)
+        }
+        let query = queries[0..., 0..., 0, 0...]
+        let expected = maximum(
+            (expandedDimensions(query.asType(.float32), axis: -2)
+                * expandedDimensions(blockKeys.asType(.float32), axis: 1))
+                .sum(axis: -1),
+            0
+        ).sum(axis: 1)
+        let actual = try XCTUnwrap(Qwen4ExpQSADecodeScores.call(
+            queries: queries,
+            blockKeys: blockKeys))
+        eval(actual, expected)
+
+        let differences = zip(
+            actual.asArray(Float.self), expected.asArray(Float.self)
+        ).map { abs($0 - $1) }
+        XCTAssertLessThanOrEqual(differences.max() ?? 0, 0.05)
+    }
+
+    func testQSADecodeRankMaskMatchesReferenceSelection() throws {
+        let visibleBlocks = 600
+        let blockTopK = 512
+        let compressionRatio = 4
+        let visibleCount = visibleBlocks * compressionRatio + 3
+        let scores = MLXRandom.uniform(low: 0, high: 4, [2, visibleBlocks])
+            .asType(.float32)
+        let actual = try XCTUnwrap(Qwen4ExpQSADecodeMask.call(
+            scores: scores,
+            visibleCount: visibleCount,
+            keyLength: visibleCount,
+            compressionRatio: compressionRatio,
+            blockTopK: blockTopK))
+
+        let blockIDs = MLXArray(Int32(0) ..< Int32(visibleBlocks))
+        let biased = scores - blockIDs.asType(.float32) * 1e-7
+        let selected = argPartition(
+            -biased, kth: blockTopK - 1, axis: -1
+        )[0..., ..<blockTopK]
+        let tokenIDs = MLXArray(Int32(0) ..< Int32(visibleCount))
+        let selectedTokens = (
+            expandedDimensions(
+                tokenIDs.floorDivide(compressionRatio), axes: [0, 1])
+                .== expandedDimensions(selected, axis: -1)
+        ).asType(.int32).sum(axis: 1) .> 0
+        let tailStart = visibleBlocks * compressionRatio
+        let tail = (tokenIDs .>= tailStart) .&& (tokenIDs .< visibleCount)
+        let expected = expandedDimensions(
+            selectedTokens .|| tail[.newAxis, 0...], axes: [1, 2])
+        eval(actual, expected)
+        XCTAssertEqual(
+            actual.asArray(Bool.self), expected.asArray(Bool.self))
+    }
+
+    func testQSADecodeBlockFusionMatchesReferenceSelectionAndOrder() throws {
+        let visibleBlocks = 130
+        let blockTopK = 64
+        var values = (0 ..< (2 * visibleBlocks)).map { index in
+            Float((index * 37) % 29) / 7
+        }
+        // Exercise the explicit lower-index tie rule with repeated values.
+        values[17] = values[18]
+        values[64] = values[65]
+        let scores = MLXArray(values).reshaped(2, visibleBlocks)
+
+        let actual = try XCTUnwrap(Qwen4ExpQSADecodeBlocks.call(
+            scores: scores,
+            blockTopK: blockTopK,
+            forceEnabledForTesting: true))
+        let blockIDs = MLXArray(Int32(0) ..< Int32(visibleBlocks))
+        let biased = scores - blockIDs.asType(.float32) * 1e-7
+        let expected = sorted(
+            argPartition(-biased, kth: blockTopK - 1, axis: -1)[
+                0..., ..<blockTopK
+            ].asType(.int32),
+            axis: -1
+        ).expandedDimensions(axis: 1)
+        eval(actual, expected)
+
+        XCTAssertEqual(
+            actual.asArray(Int32.self), expected.asArray(Int32.self))
+    }
+
+    func testQSADecodeAttentionMatchesDenseMask() throws {
+        let queryHeads = 24
+        let keyHeads = 2
+        let keyLength = 2_053
+        let headDimension = 256
+        let compressionRatio = 4
+        let scale = pow(Float(headDimension), -0.5)
+        let randomState = MLXRandom.RandomState(seed: 2718)
+        let queries = withRandomState(randomState) {
+            MLXRandom.normal([1, queryHeads, 1, headDimension])
+                .asType(.bfloat16)
+        }
+        let keys = withRandomState(randomState) {
+            MLXRandom.normal([1, keyHeads, keyLength, headDimension])
+                .asType(.bfloat16)
+        }
+        let values = withRandomState(randomState) {
+            MLXRandom.normal([1, keyHeads, keyLength, headDimension])
+                .asType(.bfloat16)
+        }
+        let selected = MLXArray(
+            (0 ..< 512).map(Int32.init)).reshaped(1, 1, 512)
+        let mask = Qwen4ExpQSAGather.maskFromBlocks(
+            selected,
+            keyLength: keyLength,
+            compressionRatio: compressionRatio)
+        let expected = MLXFast.scaledDotProductAttention(
+            queries: queries,
+            keys: keys,
+            values: values,
+            scale: scale,
+            mask: .array(mask))
+        let actual = try XCTUnwrap(Qwen4ExpQSADecodeAttention.call(
+            queries: queries,
+            keys: keys,
+            values: values,
+            scale: scale,
+            selectedBlocks: selected,
+            compressionRatio: compressionRatio))
+        eval(actual, expected)
+
+        let differences = zip(
+            actual.asType(.float32).asArray(Float.self),
+            expected.asType(.float32).asArray(Float.self)
+        ).map { abs($0 - $1) }
+        XCTAssertLessThanOrEqual(
+            differences.max() ?? 0, 0.02,
+            "decode QSA attention max abs difference \(differences.max() ?? 0)")
+    }
+
+    func testQSAFusedDecodeSelectionAttentionMatchesDenseMask() throws {
+        let queryHeads = 24
+        let keyHeads = 2
+        let keyLength = 4_170
+        let headDimension = 256
+        let compressionRatio = 32
+        let blockTopK = 64
+        let visibleBlocks = keyLength / compressionRatio
+        let scale = pow(Float(headDimension), -0.5)
+        let randomState = MLXRandom.RandomState(seed: 1618)
+        let queries = withRandomState(randomState) {
+            MLXRandom.normal([1, queryHeads, 1, headDimension])
+                .asType(.bfloat16)
+        }
+        let keys = withRandomState(randomState) {
+            MLXRandom.normal([1, keyHeads, keyLength, headDimension])
+                .asType(.bfloat16)
+        }
+        let values = withRandomState(randomState) {
+            MLXRandom.normal([1, keyHeads, keyLength, headDimension])
+                .asType(.bfloat16)
+        }
+        let scores = withRandomState(randomState) {
+            MLXRandom.uniform(low: 0, high: 4, [1, visibleBlocks])
+                .asType(.float32)
+        }
+        let blockIDs = MLXArray(Int32(0) ..< Int32(visibleBlocks))
+        let selected = sorted(
+            argPartition(
+                -(scores - blockIDs.asType(.float32) * 1e-7),
+                kth: blockTopK - 1,
+                axis: -1
+            )[0..., ..<blockTopK].asType(.int32),
+            axis: -1
+        ).expandedDimensions(axis: 1)
+        let mask = Qwen4ExpQSAGather.maskFromBlocks(
+            selected,
+            keyLength: keyLength,
+            compressionRatio: compressionRatio)
+        let expected = MLXFast.scaledDotProductAttention(
+            queries: queries,
+            keys: keys,
+            values: values,
+            scale: scale,
+            mask: .array(mask))
+        let actual = try XCTUnwrap(Qwen4ExpQSAFusedDecodeAttention.call(
+            queries: queries,
+            keys: keys,
+            values: values,
+            scale: scale,
+            scores: scores,
+            blockTopK: blockTopK,
+            compressionRatio: compressionRatio,
+            forceEnabledForTesting: true))
+        eval(actual, expected)
+
+        let differences = zip(
+            actual.asType(.float32).asArray(Float.self),
+            expected.asType(.float32).asArray(Float.self)
+        ).map { abs($0 - $1) }
+        XCTAssertLessThanOrEqual(
+            differences.max() ?? 0, 0.02,
+            "fused decode QSA max abs difference \(differences.max() ?? 0)")
     }
 
     private func appendLittleEndian<T: FixedWidthInteger>(

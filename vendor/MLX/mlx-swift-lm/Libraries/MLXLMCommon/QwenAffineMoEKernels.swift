@@ -15,7 +15,54 @@ import MLXFast
 
 private enum QwenAffineMoEKernels {
     private static let enabled =
-        ProcessInfo.processInfo.environment["AFM_QWEN_FUSED_AFFINE_MOE"] == "1"
+        ProcessInfo.processInfo.environment["AFM_QWEN_FUSED_AFFINE_MOE"] != "0"
+
+    /// Construct the two dependent MoE custom-kernel nodes below the Swift/C
+    /// boundary. The Metal kernels, launch geometry, and lazy graph remain
+    /// identical to the ordinary path; this only removes repeated Swift
+    /// configuration and vector marshalling from every decoded layer.
+    private static let nativeChainEnabled =
+        ProcessInfo.processInfo.environment[
+            "AFM_QWEN_AFFINE_MOE_NATIVE_CHAIN"
+        ] == "1"
+
+    private enum ChainExternalInput: Int {
+        case input
+        case gateWeight
+        case gateScales
+        case gateBiases
+        case upWeight
+        case upScales
+        case upBiases
+        case indices
+        case sigmoidTable
+        case downWeight
+        case downScales
+        case downBiases
+        case scores
+    }
+
+    private struct ChainKey: Hashable {
+        let inputDimensions: Int
+        let intermediateDimensions: Int
+        let outputDimensions: Int
+        let groupSize: Int
+        let bits: Int
+        let topK: Int
+        let rows: Int
+        let dtype: DType
+    }
+
+    private final class ChainPlan: @unchecked Sendable {
+        let chain: MLXFast.MetalKernelChain
+
+        init(chain: MLXFast.MetalKernelChain) {
+            self.chain = chain
+        }
+    }
+
+    private static let chainPlanLock = NSLock()
+    nonisolated(unsafe) private static var chainPlans: [ChainKey: ChainPlan] = [:]
 
     private static let gateUpKernel = MLXFast.metalKernel(
         name: "qwen_affine_moe_gate_up_swiglu",
@@ -161,6 +208,76 @@ private enum QwenAffineMoEKernels {
         _ = sigmoidTableBF16
     }
 
+    private static func chainPlan(for key: ChainKey) -> ChainPlan {
+        chainPlanLock.withLock {
+            if let plan = chainPlans[key] {
+                return plan
+            }
+
+            let gateUpConfiguration = gateUpKernel.prepare(
+                template: [
+                    ("T", key.dtype),
+                    ("INPUT", key.inputDimensions),
+                    ("OUTPUT", key.intermediateDimensions),
+                    ("GROUP_SIZE", key.groupSize),
+                    ("BITS", key.bits),
+                ],
+                grid: (32, key.intermediateDimensions, key.topK),
+                threadGroup: (32, 8, 1),
+                outputShapes: [[key.topK, key.intermediateDimensions]],
+                outputDTypes: [key.dtype])
+            let downConfiguration = downReduceKernel.prepare(
+                template: [
+                    ("T", key.dtype),
+                    ("INPUT", key.intermediateDimensions),
+                    ("OUTPUT", key.outputDimensions),
+                    ("GROUP_SIZE", key.groupSize),
+                    ("BITS", key.bits),
+                    ("TOP_K", key.topK),
+                    ("ROWS", key.rows),
+                ],
+                grid: (
+                    key.outputDimensions / key.rows * key.topK * 32,
+                    1,
+                    1),
+                threadGroup: (key.topK * 32, 1, 1),
+                outputShapes: [[key.outputDimensions]],
+                outputDTypes: [key.dtype])
+            let chain = MLXFast.MetalKernelChain(
+                stages: [
+                    .init(
+                        kernel: gateUpKernel,
+                        configuration: gateUpConfiguration,
+                        inputs: [
+                            .external(ChainExternalInput.input.rawValue),
+                            .external(ChainExternalInput.gateWeight.rawValue),
+                            .external(ChainExternalInput.gateScales.rawValue),
+                            .external(ChainExternalInput.gateBiases.rawValue),
+                            .external(ChainExternalInput.upWeight.rawValue),
+                            .external(ChainExternalInput.upScales.rawValue),
+                            .external(ChainExternalInput.upBiases.rawValue),
+                            .external(ChainExternalInput.indices.rawValue),
+                            .external(ChainExternalInput.sigmoidTable.rawValue),
+                        ]),
+                    .init(
+                        kernel: downReduceKernel,
+                        configuration: downConfiguration,
+                        inputs: [
+                            .stageOutput(stage: 0, output: 0),
+                            .external(ChainExternalInput.downWeight.rawValue),
+                            .external(ChainExternalInput.downScales.rawValue),
+                            .external(ChainExternalInput.downBiases.rawValue),
+                            .external(ChainExternalInput.indices.rawValue),
+                            .external(ChainExternalInput.scores.rawValue),
+                        ]),
+                ],
+                outputs: [.init(stage: 1, output: 0)])
+            let plan = ChainPlan(chain: chain)
+            chainPlans[key] = plan
+            return plan
+        }
+    }
+
     static func call(
         input: MLXArray,
         indices: MLXArray,
@@ -200,8 +317,35 @@ private enum QwenAffineMoEKernels {
         else { return nil }
 
         let topK = indices.dim(2)
-        let flatIndices = contiguous(indices.asType(.uint32).reshaped(topK))
-        let flatInput = contiguous(input.reshaped(gate.inputDims))
+        // Custom kernels already materialize only genuinely non-row-contiguous
+        // inputs.  Keep these lazy casts/views directly connected to the
+        // kernels instead of adding three unconditional Contiguous primitives
+        // to every MoE layer and decoded token.
+        let flatIndices = indices.asType(.uint32).reshaped(topK)
+        let flatInput = input.reshaped(gate.inputDims)
+        let rows = 4
+        let flatScores = scores.asType(input.dtype).reshaped(topK)
+        if nativeChainEnabled {
+            let key = ChainKey(
+                inputDimensions: gate.inputDims,
+                intermediateDimensions: gate.outputDims,
+                outputDimensions: down.outputDims,
+                groupSize: gate.groupSize,
+                bits: gate.bits,
+                topK: topK,
+                rows: rows,
+                dtype: input.dtype)
+            let reduced = chainPlan(for: key).chain([
+                flatInput,
+                gate.weight, gate.scales, gateBiases,
+                up.weight, up.scales, upBiases,
+                flatIndices, sigmoidTableBF16,
+                down.weight, down.scales, downBiases,
+                flatScores,
+            ])[0]
+            return reduced.reshaped(1, 1, down.outputDims)
+        }
+
         let activated = gateUpKernel(
             [
                 flatInput,
@@ -228,8 +372,6 @@ private enum QwenAffineMoEKernels {
             cacheConfiguration: true
         )[0]
 
-        let rows = 4
-        let flatScores = contiguous(scores.asType(input.dtype).reshaped(topK))
         let reduced = downReduceKernel(
             [
                 activated,

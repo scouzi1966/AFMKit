@@ -410,3 +410,467 @@ enum Qwen4ExpQSAGather {
         return outputs[0]
     }
 }
+
+/// Vector-width sparse QSA attention for one-token Qwen Next decode.
+///
+/// The execution topology follows MLX's MIT-licensed `sdpa_vector` kernel:
+/// one 32-SIMD-group threadgroup per query head, with every SIMD group owning
+/// a strided subset of keys and a final cross-group online-softmax reduction.
+/// Unlike the stock bool-mask arm, virtual key indices map directly through
+/// QSA's selected compressed blocks, so decode reads only the fixed 2,048-token
+/// budget plus the incomplete causal tail instead of scanning the full cache.
+enum Qwen4ExpQSADecodeAttention {
+    private static let headDimension = 256
+    private static let SIMDWidth = 32
+    private static let SIMDGroups = 32
+    private static let minimumKeyLength = 2_049
+
+    static let enabled =
+        ProcessInfo.processInfo.environment[
+            "AFM_QWEN_QSA_DECODE_ATTENTION"
+        ] != "0"
+
+    static func shouldSelectBlocks(
+        batch: Int,
+        keyLength: Int,
+        dtype: DType
+    ) -> Bool {
+        enabled
+            && Device.defaultDevice().deviceType == .gpu
+            && batch > 0
+            && keyLength >= minimumKeyLength
+            && dtype == .bfloat16
+    }
+
+    private static let kernel = MLXFast.metalKernel(
+        name: "qwen4_exp_qsa_decode_attention_256",
+        inputNames: ["queries", "keys", "values", "scale", "blocks"],
+        outputNames: ["output"],
+        source: """
+            constexpr int dimension = 256;
+            constexpr int simd_groups = 32;
+            constexpr int values_per_lane = dimension / 32;
+
+            const int query_head = int(threadgroup_position_in_grid.x);
+            const int batch = int(threadgroup_position_in_grid.z);
+            const ushort lane = ushort(thread_index_in_simdgroup);
+            const ushort simd_group = ushort(simdgroup_index_in_threadgroup);
+
+            const int query_heads = queries_shape[1];
+            const int key_heads = keys_shape[1];
+            const int grouped_query_heads = query_heads / key_heads;
+            const int key_head = query_head / grouped_query_heads;
+            const int key_length = keys_shape[2];
+            const int selected_blocks = blocks_shape[2];
+            const int tail_start = (key_length / COMPRESSION_RATIO)
+                * COMPRESSION_RATIO;
+            const int selected_tokens = selected_blocks * COMPRESSION_RATIO;
+            const int visible_tokens = selected_tokens
+                + key_length - tail_start;
+
+            const device T* query = queries
+                + (long)batch * queries_strides[0]
+                + (long)query_head * queries_strides[1]
+                + (long)lane * values_per_lane;
+            const device T* key_base = keys
+                + (long)batch * keys_strides[0]
+                + (long)key_head * keys_strides[1];
+            const device T* value_base = values
+                + (long)batch * values_strides[0]
+                + (long)key_head * values_strides[1];
+            const device int* selected = blocks
+                + (long)batch * blocks_strides[0];
+
+            float query_fragment[values_per_lane];
+            float output_fragment[values_per_lane];
+            for (int element = 0; element < values_per_lane; ++element) {
+                query_fragment[element] = float(scale[0])
+                    * float(query[element]);
+                output_fragment[element] = 0.0f;
+            }
+
+            float maximum = -3.0e38f;
+            float exponential_sum = 0.0f;
+            for (int virtual_index = int(simd_group);
+                 virtual_index < visible_tokens;
+                 virtual_index += simd_groups) {
+                const int position = virtual_index < selected_tokens
+                    ? selected[virtual_index / COMPRESSION_RATIO]
+                        * COMPRESSION_RATIO
+                        + virtual_index % COMPRESSION_RATIO
+                    : tail_start + virtual_index - selected_tokens;
+                const device T* key = key_base
+                    + (long)position * keys_strides[2]
+                    + (long)lane * values_per_lane;
+                float score = 0.0f;
+                for (int element = 0; element < values_per_lane; ++element) {
+                    score += query_fragment[element] * float(key[element]);
+                }
+                score = metal::simd_sum(score);
+
+                const float new_maximum = metal::max(maximum, score);
+                const float previous_factor = metal::fast::exp(
+                    maximum - new_maximum);
+                const float score_factor = metal::fast::exp(
+                    score - new_maximum);
+                maximum = new_maximum;
+                exponential_sum = exponential_sum * previous_factor
+                    + score_factor;
+
+                const device T* value = value_base
+                    + (long)position * values_strides[2]
+                    + (long)lane * values_per_lane;
+                for (int element = 0; element < values_per_lane; ++element) {
+                    output_fragment[element] = output_fragment[element]
+                        * previous_factor + score_factor * float(value[element]);
+                }
+            }
+
+            threadgroup float partial_outputs[32 * 32];
+            threadgroup float partial_maxima[32];
+            threadgroup float partial_sums[32];
+            if (lane == 0) {
+                partial_maxima[simd_group] = maximum;
+                partial_sums[simd_group] = exponential_sum;
+            }
+            threadgroup_barrier(metal::mem_flags::mem_threadgroup);
+
+            maximum = partial_maxima[lane];
+            const float global_maximum = metal::simd_max(maximum);
+            const float group_factor = metal::fast::exp(
+                maximum - global_maximum);
+            exponential_sum = metal::simd_sum(
+                partial_sums[lane] * group_factor);
+
+            for (int element = 0; element < values_per_lane; ++element) {
+                partial_outputs[(long)lane * 32 + simd_group]
+                    = output_fragment[element];
+                threadgroup_barrier(metal::mem_flags::mem_threadgroup);
+                output_fragment[element] = metal::simd_sum(
+                    partial_outputs[(long)simd_group * 32 + lane]
+                        * group_factor);
+                output_fragment[element] = exponential_sum == 0.0f
+                    ? output_fragment[element]
+                    : output_fragment[element] / exponential_sum;
+                threadgroup_barrier(metal::mem_flags::mem_threadgroup);
+            }
+
+            if (lane == 0) {
+                device T* destination = output
+                    + (((long)batch * query_heads + query_head)
+                        * dimension)
+                    + (long)simd_group * values_per_lane;
+                for (int element = 0; element < values_per_lane; ++element) {
+                    destination[element] = T(output_fragment[element]);
+                }
+            }
+        """,
+        ensureRowContiguous: false)
+
+    static func call(
+        queries: MLXArray,
+        keys: MLXArray,
+        values: MLXArray,
+        scale: Float,
+        selectedBlocks: MLXArray,
+        compressionRatio: Int
+    ) -> MLXArray? {
+        guard enabled,
+              Device.defaultDevice().deviceType == .gpu,
+              queries.ndim == 4,
+              keys.ndim == 4,
+              values.ndim == 4,
+              selectedBlocks.ndim == 3,
+              queries.dtype == .bfloat16,
+              keys.dtype == .bfloat16,
+              values.dtype == .bfloat16,
+              selectedBlocks.dtype == .int32,
+              queries.dim(2) == 1,
+              queries.dim(3) == headDimension,
+              keys.dim(3) == headDimension,
+              values.dim(3) == headDimension,
+              queries.dim(0) == keys.dim(0),
+              keys.shape == values.shape,
+              keys.dim(2) >= minimumKeyLength,
+              keys.dim(1) > 0,
+              queries.dim(1).isMultiple(of: keys.dim(1)),
+              selectedBlocks.dim(0) == queries.dim(0),
+              selectedBlocks.dim(1) == 1,
+              selectedBlocks.dim(2) > 0,
+              compressionRatio > 0
+        else { return nil }
+
+        let scaleArray = MLXArray([scale])
+        return kernel(
+            [queries, keys, values, scaleArray, selectedBlocks],
+            template: [
+                ("T", queries.dtype),
+                ("COMPRESSION_RATIO", compressionRatio),
+            ],
+            grid: (
+                queries.dim(1) * SIMDWidth,
+                SIMDGroups,
+                queries.dim(0)),
+            threadGroup: (SIMDWidth, SIMDGroups, 1),
+            outputShapes: [queries.shape],
+            outputDTypes: [queries.dtype],
+            cacheConfiguration: true)[0]
+    }
+}
+
+/// Decode-width QSA selection fused into sparse attention.
+///
+/// This keeps QSA's fixed 2,048-token read budget while eliminating the
+/// standalone `argPartition + sorted` graph. Each attention threadgroup uses
+/// its already-resident 32 SIMD groups to rank the short compressed score row,
+/// publishes selected block IDs in cache order, and immediately consumes them.
+/// The ranking and tie rule are identical to the reference selector.
+enum Qwen4ExpQSAFusedDecodeAttention {
+    private static let headDimension = 256
+    private static let SIMDWidth = 32
+    private static let SIMDGroups = 32
+    private static let minimumKeyLength = 2_049
+    private static let maximumVisibleBlocks = 256
+
+    static let enabled =
+        ProcessInfo.processInfo.environment[
+            "AFM_QWEN_QSA_FUSED_DECODE_ATTENTION"
+        ] == "1"
+
+    static func shouldSelectScores(
+        batch: Int,
+        keyLength: Int,
+        compressionRatio: Int,
+        dtype: DType
+    ) -> Bool {
+        enabled
+            && Device.defaultDevice().deviceType == .gpu
+            && batch > 0
+            && keyLength >= minimumKeyLength
+            && compressionRatio > 0
+            && keyLength / compressionRatio <= maximumVisibleBlocks
+            && dtype == .bfloat16
+    }
+
+    private static let kernel = MLXFast.metalKernel(
+        name: "qwen4_exp_qsa_fused_decode_attention_256",
+        inputNames: ["queries", "keys", "values", "scale", "scores"],
+        outputNames: ["output"],
+        source: """
+            constexpr int dimension = 256;
+            constexpr int simd_groups = 32;
+            constexpr int values_per_lane = dimension / 32;
+
+            const int query_head = int(threadgroup_position_in_grid.x);
+            const int batch = int(threadgroup_position_in_grid.z);
+            const ushort lane = ushort(thread_index_in_simdgroup);
+            const ushort simd_group = ushort(simdgroup_index_in_threadgroup);
+            const uint linear_thread = uint(simd_group) * 32u + uint(lane);
+
+            const int query_heads = queries_shape[1];
+            const int key_heads = keys_shape[1];
+            const int grouped_query_heads = query_heads / key_heads;
+            const int key_head = query_head / grouped_query_heads;
+            const int key_length = keys_shape[2];
+            const int visible_blocks = scores_shape[1];
+            const int tail_start = (key_length / COMPRESSION_RATIO)
+                * COMPRESSION_RATIO;
+            const int selected_tokens = TOP_K * COMPRESSION_RATIO;
+            const int visible_tokens = selected_tokens
+                + key_length - tail_start;
+
+            threadgroup uint picked[256];
+            threadgroup int selected[256];
+            if (linear_thread < 256u) {
+                picked[linear_thread] = 0u;
+                selected[linear_thread] = 0;
+            }
+            threadgroup_barrier(metal::mem_flags::mem_threadgroup);
+
+            const long score_base = (long)batch * scores_strides[0];
+            for (int block = int(simd_group);
+                 block < visible_blocks;
+                 block += simd_groups) {
+                const float current = float(scores[
+                    score_base + (long)block * scores_strides[1]
+                ]) - float(block) * 1.0e-7f;
+                int higher = 0;
+                for (int index = int(lane);
+                     index < visible_blocks;
+                     index += 32) {
+                    const float candidate = float(scores[
+                        score_base + (long)index * scores_strides[1]
+                    ]) - float(index) * 1.0e-7f;
+                    higher += candidate > current
+                        || (candidate == current && index < block);
+                }
+                higher = metal::simd_sum(higher);
+                if (lane == 0) picked[block] = higher < TOP_K;
+            }
+            threadgroup_barrier(metal::mem_flags::mem_threadgroup);
+
+            for (int block = int(simd_group);
+                 block < visible_blocks;
+                 block += simd_groups) {
+                if (picked[block] != 0u) {
+                    int output_index = 0;
+                    for (int index = int(lane); index < block; index += 32) {
+                        output_index += int(picked[index]);
+                    }
+                    output_index = metal::simd_sum(output_index);
+                    if (lane == 0) selected[output_index] = block;
+                }
+            }
+            threadgroup_barrier(metal::mem_flags::mem_threadgroup);
+
+            const device T* query = queries
+                + (long)batch * queries_strides[0]
+                + (long)query_head * queries_strides[1]
+                + (long)lane * values_per_lane;
+            const device T* key_base = keys
+                + (long)batch * keys_strides[0]
+                + (long)key_head * keys_strides[1];
+            const device T* value_base = values
+                + (long)batch * values_strides[0]
+                + (long)key_head * values_strides[1];
+
+            float query_fragment[values_per_lane];
+            float output_fragment[values_per_lane];
+            for (int element = 0; element < values_per_lane; ++element) {
+                query_fragment[element] = float(scale[0])
+                    * float(query[element]);
+                output_fragment[element] = 0.0f;
+            }
+
+            float maximum = -3.0e38f;
+            float exponential_sum = 0.0f;
+            for (int virtual_index = int(simd_group);
+                 virtual_index < visible_tokens;
+                 virtual_index += simd_groups) {
+                const int position = virtual_index < selected_tokens
+                    ? selected[virtual_index / COMPRESSION_RATIO]
+                        * COMPRESSION_RATIO
+                        + virtual_index % COMPRESSION_RATIO
+                    : tail_start + virtual_index - selected_tokens;
+                const device T* key = key_base
+                    + (long)position * keys_strides[2]
+                    + (long)lane * values_per_lane;
+                float score = 0.0f;
+                for (int element = 0; element < values_per_lane; ++element) {
+                    score += query_fragment[element] * float(key[element]);
+                }
+                score = metal::simd_sum(score);
+
+                const float new_maximum = metal::max(maximum, score);
+                const float previous_factor = metal::fast::exp(
+                    maximum - new_maximum);
+                const float score_factor = metal::fast::exp(
+                    score - new_maximum);
+                maximum = new_maximum;
+                exponential_sum = exponential_sum * previous_factor
+                    + score_factor;
+
+                const device T* value = value_base
+                    + (long)position * values_strides[2]
+                    + (long)lane * values_per_lane;
+                for (int element = 0; element < values_per_lane; ++element) {
+                    output_fragment[element] = output_fragment[element]
+                        * previous_factor + score_factor * float(value[element]);
+                }
+            }
+
+            threadgroup float partial_outputs[32 * 32];
+            threadgroup float partial_maxima[32];
+            threadgroup float partial_sums[32];
+            if (lane == 0) {
+                partial_maxima[simd_group] = maximum;
+                partial_sums[simd_group] = exponential_sum;
+            }
+            threadgroup_barrier(metal::mem_flags::mem_threadgroup);
+
+            maximum = partial_maxima[lane];
+            const float global_maximum = metal::simd_max(maximum);
+            const float group_factor = metal::fast::exp(
+                maximum - global_maximum);
+            exponential_sum = metal::simd_sum(
+                partial_sums[lane] * group_factor);
+
+            for (int element = 0; element < values_per_lane; ++element) {
+                partial_outputs[(long)lane * 32 + simd_group]
+                    = output_fragment[element];
+                threadgroup_barrier(metal::mem_flags::mem_threadgroup);
+                output_fragment[element] = metal::simd_sum(
+                    partial_outputs[(long)simd_group * 32 + lane]
+                        * group_factor);
+                output_fragment[element] = exponential_sum == 0.0f
+                    ? output_fragment[element]
+                    : output_fragment[element] / exponential_sum;
+                threadgroup_barrier(metal::mem_flags::mem_threadgroup);
+            }
+
+            if (lane == 0) {
+                device T* destination = output
+                    + (((long)batch * query_heads + query_head)
+                        * dimension)
+                    + (long)simd_group * values_per_lane;
+                for (int element = 0; element < values_per_lane; ++element) {
+                    destination[element] = T(output_fragment[element]);
+                }
+            }
+        """,
+        ensureRowContiguous: false)
+
+    static func call(
+        queries: MLXArray,
+        keys: MLXArray,
+        values: MLXArray,
+        scale: Float,
+        scores: MLXArray,
+        blockTopK: Int,
+        compressionRatio: Int,
+        forceEnabledForTesting: Bool = false
+    ) -> MLXArray? {
+        guard (enabled || forceEnabledForTesting),
+              Device.defaultDevice().deviceType == .gpu,
+              queries.ndim == 4,
+              keys.ndim == 4,
+              values.ndim == 4,
+              scores.ndim == 2,
+              queries.dtype == .bfloat16,
+              keys.dtype == .bfloat16,
+              values.dtype == .bfloat16,
+              scores.dtype == .float32,
+              queries.dim(2) == 1,
+              queries.dim(3) == headDimension,
+              keys.dim(3) == headDimension,
+              values.dim(3) == headDimension,
+              queries.dim(0) == keys.dim(0),
+              keys.shape == values.shape,
+              keys.dim(2) >= minimumKeyLength,
+              keys.dim(1) > 0,
+              queries.dim(1).isMultiple(of: keys.dim(1)),
+              scores.dim(0) == queries.dim(0),
+              scores.dim(1) > blockTopK,
+              scores.dim(1) <= maximumVisibleBlocks,
+              blockTopK > 0,
+              compressionRatio > 0
+        else { return nil }
+
+        let scaleArray = MLXArray([scale])
+        return kernel(
+            [queries, keys, values, scaleArray, scores],
+            template: [
+                ("T", queries.dtype),
+                ("TOP_K", blockTopK),
+                ("COMPRESSION_RATIO", compressionRatio),
+            ],
+            grid: (
+                queries.dim(1) * SIMDWidth,
+                SIMDGroups,
+                queries.dim(0)),
+            threadGroup: (SIMDWidth, SIMDGroups, 1),
+            outputShapes: [queries.shape],
+            outputDTypes: [queries.dtype],
+            cacheConfiguration: true)[0]
+    }
+}

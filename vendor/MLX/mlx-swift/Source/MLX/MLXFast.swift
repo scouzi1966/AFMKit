@@ -4,6 +4,66 @@ import Cmlx
 
 public enum MLXFast {
 
+    /// Persistent native positional-read workers for sparse rows in a large
+    /// affine-quantized file. The file descriptor remains owned by the caller;
+    /// destroy this object before closing it. Calls on one instance are safe
+    /// across concurrent requests and return `false` for a recoverable read or
+    /// geometry failure so the caller can use its mapped fallback.
+    final public class AffineRowGather: @unchecked Sendable {
+        private let handle: mlx_fast_affine_row_gather
+
+        public init?(
+            fileDescriptor: Int32,
+            totalRows: Int,
+            dimensions: Int,
+            bits: Int,
+            groupSize: Int,
+            weightOffset: Int,
+            scaleOffset: Int,
+            biasOffset: Int,
+            weightBytesPerRow: Int,
+            scaleBytesPerRow: Int,
+            workerCount: Int,
+            maximumRows: Int
+        ) {
+            let handle = mlx_fast_affine_row_gather_new(
+                fileDescriptor,
+                totalRows,
+                dimensions,
+                Int32(bits),
+                groupSize,
+                weightOffset,
+                scaleOffset,
+                biasOffset,
+                weightBytesPerRow,
+                scaleBytesPerRow,
+                workerCount,
+                maximumRows)
+            guard handle.ctx != nil else { return nil }
+            self.handle = handle
+        }
+
+        deinit {
+            mlx_fast_affine_row_gather_free(handle)
+        }
+
+        public func gather(
+            rowIDs: [Int64],
+            output: UnsafeMutablePointer<UInt16>,
+            outputCount: Int
+        ) -> Bool {
+            guard !rowIDs.isEmpty, outputCount > 0 else { return false }
+            return rowIDs.withUnsafeBufferPointer { ids in
+                mlx_fast_affine_row_gather_apply(
+                    handle,
+                    ids.baseAddress,
+                    ids.count,
+                    output,
+                    outputCount) == 0
+            }
+        }
+    }
+
     /// Executes the metadata-validated DeepSeek V4 one-token routed MXFP4 MoE
     /// as one MLX graph primitive. AFM owns the strict geometry/quantization
     /// gate and falls back before calling this function for every other model.

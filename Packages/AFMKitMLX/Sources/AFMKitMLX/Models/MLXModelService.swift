@@ -372,7 +372,7 @@ public final class MLXModelService:
     var hasInitializedGPU: Bool { withStateLock { gpuInitialized } }
     private var radixCache: RadixTreeCache?
     private var currentToolCallFormat: ToolCallFormat?
-    private var prefillStepSizeIsExplicit = false
+    private(set) var prefillStepSizeIsExplicit = false
     public var prefillStepSize: Int = AFMMLXPrefillPolicy.defaultStepSize {
         didSet { prefillStepSizeIsExplicit = true }
     }

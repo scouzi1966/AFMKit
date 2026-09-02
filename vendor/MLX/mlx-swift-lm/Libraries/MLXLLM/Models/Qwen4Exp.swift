@@ -201,7 +201,7 @@ public struct Qwen4ExpConfiguration: Decodable, Sendable {
 
 // MARK: - Normalization and hyper-connections
 
-private final class Qwen4ExpZeroCenteredRMSNorm: Module {
+final class Qwen4ExpZeroCenteredRMSNorm: Module {
     @ParameterInfo(key: "weight") var weight: MLXArray
     let groupSize: Int
     let eps: Float
@@ -221,12 +221,24 @@ private final class Qwen4ExpZeroCenteredRMSNorm: Module {
             // Q/K norm + RoPE path.
             return MLXFast.rmsNorm(x, weight: weight + 1, eps: eps)
         }
-        let grouped = x.reshaped(Array(originalShape.dropLast()) + [-1, groupSize])
-            .asType(.float32)
-        let normalized = grouped * rsqrt(
-            (grouped * grouped).mean(axis: -1, keepDims: true) + eps)
-        let groupedWeight = (weight + 1).asType(.float32).reshaped(-1, groupSize)
-        return (normalized * groupedWeight).asType(x.dtype).reshaped(originalShape)
+        let grouped = x.reshaped(
+            Array(originalShape.dropLast()) + [-1, groupSize])
+        if let fused = Qwen4ExpHyperConnectionFusion.normalizeGroupedPrefill(
+            input: x,
+            normWeight: weight,
+            groupSize: groupSize,
+            epsilon: eps)
+        {
+            return fused
+        }
+        let groupedFloat = grouped.asType(.float32)
+        let normalized = groupedFloat * rsqrt(
+            mean(groupedFloat * groupedFloat, axis: -1, keepDims: true) + eps)
+        let groupedWeight = (weight + 1).asType(.float32)
+            .reshaped(-1, groupSize)
+        return (normalized * groupedWeight)
+            .reshaped(originalShape)
+            .asType(x.dtype)
     }
 }
 
@@ -257,6 +269,9 @@ private final class Qwen4ExpGatedNorm: Module {
 }
 
 private final class Qwen4ExpGatedResidual: Module {
+    private static let fusedFinalMixerEnabled =
+        ProcessInfo.processInfo.environment["AFM_QWEN_FUSED_FINAL_MIXER"] == "1"
+
     let hcCount: Int
     let hiddenSize: Int
     @ModuleInfo(key: "hc_norm") var hcNorm: Qwen4ExpZeroCenteredRMSNorm
@@ -343,6 +358,21 @@ private final class Qwen4ExpGatedResidual: Module {
         _ input: MLXArray,
         verificationPolicy: MTPVerificationPolicy? = nil
     ) -> MLXArray {
+        if Self.fusedFinalMixerEnabled,
+           verificationPolicy == nil,
+           blockInjectWeight == nil,
+           let fused = Qwen4ExpHyperConnectionFusion.call(
+               input: input,
+               normWeight: hcNorm.weight,
+               down: inputMixWeightDown,
+               up: inputMixWeightUp,
+               inject: nil,
+               hcCount: hcCount,
+               hiddenSize: hiddenSize,
+               epsilon: hcNorm.eps)
+        {
+            return fused.mixed
+        }
         let normalized = hcNorm(input)
         let down = VerifyWidthLinear.call(
             inputMixWeightDown, normalized, verificationPolicy: verificationPolicy,
@@ -354,6 +384,34 @@ private final class Qwen4ExpGatedResidual: Module {
         let shape = Array(input.shape.dropLast())
         return (weights.reshaped(shape + [hcCount, hiddenSize])
             * normalized.reshaped(shape + [hcCount, hiddenSize])).mean(axis: -2)
+    }
+
+    func combineAfterInjection(
+        output: MLXArray,
+        residual: MLXArray,
+        weights: MLXArray,
+        verificationPolicy: MTPVerificationPolicy? = nil
+    ) -> MLXArray {
+        if Self.fusedFinalMixerEnabled,
+           verificationPolicy == nil,
+           blockInjectWeight == nil,
+           let fused = Qwen4ExpHyperConnectionFusion.call(
+               input: residual,
+               normWeight: hcNorm.weight,
+               down: inputMixWeightDown,
+               up: inputMixWeightUp,
+               inject: nil,
+               hcCount: hcCount,
+               hiddenSize: hiddenSize,
+               epsilon: hcNorm.eps,
+               pendingOutput: output,
+               pendingWeights: weights)
+        {
+            return fused.mixed
+        }
+        return combine(
+            inject(output, residual: residual, weights: weights),
+            verificationPolicy: verificationPolicy)
     }
 
     func inject(_ output: MLXArray, residual: MLXArray, weights: MLXArray) -> MLXArray {
@@ -377,14 +435,20 @@ private final class Qwen4ExpGatedResidual: Module {
 
 final class Qwen4ExpMultimodalRoPE {
     private let invFreq: MLXArray
+    private let base: Float
+    private let fusedAngleProbe: MLXArray
     private let mropeSection: [Int]
     let dimensions: Int
 
     init(dimensions: Int, base: Float, mropeSection: [Int]) {
         self.dimensions = dimensions
+        self.base = base
         let frequency = MLXArray(stride(from: 0, to: dimensions, by: 2)).asType(.float32)
             / Float(dimensions)
         invFreq = 1 / pow(MLXArray(base), frequency)
+        fusedAngleProbe = MLXArray(
+            (0 ..< dimensions).map { $0 < dimensions / 2 ? Float(1) : Float(0) }
+        ).reshaped(1, 1, 1, dimensions)
         self.mropeSection = mropeSection
     }
 
@@ -420,6 +484,26 @@ final class Qwen4ExpMultimodalRoPE {
         ], axis: -1)
     }
 
+    /// Extract the exact stock-RoPE cosine/sine rows once per text forward.
+    /// This follows ddalcu/mlx-serve's MIT-licensed `ropeAngleRows` approach:
+    /// rotate a float32 ones|zeros probe and share the resulting rows across
+    /// all full-attention layers. The fused kernel narrows each value to the
+    /// model dtype at the same boundary as the composed Swift path.
+    func fusedAngleRows(offset: Int, sequenceLength: Int) -> MLXArray {
+        precondition(sequenceLength > 0)
+        let probe = sequenceLength == 1
+            ? fusedAngleProbe
+            : tiled(fusedAngleProbe, repetitions: [1, 1, sequenceLength, 1])
+        return MLXFast.RoPE(
+            probe,
+            dimensions: dimensions,
+            traditional: false,
+            base: base,
+            scale: 1,
+            offset: offset
+        ).reshaped(sequenceLength, dimensions)
+    }
+
     func apply(_ tensor: MLXArray, positionIDs: MLXArray) -> MLXArray {
         let dimensions = invFreq.dim(0) * 2
         let rotated = tensor[0..., 0..., 0..., ..<dimensions]
@@ -433,16 +517,23 @@ final class Qwen4ExpMultimodalRoPE {
     }
 }
 
-private final class Qwen4ExpAttentionCache: KVCache {
+final class Qwen4ExpAttentionCache: KVCache {
     var offset = 0
     var offsetArray: MLXArray? { nil }
     var maxSize: Int? { nil }
+    let indexerCompressRatio: Int
     private(set) var mtpVerificationStartOffset: Int?
     private(set) var mtpVerificationWidth: Int?
     private var keys: MLXArray?
     private var values: MLXArray?
     private var indexKeys: MLXArray?
     private var indexPositionIDs: MLXArray?
+    private var pooledIndexKeys: MLXArray?
+
+    init(indexerCompressRatio: Int) {
+        precondition(indexerCompressRatio > 0)
+        self.indexerCompressRatio = indexerCompressRatio
+    }
 
     func beginMTPVerification(width: Int) {
         mtpVerificationStartOffset = offset
@@ -459,17 +550,71 @@ private final class Qwen4ExpAttentionCache: KVCache {
         mtpVerificationWidth = nil
     }
 
-    func updateIndexKeys(_ newKeys: MLXArray, positionIDs: MLXArray) -> (MLXArray, MLXArray) {
+    func updateIndexKeys(
+        _ newKeys: MLXArray,
+        positionIDs: MLXArray?
+    ) -> (keys: MLXArray, positionIDs: MLXArray?) {
         indexKeys = indexKeys.map { concatenated([$0, newKeys], axis: 1) } ?? newKeys
-        let axis = positionIDs.ndim - 1
-        indexPositionIDs = indexPositionIDs.map {
-            concatenated([$0, positionIDs], axis: axis)
-        } ?? positionIDs
-        return (indexKeys!, indexPositionIDs!)
+        if let positionIDs {
+            let axis = positionIDs.ndim - 1
+            indexPositionIDs = indexPositionIDs.map {
+                concatenated([$0, positionIDs], axis: axis)
+            } ?? positionIDs
+        } else if let existing = indexPositionIDs {
+            // Once sparse QSA is active, retain a complete serial position
+            // history for cache serialization and rollback. Before that
+            // threshold no position array is needed for ordinary text.
+            let start = existing.dim(existing.ndim - 1)
+            let generated = tiled(
+                MLXArray(Int32(start) ..< Int32(start + newKeys.dim(1)))[
+                    .newAxis, 0...],
+                repetitions: [newKeys.dim(0), 1])
+            indexPositionIDs = concatenated(
+                [existing, generated], axis: existing.ndim - 1)
+        }
+        return (indexKeys!, indexPositionIDs)
+    }
+
+    /// Materialize the implicit zero-based text positions only when sparse
+    /// QSA first needs them. Vision/M-RoPE requests supply and retain explicit
+    /// positions from their first token instead.
+    func ensureSequentialIndexPositionIDs(batchSize: Int) -> MLXArray {
+        if let indexPositionIDs { return indexPositionIDs }
+        let length = indexKeys?.dim(1) ?? 0
+        let generated = tiled(
+            MLXArray(Int32(0) ..< Int32(length))[.newAxis, 0...],
+            repetitions: [batchSize, 1])
+        indexPositionIDs = generated
+        return generated
+    }
+
+    /// Return the normalized, RoPE-applied QSA block-key bank, truncating a
+    /// speculative suffix if the raw cache has already rolled back. Keeping
+    /// this derived state beside the raw index keys avoids rebuilding every
+    /// historical block on each decode token.
+    func pooledIndexKeys(completeBlockCount: Int) -> MLXArray? {
+        guard let pooledIndexKeys else { return nil }
+        guard pooledIndexKeys.dim(1) > completeBlockCount else {
+            return pooledIndexKeys
+        }
+        if completeBlockCount == 0 {
+            self.pooledIndexKeys = nil
+            return nil
+        }
+        let truncated = pooledIndexKeys[0..., ..<completeBlockCount, 0...]
+        self.pooledIndexKeys = truncated
+        return truncated
+    }
+
+    func appendPooledIndexKeys(_ newKeys: MLXArray) -> MLXArray {
+        pooledIndexKeys = pooledIndexKeys.map {
+            concatenated([$0, newKeys], axis: 1)
+        } ?? newKeys
+        return pooledIndexKeys!
     }
 
     fileprivate var indexStateForProfiling: [MLXArray] {
-        [indexKeys, indexPositionIDs].compactMap { $0 }
+        [indexKeys, indexPositionIDs, pooledIndexKeys].compactMap { $0 }
     }
 
     func update(keys newKeys: MLXArray, values newValues: MLXArray)
@@ -482,13 +627,14 @@ private final class Qwen4ExpAttentionCache: KVCache {
     }
 
     var state: [MLXArray] {
-        get { [keys, values, indexKeys, indexPositionIDs].compactMap { $0 } }
+        get { [keys, values, indexKeys, indexPositionIDs, pooledIndexKeys].compactMap { $0 } }
         set {
-            precondition((2 ... 4).contains(newValue.count))
+            precondition((2 ... 5).contains(newValue.count))
             keys = newValue[0]
             values = newValue[1]
             indexKeys = newValue.count >= 3 ? newValue[2] : nil
-            indexPositionIDs = newValue.count == 4 ? newValue[3] : nil
+            indexPositionIDs = newValue.count >= 4 ? newValue[3] : nil
+            pooledIndexKeys = newValue.count == 5 ? newValue[4] : nil
             offset = newValue[0].dim(2)
         }
     }
@@ -512,6 +658,12 @@ private final class Qwen4ExpAttentionCache: KVCache {
                 ? positions[0..., ..<offset]
                 : positions[0..., 0..., ..<offset]
         }
+        let pooledCount = offset / indexerCompressRatio
+        if pooledCount == 0 {
+            pooledIndexKeys = nil
+        } else if let pooledIndexKeys, pooledIndexKeys.dim(1) > pooledCount {
+            self.pooledIndexKeys = pooledIndexKeys[0..., ..<pooledCount, 0...]
+        }
         return amount
     }
 
@@ -528,7 +680,7 @@ private final class Qwen4ExpAttentionCache: KVCache {
     }
 
     func innerState() -> [MLXArray] {
-        [keys, values, indexKeys, indexPositionIDs].compactMap { $0 }
+        state
     }
 }
 
@@ -649,6 +801,7 @@ func qwen4ExpTargetVerifyAttention(
 private enum Qwen4ExpQSASelection {
     case mask(MLXArray)
     case blocks(MLXArray)
+    case decodeScores(MLXArray)
 }
 
 /// Opt-in synchronization profiler for the full-attention graph. This is
@@ -674,7 +827,347 @@ private final class Qwen4ExpAttentionProfiler {
     }
 }
 
+private enum Qwen4ExpPerformanceControls {
+    /// Ordinary text positions are implicit in the cache offset until sparse
+    /// QSA engages. This mirrors ddalcu/mlx-serve's MIT-licensed qwen4_exp
+    /// path, which appends raw index keys and returns at the dense-budget gate
+    /// without constructing a QSA position history. Keep this opt-in while its
+    /// performance and cache behavior are qualified against the legacy path.
+    static let deferDenseQSAPositionHistory =
+        ProcessInfo.processInfo.environment[
+            "AFM_QWEN_DEFER_DENSE_QSA_POSITIONS"
+        ] != "0"
+
+}
+
+/// Decode-width QSA block scoring for Qwen3.8 Flash Next.
+///
+/// The score definition follows ddalcu/mlx-serve's MIT-licensed qwen4_exp
+/// implementation: for each pooled block key, compute one FP32 dot product per
+/// indexer head, apply ReLU to each head score, then sum the heads. Keeping this
+/// in one bounded dispatch avoids constructing the broadcast
+/// `[B, heads, blocks, headDimension]` intermediate on every generated token.
+enum Qwen4ExpQSADecodeScores {
+    private static let supportedHeads = 4
+    private static let supportedHeadDimension = 128
+
+    static let enabled =
+        ProcessInfo.processInfo.environment[
+            "AFM_QWEN_QSA_DECODE_SCORE_FUSION"
+        ] != "0"
+
+    private static let kernel = MLXFast.metalKernel(
+        name: "qwen4_exp_qsa_decode_scores",
+        inputNames: ["queries", "block_keys"],
+        outputNames: ["scores"],
+        source: """
+            constexpr int dimension = 128;
+
+            const int block = int(threadgroup_position_in_grid.x);
+            const int batch = int(threadgroup_position_in_grid.y);
+            const ushort lane = ushort(thread_index_in_simdgroup);
+
+            float accum0 = 0.0f;
+            float accum1 = 0.0f;
+            float accum2 = 0.0f;
+            float accum3 = 0.0f;
+
+            for (int column = int(lane); column < dimension; column += 32) {
+                const float key = float(block_keys[
+                    (long)batch * block_keys_strides[0]
+                    + (long)block * block_keys_strides[1]
+                    + (long)column * block_keys_strides[2]]);
+                const long queryBase = (long)batch * queries_strides[0]
+                    + (long)column * queries_strides[3];
+                accum0 += float(queries[
+                    queryBase + 0L * queries_strides[1]]) * key;
+                accum1 += float(queries[
+                    queryBase + 1L * queries_strides[1]]) * key;
+                accum2 += float(queries[
+                    queryBase + 2L * queries_strides[1]]) * key;
+                accum3 += float(queries[
+                    queryBase + 3L * queries_strides[1]]) * key;
+            }
+
+            accum0 = metal::simd_sum(accum0);
+            accum1 = metal::simd_sum(accum1);
+            accum2 = metal::simd_sum(accum2);
+            accum3 = metal::simd_sum(accum3);
+            if (lane == 0) {
+                scores[(long)batch * block_keys_shape[1] + (long)block]
+                    = metal::max(accum0, 0.0f)
+                    + metal::max(accum1, 0.0f)
+                    + metal::max(accum2, 0.0f)
+                    + metal::max(accum3, 0.0f);
+            }
+        """,
+        ensureRowContiguous: false)
+
+    static func call(
+        queries: MLXArray,
+        blockKeys: MLXArray
+    ) -> MLXArray? {
+        guard enabled,
+              Device.defaultDevice().deviceType == .gpu,
+              queries.ndim == 4,
+              blockKeys.ndim == 3,
+              queries.dtype == .bfloat16,
+              blockKeys.dtype == .bfloat16,
+              queries.dim(0) == blockKeys.dim(0),
+              queries.dim(1) == supportedHeads,
+              queries.dim(2) == 1,
+              queries.dim(3) == supportedHeadDimension,
+              blockKeys.dim(2) == supportedHeadDimension,
+              blockKeys.dim(1) > 0
+        else { return nil }
+
+        let batch = queries.dim(0)
+        let blocks = blockKeys.dim(1)
+        return kernel(
+            [queries, blockKeys],
+            template: [("T", DType.bfloat16)],
+            grid: (blocks * 32, batch, 1),
+            threadGroup: (32, 1, 1),
+            outputShapes: [[batch, blocks]],
+            outputDTypes: [.float32],
+            cacheConfiguration: true)[0]
+    }
+}
+
+/// Select QSA blocks and materialize the one-token visibility mask directly
+/// from the decode score row. This preserves the reference's lower-index tie
+/// preference and incomplete-tail semantics while avoiding both MLX's generic
+/// arg-partition graph and the K-by-token equality tensor on every token.
+///
+/// The rank kernel is intentionally limited to decode: each thread owns one
+/// compressed block, ranks that block against the score row, and writes its
+/// four token-mask entries. This is bounded work for the Qwen Next decode
+/// envelope and leaves the scalable row-batched prefill selector unchanged.
+enum Qwen4ExpQSADecodeMask {
+    static let enabled =
+        ProcessInfo.processInfo.environment[
+            "AFM_QWEN_QSA_DECODE_MASK_FUSION"
+        ] != "0"
+
+    private static let kernel = MLXFast.metalKernel(
+        name: "qwen4_exp_qsa_decode_mask",
+        inputNames: ["scores", "limits"],
+        outputNames: ["mask"],
+        source: """
+            const uint block = thread_position_in_grid.x;
+            const uint batch = thread_position_in_grid.y;
+            const int visible_count = limits[0];
+            const int key_length = limits[1];
+            const int ratio = limits[2];
+            const int top_k = limits[3];
+            const int visible_blocks = limits[4];
+            const int total_blocks = (key_length + ratio - 1) / ratio;
+            if (block >= uint(total_blocks)) return;
+
+            bool picked = false;
+            if (int(block) < visible_blocks) {
+                const long score_base = (long)batch * scores_strides[0];
+                const float current = float(scores[
+                    score_base + (long)block * scores_strides[1]
+                ]) - float(block) * 1.0e-7f;
+                int higher = 0;
+                for (int index = 0; index < visible_blocks; ++index) {
+                    const float candidate = float(scores[
+                        score_base + (long)index * scores_strides[1]
+                    ]) - float(index) * 1.0e-7f;
+                    higher += candidate > current
+                        || (candidate == current && index < int(block));
+                }
+                picked = higher < top_k;
+            }
+
+            const int tail_start = (visible_count / ratio) * ratio;
+            for (int offset = 0; offset < ratio; ++offset) {
+                const int token = int(block) * ratio + offset;
+                if (token >= key_length) break;
+                const bool in_tail = token >= tail_start
+                    && token < visible_count;
+                mask[(long)batch * key_length + (long)token]
+                    = picked || in_tail;
+            }
+        """,
+        ensureRowContiguous: false)
+
+    static func call(
+        scores: MLXArray,
+        visibleCount: Int,
+        keyLength: Int,
+        compressionRatio: Int,
+        blockTopK: Int
+    ) -> MLXArray? {
+        guard enabled,
+              Device.defaultDevice().deviceType == .gpu,
+              scores.ndim == 2,
+              scores.dtype == .float32,
+              scores.dim(0) > 0,
+              scores.dim(1) > blockTopK,
+              visibleCount > 0,
+              keyLength >= visibleCount,
+              compressionRatio > 0,
+              blockTopK > 0
+        else { return nil }
+
+        let batch = scores.dim(0)
+        let visibleBlocks = scores.dim(1)
+        let limits = MLXArray([
+            Int32(visibleCount), Int32(keyLength), Int32(compressionRatio),
+            Int32(blockTopK), Int32(visibleBlocks),
+        ])
+        let threadCount = 256
+        let totalBlocks = (keyLength + compressionRatio - 1) / compressionRatio
+        let gridWidth = ((totalBlocks + threadCount - 1) / threadCount) * threadCount
+        return kernel(
+            [scores, limits],
+            grid: (gridWidth, batch, 1),
+            threadGroup: (threadCount, 1, 1),
+            outputShapes: [[batch, 1, 1, keyLength]],
+            outputDTypes: [.bool],
+            cacheConfiguration: true)[0]
+    }
+}
+
+/// Select the decode-width QSA block set in one bounded GPU dispatch.
+///
+/// The generic MLX `argPartition` followed by `sorted` expands into dozens of
+/// command-buffer operations for every full-attention layer and generated
+/// token.  At the short block rows used by Qwen3.8 Flash Next decode, ranking
+/// one block per thread is both cheaper and exact.  The first pass applies the
+/// same score/index tie break as the reference selector; the second pass emits
+/// selected block IDs in ascending cache order, preserving sparse-attention
+/// accumulation order and numerical behavior.
+enum Qwen4ExpQSADecodeBlocks {
+    private static let maximumVisibleBlocks = 256
+
+    static let enabled =
+        ProcessInfo.processInfo.environment[
+            "AFM_QWEN_QSA_DECODE_BLOCK_FUSION"
+        ] == "1"
+
+    private static let kernel = MLXFast.metalKernel(
+        name: "qwen4_exp_qsa_decode_blocks",
+        inputNames: ["scores"],
+        outputNames: ["blocks"],
+        source: """
+            const uint tid = thread_position_in_threadgroup.x;
+            const uint batch = threadgroup_position_in_grid.y;
+            const int visible_blocks = scores_shape[1];
+            threadgroup float ranked_scores[256];
+            threadgroup int ranked_ids[256];
+            threadgroup int selected_ids[256];
+
+            float score = -3.0e38f;
+            int block_id = 0x7fffffff;
+            if (tid < uint(visible_blocks)) {
+                const long score_base = (long)batch * scores_strides[0];
+                score = float(scores[
+                    score_base + (long)tid * scores_strides[1]
+                ]) - float(tid) * 1.0e-7f;
+                block_id = int(tid);
+            }
+            ranked_scores[tid] = score;
+            ranked_ids[tid] = block_id;
+            threadgroup_barrier(metal::mem_flags::mem_threadgroup);
+
+            // Ascending bitonic order by score, with the lower block ID ranked
+            // higher for exact ties. The selected score suffix is therefore
+            // identical to the reference top-k rule.
+            for (uint span = 2; span <= 256; span <<= 1) {
+                for (uint stride = span >> 1; stride > 0; stride >>= 1) {
+                    const uint partner = tid ^ stride;
+                    if (partner > tid) {
+                        const float left_score = ranked_scores[tid];
+                        const float right_score = ranked_scores[partner];
+                        const int left_id = ranked_ids[tid];
+                        const int right_id = ranked_ids[partner];
+                        const bool left_higher = left_score > right_score
+                            || (left_score == right_score && left_id < right_id);
+                        const bool right_higher = right_score > left_score
+                            || (right_score == left_score && right_id < left_id);
+                        const bool ascending = (tid & span) == 0;
+                        const bool swap = ascending ? left_higher : right_higher;
+                        if (swap) {
+                            ranked_scores[tid] = right_score;
+                            ranked_scores[partner] = left_score;
+                            ranked_ids[tid] = right_id;
+                            ranked_ids[partner] = left_id;
+                        }
+                    }
+                    threadgroup_barrier(metal::mem_flags::mem_threadgroup);
+                }
+            }
+
+            selected_ids[tid] = tid < TOP_K
+                ? ranked_ids[256 - TOP_K + tid]
+                : 0x7fffffff;
+            threadgroup_barrier(metal::mem_flags::mem_threadgroup);
+
+            // Sparse attention consumes blocks in cache order, so sort only
+            // the selected IDs ascending before publishing them.
+            for (uint span = 2; span <= 256; span <<= 1) {
+                for (uint stride = span >> 1; stride > 0; stride >>= 1) {
+                    const uint partner = tid ^ stride;
+                    if (partner > tid) {
+                        const int left = selected_ids[tid];
+                        const int right = selected_ids[partner];
+                        const bool ascending = (tid & span) == 0;
+                        const bool swap = ascending ? left > right : right > left;
+                        if (swap) {
+                            selected_ids[tid] = right;
+                            selected_ids[partner] = left;
+                        }
+                    }
+                    threadgroup_barrier(metal::mem_flags::mem_threadgroup);
+                }
+            }
+
+            if (tid < TOP_K) {
+                blocks[(long)batch * TOP_K + (long)tid]
+                    = selected_ids[tid];
+            }
+        """,
+        ensureRowContiguous: false)
+
+    static func call(
+        scores: MLXArray,
+        blockTopK: Int,
+        forceEnabledForTesting: Bool = false
+    ) -> MLXArray? {
+        guard (enabled || forceEnabledForTesting),
+              Device.defaultDevice().deviceType == .gpu,
+              scores.ndim == 2,
+              scores.dtype == .float32,
+              scores.dim(0) > 0,
+              scores.dim(1) > blockTopK,
+              scores.dim(1) <= maximumVisibleBlocks,
+              blockTopK > 0
+        else { return nil }
+
+        let batch = scores.dim(0)
+        return kernel(
+            [scores],
+            template: [("TOP_K", blockTopK)],
+            grid: (maximumVisibleBlocks, batch, 1),
+            threadGroup: (maximumVisibleBlocks, 1, 1),
+            outputShapes: [[batch, 1, blockTopK]],
+            outputDTypes: [.int32],
+            cacheConfiguration: true)[0]
+    }
+}
+
 private final class Qwen4ExpQSAIndexer: Module {
+    /// The index query is irrelevant while every historical block fits inside
+    /// the dense-attention budget. Defer its norm and RoPE until sparse QSA is
+    /// actually needed. This follows the early budget gate in ddalcu/mlx-serve
+    /// (MIT); `0` is retained solely as a same-binary performance control.
+    private static let deferQueryPreparationUntilSparse =
+        ProcessInfo.processInfo.environment[
+            "AFM_QWEN_DEFER_DENSE_QSA_QUERY"
+        ] != "0"
     private static let scoreSheetBudgetBytes = 256 * 1_024 * 1_024
     private static let scoreBytes = MemoryLayout<Float>.size
     private static let minimumScoreRows = 16
@@ -712,6 +1205,18 @@ private final class Qwen4ExpQSAIndexer: Module {
             mropeSection: config.mropeSection)
     }
 
+    private func prepareQueries(
+        _ queryRows: MLXArray,
+        batch: Int,
+        length: Int,
+        positionIDs: MLXArray
+    ) -> MLXArray {
+        let normalized = qLayerNorm(
+            queryRows.reshaped(batch, length, heads, headDim)
+        ).transposed(0, 2, 1, 3)
+        return rope.apply(normalized, positionIDs: positionIDs)
+    }
+
     func callAsFunction(
         _ hidden: MLXArray,
         positionIDs providedPositionIDs: MLXArray?,
@@ -720,37 +1225,119 @@ private final class Qwen4ExpQSAIndexer: Module {
     ) -> Qwen4ExpQSASelection? {
         let (batch, length) = (hidden.dim(0), hidden.dim(1))
         let previousOffset = cache?.offset ?? 0
-        let positionIDs = providedPositionIDs ?? tiled(
-            MLXArray(Int32(previousOffset) ..< Int32(previousOffset + length))[.newAxis, 0...],
-            repetitions: [batch, 1])
+        var generatedPositionIDs: MLXArray?
+        func resolvedPositionIDs() -> MLXArray {
+            if let providedPositionIDs { return providedPositionIDs }
+            if let generatedPositionIDs { return generatedPositionIDs }
+            let generated = tiled(
+                MLXArray(
+                    Int32(previousOffset) ..< Int32(previousOffset + length)
+                )[.newAxis, 0...],
+                repetitions: [batch, 1])
+            generatedPositionIDs = generated
+            return generated
+        }
         let qk = VerifyWidthLinear.call(
             indexQKProj, hidden, verificationPolicy: verificationPolicy,
             role: .indexer)
         let splitPoint = heads * headDim
         let parts = MLX.split(qk, indices: [splitPoint], axis: -1)
-        var queries = qLayerNorm(parts[0].reshaped(batch, length, heads, headDim))
-            .transposed(0, 2, 1, 3)
-        queries = rope.apply(queries, positionIDs: positionIDs)
+        let eagerQueries = Self.deferQueryPreparationUntilSparse
+            ? nil
+            : prepareQueries(
+                parts[0], batch: batch, length: length,
+                positionIDs: resolvedPositionIDs())
         let currentKeys = parts[1].reshaped(batch, length, kvHeads, headDim)
             .mean(axis: 2)
-        let (allKeys, allPositionIDs) = cache?.updateIndexKeys(
-            currentKeys, positionIDs: positionIDs) ?? (currentKeys, positionIDs)
+        let updatedIndex = cache?.updateIndexKeys(
+            currentKeys, positionIDs: providedPositionIDs)
+        let allKeys = updatedIndex?.keys ?? currentKeys
         let totalLength = allKeys.dim(1)
 
         guard totalLength > tokenBudget else { return nil }
+        let queries = eagerQueries ?? prepareQueries(
+            parts[0], batch: batch, length: length,
+            positionIDs: resolvedPositionIDs())
+        let allPositionIDs = updatedIndex?.positionIDs
+            ?? cache?.ensureSequentialIndexPositionIDs(batchSize: batch)
+            ?? tiled(
+                MLXArray(Int32(0) ..< Int32(totalLength))[.newAxis, 0...],
+                repetitions: [batch, 1])
 
         let completeBlocks = totalLength / compressRatio
-        let pooled = allKeys[0..., ..<(completeBlocks * compressRatio), 0...]
-            .reshaped(batch, completeBlocks, compressRatio, headDim)
-            .asType(.float32).mean(axis: 2).asType(allKeys.dtype)
-        var blockKeys = kLayerNorm(pooled)
-        let blockIndices = MLXArray(
-            stride(from: 0, to: completeBlocks * compressRatio, by: compressRatio).map(Int32.init))
-        let positionAxis = allPositionIDs.ndim - 1
-        let blockPositionIDs = take(allPositionIDs, blockIndices, axis: positionAxis)
-        blockKeys = rope.apply(
-            expandedDimensions(blockKeys, axis: 1), positionIDs: blockPositionIDs
-        ).squeezed(axis: 1)
+        let cachedBlockKeys = cache?.pooledIndexKeys(
+            completeBlockCount: completeBlocks)
+        let cachedBlocks = cachedBlockKeys?.dim(1) ?? 0
+        let blockKeys: MLXArray
+        if cachedBlocks < completeBlocks {
+            let rawStart = cachedBlocks * compressRatio
+            let rawEnd = completeBlocks * compressRatio
+            let newBlockCount = completeBlocks - cachedBlocks
+            let pooled = allKeys[0..., rawStart ..< rawEnd, 0...]
+                .reshaped(batch, newBlockCount, compressRatio, headDim)
+                .asType(.float32).mean(axis: 2).asType(allKeys.dtype)
+            var newBlockKeys = kLayerNorm(pooled)
+            let blockIndices = MLXArray(
+                stride(from: rawStart, to: rawEnd, by: compressRatio).map(Int32.init))
+            let positionAxis = allPositionIDs.ndim - 1
+            let blockPositionIDs = take(
+                allPositionIDs, blockIndices, axis: positionAxis)
+            newBlockKeys = rope.apply(
+                expandedDimensions(newBlockKeys, axis: 1),
+                positionIDs: blockPositionIDs
+            ).squeezed(axis: 1)
+            blockKeys = cache?.appendPooledIndexKeys(newBlockKeys)
+                ?? (cachedBlockKeys.map {
+                    concatenated([$0, newBlockKeys], axis: 1)
+                } ?? newBlockKeys)
+        } else {
+            blockKeys = cachedBlockKeys!
+        }
+
+        // A one-token decode does not benefit from the row-batched selector;
+        // its score-sheet setup is measurable on every generated token. Keep
+        // the original single-row graph for decode and reserve vectorization
+        // for multi-token prefill.
+        if length == 1 {
+            if Qwen4ExpQSAFusedDecodeAttention.shouldSelectScores(
+                batch: batch,
+                keyLength: totalLength,
+                compressionRatio: compressRatio,
+                dtype: hidden.dtype)
+            {
+                return .decodeScores(selectDecodeScores(
+                    queries: queries,
+                    blockKeys: blockKeys,
+                    previousOffset: previousOffset))
+            }
+            if Qwen4ExpQSADecodeAttention.shouldSelectBlocks(
+                batch: batch,
+                keyLength: totalLength,
+                dtype: hidden.dtype)
+            {
+                return .blocks(selectDecodeBlocks(
+                    queries: queries,
+                    blockKeys: blockKeys,
+                    previousOffset: previousOffset))
+            }
+            return .mask(selectDecodeMask(
+                queries: queries,
+                blockKeys: blockKeys,
+                previousOffset: previousOffset,
+                totalLength: totalLength))
+        }
+
+        // Build the block selection as one row-batched MLX graph for both
+        // attention arms.  The former dense-mask path constructed one
+        // argPartition subgraph per Swift query-row (thousands at 4K), while
+        // mlx-serve and the direct-gather path select the same blocks in
+        // bounded row chunks.  Below the gather crossover we expand these
+        // indices back to the exact bool mask expected by masked SDPA.
+        let selectedBlocks = selectBlocks(
+            queries: queries,
+            blockKeys: blockKeys,
+            previousOffset: previousOffset,
+            totalLength: totalLength)
 
         if Qwen4ExpQSAGather.shouldSelectBlocks(
             batch: batch,
@@ -761,45 +1348,100 @@ private final class Qwen4ExpQSAIndexer: Module {
             keyHeads: kvHeads,
             headDimension: headDim)
         {
-            return .blocks(selectBlocks(
-                queries: queries,
-                blockKeys: blockKeys,
-                previousOffset: previousOffset,
-                totalLength: totalLength))
+            return .blocks(selectedBlocks)
         }
+        return .mask(Qwen4ExpQSAGather.maskFromBlocks(
+            selectedBlocks,
+            keyLength: totalLength,
+            compressionRatio: compressRatio))
+    }
 
+    private func selectDecodeMask(
+        queries: MLXArray,
+        blockKeys: MLXArray,
+        previousOffset: Int,
+        totalLength: Int
+    ) -> MLXArray {
+        let visibleCount = previousOffset + 1
+        let visibleBlocks = visibleCount / compressRatio
         let tokenPositions = MLXArray(Int32(0) ..< Int32(totalLength))
-        let tokenBlockIDs = tokenPositions.floorDivide(compressRatio)
-        var rows = [MLXArray]()
-
-        for queryIndex in 0 ..< length {
-            let visibleCount = previousOffset + queryIndex + 1
-            let visibleBlocks = visibleCount / compressRatio
-            if visibleBlocks <= blockTopK {
-                rows.append((tokenPositions .< visibleCount)[.newAxis, 0...])
-                continue
-            }
-
-            let query = queries[0..., 0..., queryIndex, 0...]
-            let visibleBlockKeys = blockKeys[0..., ..<visibleBlocks, 0...]
-            let scores = maximum(
-                (expandedDimensions(query, axis: -2)
-                    * expandedDimensions(visibleBlockKeys, axis: 1))
-                    .sum(axis: -1),
-                0
-            ).sum(axis: 1) / sqrt(Float(headDim))
-            let selectedBlocks = MLX.argPartition(
-                -scores, kth: blockTopK - 1, axis: -1)[0..., ..<blockTopK]
-            let selectedTokens = (
-                expandedDimensions(tokenBlockIDs, axes: [0, 1])
-                    .== expandedDimensions(selectedBlocks, axis: -1)
-            ).asType(.int32).sum(axis: 1) .> 0
-            let tailStart = visibleBlocks * compressRatio
-            let tail = (tokenPositions .>= tailStart) .&& (tokenPositions .< visibleCount)
-            rows.append(selectedTokens .|| tail[.newAxis, 0...])
+        if visibleBlocks <= blockTopK {
+            return expandedDimensions(
+                tokenPositions .< visibleCount, axes: [0, 1, 2])
         }
 
-        return .mask(stacked(rows, axis: 1)[.ellipsis, .newAxis, 0..., 0...])
+        let query = queries[0..., 0..., 0, 0...]
+        let visibleBlockKeys = blockKeys[0..., ..<visibleBlocks, 0...]
+        let scores = Qwen4ExpQSADecodeScores.call(
+            queries: queries,
+            blockKeys: visibleBlockKeys
+        ) ?? maximum(
+            (expandedDimensions(query, axis: -2)
+                * expandedDimensions(visibleBlockKeys, axis: 1))
+                .sum(axis: -1),
+            0
+        ).sum(axis: 1)
+        if let fusedMask = Qwen4ExpQSADecodeMask.call(
+            scores: scores,
+            visibleCount: visibleCount,
+            keyLength: totalLength,
+            compressionRatio: compressRatio,
+            blockTopK: blockTopK)
+        {
+            return fusedMask
+        }
+        let selectedBlocks = MLX.argPartition(
+            -scores, kth: blockTopK - 1, axis: -1)[0..., ..<blockTopK]
+        let tokenBlockIDs = tokenPositions.floorDivide(compressRatio)
+        let selectedTokens = (
+            expandedDimensions(tokenBlockIDs, axes: [0, 1])
+                .== expandedDimensions(selectedBlocks, axis: -1)
+        ).asType(.int32).sum(axis: 1) .> 0
+        let tailStart = visibleBlocks * compressRatio
+        let tail = (tokenPositions .>= tailStart)
+            .&& (tokenPositions .< visibleCount)
+        return expandedDimensions(
+            selectedTokens .|| tail[.newAxis, 0...], axes: [1, 2])
+    }
+
+    private func selectDecodeBlocks(
+        queries: MLXArray,
+        blockKeys: MLXArray,
+        previousOffset: Int
+    ) -> MLXArray {
+        let visibleBlocks = (previousOffset + 1) / compressRatio
+        precondition(visibleBlocks > blockTopK)
+        let scores = selectDecodeScores(
+            queries: queries,
+            blockKeys: blockKeys,
+            previousOffset: previousOffset)
+        let blockIDs = MLXArray(Int32(0) ..< Int32(visibleBlocks))
+        let biasedScores = scores
+            - blockIDs.asType(.float32) * Self.tieBreakScale
+        let selected = MLX.argPartition(
+            -biasedScores, kth: blockTopK - 1, axis: -1
+        )[0..., ..<blockTopK].asType(.int32)
+        return sorted(selected, axis: -1).expandedDimensions(axis: 1)
+    }
+
+    private func selectDecodeScores(
+        queries: MLXArray,
+        blockKeys: MLXArray,
+        previousOffset: Int
+    ) -> MLXArray {
+        let visibleBlocks = (previousOffset + 1) / compressRatio
+        precondition(visibleBlocks > blockTopK)
+        let query = queries[0..., 0..., 0, 0...]
+        let visibleBlockKeys = blockKeys[0..., ..<visibleBlocks, 0...]
+        return Qwen4ExpQSADecodeScores.call(
+            queries: queries,
+            blockKeys: visibleBlockKeys
+        ) ?? maximum(
+            (expandedDimensions(query, axis: -2)
+                * expandedDimensions(visibleBlockKeys, axis: 1))
+                .sum(axis: -1),
+            0
+        ).sum(axis: 1)
     }
 
     private func selectBlocks(
@@ -873,6 +1515,10 @@ private final class Qwen4ExpQSAIndexer: Module {
 }
 
 private final class Qwen4ExpAttention: Module {
+    private static let compileDecode =
+        ProcessInfo.processInfo.environment["AFM_QWEN_COMPILE_ATTN_DECODE"] == "1"
+            && HardwareInfo.isCompiledDecodeSupported
+
     let heads: Int
     let kvHeads: Int
     let headDim: Int
@@ -885,6 +1531,76 @@ private final class Qwen4ExpAttention: Module {
     @ModuleInfo(key: "q_norm") var qNorm: Qwen4ExpZeroCenteredRMSNorm
     @ModuleInfo(key: "k_norm") var kNorm: Qwen4ExpZeroCenteredRMSNorm
     @ModuleInfo var indexer: Qwen4ExpQSAIndexer
+
+    /// Compile only the stateless sides of decode attention. QSA selection,
+    /// pooled index keys, and KV growth stay explicit between these closures,
+    /// so request cache ownership and rollback behavior are unchanged.
+    private lazy var compiledProjectionDecode:
+        @Sendable ([MLXArray]) -> [MLXArray] =
+    {
+        let body: ([MLXArray]) -> [MLXArray] = { [unowned self] arguments in
+            CompiledDecodeTrace.withActive {
+                let x = arguments[0]
+                let angles = arguments[1]
+                let b = x.dim(0)
+                let l = x.dim(1)
+                let qProjection = VerifyWidthLinear.call(
+                    self.qProj, x, verificationPolicy: nil,
+                    role: .attention)
+                let kProjection = VerifyWidthLinear.call(
+                    self.kProj, x, verificationPolicy: nil,
+                    role: .attention)
+                let vProjection = VerifyWidthLinear.call(
+                    self.vProj, x, verificationPolicy: nil,
+                    role: .attention)
+                let qParts = MLX.split(
+                    qProjection.reshaped(b, l, self.heads, self.headDim * 2),
+                    parts: 2,
+                    axis: -1)
+                let qInput = qParts[0]
+                let gate = qParts[1].reshaped(b, l, -1)
+                let kInput = kProjection.reshaped(
+                    b, l, self.kvHeads, self.headDim)
+                let value = vProjection.reshaped(
+                    b, l, self.kvHeads, self.headDim)
+                    .transposed(0, 2, 1, 3)
+                let fusedQK = Qwen4ExpQKNormRoPEFusion.call(
+                    q: qInput,
+                    k: kInput,
+                    qWeight: self.qNorm.weight,
+                    kWeight: self.kNorm.weight,
+                    angles: angles,
+                    epsilon: self.qNorm.eps,
+                    qHeads: self.heads,
+                    kvHeads: self.kvHeads,
+                    rotaryDimensions: self.rope.dimensions)
+                precondition(
+                    fusedQK != nil,
+                    "compiled Qwen attention decode requires fused QK norm/RoPE")
+                return [fusedQK!.q, fusedQK!.k, value, gate]
+            }
+        }
+        return compile(shapeless: false, body)
+    }()
+
+    private lazy var compiledOutputDecode:
+        @Sendable ([MLXArray]) -> [MLXArray] =
+    {
+        let body: ([MLXArray]) -> [MLXArray] = { [unowned self] arguments in
+            CompiledDecodeTrace.withActive {
+                let outputHeads = arguments[0]
+                let gate = arguments[1]
+                let output = outputHeads
+                    .transposed(0, 2, 1, 3)
+                    .reshaped(outputHeads.dim(0), outputHeads.dim(2), -1)
+                    * sigmoid(gate)
+                return [VerifyWidthLinear.call(
+                    self.oProj, output, verificationPolicy: nil,
+                    role: .attention)]
+            }
+        }
+        return compile(shapeless: false, body)
+    }()
 
     init(_ config: Qwen4ExpTextConfiguration) {
         heads = config.attentionHeads
@@ -914,57 +1630,91 @@ private final class Qwen4ExpAttention: Module {
         let (b, l) = (x.dim(0), x.dim(1))
         let attentionProfiler = Qwen4ExpAttentionProfiler.make(sequenceLength: l)
         let offset = cache?.offset ?? 0
-        let positionIDs = providedPositionIDs ?? tiled(
-            MLXArray(Int32(offset) ..< Int32(offset + l))[.newAxis, 0...],
-            repetitions: [b, 1])
+        var generatedPositionIDs: MLXArray?
+        func resolvedPositionIDs() -> MLXArray {
+            if let providedPositionIDs { return providedPositionIDs }
+            if let generatedPositionIDs { return generatedPositionIDs }
+            let generated = tiled(
+                MLXArray(Int32(offset) ..< Int32(offset + l))[.newAxis, 0...],
+                repetitions: [b, 1])
+            generatedPositionIDs = generated
+            return generated
+        }
+        // Establish an explicit boundary before the QSA indexer. Without this
+        // profiler-only synchronization, the first attention lap also owns the
+        // lazy work accumulated by the preceding linear-attention layers and
+        // substantially overstates indexer cost.
+        attentionProfiler?.lap([x], stage: "entry")
+        let qsaPositionIDs = Qwen4ExpPerformanceControls
+            .deferDenseQSAPositionHistory
+            ? providedPositionIDs
+            : resolvedPositionIDs()
         let qsaSelection = indexer(
-            x, positionIDs: positionIDs, cache: cache as? Qwen4ExpAttentionCache,
+            x, positionIDs: qsaPositionIDs,
+            cache: cache as? Qwen4ExpAttentionCache,
             verificationPolicy: verificationPolicy)
         if let indexState = (cache as? Qwen4ExpAttentionCache)?.indexStateForProfiling {
             attentionProfiler?.lap(indexState, stage: "indexer")
         }
-        let qParts = MLX.split(
-            VerifyWidthLinear.call(
-                qProj, x, verificationPolicy: verificationPolicy,
-                role: .attention)
-                .reshaped(b, l, heads, headDim * 2),
-            parts: 2,
-            axis: -1)
-        let qInput = qParts[0]
-        let gate = qParts[1].reshaped(b, l, -1)
-        let kInput = VerifyWidthLinear.call(
-            kProj, x, verificationPolicy: verificationPolicy, role: .attention)
-            .reshaped(b, l, kvHeads, headDim)
-        let v = VerifyWidthLinear.call(
-            vProj, x, verificationPolicy: verificationPolicy, role: .attention)
-            .reshaped(b, l, kvHeads, headDim).transposed(0, 2, 1, 3)
-        attentionProfiler?.lap([qInput, gate, kInput, v], stage: "projections")
-        let fusedQK = verificationPolicy == nil
-            && Qwen4ExpQKNormRoPEFusion.enabled
-            ? Qwen4ExpQKNormRoPEFusion.call(
-                q: qInput,
-                k: kInput,
-                qWeight: qNorm.weight,
-                kWeight: kNorm.weight,
-                angles: sharedFusedQKAngles ?? rope.fusedAngleTable(
-                    positionIDs: positionIDs, dtype: qInput.dtype),
-                epsilon: qNorm.eps,
-                qHeads: heads,
-                kvHeads: kvHeads,
-                rotaryDimensions: rope.dimensions)
-            : nil
         let q: MLXArray
         let k: MLXArray
-        if let fusedQK {
-            q = fusedQK.q
-            k = fusedQK.k
+        let v: MLXArray
+        let gate: MLXArray
+        if Self.compileDecode,
+           verificationPolicy == nil,
+           l == 1,
+           let sharedFusedQKAngles
+        {
+            let projected = compiledProjectionDecode([x, sharedFusedQKAngles])
+            q = projected[0]
+            k = projected[1]
+            v = projected[2]
+            gate = projected[3]
         } else {
-            q = rope.apply(
-                qNorm(qInput).transposed(0, 2, 1, 3),
-                positionIDs: positionIDs)
-            k = rope.apply(
-                kNorm(kInput).transposed(0, 2, 1, 3),
-                positionIDs: positionIDs)
+            let qProjection = VerifyWidthLinear.call(
+                qProj, x, verificationPolicy: verificationPolicy,
+                role: .attention)
+            let kProjection = VerifyWidthLinear.call(
+                kProj, x, verificationPolicy: verificationPolicy,
+                role: .attention)
+            let vProjection = VerifyWidthLinear.call(
+                vProj, x, verificationPolicy: verificationPolicy,
+                role: .attention)
+            let qParts = MLX.split(
+                qProjection.reshaped(b, l, heads, headDim * 2),
+                parts: 2,
+                axis: -1)
+            let qInput = qParts[0]
+            gate = qParts[1].reshaped(b, l, -1)
+            let kInput = kProjection.reshaped(b, l, kvHeads, headDim)
+            v = vProjection.reshaped(b, l, kvHeads, headDim)
+                .transposed(0, 2, 1, 3)
+            attentionProfiler?.lap([qInput, gate, kInput, v], stage: "projections")
+            let fusedQK = verificationPolicy == nil
+                && Qwen4ExpQKNormRoPEFusion.enabled
+                ? Qwen4ExpQKNormRoPEFusion.call(
+                    q: qInput,
+                    k: kInput,
+                    qWeight: qNorm.weight,
+                    kWeight: kNorm.weight,
+                    angles: sharedFusedQKAngles ?? rope.fusedAngleTable(
+                        positionIDs: resolvedPositionIDs(), dtype: qInput.dtype),
+                    epsilon: qNorm.eps,
+                    qHeads: heads,
+                    kvHeads: kvHeads,
+                    rotaryDimensions: rope.dimensions)
+                : nil
+            if let fusedQK {
+                q = fusedQK.q
+                k = fusedQK.k
+            } else {
+                q = rope.apply(
+                    qNorm(qInput).transposed(0, 2, 1, 3),
+                    positionIDs: resolvedPositionIDs())
+                k = rope.apply(
+                    kNorm(kInput).transposed(0, 2, 1, 3),
+                    positionIDs: resolvedPositionIDs())
+            }
         }
         attentionProfiler?.lap([q, k, v], stage: "qk-rope")
         let effectiveMask: MLXFast.ScaledDotProductAttentionMaskMode
@@ -992,9 +1742,72 @@ private final class Qwen4ExpAttention: Module {
                 chunkSize: VerifyWidthLinear.exactAttentionEnabled
                     ? VerifyWidthLinear.exactAttentionChunkSize
                     : 1)
+        } else if case let .some(.mask(qsaMask)) = qsaSelection {
+            let cached = cache?.update(keys: k, values: v) ?? (k, v)
+            if let fused = Qwen4ExpQSAMaskedAttention.call(
+                queries: q,
+                keys: cached.0,
+                values: cached.1,
+                scale: scale,
+                mask: qsaMask)
+            {
+                outputHeads = fused
+            } else {
+                outputHeads = MLXFast.scaledDotProductAttention(
+                    queries: q,
+                    keys: cached.0,
+                    values: cached.1,
+                    scale: scale,
+                    mask: .array(qsaMask))
+            }
+        } else if case let .some(.decodeScores(scores)) = qsaSelection {
+            let cached = cache?.update(keys: k, values: v) ?? (k, v)
+            if let decoded = Qwen4ExpQSAFusedDecodeAttention.call(
+                queries: q,
+                keys: cached.0,
+                values: cached.1,
+                scale: scale,
+                scores: scores,
+                blockTopK: indexer.blockTopK,
+                compressionRatio: indexer.compressRatio)
+            {
+                outputHeads = decoded
+            } else {
+                let visibleBlocks = scores.dim(1)
+                let blockIDs = MLXArray(Int32(0) ..< Int32(visibleBlocks))
+                let biasedScores = scores
+                    - blockIDs.asType(.float32) * 1e-7
+                let selectedBlocks = sorted(
+                    MLX.argPartition(
+                        -biasedScores,
+                        kth: indexer.blockTopK - 1,
+                        axis: -1
+                    )[0..., ..<indexer.blockTopK].asType(.int32),
+                    axis: -1
+                ).expandedDimensions(axis: 1)
+                let fallbackMask = Qwen4ExpQSAGather.maskFromBlocks(
+                    selectedBlocks,
+                    keyLength: cached.0.dim(2),
+                    compressionRatio: indexer.compressRatio)
+                outputHeads = MLXFast.scaledDotProductAttention(
+                    queries: q,
+                    keys: cached.0,
+                    values: cached.1,
+                    scale: scale,
+                    mask: .array(fallbackMask))
+            }
         } else if case let .some(.blocks(selectedBlocks)) = qsaSelection {
             let cached = cache?.update(keys: k, values: v) ?? (k, v)
-            if let gathered = Qwen4ExpQSAGather.call(
+            if let decoded = Qwen4ExpQSADecodeAttention.call(
+                queries: q,
+                keys: cached.0,
+                values: cached.1,
+                scale: scale,
+                selectedBlocks: selectedBlocks,
+                compressionRatio: indexer.compressRatio)
+            {
+                outputHeads = decoded
+            } else if let gathered = Qwen4ExpQSAGather.call(
                 queries: q,
                 keys: cached.0,
                 values: cached.1,
@@ -1021,12 +1834,17 @@ private final class Qwen4ExpAttention: Module {
                 mask: effectiveMask)
         }
         attentionProfiler?.lap([outputHeads], stage: "cache-sdpa")
-        var output = outputHeads
-            .transposed(0, 2, 1, 3).reshaped(b, l, -1)
-        output = output * sigmoid(gate)
-        let result = VerifyWidthLinear.call(
-            oProj, output, verificationPolicy: verificationPolicy,
-            role: .attention)
+        let result: MLXArray
+        if Self.compileDecode, verificationPolicy == nil, l == 1 {
+            result = compiledOutputDecode([outputHeads, gate])[0]
+        } else {
+            var output = outputHeads
+                .transposed(0, 2, 1, 3).reshaped(b, l, -1)
+            output = output * sigmoid(gate)
+            result = VerifyWidthLinear.call(
+                oProj, output, verificationPolicy: verificationPolicy,
+                role: .attention)
+        }
         attentionProfiler?.lap([result], stage: "gated-output")
         return result
     }
@@ -1035,6 +1853,9 @@ private final class Qwen4ExpAttention: Module {
 // MARK: - Gated DeltaNet
 
 private final class Qwen4ExpGatedDeltaNet: Module {
+    private static let compileDecode =
+        ProcessInfo.processInfo.environment["AFM_QWEN_COMPILE_GDN_DECODE"] == "1"
+            && HardwareInfo.isCompiledDecodeSupported
     private static let explicitGating =
         ProcessInfo.processInfo.environment["AFM_QWEN_EXPLICIT_GATING"] == "1"
     private static let verifyExplicitGating =
@@ -1062,6 +1883,66 @@ private final class Qwen4ExpGatedDeltaNet: Module {
     @ParameterInfo(key: "A_log") var aLog: MLXArray
     @ModuleInfo var norm: Qwen4ExpGatedNorm
     @ModuleInfo(key: "out_proj") var outProj: Linear
+
+    /// Compile the complete functional one-token recurrent block with both
+    /// mutable states supplied as inputs and returned as outputs. Keeping the
+    /// states explicit prevents a compiled closure from retaining request
+    /// cache objects and leaves verification/rollback on the eager path.
+    private lazy var compiledDecode: @Sendable ([MLXArray]) -> [MLXArray] = {
+        let body: ([MLXArray]) -> [MLXArray] = { [unowned self] arguments in
+            CompiledDecodeTrace.withActive {
+                let x = arguments[0]
+                let prior = arguments[1]
+                let recurrentState = arguments[2]
+                let b = x.dim(0)
+                let l = x.dim(1)
+                let projected = VerifyWidthLinear.call(
+                    self.inProjQKV, x, verificationPolicy: nil,
+                    role: .gatedDelta)
+                let projectedA = VerifyWidthLinear.call(
+                    self.inProjA, x, verificationPolicy: nil,
+                    role: .gatedDelta)
+                let projectedB = VerifyWidthLinear.call(
+                    self.inProjB, x, verificationPolicy: nil,
+                    role: .gatedDelta)
+                let prework = Qwen4ExpGatedDeltaPrework.call(
+                    projected: projected,
+                    prior: prior,
+                    convolutionWeight: self.conv1d.weight,
+                    projectedA: projectedA,
+                    projectedB: projectedB,
+                    aLog: self.aLog,
+                    dtBias: self.dtBias,
+                    keyHeads: self.keyHeads,
+                    valueHeads: self.valueHeads,
+                    keyHeadDimension: self.keyHeadDim,
+                    valueHeadDimension: self.valueHeadDim,
+                    convolutionKernel: self.convKernel)
+                precondition(
+                    prework != nil,
+                    "compiled Qwen GDN decode requires the fused one-token prework")
+                let prepared = prework!
+                let delta = gatedDeltaKernel(
+                    q: prepared.queries,
+                    k: prepared.keys,
+                    v: prepared.values,
+                    g: prepared.gate,
+                    beta: prepared.beta,
+                    state: recurrentState)
+                let z = VerifyWidthLinear.call(
+                    self.inProjZ, x, verificationPolicy: nil,
+                    role: .gatedDelta)
+                    .reshaped(b, l, self.valueHeads, self.valueHeadDim)
+                let output = VerifyWidthLinear.call(
+                    self.outProj,
+                    self.norm(delta.0, gate: z).reshaped(b, l, self.valueDim),
+                    verificationPolicy: nil,
+                    role: .gatedDelta)
+                return [output, prepared.convolutionState, delta.1]
+            }
+        }
+        return compile(shapeless: false, body)
+    }()
 
     init(_ config: Qwen4ExpTextConfiguration) {
         keyHeads = config.linearNumKeyHeads
@@ -1114,6 +1995,16 @@ private final class Qwen4ExpGatedDeltaNet: Module {
         verificationPolicy: MTPVerificationPolicy?
     ) -> MLXArray {
         let (b, l) = (x.dim(0), x.dim(1))
+        if Self.compileDecode, verificationPolicy == nil, l == 1 {
+            let convolutionState = cache?[0] ?? MLXArray.zeros(
+                [b, convKernel - 1, keyDim * 2 + valueDim], dtype: x.dtype)
+            let recurrentState = cache?[1] ?? MLXArray.zeros(
+                [b, valueHeads, valueHeadDim, keyHeadDim], dtype: .float32)
+            let decoded = compiledDecode([x, convolutionState, recurrentState])
+            cache?[0] = decoded[1]
+            cache?[1] = decoded[2]
+            return decoded[0]
+        }
         let projected = VerifyWidthLinear.call(
             inProjQKV, x, verificationPolicy: verificationPolicy,
             role: .gatedDelta)
@@ -1659,6 +2550,11 @@ private final class Qwen4ExpNGramEmbedding: Module {
             let inputValues: [Int64]
             if let hostTokenIDs, hostTokenIDs.count == expectedInputCount {
                 inputValues = hostTokenIDs.map(Int64.init)
+            } else if expectedInputCount == 1 {
+                // A decode token is already scalar. This path supports the
+                // reference-style schedule that resolves the pending sample at
+                // the PLE boundary without allocating a temporary Swift Array.
+                inputValues = [Int64(inputIDs.item(Int.self))]
             } else {
                 inputValues = ids.reshaped(-1).asArray(Int64.self)
             }
@@ -1721,6 +2617,110 @@ private final class Qwen4ExpNGramEmbedding: Module {
             multipliers: hostMultipliers)
         return MLXArray(computed.rowIDs).reshaped(
             ids.dim(0), ids.dim(1), contextLength * headsPerNgram)
+    }
+}
+
+/// Diagnostic-only PLE profiler. `host` records Swift lazy-graph construction;
+/// `all` additionally materializes each boundary to attribute execution time.
+/// The synchronized mode deliberately changes scheduling and must never be
+/// used for throughput reporting.
+private final class Qwen4ExpPLEProfiler {
+    enum Stage: Int, CaseIterable {
+        case embedding
+        case keyProjection
+        case valueProjection
+        case keyQueryNorm
+        case gateAndValue
+        case convolutionNorm
+        case shortConvolution
+        case residual
+
+        var label: String {
+            switch self {
+            case .embedding: "embedding"
+            case .keyProjection: "keyProj"
+            case .valueProjection: "valueProj"
+            case .keyQueryNorm: "keyQueryNorm"
+            case .gateAndValue: "gateValue"
+            case .convolutionNorm: "convNorm"
+            case .shortConvolution: "shortConv"
+            case .residual: "residual"
+            }
+        }
+    }
+
+    private static let reportInterval = 32
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var calls = 0
+    nonisolated(unsafe) private static var accumulatedHost = Array(
+        repeating: UInt64(0), count: Stage.allCases.count)
+    nonisolated(unsafe) private static var accumulatedExecution = Array(
+        repeating: UInt64(0), count: Stage.allCases.count)
+
+    private let synchronize: Bool
+    private var mark = DispatchTime.now().uptimeNanoseconds
+    private var hostNanoseconds = Array(
+        repeating: UInt64(0), count: Stage.allCases.count)
+    private var executionNanoseconds = Array(
+        repeating: UInt64(0), count: Stage.allCases.count)
+
+    static func make(sequenceLength: Int) -> Qwen4ExpPLEProfiler? {
+        guard sequenceLength == 1,
+              let mode = ProcessInfo.processInfo.environment["AFM_QWEN_PROFILE_PLE"],
+              mode == "host" || mode == "all"
+        else { return nil }
+        return Qwen4ExpPLEProfiler(synchronize: mode == "all")
+    }
+
+    private init(synchronize: Bool) {
+        self.synchronize = synchronize
+    }
+
+    func lap(_ array: MLXArray, stage: Stage) {
+        lap([array], stage: stage)
+    }
+
+    func lap(_ arrays: [MLXArray], stage: Stage) {
+        let constructed = DispatchTime.now().uptimeNanoseconds
+        hostNanoseconds[stage.rawValue] += constructed - mark
+        if synchronize {
+            eval(arrays)
+            let executed = DispatchTime.now().uptimeNanoseconds
+            executionNanoseconds[stage.rawValue] += executed - constructed
+            mark = executed
+        } else {
+            mark = constructed
+        }
+    }
+
+    func report() {
+        Self.lock.withLock {
+            Self.calls += 1
+            for stage in Stage.allCases {
+                Self.accumulatedHost[stage.rawValue] += hostNanoseconds[stage.rawValue]
+                Self.accumulatedExecution[stage.rawValue] += executionNanoseconds[stage.rawValue]
+            }
+            guard Self.calls.isMultiple(of: Self.reportInterval) else { return }
+
+            let divisor = Double(Self.reportInterval) * 1_000_000
+            func milliseconds(_ nanoseconds: UInt64) -> String {
+                String(format: "%.3f", Double(nanoseconds) / divisor)
+            }
+            let host = Stage.allCases.map { stage in
+                "\(stage.label) \(milliseconds(Self.accumulatedHost[stage.rawValue]))"
+            }.joined(separator: " ")
+            print("[qwen4-ple-host-prof] avg-ms/call \(host)")
+            if synchronize {
+                let execution = Stage.allCases.map { stage in
+                    "\(stage.label) \(milliseconds(Self.accumulatedExecution[stage.rawValue]))"
+                }.joined(separator: " ")
+                print("[qwen4-ple-exec-prof] avg-ms/call \(execution)")
+            }
+            Self.accumulatedHost = Array(
+                repeating: 0, count: Stage.allCases.count)
+            Self.accumulatedExecution = Array(
+                repeating: 0, count: Stage.allCases.count)
+        }
     }
 }
 
@@ -1792,27 +2792,36 @@ private final class Qwen4ExpPLE: Module {
         hostTokenIDs: [Int]? = nil,
         verificationPolicy: MTPVerificationPolicy? = nil
     ) -> MLXArray {
+        let profiler = Qwen4ExpPLEProfiler.make(sequenceLength: hidden.dim(1))
         let initialTokenHistory = cache?[3] ?? MLXArray.full(
             [inputIDs.dim(0), pleEmbedding.contextLength],
             values: MLXArray(pleEmbedding.eosTokenID),
             dtype: .int64)
         let embedding = pleEmbedding(
             inputIDs, cache: cache, hostTokenIDs: hostTokenIDs)
+        profiler?.lap(embedding, stage: .embedding)
         let shape = Array(hidden.shape.dropLast())
-        let key = normKey(VerifyWidthLinear.call(
+        let keyProjection = VerifyWidthLinear.call(
             keyProj, embedding, verificationPolicy: verificationPolicy,
-            role: .positionalEmbedding))
+            role: .positionalEmbedding)
+        profiler?.lap(keyProjection, stage: .keyProjection)
+        let valueProjection = VerifyWidthLinear.call(
+            valueProj, embedding, verificationPolicy: verificationPolicy,
+            role: .positionalEmbedding)
+        profiler?.lap(valueProjection, stage: .valueProjection)
+        let key = normKey(keyProjection)
             .reshaped(shape + [hcCount, hiddenSize])
         let query = normQuery(hidden).reshaped(shape + [hcCount, hiddenSize])
+        profiler?.lap([key, query], stage: .keyQueryNorm)
         var gate = (key * query).sum(axis: -1, keepDims: true) / sqrt(Float(hiddenSize))
         gate = sign(gate) * sqrt(maximum(abs(gate), 1e-6))
         let value = expandedDimensions(
-            VerifyWidthLinear.call(
-                valueProj, embedding, verificationPolicy: verificationPolicy,
-                role: .positionalEmbedding),
+            valueProjection,
             axis: -2)
         let gated = (sigmoid(gate) * value).reshaped(shape + [hcCount * hiddenSize])
+        profiler?.lap(gated, stage: .gateAndValue)
         let convolutionInputs = normConv(gated)
+        profiler?.lap(convolutionInputs, stage: .convolutionNorm)
         if verificationPolicy != nil,
            hidden.dim(1) > 1,
            let layerCache = cache as? Qwen4ExpLayerCache
@@ -1826,7 +2835,12 @@ private final class Qwen4ExpPLE: Module {
                 convolutionInputs: convolutionInputs,
                 inputIDs: inputIDs.asType(.int64))
         }
-        return gated + shortConv(convolutionInputs, cache: cache)
+        let convolved = shortConv(convolutionInputs, cache: cache)
+        profiler?.lap(convolved, stage: .shortConvolution)
+        let output = gated + convolved
+        profiler?.lap(output, stage: .residual)
+        profiler?.report()
+        return output
     }
 
     func traceForTesting(
@@ -1910,14 +2924,18 @@ final class Qwen4ExpForwardProfiler {
     private var attentionNanoseconds: UInt64 = 0
     private var gatedDeltaLayers = 0
     private var attentionLayers = 0
+    private let sequenceLength: Int
     private var blockCommandBuffers = Array(repeating: UInt64(0), count: Block.allCases.count)
     private var blockOperations = Array(repeating: UInt64(0), count: Block.allCases.count)
 
     static func make(sequenceLength: Int) -> Qwen4ExpForwardProfiler? {
-        guard sequenceLength == 1,
-              ProcessInfo.processInfo.environment["AFM_QWEN_PROFILE_FWD"] == "all"
+        guard ProcessInfo.processInfo.environment["AFM_QWEN_PROFILE_FWD"] == "all"
         else { return nil }
-        return Qwen4ExpForwardProfiler()
+        return Qwen4ExpForwardProfiler(sequenceLength: sequenceLength)
+    }
+
+    private init(sequenceLength: Int) {
+        self.sequenceLength = sequenceLength
     }
 
     func start(_ array: MLXArray) {
@@ -1958,7 +2976,7 @@ final class Qwen4ExpForwardProfiler {
             "\($0.label) \(String(format: "%.2f", milliseconds(blockNanoseconds[$0.rawValue])))"
         }.joined(separator: " ")
         print(
-            "[qwen4-prof] S=1 gdn \(String(format: "%.2f", milliseconds(gatedDeltaNanoseconds))) ms "
+            "[qwen4-prof] S=\(sequenceLength) gdn \(String(format: "%.2f", milliseconds(gatedDeltaNanoseconds))) ms "
                 + "(\(gatedDeltaLayers) layers) attn \(String(format: "%.2f", milliseconds(attentionNanoseconds))) ms "
                 + "(\(attentionLayers) layers) ple-layer \(String(format: "%.2f", milliseconds(pleLayerNanoseconds))) ms")
         print("[qwen4-prof] blocks (ms, whole forward): \(blocks)")
@@ -2099,6 +3117,32 @@ final class Qwen4ExpDecoderLayer: Module {
         return compile(shapeless: false, body)
     }()
 
+    /// Compiled counterpart of the deferred inter-layer schedule. It traces
+    /// the post-attention hyper-connection read and sparse-MoE work, but leaves
+    /// the final stream injection pending so the next layer can consume it in
+    /// its fused read. This preserves the dispatch reduction of the deferred
+    /// schedule while avoiding repeated Swift graph construction for its tail.
+    private lazy var compiledDeferredLayerTailDecode:
+        @Sendable ([MLXArray]) -> [MLXArray] =
+    {
+        mlp.switchMLP.prepareQwenAffineDecode()
+        let body: ([MLXArray]) -> [MLXArray] = { [unowned self] arguments in
+            CompiledDecodeTrace.withActive {
+                let mlpRead = self.mlpHyperConnection.mixAfterInjection(
+                    output: arguments[0],
+                    residual: arguments[1],
+                    weights: arguments[2],
+                    verificationPolicy: nil)
+                return [
+                    self.mlp(mlpRead.0, verificationPolicy: nil),
+                    mlpRead.1,
+                    mlpRead.2,
+                ]
+            }
+        }
+        return compile(shapeless: false, body)
+    }()
+
     init(
         _ config: Qwen4ExpTextConfiguration,
         layerIndex: Int,
@@ -2153,6 +3197,7 @@ final class Qwen4ExpDecoderLayer: Module {
         attentionMask: MLXFast.ScaledDotProductAttentionMaskMode,
         positionIDs: MLXArray?,
         cache: KVCache?,
+        fusedQKAngles: MLXArray? = nil,
         verificationPolicy: MTPVerificationPolicy? = nil,
         profiler: Qwen4ExpForwardProfiler? = nil
     ) -> MLXArray {
@@ -2177,7 +3222,8 @@ final class Qwen4ExpDecoderLayer: Module {
                 verificationPolicy: verificationPolicy)
             : selfAttention!(
                 mixed, mask: attentionMask, positionIDs: positionIDs, cache: cache,
-                verificationPolicy: verificationPolicy)
+                verificationPolicy: verificationPolicy,
+                fusedQKAngles: fusedQKAngles)
         profiler?.lap(attended, block: isLinear ? .gatedDelta : .attention)
         if let profiler {
             let injected = attentionHyperConnection.inject(
@@ -2238,6 +3284,7 @@ final class Qwen4ExpDecoderLayer: Module {
         attentionMask: MLXFast.ScaledDotProductAttentionMaskMode,
         positionIDs: MLXArray?,
         cache: KVCache?,
+        fusedQKAngles: MLXArray? = nil,
         hostProfiler: Qwen4ExpHostProfiler? = nil
     ) -> (stream: MLXArray, pending: Qwen4ExpPendingHyperConnectionWrite) {
         let arrayCache = cache as? ArraysCache
@@ -2278,15 +3325,31 @@ final class Qwen4ExpDecoderLayer: Module {
             ? linearAttention!(attentionRead.0, cache: arrayCache, verificationPolicy: nil)
             : selfAttention!(
                 attentionRead.0, mask: attentionMask, positionIDs: positionIDs,
-                cache: cache, verificationPolicy: nil)
+                cache: cache, verificationPolicy: nil,
+                fusedQKAngles: fusedQKAngles)
         hostProfiler?.lap(isLinear ? .gatedDelta : .attention)
-        let mlpRead = mlpHyperConnection.mixAfterInjection(
-            output: attended,
-            residual: attentionRead.1,
-            weights: attentionRead.2,
-            verificationPolicy: nil)
+        let compiledTail: [MLXArray]?
+        if Self.compileLayerTailDecode, input.dim(1) == 1 {
+            compiledTail = compiledDeferredLayerTailDecode([
+                attended, attentionRead.1, attentionRead.2,
+            ])
+        } else {
+            compiledTail = nil
+        }
+        let mlpRead: (MLXArray, MLXArray, MLXArray)
+        let mlpOutput: MLXArray
+        if let compiledTail {
+            mlpRead = (compiledTail[0], compiledTail[1], compiledTail[2])
+            mlpOutput = compiledTail[0]
+        } else {
+            mlpRead = mlpHyperConnection.mixAfterInjection(
+                output: attended,
+                residual: attentionRead.1,
+                weights: attentionRead.2,
+                verificationPolicy: nil)
+            mlpOutput = mlp(mlpRead.0, verificationPolicy: nil)
+        }
         hostProfiler?.lap(.hyperConnectionRead)
-        let mlpOutput = mlp(mlpRead.0, verificationPolicy: nil)
         hostProfiler?.lap(.mlp)
         return (
             mlpRead.1,
@@ -2309,13 +3372,18 @@ final class Qwen4ExpDecoderLayer: Module {
 
 private final class Qwen4ExpModelInner: Module {
     private static let deferInterLayerHyperConnectionWriteDecode =
-        ProcessInfo.processInfo.environment["AFM_QWEN_DEFER_HC_WRITE"] == "1"
+        ProcessInfo.processInfo.environment["AFM_QWEN_DEFER_HC_WRITE"] != "0"
 
     @ModuleInfo(key: "embed_tokens") var embedTokens: Embedding
     @ModuleInfo var layers: [Qwen4ExpDecoderLayer]
     @ModuleInfo(key: "hyper_connection_mixer") var hyperConnectionMixer: Qwen4ExpGatedResidual
+    private let fusedQKRoPE: Qwen4ExpMultimodalRoPE
 
     init(_ config: Qwen4ExpTextConfiguration) {
+        fusedQKRoPE = Qwen4ExpMultimodalRoPE(
+            dimensions: Int(Float(config.headDim) * config.partialRotaryFactor),
+            base: config.ropeTheta,
+            mropeSection: config.mropeSection)
         _embedTokens.wrappedValue = Embedding(
             embeddingCount: config.vocabularySize, dimensions: config.hiddenSize)
         _layers.wrappedValue = (0 ..< config.hiddenLayers).map {
@@ -2361,7 +3429,8 @@ private final class Qwen4ExpModelInner: Module {
         positionIDs: MLXArray? = nil,
         cache: [KVCache]?,
         hostTokenIDs: [Int]? = nil,
-        verificationPolicy: MTPVerificationPolicy? = nil
+        verificationPolicy: MTPVerificationPolicy? = nil,
+        combineWithFinalMixer: Bool = false
     ) -> MLXArray {
         var hidden = MLX.tiled(
             inputEmbeddings ?? embedTokens(inputIDs),
@@ -2369,6 +3438,24 @@ private final class Qwen4ExpModelInner: Module {
         let layerCaches: [KVCache?] = cache ?? Array(repeating: nil, count: layers.count)
         let attentionIndex = layers.firstIndex { !$0.isLinear }
         let mask = attentionIndex.map { createAttentionMask(h: hidden, cache: layerCaches[$0]) } ?? .none
+        let sharedFusedQKAngles: MLXArray?
+        if verificationPolicy == nil,
+           Qwen4ExpQKNormRoPEFusion.shouldPrepareSharedAngles(
+               batchSize: hidden.dim(0),
+               sequenceLength: hidden.dim(1),
+               dtype: hidden.dtype),
+           let attentionIndex
+        {
+            let offset = layerCaches[attentionIndex]?.offset ?? 0
+            // Explicit position IDs may carry multimodal t/h/w coordinates;
+            // those must stay on the authoritative per-layer M-RoPE path.
+            sharedFusedQKAngles = positionIDs == nil
+                ? fusedQKRoPE.fusedAngleRows(
+                    offset: offset, sequenceLength: hidden.dim(1))
+                : nil
+        } else {
+            sharedFusedQKAngles = nil
+        }
         let deferInterLayerWrite = Self.deferInterLayerHyperConnectionWriteDecode
             && verificationPolicy == nil
             && hidden.dim(1) == 1
@@ -2386,6 +3473,7 @@ private final class Qwen4ExpModelInner: Module {
                     attentionMask: mask,
                     positionIDs: positionIDs,
                     cache: layerCaches[index],
+                    fusedQKAngles: sharedFusedQKAngles,
                     hostProfiler: hostProfiler)
                 hidden = result.stream
                 pending = result.pending
@@ -2394,13 +3482,27 @@ private final class Qwen4ExpModelInner: Module {
                     hidden, inputIDs: inputIDs,
                     hostTokenIDs: hostTokenIDs,
                     attentionMask: mask, positionIDs: positionIDs, cache: layerCaches[index],
+                    fusedQKAngles: sharedFusedQKAngles,
                     verificationPolicy: verificationPolicy,
                     profiler: profiler)
             }
         }
-        if let pending, let finalLayer = layers.last {
-            hidden = finalLayer.materializeFinalInjection(pending)
+        if combineWithFinalMixer, let pending {
+            hidden = hyperConnectionMixer.combineAfterInjection(
+                output: pending.output,
+                residual: pending.residual,
+                weights: pending.weights,
+                verificationPolicy: verificationPolicy)
             hostProfiler?.lap(.finalWrite)
+        } else {
+            if let pending, let finalLayer = layers.last {
+                hidden = finalLayer.materializeFinalInjection(pending)
+                hostProfiler?.lap(.finalWrite)
+            }
+            if combineWithFinalMixer {
+                hidden = hyperConnectionMixer.combine(
+                    hidden, verificationPolicy: verificationPolicy)
+            }
         }
         profiler?.report()
         hostProfiler?.report()
@@ -2452,16 +3554,14 @@ private final class Qwen4ExpModelInner: Module {
         hostTokenIDs: [Int]? = nil,
         verificationPolicy: MTPVerificationPolicy? = nil
     ) -> MLXArray {
-        hyperConnectionMixer.combine(
-            forwardStream(
-                inputIDs,
-                inputEmbeddings: inputEmbeddings,
-                positionIDs: positionIDs,
-                cache: cache,
-                hostTokenIDs: hostTokenIDs,
-                verificationPolicy: verificationPolicy
-            ),
-            verificationPolicy: verificationPolicy
+        forwardStream(
+            inputIDs,
+            inputEmbeddings: inputEmbeddings,
+            positionIDs: positionIDs,
+            cache: cache,
+            hostTokenIDs: hostTokenIDs,
+            verificationPolicy: verificationPolicy,
+            combineWithFinalMixer: true
         )
     }
 
@@ -2491,10 +3591,12 @@ public final class Qwen4ExpMTPHead: Module {
 
     private let hiddenSize: Int
     private let hcCount: Int
+    private let indexerCompressRatio: Int
 
     fileprivate init(_ config: Qwen4ExpTextConfiguration) {
         hiddenSize = config.hiddenSize
         hcCount = config.hcCount
+        indexerCompressRatio = config.indexerCompressRatio
         _preFcNormEmbedding.wrappedValue = RMSNorm(
             dimensions: config.hiddenSize, eps: config.rmsNormEps)
         _preFcNormHidden.wrappedValue = RMSNorm(
@@ -2551,7 +3653,7 @@ public final class Qwen4ExpMTPHead: Module {
     }
 
     public func newCache() -> [KVCache] {
-        [Qwen4ExpAttentionCache()]
+        [Qwen4ExpAttentionCache(indexerCompressRatio: indexerCompressRatio)]
     }
 
     static func prepareCheckpointWeights(_ raw: [String: MLXArray]) -> [String: MLXArray] {
@@ -2634,6 +3736,15 @@ public final class Qwen4ExpModel: Module, LLMModel, KVCacheDimensionProvider {
     let configuration: Qwen4ExpTextConfiguration
     private let ngramTableConfiguration: Qwen4ExpNGramTableConfiguration?
     private var usesMappedNGramTable = false
+
+    /// Diagnostic parity path for the mapped PLE table. The reference token
+    /// loop reaches the PLE boundary before resolving the pending sampled
+    /// scalar. Keep this opt-in until the fixed-gate A/B proves that scheduling
+    /// is beneficial in the Swift runtime.
+    private static let resolveMappedNGramTokenAtPLE =
+        ProcessInfo.processInfo.environment[
+            "AFM_QWEN_RESOLVE_MAPPED_NGRAM_TOKEN_AT_PLE"
+        ] != "0"
     @ModuleInfo(key: "lm_head") var lmHead: Linear?
 
     public init(_ wrapper: Qwen4ExpConfiguration) {
@@ -2666,7 +3777,9 @@ public final class Qwen4ExpModel: Module, LLMModel, KVCacheDimensionProvider {
         usesMappedNGramTable = true
     }
 
-    public var consumesHostTokenIDs: Bool { usesMappedNGramTable }
+    public var consumesHostTokenIDs: Bool {
+        usesMappedNGramTable && !Self.resolveMappedNGramTokenAtPLE
+    }
 
     public func callAsFunction(
         _ input: LMInput.Text,
@@ -2906,7 +4019,8 @@ public final class Qwen4ExpModel: Module, LLMModel, KVCacheDimensionProvider {
             if layerType == "linear_attention" {
                 return Qwen4ExpLayerCache()
             }
-            return Qwen4ExpAttentionCache()
+            return Qwen4ExpAttentionCache(
+                indexerCompressRatio: configuration.indexerCompressRatio)
         }
     }
 

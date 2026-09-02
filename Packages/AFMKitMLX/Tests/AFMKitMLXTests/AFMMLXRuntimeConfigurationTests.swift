@@ -3,6 +3,23 @@ import AFMKitCore
 import XCTest
 
 final class AFMMLXRuntimeConfigurationTests: XCTestCase {
+    func testAbsentPrefillSettingPreservesArchitectureTuningEligibility() {
+        let service = MLXModelService(resolver: MLXCacheResolver())
+
+        AFMMLXRuntimeConfiguration(prefillStepSize: nil).apply(to: service)
+
+        XCTAssertFalse(service.prefillStepSizeIsExplicit)
+    }
+
+    func testExplicitPrefillSettingDisablesArchitectureRecommendation() {
+        let service = MLXModelService(resolver: MLXCacheResolver())
+
+        AFMMLXRuntimeConfiguration(prefillStepSize: 2_048).apply(to: service)
+
+        XCTAssertTrue(service.prefillStepSizeIsExplicit)
+        XCTAssertEqual(service.prefillStepSize, 2_048)
+    }
+
     func testMappedQwenNGramLoadingIsDisabledByDefault() {
         let service = MLXModelService(resolver: MLXCacheResolver())
         let configuration = AFMMLXRuntimeConfiguration()

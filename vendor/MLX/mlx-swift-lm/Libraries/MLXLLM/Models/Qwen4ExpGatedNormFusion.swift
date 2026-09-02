@@ -16,7 +16,7 @@ enum Qwen4ExpGatedNormFusion {
     static let enabled =
         ProcessInfo.processInfo.environment[
             "AFM_QWEN_FUSED_GDN_NORM_GATE"
-        ] == "1"
+        ] != "0"
 
     private static let kernel = MLXFast.metalKernel(
         name: "qwen4_exp_gdn_norm_gate",
@@ -80,7 +80,9 @@ enum Qwen4ExpGatedNormFusion {
         let rows = values.dim(0) * values.dim(1)
         let heads = values.dim(2)
         return kernel(
-            [contiguous(values), contiguous(gate), weight, MLXArray(epsilon)],
+            // The custom-kernel boundary copies only non-row-contiguous
+            // inputs; avoid forcing two redundant graph nodes per GDN layer.
+            [values, gate, weight, MLXArray(epsilon)],
             template: [
                 ("T", values.dtype),
                 ("HEADS", heads),

@@ -11,7 +11,7 @@ import MLXFast
 
 private enum QwenMoERouterKernel {
     private static let enabled =
-        ProcessInfo.processInfo.environment["AFM_QWEN_FUSED_MOE_ROUTER"] == "1"
+        ProcessInfo.processInfo.environment["AFM_QWEN_FUSED_MOE_ROUTER"] != "0"
 
     private static let kernel = MLXFast.metalKernel(
         name: "qwen_moe_router_softmax",
@@ -130,8 +130,12 @@ private enum QwenMoERouterKernel {
 
         let experts = logits.dim(2)
         let threadGroup = min(256, max(32, ((experts + 31) / 32) * 32))
+        // The Metal custom-kernel boundary already performs a row-contiguous
+        // copy only when the input flags require one.  Wrapping every decode
+        // row in MLX.contiguous() unconditionally adds one lazy graph node per
+        // layer even though the projection result is already row contiguous.
         let output = kernel(
-            [contiguous(logits)],
+            [logits],
             template: [
                 ("TOUT", logits.dtype),
                 ("NUM_EXPERTS", experts),

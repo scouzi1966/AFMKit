@@ -1,6 +1,7 @@
 import Darwin
 import Foundation
 import MLX
+import MLXFast
 
 enum Qwen4ExpMappedNGramTableError: Error, LocalizedError, Equatable {
     case cannotOpen(String)
@@ -38,6 +39,27 @@ enum Qwen4ExpMappedNGramTableError: Error, LocalizedError, Equatable {
 /// disk. Decode gathers use parallel positional reads to avoid serial VM page
 /// faults; larger prefill gathers use the mapped data directly.
 final class Qwen4ExpMappedNGramTable: @unchecked Sendable {
+    /// Native equivalent of the reference's lightweight PLE prefetch pool.
+    /// Exact-checkpoint qualification selected 48 workers; `0` retains the
+    /// existing mapped path as a fail-closed recovery option.
+    private static var useNativePositionalReads: Bool {
+        ProcessInfo.processInfo.environment["AFM_QWEN_PLE_NATIVE_READS"] != "0"
+    }
+
+    private static var nativeWorkerCount: Int {
+        let requested = Int(
+            ProcessInfo.processInfo.environment["AFM_QWEN_PLE_NATIVE_WORKERS"]
+                ?? "48") ?? 48
+        return min(max(requested, 1), 64)
+    }
+
+    /// Emergency fallback for decode-width sidecar reads. Direct mapped reads
+    /// avoid waking 48 parked threads per generated token and won the
+    /// exact-checkpoint A/B while preserving byte-identical output. Set this
+    /// only to compare or recover the earlier positional-read implementation.
+    private static let usePositionalReads =
+        ProcessInfo.processInfo.environment["AFM_QWEN_PLE_POSITIONAL_READS"] == "1"
+
     private final class MappedBuffer: @unchecked Sendable {
         let pointer: UnsafeRawPointer
         let count: Int
@@ -290,6 +312,7 @@ final class Qwen4ExpMappedNGramTable: @unchecked Sendable {
     private let weightBytesPerRow: Int
     private let scaleBytesPerRow: Int
     private let parallelReadLimit = 64
+    private var nativeReadPool: MLXFast.AffineRowGather?
     private var positionalReadPool: PositionalReadPool?
 
     init(
@@ -428,13 +451,30 @@ final class Qwen4ExpMappedNGramTable: @unchecked Sendable {
             self.biasOffset = try Self.checkedAdd(dataOffset, header.biases.dataOffsets[0])
             self.weightBytesPerRow = try Self.checkedMultiply(packedColumns, 4)
             self.scaleBytesPerRow = try Self.checkedMultiply(scaleColumns, 2)
-            self.positionalReadPool = PositionalReadPool(
-                descriptor: descriptor,
-                weightOffset: self.weightOffset,
-                scaleOffset: self.scaleOffset,
-                biasOffset: self.biasOffset,
-                weightBytesPerRow: self.weightBytesPerRow,
-                scaleBytesPerRow: self.scaleBytesPerRow)
+            self.nativeReadPool = Self.useNativePositionalReads
+                ? MLXFast.AffineRowGather(
+                    fileDescriptor: descriptor,
+                    totalRows: actualRows,
+                    dimensions: actualDimensions,
+                    bits: actualBits,
+                    groupSize: actualGroupSize,
+                    weightOffset: self.weightOffset,
+                    scaleOffset: self.scaleOffset,
+                    biasOffset: self.biasOffset,
+                    weightBytesPerRow: self.weightBytesPerRow,
+                    scaleBytesPerRow: self.scaleBytesPerRow,
+                    workerCount: Self.nativeWorkerCount,
+                    maximumRows: self.parallelReadLimit)
+                : nil
+            self.positionalReadPool = !Self.useNativePositionalReads && Self.usePositionalReads
+                ? PositionalReadPool(
+                    descriptor: descriptor,
+                    weightOffset: self.weightOffset,
+                    scaleOffset: self.scaleOffset,
+                    biasOffset: self.biasOffset,
+                    weightBytesPerRow: self.weightBytesPerRow,
+                    scaleBytesPerRow: self.scaleBytesPerRow)
+                : nil
         } catch {
             Darwin.close(descriptor)
             throw error
@@ -442,6 +482,7 @@ final class Qwen4ExpMappedNGramTable: @unchecked Sendable {
     }
 
     deinit {
+        nativeReadPool = nil
         positionalReadPool?.shutdown()
         positionalReadPool = nil
         Darwin.close(fileDescriptor)
@@ -461,7 +502,9 @@ final class Qwen4ExpMappedNGramTable: @unchecked Sendable {
             let count = try Self.checkedMultiply(ids.count, dimensions)
             let output = OutputBuffer(count: count)
             if ids.count <= parallelReadLimit {
-                if !gatherWithPositionalReads(ids, output: output) {
+                if !gatherWithNativeReads(ids, output: output)
+                    && !gatherWithPositionalReads(ids, output: output)
+                {
                     // A regular-file pread can be interrupted or fail after the
                     // sidecar was opened. The already validated read-only mapping
                     // is the safe in-process fallback for this generation step.
@@ -476,6 +519,15 @@ final class Qwen4ExpMappedNGramTable: @unchecked Sendable {
             return MLXArray(data, shape + [dimensions], dtype: .bfloat16)
         }
         throw Qwen4ExpMappedNGramTableError.rowOutOfRange(invalid)
+    }
+
+    private func gatherWithNativeReads(
+        _ ids: [Int64], output: OutputBuffer
+    ) -> Bool {
+        nativeReadPool?.gather(
+            rowIDs: ids,
+            output: output.pointer,
+            outputCount: ids.count * dimensions) ?? false
     }
 
     private func gatherWithPositionalReads(

@@ -175,7 +175,12 @@ public struct AFMMLXRuntimeConfiguration: Sendable {
         service.maxConcurrent = maxConcurrent >= 2 ? maxConcurrent : 0
         service.toolCallParser = toolCallParser
         service.enableGrammarConstraints = enableGrammarConstraints
-        service.prefillStepSize = prefillStepSize ?? service.prefillStepSize
+        // Leaving the setting absent is semantically different from assigning
+        // the service's current value: the latter marks it as an explicit user
+        // override and prevents architecture-specific tuning after model load.
+        if let prefillStepSize {
+            service.prefillStepSize = prefillStepSize
+        }
         service.kvEvictionPolicy = kvEvictionPolicy
         service.fixToolArgs = fixToolArguments
         service.forceVLM = forceVLM

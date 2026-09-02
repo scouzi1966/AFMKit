@@ -160,6 +160,71 @@ int mlx_fast_metal_kernel_apply(
     const mlx_fast_metal_kernel_config config,
     const mlx_stream stream);
 
+/**
+ * A reusable lazy-graph plan for several custom Metal kernels whose inputs can
+ * reference either external arrays or outputs from an earlier stage. The plan
+ * does not own the kernels or configurations; callers must keep them alive.
+ *
+ * A negative input source selects `external_inputs`; otherwise the source is
+ * the zero-based index of an earlier stage. `stage_input_offsets` has
+ * `stage_count + 1` entries and partitions the flattened input bindings.
+ */
+typedef struct mlx_fast_metal_kernel_chain_ {
+  void* ctx;
+} mlx_fast_metal_kernel_chain;
+
+mlx_fast_metal_kernel_chain mlx_fast_metal_kernel_chain_new(
+    const mlx_fast_metal_kernel* kernels,
+    const mlx_fast_metal_kernel_config* configs,
+    size_t stage_count,
+    const int32_t* stage_input_offsets,
+    const int32_t* input_sources,
+    const int32_t* input_indices,
+    const int32_t* output_sources,
+    const int32_t* output_indices,
+    size_t output_count);
+
+void mlx_fast_metal_kernel_chain_free(mlx_fast_metal_kernel_chain chain);
+
+int mlx_fast_metal_kernel_chain_apply(
+    mlx_vector_array* outputs,
+    const mlx_fast_metal_kernel_chain chain,
+    const mlx_vector_array external_inputs,
+    const mlx_stream stream);
+
+/**
+ * Persistent positional-read workers for sparse affine-quantized row
+ * gathering. The pool does not own `file_descriptor`; callers must keep the
+ * descriptor open until the pool is freed. `gather` is synchronous and
+ * serializes concurrent callers on the same pool.
+ */
+typedef struct mlx_fast_affine_row_gather_ {
+  void* ctx;
+} mlx_fast_affine_row_gather;
+
+mlx_fast_affine_row_gather mlx_fast_affine_row_gather_new(
+    int file_descriptor,
+    size_t total_rows,
+    size_t dimensions,
+    int bits,
+    size_t group_size,
+    size_t weight_offset,
+    size_t scale_offset,
+    size_t bias_offset,
+    size_t weight_bytes_per_row,
+    size_t scale_bytes_per_row,
+    size_t worker_count,
+    size_t max_rows);
+
+void mlx_fast_affine_row_gather_free(mlx_fast_affine_row_gather gather);
+
+int mlx_fast_affine_row_gather_apply(
+    const mlx_fast_affine_row_gather gather,
+    const int64_t* row_ids,
+    size_t row_count,
+    uint16_t* output,
+    size_t output_count);
+
 int mlx_fast_deepseek_v4_mxfp4_moe(
     mlx_array* result,
     const mlx_array x,

@@ -10,12 +10,39 @@ import MLX
 import MLXFast
 
 enum Qwen4ExpQKNormRoPEFusion {
+    static let maximumSequenceLength = 32
+
     // Performance switches are process-start settings. Cache this once: this
     // path runs in every attention layer for every decoded token.
     static let enabled =
         ProcessInfo.processInfo.environment[
             "AFM_QWEN_FUSED_QK_NORM_ROPE"
-        ] == "1"
+        ] != "0"
+
+    /// Qualified model-boundary sharing. Keep an independent `0` escape hatch
+    /// so diagnostics can compare against the retained per-layer path.
+    static let sharedAnglesEnabled =
+        ProcessInfo.processInfo.environment[
+            "AFM_QWEN_SHARED_QK_ANGLES"
+        ] != "0"
+
+    /// The Qwen full-attention layers all use the same position-dependent
+    /// angle table during one forward. Build that lazy graph once at the
+    /// model boundary and share it across layers instead of recreating the
+    /// identical cosine/sine chain in every layer.
+    static func shouldPrepareSharedAngles(
+        batchSize: Int,
+        sequenceLength: Int,
+        dtype: DType
+    ) -> Bool {
+        enabled
+            && sharedAnglesEnabled
+            && Device.defaultDevice().deviceType == .gpu
+            && dtype == .bfloat16
+            && batchSize == 1
+            && sequenceLength > 0
+            && sequenceLength <= maximumSequenceLength
+    }
 
     private static let kernel = MLXFast.metalKernel(
         name: "qwen_qk_norm_rope_256",
@@ -77,20 +104,20 @@ enum Qwen4ExpQKNormRoPEFusion {
             }
             threadgroup_barrier(mem_flags::mem_threadgroup);
 
-            const device T* angle_row = angles + sequence * uint(ROTARY_DIM);
+            const device A* angle_row = angles + sequence * uint(ROTARY_DIM);
             for (uint item = 0; item < 4; ++item) {
                 const uint index = base + item;
                 T result;
                 if (index < half_rotary) {
-                    const T cosine_product = normalized[index] * angle_row[index];
+                    const T cosine_product = normalized[index] * T(angle_row[index]);
                     const T sine_product = normalized[index + half_rotary]
-                        * angle_row[half_rotary + index];
+                        * T(angle_row[half_rotary + index]);
                     result = cosine_product - sine_product;
                 } else if (index < uint(ROTARY_DIM)) {
                     const T sine_product = normalized[index - half_rotary]
-                        * angle_row[index];
+                        * T(angle_row[index]);
                     const T cosine_product = normalized[index]
-                        * angle_row[index - half_rotary];
+                        * T(angle_row[index - half_rotary]);
                     result = sine_product + cosine_product;
                 } else {
                     result = normalized[index];
@@ -120,7 +147,7 @@ enum Qwen4ExpQKNormRoPEFusion {
               k.dim(0) == 1,
               q.dim(1) == k.dim(1),
               q.dim(1) > 0,
-              q.dim(1) <= 32,
+              q.dim(1) <= maximumSequenceLength,
               q.shape == [1, q.dim(1), qHeads, 256],
               k.shape == [1, k.dim(1), kvHeads, 256],
               qWeight.shape == [256],
@@ -128,18 +155,19 @@ enum Qwen4ExpQKNormRoPEFusion {
               qWeight.dtype == q.dtype,
               kWeight.dtype == q.dtype,
               angles.shape == [q.dim(1), rotaryDimensions],
-              angles.dtype == q.dtype,
+              angles.dtype == q.dtype || angles.dtype == .float32,
               [32, 64, 128].contains(rotaryDimensions)
         else { return nil }
 
         let sequence = q.dim(1)
         let output = kernel(
-            [
-                contiguous(q), contiguous(k), qWeight, kWeight,
-                contiguous(angles), MLXArray(epsilon),
-            ],
+            // MLXFast enforces row contiguity only when a view actually needs
+            // materialization.  Decode-width q/k/angles are already eligible,
+            // so avoid three unconditional graph nodes per attention layer.
+            [q, k, qWeight, kWeight, angles, MLXArray(epsilon)],
             template: [
                 ("T", q.dtype),
+                ("A", angles.dtype),
                 ("Q_HEADS", qHeads),
                 ("KV_HEADS", kvHeads),
                 ("SEQUENCE", sequence),
