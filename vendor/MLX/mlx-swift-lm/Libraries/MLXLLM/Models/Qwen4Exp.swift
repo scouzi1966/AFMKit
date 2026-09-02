@@ -3515,6 +3515,25 @@ private final class Qwen4ExpModelInner: Module {
     private static let deferInterLayerHyperConnectionWriteDecode =
         ProcessInfo.processInfo.environment["AFM_QWEN_DEFER_HC_WRITE"] != "0"
 
+    /// Decode-side submission ladder. A completed layer prefix is
+    /// handed to MLX while Swift continues constructing the rest of the token
+    /// graph, allowing CPU graph construction and GPU execution to overlap.
+    ///
+    /// The scheduling technique is described by ddalcu/mlx-serve's
+    /// `Transformer.ladderStep` (MIT). Exact-checkpoint A/B on Qwen3.8 Flash
+    /// Next established eight layers as the default Swift graph boundary.
+    /// Setting `AFM_QWEN_DECODE_ASYNC_LADDER=0` disables the optimization;
+    /// `auto` or an invalid value retains the measured default, while a
+    /// positive integer selects an explicit diagnostic stride. No model
+    /// operation, cache update, or numerical value changes.
+    private static let decodeAsyncLadderStride: Int = {
+        guard let raw = ProcessInfo.processInfo.environment[
+            "AFM_QWEN_DECODE_ASYNC_LADDER"
+        ] else { return 8 }
+        if raw == "auto" { return 8 }
+        return max(Int(raw) ?? 8, 0)
+    }()
+
     @ModuleInfo(key: "embed_tokens") var embedTokens: Embedding
     @ModuleInfo var layers: [Qwen4ExpDecoderLayer]
     @ModuleInfo(key: "hyper_connection_mixer") var hyperConnectionMixer: Qwen4ExpGatedResidual
@@ -3600,6 +3619,10 @@ private final class Qwen4ExpModelInner: Module {
         let deferInterLayerWrite = Self.deferInterLayerHyperConnectionWriteDecode
             && verificationPolicy == nil
             && hidden.dim(1) == 1
+        let decodeAsyncLadderStride = Self.decodeAsyncLadderStride
+        let useDecodeAsyncLadder = decodeAsyncLadderStride > 0
+            && verificationPolicy == nil
+            && hidden.dim(1) == 1
         let profiler = Qwen4ExpForwardProfiler.make(sequenceLength: hidden.dim(1))
         let hostProfiler = Qwen4ExpHostProfiler.make(sequenceLength: hidden.dim(1))
         profiler?.start(hidden)
@@ -3626,6 +3649,20 @@ private final class Qwen4ExpModelInner: Module {
                     fusedQKAngles: sharedFusedQKAngles,
                     verificationPolicy: verificationPolicy,
                     profiler: profiler)
+            }
+            if useDecodeAsyncLadder,
+               index + 1 < layers.count,
+               (index + 1).isMultiple(of: decodeAsyncLadderStride)
+            {
+                if let pending {
+                    asyncEval([
+                        pending.output,
+                        pending.residual,
+                        pending.weights,
+                    ])
+                } else {
+                    asyncEval(hidden)
+                }
             }
         }
         if combineWithFinalMixer, let pending {

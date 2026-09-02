@@ -514,44 +514,114 @@ part of the key. Mutable generation state must remain request-owned. A compiled
 closure that captures one request's cache is incorrect even if it benchmarks
 well in isolation.
 
-## Remaining work
+## Decode submission ladder result
 
-The no-MTP performance gate and saved-response coherence gate are complete.
-The remaining release work is compatibility qualification, followed by a
-separate parity phase:
+The remaining decode gap was graph submission, not slower layer arithmetic.
+During ordinary one-token decode, AFMKit now submits the completed graph prefix
+after every eight transformer layers with `asyncEval`. Swift continues building
+the later layers while Metal begins executing the dependency-ready prefix.
+There is no extra numerical operation, model state remains request-owned, and
+MTP verification keeps the original synchronous schedule.
 
-1. Exercise model construction/destruction and independently compiled closures
-   to prove that graphs do not cross model lifetimes or executor threads.
-2. Run prefix/radix-cache restore and divergent-branch concurrency tests. A
-   recurrent cache may safely decline reuse, but it must never restore partial
-   KV state without matching GDN, convolution, and PLE state.
-3. Run continuous batching, streaming, cancellation, tool-calling, and
-   structured-output tests with compiled regions active by default.
-4. Evaluate MTP only after base decode qualification. Keep its throughput,
-   acceptance rate, and correctness separate from the no-MTP curve.
-5. For exact parity, add low-overhead counters for QSA direct-gather selection,
-   dense fallback, selected K/V row counts, and compiled-attention cache hits.
-   The decode deficit grows from about 0.5-0.6 ms/token at 0.5-1K to about
-   1.7 ms/token at 2-4K, pointing to context-dependent QSA/attention work.
-6. If AFMKit performs extra work, correct selection or cache restoration. If
-   work counts match the reference, combine QSA gather and attention into one
-   persistent model-owned compiled boundary and measure again.
-7. Retune architecture-owned prefill chunking only after decode parity. Prefill
-   already passes at every context, so a global chunk-size change is not
-   justified without same-checkpoint measurements for other architectures.
+The scheduling technique follows `Transformer.ladderStep` in
+`ddalcu/mlx-serve` (MIT). The stride is an AFMKit-owned Qwen Next default, so the
+normal launch command needs no tuning environment variable. The diagnostic
+`AFM_QWEN_DECODE_ASYNC_LADDER=0` kill switch remains available for comparison.
+
+```mermaid
+sequenceDiagram
+    participant S as Swift graph builder
+    participant M as MLX scheduler
+    participant G as Metal GPU
+    S->>M: Build layers 0...7 and asyncEval(prefix)
+    M->>G: Submit ready prefix
+    par Overlapped work
+        S->>S: Build layers 8...15
+        G->>G: Execute layers 0...7
+    end
+    S->>M: asyncEval(next prefix)
+    M->>G: Continue dependency chain
+    S->>M: Return final logits graph
+```
+
+Fresh same-machine, same-checkpoint, three-run peak measurements on 2026-09-02
+used 128 generated tokens, cold prefill, no MTP, no prefix cache, and no tuning
+variables:
+
+| Context | Reference prefill | AFM prefill | Difference | Reference decode | AFM decode | Difference |
+|---:|---:|---:|---:|---:|---:|---:|
+| 0.5K | 903.2 | 893.2 | -1.1% | 65.57 | 67.44 | +2.9% |
+| 1K | 1049.5 | 1048.0 | -0.1% | 65.14 | 66.91 | +2.7% |
+| 2K | 1193.2 | 1172.3 | -1.8% | 58.65 | 60.57 | +3.3% |
+| 4K | 1262.7 | 1178.1 | -6.7% | 58.42 | 59.10 | +1.2% |
+
+Decode therefore meets the parity target across the complete first-four curve.
+Prefill is within two percent through 2K; the remaining performance target is
+the 4K prefill row, not decode.
+
+## PLE and n-gram lookup findings
+
+Both engines synchronize the sampled token at Qwen Next's PLE boundary, hash a
+short EOS-aware history into 16 row IDs, gather 48 quantized rows from the
+roughly 30 GB mapped table, dequantize them, and construct the 2,560-element
+BF16 embedding. The raw AFM gather is already faster in steady state, so lookup
+micro-tuning cannot explain or close a millisecond-scale decode deficit.
 
 ```mermaid
 flowchart LR
-    A[Four-context performance gate passed] --> B[Cache and concurrency qualification]
-    B --> C[Lifecycle and API qualification]
-    C --> D[MTP evaluation]
-    D --> E[Release-ready no-MTP and MTP records]
-    A --> F[Count QSA work at each context]
-    F --> G{Same work as reference?}
-    G -- no --> H[Fix selection or restore policy]
-    G -- yes --> I[Collapse QSA gather plus attention boundary]
-    H --> J[Exact-parity benchmark]
-    I --> J
+    T[Sampled token] --> H[Request-local short history]
+    H --> R[16 deterministic row IDs]
+    R --> P[48 positional reads]
+    P --> D[Worker-side Q4 to BF16 dequantization]
+    D --> E[PLE embedding MLXArray]
+    E --> L[Layer 1]
+
+    C[Radix snapshot] -. restores .-> H
+    C -. restores .-> L
+    V[MTP accepted prefix] -. commits only accepted rows .-> H
+```
+
+The reference uses a 48-worker `pread` pool for decode and small verification
+widths, direct mmap access for large prefill, and an optional sequential
+background sidecar warm. AFMKit already has the 48-worker positional-read path
+and improves it by performing dequantization on the worker that completes a
+row's third read. Any future PLE work should instead focus on an owned
+zero-copy BF16 output buffer and safe overlap of the request-local gather with
+other graph construction. It must commit history only when the PLE result is
+consumed so cancellation, radix restore, and MTP rollback remain exact.
+
+## Remaining work
+
+The no-MTP decode and saved-response coherence gates are complete. Live checks
+also passed client-disconnect recovery and strict MTP execution. Prefix/radix
+reuse and true concurrent execution for Qwen's model-specific hybrid caches
+remain the next qualification boundary. Remaining release work is:
+
+1. Close the 4K prefill gap without regressing the first three rows. Keep the
+   architecture-owned 8,192-token step recommendation; the 4K prompt already
+   executes as one pass, so smaller generic chunking is not the likely fix.
+2. Complete prefix/radix-cache reuse and concurrency for the model-specific
+   Qwen attention and recurrent caches without coercing their state layouts.
+3. Exercise repeated model construction/destruction and independently compiled
+   closures to prove that graphs do not cross model lifetimes or executors.
+4. Run the complete streaming, tool-calling, structured-output, and evaluation
+   suites with the ladder enabled by default.
+5. Keep MTP throughput and acceptance separate from base decode. Strict MTP is
+   functionally correct but materially slower than autoregressive decode and
+   needs its own optimization workstream.
+6. Evaluate owned zero-copy PLE output buffers for hot prefill. Do not expose
+   the entire 30 GB mmap as an MLX array, and do not repeat the already-ported
+   worker pool.
+
+```mermaid
+flowchart LR
+    A[Decode parity passed] --> B[4K prefill optimization]
+    A --> C[Cache and concurrency qualification]
+    B --> D[Lifecycle and API qualification]
+    C --> D
+    D --> E[Full evaluation suite]
+    E --> F[Release-ready no-MTP record]
+    A --> G[Separate MTP optimization]
 ```
 
 ## Reproduction and diagnostics
@@ -571,6 +641,8 @@ afm mlx \
 published throughput. `AFM_QWEN_COMPILE_ATTN_DECODE=0`,
 `AFM_QWEN_COMPILE_GDN_DECODE=0`, and `AFM_QWEN_COMPILE_LAYER_TAIL=0` are
 diagnostic kill switches; they are not required in ordinary launch commands.
+`AFM_QWEN_DECODE_ASYNC_LADDER=0` similarly restores the pre-parity decode
+schedule for controlled comparison only.
 
 Build maclocal-api against this AFMKit worktree only through the consumer's
 reliable wrapper:
@@ -596,9 +668,8 @@ in AFMKit, then consumed by maclocal-api through one exact AFMKit version bump.
 - Do not let MTP acceptance rate hide the base decoder's performance.
 
 The central finding is therefore narrower than “Swift is slow” or “the kernels
-are slow.” AFMKit drives the GPU effectively for this checkpoint, and explicit
-model ownership of compiled MLX graphs closes the release-target performance
-gap without moving mutable inference state out of the request. Exact parity now
-depends on measuring the context-sensitive QSA/attention work, while release
-readiness depends on completing the cache, concurrency, lifecycle, and MTP
-matrix.
+are slow.” AFMKit drives the GPU effectively for this checkpoint, and the
+eight-layer submission ladder closes the decode gap without moving mutable
+inference state out of the request. Release parity now depends on the remaining
+4K prefill gap and lifecycle/API qualification; MTP remains a separate
+correctness-and-performance track.
