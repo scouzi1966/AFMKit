@@ -1224,6 +1224,26 @@ public final class GLM5NextVLModel: Module, VLMModel, KVCacheDimensionProvider,
         languageModel(inputs, cache: cache)
     }
 
+    /// Parent updates do not dynamically dispatch through nested module
+    /// overrides. Mirror the text model's compiled-artifact lifecycle so the
+    /// vision wrapper cannot retain a graph over stale text parameters.
+    @discardableResult
+    public override func update(
+        parameters: ModuleParameters,
+        verify: VerifyUpdate,
+        path: [String] = [],
+        modulePath: [String] = []
+    ) throws -> Self {
+        languageModel.invalidateCompiledFFN()
+        let result = try super.update(
+            parameters: parameters,
+            verify: verify,
+            path: path,
+            modulePath: modulePath)
+        languageModel.prepareCompiledFFN()
+        return result
+    }
+
     public func shouldLoad(weightKey key: String) -> Bool {
         if key.hasPrefix("model.visual.") || key.hasPrefix("vision_model.") {
             return true

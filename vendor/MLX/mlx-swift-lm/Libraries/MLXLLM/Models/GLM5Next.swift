@@ -10,6 +10,7 @@
 
 import Foundation
 import MLX
+import MLXFast
 import MLXLMCommon
 import MLXNN
 
@@ -669,6 +670,10 @@ final class GLM5NextIndexer: Module {
 // MARK: - NoPE MLA and sparse attention
 
 final class GLM5NextSparseAttention: Module {
+    private static let defaultFastSDPAEnabled =
+        fastSDPAEnabled(override:
+            ProcessInfo.processInfo.environment["AFM_GLM53_FAST_SDPA"])
+
     let heads: Int
     let qLoraRank: Int
     let qHeadDim: Int
@@ -784,13 +789,34 @@ final class GLM5NextSparseAttention: Module {
         }
 
         let output: MLXArray
+        let canUseDecodeSDPA = Self.canUseFastSDPA(
+            enabled: Self.defaultFastSDPAEnabled,
+            batch: batch,
+            length: length,
+            hasSelection: selected != nil,
+            hasCacheMask: cacheMask != nil)
         if length == 1 {
             query = embedQuery(query)
-            output = unembedOutput(attend(
-                query: query,
-                key: latent,
-                value: latent,
-                mask: attentionMask))
+            let attended: MLXArray
+            if canUseDecodeSDPA {
+                // The newly appended singleton query can see every cached key
+                // when there is no padding mask and the sparse indexer has not
+                // activated. Omitting the all-true causal mask admits MLX's
+                // fused decode SDPA without changing visible positions.
+                attended = MLXFast.scaledDotProductAttention(
+                    queries: query,
+                    keys: latent,
+                    values: latent,
+                    scale: scale,
+                    mask: .none)
+            } else {
+                attended = attend(
+                    query: query,
+                    key: latent,
+                    value: latent,
+                    mask: attentionMask)
+            }
+            output = unembedOutput(attended)
         } else {
             output = attend(
                 query: query,
@@ -800,6 +826,43 @@ final class GLM5NextSparseAttention: Module {
         }
         return outputProjection(
             output.transposed(0, 2, 1, 3).reshaped(batch, length, -1))
+    }
+
+    static func fastSDPAEnabled(override raw: String?) -> Bool {
+        guard let raw else { return true }
+        return raw != "0" && raw.lowercased() != "false"
+    }
+
+    static func canUseFastSDPA(
+        enabled: Bool,
+        batch: Int,
+        length: Int,
+        hasSelection: Bool,
+        hasCacheMask: Bool
+    ) -> Bool {
+        enabled && batch == 1 && length == 1 && !hasSelection && !hasCacheMask
+    }
+
+    func manualAttentionForTesting(
+        query: MLXArray,
+        key: MLXArray,
+        value: MLXArray,
+        mask: MLXArray?
+    ) -> MLXArray {
+        attend(query: query, key: key, value: value, mask: mask)
+    }
+
+    func fastAttentionForTesting(
+        query: MLXArray,
+        key: MLXArray,
+        value: MLXArray
+    ) -> MLXArray {
+        MLXFast.scaledDotProductAttention(
+            queries: query,
+            keys: key,
+            values: value,
+            scale: scale,
+            mask: .none)
     }
 
     private func attend(
@@ -929,9 +992,15 @@ private final class GLM5NextMoE: Module, UnaryLayer {
 
 // MARK: - Decoder and model
 
-private final class GLM5NextDecoderLayer: Module {
+final class GLM5NextDecoderLayer: Module {
+    private static let defaultCompiledFFNEnabled =
+        compiledFFNEnabled(override:
+            ProcessInfo.processInfo.environment["AFM_GLM53_COMPILE_FFN"])
+
     let isLinear: Bool
     let mlp: UnaryLayer
+    private let compiledFFN = FixedShapeCompiledUnaryCache()
+    private let compiledFFNShape: [Int]
     @ModuleInfo(key: "self_attn") var attention: Module
     @ModuleInfo(key: "input_layernorm") var inputNorm: RMSNorm
     @ModuleInfo(key: "post_attention_layernorm") var postAttentionNorm: RMSNorm
@@ -940,6 +1009,7 @@ private final class GLM5NextDecoderLayer: Module {
 
     init(_ config: GLM5NextTextConfiguration, layerIndex: Int) {
         isLinear = config.layerTypes[layerIndex] == "linear_attention"
+        compiledFFNShape = [1, 1, config.hcMultiplier, config.hiddenSize]
         if isLinear {
             _attention.wrappedValue = GLM5NextLinearAttention(config)
         } else {
@@ -962,13 +1032,48 @@ private final class GLM5NextDecoderLayer: Module {
         _ffnHyperConnection.wrappedValue = GLM5NextHyperConnection(config)
     }
 
+    static func compiledFFNEnabled(override raw: String?) -> Bool {
+        guard let raw else { return true }
+        return raw != "0" && raw.lowercased() != "false"
+    }
+
+    func prepareCompiledFFN(enabled: Bool = Self.defaultCompiledFFNEnabled) {
+        compiledFFN.prepare(
+            enabled: enabled,
+            expectedShape: compiledFFNShape
+        ) { [unowned self] input in
+            self.ffnBlock(input)
+        }
+    }
+
+    func invalidateCompiledFFN() {
+        compiledFFN.invalidate()
+    }
+
+    var usesCompiledFFN: Bool { compiledFFN.isPrepared }
+    var compiledFFNDType: DType? { compiledFFN.inputDType }
+
+    func compiledFFNBlock(_ input: MLXArray) -> MLXArray? {
+        compiledFFN(input)
+    }
+
+    func ffnBlock(_ input: MLXArray) -> MLXArray {
+        let residual = input
+        let (collapsed, post, combination) = ffnHyperConnection.collapse(input)
+        return ffnHyperConnection.expand(
+            mlp(postAttentionNorm(collapsed)),
+            residual: residual,
+            post: post,
+            combination: combination)
+    }
+
     func callAsFunction(
         _ input: MLXArray,
         validMask: MLXArray?,
         cache: KVCache?
     ) -> MLXArray {
-        var residual = input
-        var (collapsed, post, combination) = attentionHyperConnection.collapse(input)
+        let residual = input
+        let (collapsed, post, combination) = attentionHyperConnection.collapse(input)
         let attended: MLXArray
         if isLinear {
             guard let attention = attention as? GLM5NextLinearAttention else {
@@ -982,17 +1087,9 @@ private final class GLM5NextDecoderLayer: Module {
             }
             attended = attention(inputNorm(collapsed), validMask: validMask, cache: cache)
         }
-        var hidden = attentionHyperConnection.expand(
+        let hidden = attentionHyperConnection.expand(
             attended, residual: residual, post: post, combination: combination)
-
-        residual = hidden
-        (collapsed, post, combination) = ffnHyperConnection.collapse(hidden)
-        hidden = ffnHyperConnection.expand(
-            mlp(postAttentionNorm(collapsed)),
-            residual: residual,
-            post: post,
-            combination: combination)
-        return hidden
+        return compiledFFNBlock(hidden) ?? ffnBlock(hidden)
     }
 }
 
@@ -1099,6 +1196,14 @@ private final class GLM5NextModelInner: Module {
             GLM5NextDecoderLayer(config, layerIndex: $0)
         }
         _norm.wrappedValue = RMSNorm(dimensions: config.hiddenSize, eps: config.rmsNormEps)
+    }
+
+    func invalidateCompiledFFN() {
+        for layer in layers { layer.invalidateCompiledFFN() }
+    }
+
+    func prepareCompiledFFN() {
+        for layer in layers { layer.prepareCompiledFFN() }
     }
 
     func callAsFunction(
@@ -1353,6 +1458,7 @@ public final class GLM5NextModel: Module, LLMModel, KVCacheDimensionProvider, Lo
     @ModuleInfo(key: "mtp") private var embeddedMTP: GLM5NextMTPHead?
     private var embeddedMTPWeightsLoaded = false
     private let checkpointQuantization: BaseConfiguration.Quantization?
+    private let compiledFFNLifecycleLock = NSLock()
 
     public var loraLayers: [Module] { model.layers }
 
@@ -1366,6 +1472,46 @@ public final class GLM5NextModel: Module, LLMModel, KVCacheDimensionProvider, Lo
         if !config.tieWordEmbeddings {
             _lmHead.wrappedValue = Linear(config.hiddenSize, config.vocabularySize, bias: false)
         }
+    }
+
+    /// Rebuild model-owned compiled graphs after checkpoint parameters change.
+    /// The compiled FFN captures immutable model weights only; KV, recurrent,
+    /// radix, and MTP state remain explicit and request-owned.
+    @discardableResult
+    public override func update(
+        parameters: ModuleParameters,
+        verify: VerifyUpdate,
+        path: [String] = [],
+        modulePath: [String] = []
+    ) throws -> Self {
+        try compiledFFNLifecycleLock.withLock {
+            model.invalidateCompiledFFN()
+            let result = try super.update(
+                parameters: parameters,
+                verify: verify,
+                path: path,
+                modulePath: modulePath)
+            model.prepareCompiledFFN()
+            return result
+        }
+    }
+
+    public func invalidateCompiledFFN() {
+        compiledFFNLifecycleLock.withLock { model.invalidateCompiledFFN() }
+    }
+
+    public func prepareCompiledFFN() {
+        compiledFFNLifecycleLock.withLock { model.prepareCompiledFFN() }
+    }
+
+    func prepareCompiledFFNForTesting(enabled: Bool) {
+        compiledFFNLifecycleLock.withLock {
+            for layer in model.layers { layer.prepareCompiledFFN(enabled: enabled) }
+        }
+    }
+
+    var preparedCompiledFFNLayerCount: Int {
+        model.layers.count(where: \.usesCompiledFFN)
     }
 
     public func callAsFunction(_ inputs: MLXArray, cache: [KVCache]?) -> MLXArray {
