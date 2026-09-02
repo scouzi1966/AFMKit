@@ -29,7 +29,7 @@ enum Qwen4ExpHyperConnectionFusion {
     /// The compound C++ graph-construction boundary is qualified for decode;
     /// retain `0` as a diagnostic and recovery escape hatch.
     private static let nativeChainEnabled =
-        ProcessInfo.processInfo.environment["AFM_QWEN_HC_NATIVE_CHAIN"] != "0"
+        ProcessInfo.processInfo.environment["AFM_QWEN_HC_NATIVE_CHAIN"] == "1"
 
     private enum ChainExternalInput: Int {
         case input
