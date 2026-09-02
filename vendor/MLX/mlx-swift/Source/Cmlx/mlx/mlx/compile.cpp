@@ -1119,8 +1119,9 @@ bool skip_compile() {
 ArrayFnWithExtra compile(
     ArrayFnWithExtra fun,
     std::uintptr_t fun_id,
-    bool shapeless /* = false */,
-    std::vector<uint64_t> constants /* = {} */) {
+    bool shapeless,
+    std::vector<uint64_t> constants,
+    CompileCachePtr cache) {
   if (skip_compile()) {
     return fun;
   }
@@ -1132,7 +1133,8 @@ ArrayFnWithExtra compile(
   return [fun = std::move(fun),
           fun_id,
           shapeless,
-          constants = std::move(constants)](const std::vector<array>& inputs) {
+          constants = std::move(constants),
+          cache = std::move(cache)](const std::vector<array>& inputs) {
     // If the inputs are tracers, trace the original graph
     if (std::any_of(inputs.begin(), inputs.end(), [](auto& in) {
           return in.is_tracer();
@@ -1142,7 +1144,7 @@ ArrayFnWithExtra compile(
 
     // Find a cache entry with the correct inputs
     auto [entry, entries_ptr] =
-        compile_cache_unsafe()->find(fun_id, inputs, shapeless, constants);
+        cache->find(fun_id, inputs, shapeless, constants);
     static_assert(std::is_reference_v<decltype(entry)>);
 
     // No matching cache entry existed, so compile
@@ -1188,11 +1190,25 @@ ArrayFnWithExtra compile(
   };
 }
 
-std::function<std::vector<array>(const std::vector<array>&)> compile(
-    std::function<std::vector<array>(const std::vector<array>&)> fun,
+ArrayFnWithExtra compile(
+    ArrayFnWithExtra fun,
     std::uintptr_t fun_id,
     bool shapeless /* = false */,
     std::vector<uint64_t> constants /* = {} */) {
+  return compile(
+      std::move(fun),
+      fun_id,
+      shapeless,
+      std::move(constants),
+      compile_cache_unsafe());
+}
+
+std::function<std::vector<array>(const std::vector<array>&)> compile(
+    std::function<std::vector<array>(const std::vector<array>&)> fun,
+    std::uintptr_t fun_id,
+    bool shapeless,
+    std::vector<uint64_t> constants,
+    CompileCachePtr cache) {
   if (skip_compile()) {
     return fun;
   }
@@ -1207,7 +1223,11 @@ std::function<std::vector<array>(const std::vector<array>&)> compile(
       };
 
   auto compiled_fun = compile(
-      std::move(fun_with_extra), fun_id, shapeless, std::move(constants));
+      std::move(fun_with_extra),
+      fun_id,
+      shapeless,
+      std::move(constants),
+      std::move(cache));
 
   return [compiled_fun =
               std::move(compiled_fun)](const std::vector<array>& inputs) {
@@ -1215,8 +1235,25 @@ std::function<std::vector<array>(const std::vector<array>&)> compile(
   };
 }
 
+std::function<std::vector<array>(const std::vector<array>&)> compile(
+    std::function<std::vector<array>(const std::vector<array>&)> fun,
+    std::uintptr_t fun_id,
+    bool shapeless /* = false */,
+    std::vector<uint64_t> constants /* = {} */) {
+  return compile(
+      std::move(fun),
+      fun_id,
+      shapeless,
+      std::move(constants),
+      compile_cache_unsafe());
+}
+
 CompileCacheWeakPtr compile_cache() {
   return compile_cache_unsafe();
+}
+
+CompileCachePtr compile_cache_create() {
+  return std::make_shared<CompileCache>();
 }
 
 void compile_erase(const CompileCacheWeakPtr& cache, std::uintptr_t fun_id) {

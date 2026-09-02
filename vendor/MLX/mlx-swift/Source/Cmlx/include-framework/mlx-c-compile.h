@@ -34,6 +34,18 @@ typedef enum mlx_compile_mode_ {
   MLX_COMPILE_MODE_NO_FUSE,
   MLX_COMPILE_MODE_ENABLED
 } mlx_compile_mode;
+
+/**
+ * An explicitly owned compilation cache. Unlike MLX's default thread-local
+ * cache, this cache follows the compiled function across executor threads and
+ * is released with that function.
+ */
+typedef struct mlx_detail_compile_cache_ {
+  void* ctx;
+} mlx_detail_compile_cache;
+
+mlx_detail_compile_cache mlx_detail_compile_cache_new(void);
+void mlx_detail_compile_cache_free(mlx_detail_compile_cache cache);
 int mlx_compile(mlx_closure* res, const mlx_closure fun, bool shapeless);
 int mlx_detail_compile(
     mlx_closure* res,
@@ -42,6 +54,14 @@ int mlx_detail_compile(
     bool shapeless,
     const uint64_t* constants,
     size_t constants_num);
+int mlx_detail_compile_with_cache(
+    mlx_closure* res,
+    const mlx_closure fun,
+    uintptr_t fun_id,
+    bool shapeless,
+    const uint64_t* constants,
+    size_t constants_num,
+    mlx_detail_compile_cache cache);
 int mlx_detail_compile_clear_cache(void);
 int mlx_detail_compile_erase(uintptr_t fun_id);
 int mlx_disable_compile(void);

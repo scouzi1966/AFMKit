@@ -1,6 +1,9 @@
 // Copyright © 2026 Osaurus AI
 
 import Foundation
+#if canImport(Metal)
+import Metal
+#endif
 
 /// Hardware capability detection for Apple Silicon chip generations.
 ///
@@ -62,6 +65,24 @@ public enum HardwareInfo {
             ?? env["MLXPRESS_ENABLE_UNSAFE_COMPILE"]
             ?? ""
         return raw == "1" || raw.lowercased() == "true"
+    }
+
+    /// Whether model-owned, shape-specialized compilation is qualified for
+    /// architectures that keep mutable request state in explicit arguments.
+    ///
+    /// Unlike the legacy compile path above, these closures own their MLX
+    /// compilation cache. Their graphs cannot collide with a later model when
+    /// Swift resumes work on another executor thread, and releasing the model
+    /// releases its cached graphs and captured weights. Apple-9-family GPUs
+    /// (M3 and newer) are the qualified default; older GPUs retain the existing
+    /// explicit diagnostic opt-in because of the Tahoe Metal JIT failures.
+    public static var isModelOwnedCompiledDecodeSupported: Bool {
+        if isCompiledDecodeSupported { return true }
+        #if canImport(Metal)
+        return MTLCreateSystemDefaultDevice()?.supportsFamily(.apple9) == true
+        #else
+        return false
+        #endif
     }
 
     /// Returns `true` if running on Apple Silicon hardware.

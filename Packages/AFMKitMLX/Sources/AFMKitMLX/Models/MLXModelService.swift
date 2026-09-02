@@ -2555,11 +2555,15 @@ public final class MLXModelService:
     /// from the container. Must be called after ensureLoaded() and only when maxConcurrent >= 2.
     public func initScheduler() async throws {
         guard maxConcurrent >= 2 else { return }
+        // AFMMLXModel.load() is intentionally idempotent and may be called for
+        // every request. Keep scheduler initialization idempotent as well:
+        // replacing a live scheduler orphans its pending continuations and lets
+        // several schedulers drive the same model concurrently.
+        guard withStateLock({ scheduler == nil }) else { return }
         if forceSerialGeneration {
             print("[\(ts())] Concurrent mode requested but model requires serial generation — running serially (correct output, requests serialized through model lock)")
             return
         }
-        startedInBatchMode = true
         guard let container = withStateLock({ currentContainer }) else {
             throw MLXServiceError.noModelLoaded
         }
@@ -2576,7 +2580,19 @@ public final class MLXModelService:
                 cacheProfilePath: self.cacheProfilePath
             )
         }
-        self.scheduler = sched
+        let installed = withStateLock { () -> Bool in
+            guard self.scheduler == nil else { return false }
+            self.scheduler = sched
+            self.startedInBatchMode = true
+            return true
+        }
+        guard installed else {
+            // Another concurrent idempotent load won the installation race.
+            // The unused scheduler has no requests, but shut it down so its
+            // resources and metrics closures do not outlive this call.
+            await sched.shutdown()
+            return
+        }
         print("[\(ts())] Concurrent mode: up to \(limit) parallel generations\(prefixCaching ? " (prefix caching enabled)" : "")")
     }
 

@@ -1516,8 +1516,8 @@ private final class Qwen4ExpQSAIndexer: Module {
 
 private final class Qwen4ExpAttention: Module {
     private static let compileDecode =
-        ProcessInfo.processInfo.environment["AFM_QWEN_COMPILE_ATTN_DECODE"] == "1"
-            && HardwareInfo.isCompiledDecodeSupported
+        ProcessInfo.processInfo.environment["AFM_QWEN_COMPILE_ATTN_DECODE"] != "0"
+            && HardwareInfo.isModelOwnedCompiledDecodeSupported
 
     let heads: Int
     let kvHeads: Int
@@ -1854,8 +1854,8 @@ private final class Qwen4ExpAttention: Module {
 
 private final class Qwen4ExpGatedDeltaNet: Module {
     private static let compileDecode =
-        ProcessInfo.processInfo.environment["AFM_QWEN_COMPILE_GDN_DECODE"] == "1"
-            && HardwareInfo.isCompiledDecodeSupported
+        ProcessInfo.processInfo.environment["AFM_QWEN_COMPILE_GDN_DECODE"] != "0"
+            && HardwareInfo.isModelOwnedCompiledDecodeSupported
     private static let explicitGating =
         ProcessInfo.processInfo.environment["AFM_QWEN_EXPLICIT_GATING"] == "1"
     private static let verifyExplicitGating =
@@ -3083,8 +3083,8 @@ struct Qwen4ExpPendingHyperConnectionWrite {
 
 final class Qwen4ExpDecoderLayer: Module {
     private static let compileLayerTailDecode =
-        ProcessInfo.processInfo.environment["AFM_QWEN_COMPILE_LAYER_TAIL"] == "1"
-            && HardwareInfo.isCompiledDecodeSupported
+        ProcessInfo.processInfo.environment["AFM_QWEN_COMPILE_LAYER_TAIL"] != "0"
+            && HardwareInfo.isModelOwnedCompiledDecodeSupported
 
     let isLinear: Bool
     @ModuleInfo(key: "linear_attn") fileprivate var linearAttention: Qwen4ExpGatedDeltaNet?

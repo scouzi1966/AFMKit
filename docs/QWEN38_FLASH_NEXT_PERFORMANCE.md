@@ -1,8 +1,9 @@
 # Qwen3.8 Flash Next performance investigation
 
-Status: active engineering investigation, updated 2026-09-01. The implementation on
-`perf/qwen-next-qsa-gather` is experimental until its numerical, cache,
-concurrency, and full-context qualification gates pass.
+Status: performance gate passed, compatibility qualification in progress,
+updated 2026-09-02. The implementation on `perf/qwen-next-qsa-gather` now meets
+the four-context, no-MTP throughput target without feature environment variables.
+Cache, concurrency, model-lifecycle, and MTP qualification remain before release.
 
 This document records why Qwen3.8 Flash Next initially decoded much more slowly
 through AFMKit than through the reproduced reference engine, what has been
@@ -12,26 +13,27 @@ optimizations without measurement.
 
 ## Executive summary
 
-The performance gap is real, reproducible, and now localized.
+The original performance gap was real and reproducible. The default AFMKit path
+now meets the agreed requirement of staying within 10% of the reproduced
+reference at every measured prefill and decode point.
 
-- The same checkpoint on the same M3 Ultra reached **65.99 decode tok/s** and
-  **844.79 prefill tok/s** through the reference engine.
+- The same checkpoint on the same M3 Ultra produced the reference curve shown
+  below: **898-1246 prefill tok/s** and **63.8-54.1 decode tok/s** from 0.5K to
+  4K context.
 - AFMKit's initial comparable no-MTP run reached approximately **39.5 decode
   tok/s** and **850 prefill tok/s**.
-- The best current experimental AFMKit path reaches **52.10 decode tok/s** and
-  **867.46 prefill tok/s** with deferred inter-layer hyper-connection writes.
-- Prefill is already within the 10% target. Decode improved by approximately
-  31.9%, but remains 21.1% below the reproduced reference and 12.3% below the
-  minimum acceptable 59.4 tok/s target.
-- Profiling shows that the remaining gap is primarily per-token Swift lazy-graph
-  construction and dispatch preparation, not a lack of GPU arithmetic
-  throughput. The GPU portion of the measured token loop is already close to
-  the reference's complete token time.
-
-At 52.10 tok/s, AFMKit spends 19.20 ms per generated token. The reproduced
-reference spends 15.15 ms. Meeting the 10% threshold requires no more than
-16.84 ms/token, so approximately 2.36 ms/token still must be removed from the
-current path.
+- The current default path reaches **909.8/61.7 tok/s** at 0.5K and
+  **1160.0/49.4 tok/s** at 4K. It passes all eight prefill/decode floors and its
+  saved responses are coherent.
+- The decisive fix gives every Swift `CompiledFunction` an explicitly owned MLX
+  compile cache. This makes compiled Qwen GDN, attention, and layer-tail regions
+  safe across Swift executor threads and across model destruction/reload.
+- On Apple GPU family 9 and newer, those model-owned compiled regions are now the
+  default. Environment variables remain diagnostic kill switches, not required
+  performance configuration.
+- The remaining parity gap is approximately 0.5-0.6 ms/token at 0.5-1K and
+  1.7 ms/token at 2-4K. Its context-dependent shape points to QSA gather and
+  attention as the next measured boundary; it does not block the 10% gate.
 
 ## Qualification boundary
 
@@ -61,10 +63,18 @@ uv run openai-benchmark \
   --no-batch
 ```
 
-The short 0.5K test is an iteration gate, not final qualification. Once decode
-crosses 59.4 tok/s, the first four context sizes must be rerun. Correctness,
-radix/prefix-cache behavior, streaming, continuous batching, and concurrent
-requests remain mandatory gates.
+The short 0.5K test is an iteration gate, not final qualification. The first
+four context sizes have now been rerun and pass these 10% floors:
+
+| Context | Reference prefill | AFMKit floor | Reference decode | AFMKit floor |
+| --- | ---: | ---: | ---: | ---: |
+| 0.5K | 898.0 | 808.2 | 63.8 | 57.42 |
+| 1K | 1045.0 | 940.5 | 63.4 | 57.06 |
+| 2K | 1185.0 | 1066.5 | 56.9 | 51.21 |
+| 4K | 1246.0 | 1121.4 | 54.1 | 48.69 |
+
+Correctness, radix/prefix-cache behavior, continuous batching, concurrent
+requests, model lifecycle, and MTP remain mandatory release gates.
 
 ## Reproduced results
 
@@ -72,6 +82,21 @@ The table uses the best recorded run for each milestone because the acceptance
 target is defined against the reproduced reference peak under the same
 three-run method. Full CSV files are retained outside the Git checkout under
 `/Volumes/edata/afm-release-artifacts/qwen-next-afm-current/`.
+
+The final default, no-environment-variable four-context comparison is:
+
+| Context | Reference prefill | AFMKit prefill | Difference | Reference decode | AFMKit decode | Difference |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 0.5K | 898.0 | 909.8 | +1.3% | 63.8 | 61.7 | -3.3% |
+| 1K | 1045.0 | 990.8 | -5.2% | 63.4 | 61.1 | -3.6% |
+| 2K | 1185.0 | 1150.2 | -2.9% | 56.9 | 52.0 | -8.6% |
+| 4K | 1246.0 | 1160.0 | -6.9% | 54.1 | 49.4 | -8.7% |
+
+The benchmark saved every generated response; all four context sizes produced
+coherent summaries of the supplied text. The unprofiled figures above are the
+acceptance results. Extended profiling materially perturbed decode throughput,
+but separately recorded sustained prefill GPU power of approximately 142-151 W,
+confirming that AFMKit is driving the device rather than idling on the host.
 
 | Milestone | Prefill tok/s | Decode tok/s | Decode ms/token | Change from initial |
 | --- | ---: | ---: | ---: | ---: |
@@ -86,6 +111,7 @@ three-run method. Full CSV files are retained outside the Git checkout under
 | Prepared Swift HC launch plans | 739.24 | 51.56 | 19.39 | rejected (+0.7% decode; prefill below floor) |
 | Reused immutable Qwen epsilon scalars | 755.04 | 50.91 | 19.64 | rejected (no decode gain; prefill below floor) |
 | Deferred inter-layer HC write | 867.46 | 52.10 | 19.20 | +31.9% |
+| Model-owned compiled GDN, attention, and layer tail (default) | 909.8 | 61.7 | 16.21 | +56.2% |
 | Fused shared-expert merge | 715.74 | 49.55 | 20.18 | rejected (decode and prefill regression) |
 | Strided attention-gate tail, decode only | 772.83 | 53.17 | 18.81 | rejected (flag-off control reached 53.44) |
 | Reproduced reference | 844.79 | 65.99 | 15.15 | +67.1% over initial |
@@ -112,9 +138,9 @@ the remaining gap.
 ```mermaid
 xychart-beta
     title "Qwen3.8 Flash Next decode throughput (0.5K, no MTP)"
-    x-axis ["Initial", "Host PLE", "Static flags", "Config cache", "Deferred HC", "10% floor", "Reference"]
+    x-axis ["Initial", "Host PLE", "Static flags", "Config cache", "Deferred HC", "Compiled regions", "10% floor", "Reference"]
     y-axis "tokens/second" 0 --> 70
-    bar [39.5, 45.51, 49.09, 51.20, 52.10, 59.39, 65.99]
+    bar [39.5, 45.51, 49.09, 51.20, 52.10, 61.7, 57.42, 63.8]
 ```
 
 ## What the token loop is doing
@@ -291,10 +317,55 @@ does not move mutable state into a shared kernel or model object.
 
 The exact-checkpoint A/B reached 867.46 prefill and 52.10 decode tok/s. Focused
 tests cover both an ordinary two-layer boundary and the required PLE flush. The
-path remains opt-in while full-model numerical tolerance, cache restoration,
-batching, and concurrency are qualified: changing the graph's evaluation and
-reduction boundaries can accumulate BF16 rounding differences even when each
-local operation is numerically equivalent.
+path is now part of the qualified Qwen default and retains an explicit diagnostic
+kill switch. Changing graph evaluation and reduction boundaries can accumulate
+BF16 rounding differences even when each local operation is numerically
+equivalent, so cache, batching, and concurrency coverage remains mandatory.
+
+### 6. Compiled graphs were owned by executor threads instead of models
+
+The remaining breakthrough did not require another model-specific Metal kernel.
+MLX's default C++ compile cache was thread-local, while Swift tasks are free to
+resume on a different executor thread. A compiled closure could therefore trace
+on one thread, execute or destruct on another, and leave a cached graph behind.
+The identifier supplied by MLX Swift was also derived from the Swift object's
+heap address. After model destruction, allocator reuse could give a later model
+the same identifier and collide with the stale graph. Besides model-switch
+corruption, the cache retained graph-captured weights after the Swift model was
+released.
+
+AFMKit's self-contained MLX Swift layer now gives each `CompiledFunction`:
+
+1. A monotonically allocated, process-unique identifier.
+2. An explicit opaque MLX compile cache owned by the Swift object.
+3. A C/C++ compile entry point that uses that cache regardless of executor
+   thread.
+4. Deterministic cache destruction when the compiled function/model is released.
+
+```mermaid
+flowchart LR
+    M[Qwen model] --> F1[Compiled GDN closure]
+    M --> F2[Compiled attention closure]
+    M --> F3[Compiled layer-tail closure]
+    F1 --> C1[Owned MLX cache]
+    F2 --> C2[Owned MLX cache]
+    F3 --> C3[Owned MLX cache]
+    T1[Swift executor thread A] --> F1
+    T2[Swift executor thread B] --> F1
+    M -->|deinit| D[Destroy caches and release captured graphs/weights]
+```
+
+Mutable KV, GDN, convolution, PLE, and hyper-connection state remains explicit
+request input/output; compiled closures capture only immutable model parameters.
+This makes compilation a model-lifetime optimization rather than hidden
+thread-lifetime state.
+
+The Qwen GDN, attention, and layer-tail compiled regions are enabled by default
+on Apple GPU family 9 and newer (M3 and newer). Older families retain the
+explicit diagnostic opt-in because of separate reported Tahoe Metal JIT
+failures. Each Qwen region also has a `=0` diagnostic kill switch. With no
+feature environment variables, the exact checkpoint reached 909.8 prefill and
+61.7 decode tok/s at 0.5K and passed the complete four-context 10% curve.
 
 ## Reference implementation mapping
 
@@ -445,84 +516,49 @@ well in isolation.
 
 ## Remaining work
 
-The next work should attack the measured 4.6 ms/token host construction cost,
-not add more speculative model-wide fusion blindly. The PLE wait experiment
-also rules out replacing `NSCondition` with a bounded atomic spin as a useful
-decode optimization on this machine. Likewise, replacing the transient C-handle
-array in the generic MLX Swift vector bridge with stack storage produced no
-decode gain. Borrowing the `mlx-c` configuration descriptor at apply time also
-regressed both decode and prefill. The remaining cost is therefore deeper than
-those collection/configuration copies: it is associated with repeated
-custom-call/lazy-node construction, signature handling, and graph submission
-boundaries. A direct prepared-launch A/B now also rules out the Swift
-configuration-key lock and `ScalarOrArray` conversion as material contributors:
-that path reached 51.56 tok/s decode but only 739.24 tok/s prefill and was
-reverted. The reference also retains immutable epsilon arrays, but copying that
-detail into all three AFM Qwen fusions reached only 50.91 tok/s decode and
-755.04 tok/s prefill. That experiment was reverted too: host-side scalar-node
-creation is not the missing 2.69 ms/token.
+The no-MTP performance gate and saved-response coherence gate are complete.
+The remaining release work is compatibility qualification, followed by a
+separate parity phase:
 
-The MLX reclaimable-buffer-pool cap is not the missing decode performance
-either. A same-binary, same-checkpoint A/B compared AFMKit's normal 1 GiB cap
-with the reference engine's 8 GiB cap on the 512 GiB M3 Ultra. The best 0.5K
-no-MTP results were 850.0 prefill / 51.12 decode tok/s at 1 GiB and 878.59
-prefill / 51.14 decode tok/s at 8 GiB. The 0.04% decode difference is noise,
-while the larger pool increased observed peak host memory. The override seam was
-therefore removed and the existing automatic memory policy retained. A later
-shared-expert merge experiment reached only 715.74 prefill / 49.55 decode
-tok/s, showing that replacing three inexpensive elementwise nodes with another
-custom Metal boundary is also counterproductive on this path. Keeping the
-attention output and gate as strided 4-D views was rejected as well: its
-decode-only A/B was 53.17 tok/s with the feature on versus 53.44 tok/s off, and
-both source-layout runs showed materially worse prefill than the retained
-867.46 tok/s graph. That reference implementation detail does not transfer as a
-standalone optimization through the current MLX Swift graph builder.
-
-1. Profile the current 52.1 tok/s build without sampling the GPU throughput
-   result itself. Use samples to identify host call counts, then benchmark
-   separately without the profiler.
-2. Compare graph-node counts and calls per token with the reference's direct MLX
-   C path, beginning with affine MoE and QKV decode. Port only the smallest
-   proven boundary that removes repeated construction.
-3. Do not repeat the rejected config-only prepared-call or scalar-cache
-   experiments. If a
-   reusable custom-call abstraction is revisited, require it to remove lazy
-   nodes or graph-submission boundaries—not merely the already-small config
-   lookup and Swift input type erasure—and prove the reduction with call counts.
-4. Preserve model-generic applicability: reusable MLX Swift launch preparation
-   belongs in `MLXFastKernel`; Qwen-specific geometry and kernels belong in the
-   Qwen implementation.
-5. Add numerical parity and concurrent-call tests for cached/prepared configs,
-   plus host PLE history rollback tests.
-6. Rerun the 0.5K no-MTP gate. Proceed only after decode is at least 59.4 tok/s
-   with no prefill regression below 760 tok/s.
-7. Run the first four context sizes, then radix cache, batching, concurrency,
-   streaming, tool-calling, and full model qualification.
-8. Evaluate MTP only after the no-MTP decoder is qualified. Report MTP and
-   no-MTP separately.
+1. Exercise model construction/destruction and independently compiled closures
+   to prove that graphs do not cross model lifetimes or executor threads.
+2. Run prefix/radix-cache restore and divergent-branch concurrency tests. A
+   recurrent cache may safely decline reuse, but it must never restore partial
+   KV state without matching GDN, convolution, and PLE state.
+3. Run continuous batching, streaming, cancellation, tool-calling, and
+   structured-output tests with compiled regions active by default.
+4. Evaluate MTP only after base decode qualification. Keep its throughput,
+   acceptance rate, and correctness separate from the no-MTP curve.
+5. For exact parity, add low-overhead counters for QSA direct-gather selection,
+   dense fallback, selected K/V row counts, and compiled-attention cache hits.
+   The decode deficit grows from about 0.5-0.6 ms/token at 0.5-1K to about
+   1.7 ms/token at 2-4K, pointing to context-dependent QSA/attention work.
+6. If AFMKit performs extra work, correct selection or cache restoration. If
+   work counts match the reference, combine QSA gather and attention into one
+   persistent model-owned compiled boundary and measure again.
+7. Retune architecture-owned prefill chunking only after decode parity. Prefill
+   already passes at every context, so a global chunk-size change is not
+   justified without same-checkpoint measurements for other architectures.
 
 ```mermaid
 flowchart LR
-    A[52.1 tok/s current] --> B[Remove repeated Swift launch construction]
-    B --> C{At least 59.4 tok/s?}
-    C -- no --> D[Profile next dominant host boundary]
-    D --> B
-    C -- yes --> E[First four contexts]
-    E --> F[Cache and concurrency qualification]
-    F --> G[Correctness and API suite]
-    G --> H[MTP evaluation]
+    A[Four-context performance gate passed] --> B[Cache and concurrency qualification]
+    B --> C[Lifecycle and API qualification]
+    C --> D[MTP evaluation]
+    D --> E[Release-ready no-MTP and MTP records]
+    A --> F[Count QSA work at each context]
+    F --> G{Same work as reference?}
+    G -- no --> H[Fix selection or restore policy]
+    G -- yes --> I[Collapse QSA gather plus attention boundary]
+    H --> J[Exact-parity benchmark]
+    I --> J
 ```
 
 ## Reproduction and diagnostics
 
-Run AFM with performance instrumentation only during diagnosis:
+The qualified path requires no performance feature variables:
 
 ```bash
-AFM_QWEN_FUSED_MOE_ROUTER=1 \
-AFM_QWEN_FUSED_AFFINE_MOE=1 \
-AFM_QWEN_FUSED_QK_NORM_ROPE=1 \
-AFM_QWEN_FUSED_GDN_NORM_GATE=1 \
-AFM_PERF=1 \
 afm mlx \
   -m /Volumes/edata2/models/ddalcu/Qwen3.8-Flash-Next-MLX-Serve-4bit \
   --no-think \
@@ -532,8 +568,9 @@ afm mlx \
 
 `AFM_PERF=1` adds timing probes and is not a production optimization.
 `AFM_DEBUG=1` enables diagnostic logging and likewise should not be used for
-published throughput. Environment feature switches are experimental until the
-qualified combination becomes a stable model policy.
+published throughput. `AFM_QWEN_COMPILE_ATTN_DECODE=0`,
+`AFM_QWEN_COMPILE_GDN_DECODE=0`, and `AFM_QWEN_COMPILE_LAYER_TAIL=0` are
+diagnostic kill switches; they are not required in ordinary launch commands.
 
 Build maclocal-api against this AFMKit worktree only through the consumer's
 reliable wrapper:
@@ -559,7 +596,9 @@ in AFMKit, then consumed by maclocal-api through one exact AFMKit version bump.
 - Do not let MTP acceptance rate hide the base decoder's performance.
 
 The central finding is therefore narrower than “Swift is slow” or “the kernels
-are slow.” AFMKit already drives the GPU effectively for this checkpoint. The
-remaining task is to make the Swift/MLX boundary retain and reuse more of the
-stable decode launch plan while keeping all mutable inference state isolated per
-request.
+are slow.” AFMKit drives the GPU effectively for this checkpoint, and explicit
+model ownership of compiled MLX graphs closes the release-target performance
+gap without moving mutable inference state out of the request. Exact parity now
+depends on measuring the context-sensitive QSA/attention work, while release
+readiness depends on completing the cache, concurrency, lifecycle, and MTP
+matrix.

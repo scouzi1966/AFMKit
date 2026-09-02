@@ -10,6 +10,9 @@ import XCTest
 class TransformTests: XCTestCase {
 
     override class func setUp() {
+        if let metallib = ProcessInfo.processInfo.environment["MACAFM_MLX_METALLIB"] {
+            GPU.setMetallibPath(metallib)
+        }
         setDefaultDevice()
     }
 
@@ -385,6 +388,55 @@ class TransformTests: XCTestCase {
             for await _ in group {
 
             }
+        }
+    }
+
+    func testCompiledFunctionCacheFollowsExecutorThreads() async throws {
+        let addOne = compile(shapeless: false) { value in value + 1 }
+
+        for value in 0 ..< 8 {
+            let result = await Task.detached {
+                let output = addOne(MLXArray(value))
+                eval(output)
+                return output.item(Int.self)
+            }.value
+            XCTAssertEqual(result, value + 1)
+        }
+
+        // A separate compiled function must never observe a graph retained for
+        // another closure, even when Swift schedules both on worker threads.
+        let triple = compile(shapeless: false) { value in value * 3 }
+        let result = await Task.detached {
+            let output = triple(MLXArray(7))
+            eval(output)
+            return output.item(Int.self)
+        }.value
+        XCTAssertEqual(result, 21)
+    }
+
+    func testNestedCompiledFunctionsUseConsistentLockOrdering() async throws {
+        let inner = compile(shapeless: false) { value in value * 2 }
+        let outer = compile(shapeless: false) { value in inner(value) + 1 }
+
+        await withTaskGroup(of: Int.self) { group in
+            for value in 0 ..< 16 {
+                group.addTask {
+                    let output = value.isMultiple(of: 2)
+                        ? outer(MLXArray(value))
+                        : inner(MLXArray(value))
+                    eval(output)
+                    return output.item(Int.self)
+                }
+            }
+
+            var values: [Int] = []
+            for await value in group {
+                values.append(value)
+            }
+
+            XCTAssertEqual(values.count, 16)
+            XCTAssertTrue(values.contains(1))
+            XCTAssertTrue(values.contains(30))
         }
     }
 
