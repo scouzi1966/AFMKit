@@ -281,6 +281,153 @@ final class Qwen4ExpTests: XCTestCase {
         try save(arrays: arrays, url: URL(fileURLWithPath: outputPath))
     }
 
+    /// Diagnostic equivalent of the reference engine's decode-forward probe.
+    /// It deliberately excludes sampling, detokenization, HTTP handling, and
+    /// token-loop bookkeeping so model graph construction and GPU evaluation
+    /// can be compared at the same cache depth. The test is skipped unless an
+    /// exact checkpoint and iteration count are supplied explicitly.
+    func testExactCheckpointDecodeForwardMicrobenchmark() async throws {
+        let environment = ProcessInfo.processInfo.environment
+        guard let modelPath = environment["QWEN4_FORWARD_BENCH_MODEL"],
+              let rawIterations = environment["QWEN4_FORWARD_BENCH_ITERATIONS"],
+              let iterations = Int(rawIterations), iterations > 0
+        else {
+            throw XCTSkip(
+                "Set QWEN4_FORWARD_BENCH_MODEL and "
+                    + "QWEN4_FORWARD_BENCH_ITERATIONS")
+        }
+        let prefillCount = max(
+            0, Int(environment["QWEN4_FORWARD_BENCH_KV"] ?? "0") ?? 0)
+        let profileOperations =
+            environment["QWEN4_FORWARD_BENCH_PROFILE_OPS"] == "1"
+        let context = try await loadModel(directory: URL(fileURLWithPath: modelPath))
+        let qwen = try XCTUnwrap(context.model as? Qwen4ExpModel)
+        let cache = qwen.newCache(parameters: nil)
+
+        var prefilled = 0
+        while prefilled < prefillCount {
+            let width = min(2_048, prefillCount - prefilled)
+            let values = (0 ..< width).map {
+                Int32(1 + ((prefilled + $0) % 1_000))
+            }
+            let logits = qwen(
+                MLXArray(values).reshaped(1, width), cache: cache)
+            eval(logits)
+            prefilled += width
+        }
+
+        func forward() -> MLXArray {
+            let token = MLXArray([Int32(1)]).reshaped(1, 1)
+            return qwen(token, cache: cache)
+        }
+        for _ in 0 ..< 3 {
+            eval(forward())
+        }
+
+        if profileOperations {
+            _ = Stream.gpu.commandBufferProfileSinceReport()
+        }
+        var buildNanoseconds: UInt64 = 0
+        var evaluationNanoseconds: UInt64 = 0
+        var operations: UInt64 = 0
+        var lastLogits: MLXArray?
+        let totalStart = DispatchTime.now().uptimeNanoseconds
+        for _ in 0 ..< iterations {
+            let buildStart = DispatchTime.now().uptimeNanoseconds
+            let logits = forward()
+            buildNanoseconds += DispatchTime.now().uptimeNanoseconds - buildStart
+
+            let evaluationStart = DispatchTime.now().uptimeNanoseconds
+            eval(logits)
+            evaluationNanoseconds +=
+                DispatchTime.now().uptimeNanoseconds - evaluationStart
+            if profileOperations {
+                operations +=
+                    Stream.gpu.commandBufferProfileSinceReport().operations
+            }
+            lastLogits = logits
+        }
+        let totalNanoseconds = DispatchTime.now().uptimeNanoseconds - totalStart
+        let divisor = Double(iterations) * 1_000_000
+        print(
+            "[qwen4-fwd-ubench] \(iterations) decode forwards at "
+                + "KV \(prefillCount): "
+                + String(format: "%.3f", Double(totalNanoseconds) / divisor)
+                + " ms/forward (build "
+                + String(format: "%.3f", Double(buildNanoseconds) / divisor)
+                + " ms CPU + eval "
+                + String(format: "%.3f", Double(evaluationNanoseconds) / divisor)
+                + " ms GPU, "
+                + (profileOperations
+                    ? String(
+                        format: "%.0f ops/forward",
+                        Double(operations) / Double(iterations))
+                    : "operation profiling disabled")
+                + ")")
+
+        let logits = try XCTUnwrap(lastLogits)
+        XCTAssertEqual(logits.shape, [1, 1, qwen.vocabularySize])
+        XCTAssertTrue(logits[0, 0, 0].item(Float.self).isFinite)
+
+        func forwardWithoutLMHead() -> MLXArray {
+            qwen.forwardStreamState(
+                inputIDs: MLXArray([Int32(1)]).reshaped(1, 1),
+                cache: cache).hidden
+        }
+        for _ in 0 ..< 3 {
+            eval(forwardWithoutLMHead())
+        }
+        if profileOperations {
+            _ = Stream.gpu.commandBufferProfileSinceReport()
+        }
+        var noLMHeadBuildNanoseconds: UInt64 = 0
+        var noLMHeadEvaluationNanoseconds: UInt64 = 0
+        var noLMHeadOperations: UInt64 = 0
+        var lastHidden: MLXArray?
+        let noLMHeadTotalStart = DispatchTime.now().uptimeNanoseconds
+        for _ in 0 ..< iterations {
+            let buildStart = DispatchTime.now().uptimeNanoseconds
+            let hidden = forwardWithoutLMHead()
+            noLMHeadBuildNanoseconds +=
+                DispatchTime.now().uptimeNanoseconds - buildStart
+
+            let evaluationStart = DispatchTime.now().uptimeNanoseconds
+            eval(hidden)
+            noLMHeadEvaluationNanoseconds +=
+                DispatchTime.now().uptimeNanoseconds - evaluationStart
+            if profileOperations {
+                noLMHeadOperations +=
+                    Stream.gpu.commandBufferProfileSinceReport().operations
+            }
+            lastHidden = hidden
+        }
+        let noLMHeadTotalNanoseconds =
+            DispatchTime.now().uptimeNanoseconds - noLMHeadTotalStart
+        print(
+            "[qwen4-fwd-ubench] without lm_head: "
+                + String(
+                    format: "%.3f", Double(noLMHeadTotalNanoseconds) / divisor)
+                + " ms/forward (build "
+                + String(
+                    format: "%.3f", Double(noLMHeadBuildNanoseconds) / divisor)
+                + " ms CPU + eval "
+                + String(
+                    format: "%.3f", Double(noLMHeadEvaluationNanoseconds) / divisor)
+                + " ms GPU, "
+                + (profileOperations
+                    ? String(
+                        format: "%.0f ops/forward",
+                        Double(noLMHeadOperations) / Double(iterations))
+                    : "operation profiling disabled")
+                + ") => lm_head "
+                + String(
+                    format: "%.3f",
+                    (Double(totalNanoseconds)
+                        - Double(noLMHeadTotalNanoseconds)) / divisor)
+                + " ms")
+        XCTAssertEqual(try XCTUnwrap(lastHidden).shape, [1, 1, 2_560])
+    }
+
     func testSanitizeAppliesCheckpointNGramMultipliersToMappedLookupPath() async throws {
         let loaded = try await LLMTypeRegistry.shared.createModel(
             configuration: Data(pleConfiguration.utf8),
@@ -1639,7 +1786,9 @@ final class Qwen4ExpTests: XCTestCase {
     }
 
     func testExplicitGatedDeltaBlockMatchesSequentialDecodeExactly() {
-        let time = 4
+        // Sixteen rows cross the packed prefill dispatch threshold, while
+        // each singleton comparison stays on the established decode kernel.
+        let time = 16
         let keyHeads = 1
         let valueHeads = 2
         let headDimension = 128

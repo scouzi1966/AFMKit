@@ -827,6 +827,72 @@ private final class Qwen4ExpAttentionProfiler {
     }
 }
 
+/// Host-only decode profiler for the Swift graph-construction path. Unlike
+/// `Qwen4ExpAttentionProfiler`, this never evaluates arrays or synchronizes the
+/// GPU; it only attributes CPU time spent constructing each lazy subgraph.
+private final class Qwen4ExpAttentionHostProfiler {
+    private enum Stage: Int, CaseIterable {
+        case indexer
+        case projections
+        case attention
+        case output
+
+        var label: String {
+            switch self {
+            case .indexer: "indexer"
+            case .projections: "projections"
+            case .attention: "attention"
+            case .output: "output"
+            }
+        }
+    }
+
+    private static let reportInterval = 384
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var calls = 0
+    nonisolated(unsafe) private static var totals = Array(
+        repeating: UInt64(0), count: Stage.allCases.count)
+
+    private var mark = DispatchTime.now().uptimeNanoseconds
+
+    static func make(sequenceLength: Int) -> Qwen4ExpAttentionHostProfiler? {
+        guard sequenceLength == 1,
+              ProcessInfo.processInfo.environment[
+                  "AFM_QWEN_PROFILE_ATTN_HOST"
+              ] == "all"
+        else { return nil }
+        return Qwen4ExpAttentionHostProfiler()
+    }
+
+    private func lap(_ stage: Stage) {
+        let now = DispatchTime.now().uptimeNanoseconds
+        let elapsed = now - mark
+        mark = now
+        Self.lock.withLock {
+            Self.totals[stage.rawValue] += elapsed
+        }
+    }
+
+    func indexer() { lap(.indexer) }
+    func projections() { lap(.projections) }
+    func attention() { lap(.attention) }
+
+    func finish() {
+        lap(.output)
+        Self.lock.withLock {
+            Self.calls += 1
+            guard Self.calls.isMultiple(of: Self.reportInterval) else { return }
+            let divisor = Double(Self.reportInterval) * 1_000_000
+            let fields = Stage.allCases.map {
+                "\($0.label) "
+                    + String(format: "%.3f", Double(Self.totals[$0.rawValue]) / divisor)
+            }.joined(separator: " ")
+            print("[qwen4-attn-host-prof] avg-ms/call \(fields)")
+            Self.totals = Array(repeating: 0, count: Stage.allCases.count)
+        }
+    }
+}
+
 private enum Qwen4ExpPerformanceControls {
     /// Ordinary text positions are implicit in the cache offset until sparse
     /// QSA engages. This mirrors ddalcu/mlx-serve's MIT-licensed qwen4_exp
@@ -1160,6 +1226,12 @@ enum Qwen4ExpQSADecodeBlocks {
 }
 
 private final class Qwen4ExpQSAIndexer: Module {
+    private static let compileDecode =
+        ProcessInfo.processInfo.environment[
+            "AFM_QWEN_COMPILE_QSA_INDEXER"
+        ] != "0"
+            && HardwareInfo.isModelOwnedCompiledDecodeSupported
+
     /// The index query is irrelevant while every historical block fits inside
     /// the dense-attention budget. Defer its norm and RoPE until sparse QSA is
     /// actually needed. This follows the early budget gate in ddalcu/mlx-serve
@@ -1183,6 +1255,48 @@ private final class Qwen4ExpQSAIndexer: Module {
     @ModuleInfo(key: "index_qk_proj") var indexQKProj: Linear
     @ModuleInfo(key: "q_layernorm") var qLayerNorm: Qwen4ExpZeroCenteredRMSNorm
     @ModuleInfo(key: "k_layernorm") var kLayerNorm: Qwen4ExpZeroCenteredRMSNorm
+
+    /// The decode-width index projection and split are stateless. Capturing
+    /// them once removes repeated Swift graph construction from every QSA
+    /// layer while leaving the request-owned index cache explicit.
+    private lazy var compiledProjectionDecode:
+        @Sendable ([MLXArray]) -> [MLXArray] =
+    {
+        let body: ([MLXArray]) -> [MLXArray] = { [unowned self] arguments in
+            CompiledDecodeTrace.withActive {
+                let hidden = arguments[0]
+                let qk = VerifyWidthLinear.call(
+                    self.indexQKProj, hidden, verificationPolicy: nil,
+                    role: .indexer)
+                let splitPoint = self.heads * self.headDim
+                let parts = MLX.split(qk, indices: [splitPoint], axis: -1)
+                let currentKeys = parts[1]
+                    .reshaped(
+                        hidden.dim(0), hidden.dim(1),
+                        self.kvHeads, self.headDim)
+                    .mean(axis: 2)
+                return [parts[0], currentKeys]
+            }
+        }
+        return compile(shapeless: false, body)
+    }()
+
+    /// Query normalization and RoPE are needed only after the QSA budget is
+    /// exceeded. Keeping this as a second closure preserves the reference
+    /// engine's early dense-budget gate instead of paying sparse-query work at
+    /// short contexts.
+    private lazy var compiledQueryDecode:
+        @Sendable ([MLXArray]) -> [MLXArray] =
+    {
+        let body: ([MLXArray]) -> [MLXArray] = { [unowned self] arguments in
+            CompiledDecodeTrace.withActive {
+                [self.prepareQueries(
+                    arguments[0], batch: arguments[0].dim(0), length: 1,
+                    positionIDs: arguments[1])]
+            }
+        }
+        return compile(shapeless: false, body)
+    }()
 
     init(_ config: Qwen4ExpTextConfiguration) {
         heads = config.indexerHeads
@@ -1237,27 +1351,48 @@ private final class Qwen4ExpQSAIndexer: Module {
             generatedPositionIDs = generated
             return generated
         }
-        let qk = VerifyWidthLinear.call(
-            indexQKProj, hidden, verificationPolicy: verificationPolicy,
-            role: .indexer)
-        let splitPoint = heads * headDim
-        let parts = MLX.split(qk, indices: [splitPoint], axis: -1)
+        let queryRows: MLXArray
+        let currentKeys: MLXArray
+        if Self.compileDecode, verificationPolicy == nil, length == 1 {
+            let projected = compiledProjectionDecode([hidden])
+            queryRows = projected[0]
+            currentKeys = projected[1]
+        } else {
+            let qk = VerifyWidthLinear.call(
+                indexQKProj, hidden, verificationPolicy: verificationPolicy,
+                role: .indexer)
+            let splitPoint = heads * headDim
+            let parts = MLX.split(qk, indices: [splitPoint], axis: -1)
+            queryRows = parts[0]
+            currentKeys = parts[1].reshaped(batch, length, kvHeads, headDim)
+                .mean(axis: 2)
+        }
         let eagerQueries = Self.deferQueryPreparationUntilSparse
             ? nil
             : prepareQueries(
-                parts[0], batch: batch, length: length,
+                queryRows, batch: batch, length: length,
                 positionIDs: resolvedPositionIDs())
-        let currentKeys = parts[1].reshaped(batch, length, kvHeads, headDim)
-            .mean(axis: 2)
         let updatedIndex = cache?.updateIndexKeys(
             currentKeys, positionIDs: providedPositionIDs)
         let allKeys = updatedIndex?.keys ?? currentKeys
         let totalLength = allKeys.dim(1)
 
         guard totalLength > tokenBudget else { return nil }
-        let queries = eagerQueries ?? prepareQueries(
-            parts[0], batch: batch, length: length,
-            positionIDs: resolvedPositionIDs())
+        let queries: MLXArray
+        if let eagerQueries {
+            queries = eagerQueries
+        } else if Self.compileDecode,
+                  verificationPolicy == nil,
+                  length == 1
+        {
+            queries = compiledQueryDecode([
+                queryRows, resolvedPositionIDs(),
+            ])[0]
+        } else {
+            queries = prepareQueries(
+                queryRows, batch: batch, length: length,
+                positionIDs: resolvedPositionIDs())
+        }
         let allPositionIDs = updatedIndex?.positionIDs
             ?? cache?.ensureSequentialIndexPositionIDs(batchSize: batch)
             ?? tiled(
@@ -1629,6 +1764,8 @@ private final class Qwen4ExpAttention: Module {
     ) -> MLXArray {
         let (b, l) = (x.dim(0), x.dim(1))
         let attentionProfiler = Qwen4ExpAttentionProfiler.make(sequenceLength: l)
+        let attentionHostProfiler = Qwen4ExpAttentionHostProfiler.make(
+            sequenceLength: l)
         let offset = cache?.offset ?? 0
         var generatedPositionIDs: MLXArray?
         func resolvedPositionIDs() -> MLXArray {
@@ -1653,6 +1790,7 @@ private final class Qwen4ExpAttention: Module {
             x, positionIDs: qsaPositionIDs,
             cache: cache as? Qwen4ExpAttentionCache,
             verificationPolicy: verificationPolicy)
+        attentionHostProfiler?.indexer()
         if let indexState = (cache as? Qwen4ExpAttentionCache)?.indexStateForProfiling {
             attentionProfiler?.lap(indexState, stage: "indexer")
         }
@@ -1716,6 +1854,7 @@ private final class Qwen4ExpAttention: Module {
                     positionIDs: resolvedPositionIDs())
             }
         }
+        attentionHostProfiler?.projections()
         attentionProfiler?.lap([q, k, v], stage: "qk-rope")
         let effectiveMask: MLXFast.ScaledDotProductAttentionMaskMode
         if case let .some(.mask(qsaMask)) = qsaSelection {
@@ -1833,6 +1972,7 @@ private final class Qwen4ExpAttention: Module {
                 queries: q, keys: k, values: v, cache: cache, scale: scale,
                 mask: effectiveMask)
         }
+        attentionHostProfiler?.attention()
         attentionProfiler?.lap([outputHeads], stage: "cache-sdpa")
         let result: MLXArray
         if Self.compileDecode, verificationPolicy == nil, l == 1 {
@@ -1845,6 +1985,7 @@ private final class Qwen4ExpAttention: Module {
                 oProj, output, verificationPolicy: verificationPolicy,
                 role: .attention)
         }
+        attentionHostProfiler?.finish()
         attentionProfiler?.lap([result], stage: "gated-output")
         return result
     }
