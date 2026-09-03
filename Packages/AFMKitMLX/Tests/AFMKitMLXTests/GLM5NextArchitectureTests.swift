@@ -526,6 +526,11 @@ final class GLM5NextArchitectureTests: XCTestCase {
         for (key, array) in serialized {
             XCTAssertEqual(array.shape, after[key]?.shape, key)
             XCTAssertEqual(array.dtype, after[key]?.dtype, key)
+            let source = try XCTUnwrap(
+                Dictionary(uniqueKeysWithValues: attention.parameters().flattened())[key])
+            XCTAssertTrue(
+                allClose(array, source, rtol: 0, atol: 0).item(Bool.self),
+                "serialized parameter value changed: \(key)")
         }
     }
 
@@ -546,6 +551,9 @@ final class GLM5NextArchitectureTests: XCTestCase {
         try model.update(parameters: ModuleParameters(values: [:]), verify: .none)
         let layer = try XCTUnwrap(model.loraLayers.first as? GLM5NextDecoderLayer)
         let attention = try XCTUnwrap(layer.attention as? GLM5NextLinearAttention)
+        XCTAssertFalse(model.hasPreparedPerformanceCaches)
+        XCTAssertFalse(attention.usesFusedInputProjections)
+        model.preparePerformanceCaches()
         XCTAssertTrue(model.hasPreparedPerformanceCaches)
         XCTAssertTrue(attention.usesFusedInputProjections)
 
@@ -559,6 +567,9 @@ final class GLM5NextArchitectureTests: XCTestCase {
                     q.weight.shape, dtype: .uint32),
             ]),
             verify: .none)
+        XCTAssertFalse(model.hasPreparedPerformanceCaches)
+        XCTAssertFalse(attention.usesFusedInputProjections)
+        model.preparePerformanceCaches()
         let rebuilt = attention.inputProjections(input).q
         let source = attention.inputProjections(input, useFusion: false).q
         MLX.eval(rebuilt, source)
@@ -567,6 +578,27 @@ final class GLM5NextArchitectureTests: XCTestCase {
         XCTAssertTrue(attention.usesFusedInputProjections)
         XCTAssertFalse(allClose(before, rebuilt, rtol: 0, atol: 0).item(Bool.self))
         XCTAssertTrue(allClose(rebuilt, source, rtol: 0, atol: 0).item(Bool.self))
+    }
+
+    func testLoRAModuleReplacementInvalidatesAndUnloadRebuildsPerformanceCaches() throws {
+        let data = try XCTUnwrap(tinyConfigurationData(hiddenSize: 64))
+        let config = try JSONDecoder().decode(GLM5NextConfiguration.self, from: data)
+        let model = GLM5NextModel(config)
+        model.preparePerformanceCaches()
+        XCTAssertTrue(model.hasPreparedPerformanceCaches)
+
+        let container = try LoRAContainer.from(
+            model: model,
+            configuration: LoRAConfiguration(
+                numLayers: config.textConfig.hiddenLayers,
+                loraParameters: .init(
+                    rank: 4,
+                    scale: 8,
+                    keys: ["self_attn.q_proj"])))
+        XCTAssertFalse(model.hasPreparedPerformanceCaches)
+
+        container.unload(from: model)
+        XCTAssertTrue(model.hasPreparedPerformanceCaches)
     }
 
     func testLinearAttentionFusionRemainsValidForPrefillAfterDecodePreparation() throws {
@@ -840,6 +872,7 @@ final class GLM5NextArchitectureTests: XCTestCase {
     }
 
     func testSparseCachedDecodeMatchesUncachedForwardWithPublishedPoolingPolicy() throws {
+        MLXRandom.seed(101)
         let data = try XCTUnwrap(tinyConfigurationData(indexTopK: 4))
         let config = try JSONDecoder().decode(GLM5NextConfiguration.self, from: data)
         XCTAssertEqual(config.textConfig.indexTopK, 4)
@@ -852,6 +885,7 @@ final class GLM5NextArchitectureTests: XCTestCase {
         ]))
         model.update(parameters: model.mapParameters { $0.asType(.float16) })
         XCTAssertTrue(model.parameters().flattened().allSatisfy { $0.1.dtype == .float16 })
+        model.preparePerformanceCaches()
 
         let cached = model.newCache(parameters: nil)
         let prefill = model(MLXArray([1, 2, 3, 4]).reshaped(1, 4), cache: cached)
@@ -864,7 +898,18 @@ final class GLM5NextArchitectureTests: XCTestCase {
         let uncached = model(MLXArray([1, 2, 3, 4, 5]).reshaped(1, 5), cache: nil)
         MLX.eval(uncached)
         let finalUncached = uncached[0..., 4 ..< 5, 0...]
-        XCTAssertTrue(allClose(decode, finalUncached, rtol: 1e-3, atol: 1e-3).item(Bool.self))
+        let absoluteDifference = abs(
+            decode.asType(.float32) - finalUncached.asType(.float32))
+        MLX.eval(absoluteDifference)
+        let maximumDifference = absoluteDifference.max().item(Float.self)
+        let cachedToken = argMax(decode[0, 0]).item(Int.self)
+        let uncachedToken = argMax(finalUncached[0, 0]).item(Int.self)
+        XCTAssertEqual(
+            cachedToken, uncachedToken,
+            "cached and uncached greedy tokens differ; max logit delta: \(maximumDifference)")
+        XCTAssertTrue(
+            allClose(decode, finalUncached, rtol: 2e-3, atol: 2e-3).item(Bool.self),
+            "cached and uncached logits exceed tolerance; max delta: \(maximumDifference)")
     }
 
     func testSanitizerMapsPublishedNamespaceAndDropsVisionAndMTP() throws {
@@ -1010,6 +1055,21 @@ final class GLM5NextArchitectureTests: XCTestCase {
         XCTAssertEqual(generated, expected)
     }
 
+    func testTopLevelParameterUpdateInvalidatesEmbeddedMTPPerformanceCaches() throws {
+        let data = try XCTUnwrap(tinyConfigurationData(indexTopK: 8))
+        let config = try JSONDecoder().decode(GLM5NextConfiguration.self, from: data)
+        let model = GLM5NextModel(config)
+        model.installEmbeddedMTPForTesting(initializedMTPHead(config: config.textConfig))
+        model.preparePerformanceCaches()
+        XCTAssertTrue(model.embeddedMTPHasPreparedPerformanceCaches)
+
+        try model.update(parameters: ModuleParameters(values: [:]), verify: .none)
+        XCTAssertFalse(model.embeddedMTPHasPreparedPerformanceCaches)
+
+        model.preparePerformanceCaches()
+        XCTAssertTrue(model.embeddedMTPHasPreparedPerformanceCaches)
+    }
+
     func testEmbeddedMTPTelemetryReportsSpeculativeWork() throws {
         MLXRandom.seed(71)
         let data = try XCTUnwrap(tinyConfigurationData(indexTopK: 8))
@@ -1038,6 +1098,54 @@ final class GLM5NextArchitectureTests: XCTestCase {
         XCTAssertEqual(metrics.emittedTokens, expected.count)
         XCTAssertGreaterThanOrEqual(metrics.headForwards, metrics.draftedTokens)
         XCTAssertGreaterThan(metrics.totalSeconds, 0)
+    }
+
+    func testRepeatedForcedRejectionsRestoreTargetCacheToAROracle() throws {
+        MLXRandom.seed(17)
+        let data = try XCTUnwrap(tinyConfigurationData(indexTopK: 8))
+        let config = try JSONDecoder().decode(GLM5NextConfiguration.self, from: data)
+        let model = GLM5NextModel(config)
+        initializeTinyTarget(model, config: config.textConfig)
+        model.installEmbeddedMTPForTesting(initializedMTPHead(config: config.textConfig))
+        let prompt = [1, 2, 3]
+        let expectedTokens = ordinaryGreedy(model: model, prompt: prompt, count: 7)
+
+        let expectedCaches: [(offsets: [Int], states: [[MLXArray]])] =
+            (1 ..< expectedTokens.count).map { committed in
+                let cache = model.newCache(parameters: nil)
+                let ids = prompt + Array(expectedTokens.prefix(committed))
+                let logits = model(
+                    MLXArray(ids.map(Int32.init)).reshaped(1, ids.count),
+                    cache: cache)
+                MLX.eval(logits)
+                let states = cache.map(\.state)
+                for state in states { for array in state { MLX.eval(array) } }
+                return (cache.map(\.offset), states)
+            }
+
+        var rejection = 0
+        let generated = try XCTUnwrap(GLM5NextMTPGenerator(model: model)).generateForTesting(
+            promptIds: prompt,
+            maxTokens: expectedTokens.count,
+            forceRejectEveryDraft: true
+        ) { cache in
+            XCTAssertLessThan(rejection, expectedCaches.count)
+            let expected = expectedCaches[rejection]
+            XCTAssertEqual(cache.map(\.offset), expected.offsets)
+            for (actualLayer, expectedLayer) in zip(cache.map(\.state), expected.states) {
+                XCTAssertEqual(actualLayer.count, expectedLayer.count)
+                for (actual, oracle) in zip(actualLayer, expectedLayer) {
+                    MLX.eval(actual)
+                    XCTAssertEqual(actual.shape, oracle.shape)
+                    XCTAssertTrue(
+                        allClose(actual, oracle, rtol: 1e-4, atol: 1e-4).item(Bool.self))
+                }
+            }
+            rejection += 1
+        }
+
+        XCTAssertEqual(generated, expectedTokens)
+        XCTAssertEqual(rejection, expectedCaches.count)
     }
 
     func testEmbeddedMTPRejectsUnsupportedRequestedDepth() throws {

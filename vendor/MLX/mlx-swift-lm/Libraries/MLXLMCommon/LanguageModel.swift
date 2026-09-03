@@ -206,6 +206,19 @@ public protocol LanguageModelWeightFilter {
     func shouldLoad(weightKey: String) -> Bool
 }
 
+/// Optional post-load hook for model-owned, derived performance state.
+///
+/// `loadWeights` invokes this only after checkpoint parameters have been
+/// installed and evaluated and its temporary weight dictionaries have been
+/// released. Implementations may materialize fused tensors or compiled graphs
+/// here without overlapping their memory with the loader's original arrays.
+/// Parameter mutation and this hook require exclusive access to the model;
+/// callers must not update a model while inference is in flight.
+public protocol LanguageModelPerformanceCachePreparable {
+    func invalidatePerformanceCaches()
+    func preparePerformanceCaches()
+}
+
 extension LanguageModel {
     public var consumesHostTokenIDs: Bool { false }
 

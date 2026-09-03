@@ -231,18 +231,25 @@ public func loadWeights(
         deepseekV4LoadTrace("module quantization complete")
     }
 
-    // apply the loaded weights
-    let parameters = ModuleParameters.unflattened(weights)
-    // Use .noUnusedKeys only (skip .shapeMismatch) to match Python's strict=False.
-    // Custom modules like GLM5's MultiLinear have manually quantized weights with
-    // packed shapes that differ from the model's logical init shapes.
-    deepseekV4LoadTrace("parameter update begin")
-    try model.update(parameters: parameters, verify: [.noUnusedKeys])
-    deepseekV4LoadTrace("parameter update complete")
+    // Apply the loaded weights in a nested scope, then release the loader's
+    // dictionaries before any model-owned fused tensors are materialized.
+    // This is material for very large MoE checkpoints whose performance caches
+    // replace source projections with views into newly packed storage.
+    do {
+        let parameters = ModuleParameters.unflattened(weights)
+        // Use .noUnusedKeys only (skip .shapeMismatch) to match Python's strict=False.
+        // Custom modules like GLM5's MultiLinear have manually quantized weights with
+        // packed shapes that differ from the model's logical init shapes.
+        deepseekV4LoadTrace("parameter update begin")
+        try model.update(parameters: parameters, verify: [.noUnusedKeys])
+        deepseekV4LoadTrace("parameter update complete")
+    }
+    weights.removeAll(keepingCapacity: false)
 
     deepseekV4LoadTrace("parameter eval begin")
     eval(model)
     deepseekV4LoadTrace("parameter eval complete")
+    (model as? LanguageModelPerformanceCachePreparable)?.preparePerformanceCaches()
 }
 
 /// Resolve the quantization parameters for one checkpoint layer.

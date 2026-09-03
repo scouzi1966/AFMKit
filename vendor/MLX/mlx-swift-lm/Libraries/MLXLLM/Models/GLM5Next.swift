@@ -1317,6 +1317,14 @@ final class GLM5NextMTPDecoderLayer: Module {
         return hidden + mlp(postAttentionNorm(hidden))
     }
 
+    func preparePerformanceCaches() {
+        mlp.preparePerformanceCaches()
+    }
+
+    func invalidatePerformanceCaches() {
+        mlp.invalidatePerformanceCaches()
+    }
+
 }
 
 final class GLM5NextMTPSharedHead: Module {
@@ -1335,6 +1343,7 @@ final class GLM5NextMTPHead: Module {
     @ModuleInfo(key: "eh_proj") var projection: Linear
     @ModuleInfo var decoder: GLM5NextMTPDecoderLayer
     @ModuleInfo(key: "shared_head") var sharedHead: GLM5NextMTPSharedHead
+    private(set) var hasPreparedPerformanceCaches = false
 
     init(_ config: GLM5NextTextConfiguration) {
         _enorm.wrappedValue = RMSNorm(dimensions: config.hiddenSize, eps: config.rmsNormEps)
@@ -1378,6 +1387,16 @@ final class GLM5NextMTPHead: Module {
             enorm(tokenEmbeddings), hnorm(hiddenStates),
         ], axis: -1))
         return sharedHead.norm(decoder(fused, cache: cache))
+    }
+
+    func preparePerformanceCaches() {
+        decoder.preparePerformanceCaches()
+        hasPreparedPerformanceCaches = true
+    }
+
+    func invalidatePerformanceCaches() {
+        decoder.invalidatePerformanceCaches()
+        hasPreparedPerformanceCaches = false
     }
 
 }
@@ -1653,7 +1672,7 @@ private struct GLM5NextEmbeddedMTPManifest {
 }
 
 public final class GLM5NextModel: Module, LLMModel, KVCacheDimensionProvider, LoRAModel,
-    LanguageModelWeightFilter
+    LanguageModelWeightFilter, LanguageModelPerformanceCachePreparable
 {
     public let vocabularySize: Int
     public let kvHeads: [Int]
@@ -1680,11 +1699,12 @@ public final class GLM5NextModel: Module, LLMModel, KVCacheDimensionProvider, Lo
         }
     }
 
-    /// GLM decode caches are derived from registered parameters. Rebuild them
-    /// synchronously as part of every top-level parameter update, before the
-    /// model can be published or returned to inference callers. This keeps
-    /// forward read-only and prevents adapters or later parameter updates from
-    /// leaving fused tensors and compiled graphs stale.
+    /// GLM decode caches are derived from registered parameters. Parameter
+    /// updates invalidate them; `loadWeights` republishes them only after its
+    /// temporary checkpoint arrays have been released. Direct callers that
+    /// mutate parameters must call `preparePerformanceCaches()` before
+    /// publishing the model again. Parameter mutation requires exclusive model
+    /// access and must never overlap an in-flight forward pass.
     @discardableResult
     public override func update(
         parameters: ModuleParameters,
@@ -1696,15 +1716,28 @@ public final class GLM5NextModel: Module, LLMModel, KVCacheDimensionProvider, Lo
         defer { performancePreparationLock.unlock() }
 
         model.invalidatePerformanceCaches()
+        embeddedMTP?.invalidatePerformanceCaches()
         hasPreparedPerformanceCaches = false
-        let result = try super.update(
+        return try super.update(
             parameters: parameters,
             verify: verify,
             path: path,
             modulePath: modulePath)
-        model.preparePerformanceCaches()
-        hasPreparedPerformanceCaches = true
-        return result
+    }
+
+    @discardableResult
+    public override func update(
+        modules: ModuleChildren,
+        verify: VerifyUpdate,
+        path: [String] = [],
+        modulePath: [String] = []
+    ) throws -> Self {
+        invalidatePerformanceCaches()
+        return try super.update(
+            modules: modules,
+            verify: verify,
+            path: path,
+            modulePath: modulePath)
     }
 
     /// Invalidates derived decode caches when this text model is owned by a
@@ -1714,6 +1747,7 @@ public final class GLM5NextModel: Module, LLMModel, KVCacheDimensionProvider, Lo
         performancePreparationLock.lock()
         defer { performancePreparationLock.unlock() }
         model.invalidatePerformanceCaches()
+        embeddedMTP?.invalidatePerformanceCaches()
         hasPreparedPerformanceCaches = false
     }
 
@@ -1723,6 +1757,7 @@ public final class GLM5NextModel: Module, LLMModel, KVCacheDimensionProvider, Lo
         performancePreparationLock.lock()
         defer { performancePreparationLock.unlock() }
         model.preparePerformanceCaches()
+        embeddedMTP?.preparePerformanceCaches()
         hasPreparedPerformanceCaches = true
     }
 
@@ -1736,6 +1771,10 @@ public final class GLM5NextModel: Module, LLMModel, KVCacheDimensionProvider, Lo
 
     var preparedCompiledFFNLayerCount: Int {
         model.layers.count(where: \.usesCompiledFFN)
+    }
+
+    var embeddedMTPHasPreparedPerformanceCaches: Bool {
+        embeddedMTP?.hasPreparedPerformanceCaches ?? false
     }
 
     public func callAsFunction(_ inputs: MLXArray, cache: [KVCache]?) -> MLXArray {
@@ -1876,6 +1915,7 @@ public final class GLM5NextModel: Module, LLMModel, KVCacheDimensionProvider, Lo
         try head.prepareMultiLinearParametersForVerifiedUpdate(local)
         try head.update(parameters: ModuleParameters.unflattened(local), verify: [.all])
         eval(head)
+        head.preparePerformanceCaches()
         _embeddedMTP.wrappedValue = head
         embeddedMTPWeightsLoaded = true
     }

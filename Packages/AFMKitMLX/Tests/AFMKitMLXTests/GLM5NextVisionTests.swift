@@ -52,18 +52,22 @@ final class GLM5NextVisionTests: XCTestCase {
         XCTAssertTrue(keys.contains("language_model.model.layers.0.self_attn.q_proj.weight"))
     }
 
-    func testVLMParentUpdatePreparesNestedTextPerformanceCaches() throws {
+    func testVLMParentUpdateInvalidatesCachesUntilExplicitPostLoadPreparation() throws {
         let config = try JSONDecoder().decode(
             GLM5NextVLConfiguration.self, from: try modelConfigurationData())
         let model = GLM5NextVLModel(config)
 
         XCTAssertFalse(model.languageModel.hasPreparedPerformanceCaches)
         try model.update(parameters: model.parameters(), verify: [.all])
+        XCTAssertFalse(model.languageModel.hasPreparedPerformanceCaches)
+        model.preparePerformanceCaches()
         XCTAssertTrue(model.languageModel.hasPreparedPerformanceCaches)
 
         // A later parent-level update must invalidate and republish the
         // nested model's derived caches rather than leaving stale tensors.
         try model.update(parameters: model.parameters(), verify: [.all])
+        XCTAssertFalse(model.languageModel.hasPreparedPerformanceCaches)
+        model.preparePerformanceCaches()
         XCTAssertTrue(model.languageModel.hasPreparedPerformanceCaches)
     }
 
