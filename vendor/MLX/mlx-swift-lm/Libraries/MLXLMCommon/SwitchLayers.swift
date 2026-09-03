@@ -1079,6 +1079,22 @@ public class SwitchGLU: Module, SwitchGLULayer {
         self.fusedMode = g.mode
     }
 
+    /// Materialize the optional gate/up cache before publishing a model for
+    /// inference. Models that prepare their decode graph explicitly use this
+    /// to keep cache construction out of concurrent forward calls.
+    public func prepareFusedGateUpCache() {
+        ensureFusedGateUp()
+    }
+
+    /// Discard derived gate/up tensors before registered parameters change.
+    /// A subsequent preparation rebuilds them from the updated source modules.
+    public func invalidateFusedGateUpCache() {
+        fusedGateUpWeight = nil
+        fusedGateUpScales = nil
+        fusedGateUpBiases = nil
+        fusionAttempted = false
+    }
+
     private func fusedGateUpCacheByteLimit() -> Int {
         let env = ProcessInfo.processInfo.environment
         if let raw = env["VMLX_FUSED_GATE_UP_CACHE_LIMIT_BYTES"],
