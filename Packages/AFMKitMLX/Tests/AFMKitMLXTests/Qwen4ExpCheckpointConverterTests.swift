@@ -40,11 +40,11 @@ final class Qwen4ExpCheckpointConverterTests: XCTestCase {
                 with: Data(contentsOf: fixture.output.appendingPathComponent("config.json")))
                 as? [String: Any])
         let descriptor = try XCTUnwrap(config["ngram_table"] as? [String: Any])
-        XCTAssertEqual(descriptor["file"] as? String, "ngram_table.bin")
+        XCTAssertEqual(descriptor["file"] as? String, "ngram_table.ngram")
         XCTAssertEqual(descriptor["bits"] as? Int, 4)
         XCTAssertEqual(descriptor["group_size"] as? Int, 32)
 
-        let sidecar = fixture.output.appendingPathComponent("ngram_table.bin")
+        let sidecar = fixture.output.appendingPathComponent("ngram_table.ngram")
         let sidecarHeader = try AFMSafetensorHeader(url: sidecar)
         let sidecarMetadata = try sidecarMetadata(at: sidecar)
         XCTAssertEqual(sidecarMetadata["format"], "mlx-serve-ngram")

@@ -17,7 +17,7 @@ flowchart LR
     A[Official BF16 checkpoint\n128 n-gram tensors] --> B[Conventional MLX conversion]
     A --> C[AFM sidecar conversion]
     B --> D[All quantized n-gram tensors\nloaded as MLX arrays\nabout 32 GB]
-    C --> E[One ngram_table.bin\nmemory mapped on the host]
+    C --> E[One ngram_table.ngram\nmemory mapped on the host]
     E --> F[Read 16 rows per token]
     F --> G[Upload one 2560-value vector]
 ```
@@ -53,8 +53,10 @@ Conversion also performs architecture-required layout changes:
 3. Transpose depthwise convolution weights from `[C, 1, K]` to `[C, K, 1]`.
 4. Fold the `1 + weight` convention into Qwen RMSNorm weights.
 5. Merge the 128 n-gram shards into one SafeTensor-format file named
-   `ngram_table.bin`. The non-`.safetensors` extension intentionally keeps the
+   `ngram_table.ngram`. The non-`.safetensors` extension intentionally keeps the
    ordinary MLX directory loader from loading it as model parameters.
+   Existing checkpoint-declared `.bin` sidecars remain supported for
+   compatibility.
 6. Preserve tokenizer, chat-template, generation, license, and multimodal
    processor assets.
 

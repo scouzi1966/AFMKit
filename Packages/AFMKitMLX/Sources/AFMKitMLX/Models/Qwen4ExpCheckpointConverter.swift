@@ -21,6 +21,7 @@ public struct Qwen4ExpCheckpointConverter {
     private static let ngramGroupSize = 32
     private static let ngramBits = 4
     private static let ngramDimension = 160
+    private static let ngramSidecarFilename = "ngram_table.ngram"
     private static let minimumDestinationFreeBytes: Int64 = 140_000_000_000
     private static let ngramMarker = ".ple.ple_embedding.ngram_embedding.shard_"
     private static let requiredSupportFiles = [
@@ -230,7 +231,7 @@ public struct Qwen4ExpCheckpointConverter {
         let ngramLocations = try Self.makeNGramLocations(ngramReferences)
         let ngramRows = ngramReferences.reduce(0) { $0 + $1.shape[0] }
         let sidecar = try NGramSidecar(
-            url: paths.output.appendingPathComponent("ngram_table.bin"),
+            url: paths.output.appendingPathComponent(Self.ngramSidecarFilename),
             rows: ngramRows,
             dimension: Self.ngramDimension,
             bits: Self.ngramBits,
@@ -623,7 +624,7 @@ public struct Qwen4ExpCheckpointConverter {
         object["quantization"] = quantization
         object["quantization_config"] = quantization
         object["ngram_table"] = [
-            "file": "ngram_table.bin",
+            "file": Self.ngramSidecarFilename,
             "bits": Self.ngramBits,
             "group_size": Self.ngramGroupSize,
         ]
@@ -804,7 +805,7 @@ private final class NGramSidecar {
             let size = UInt64(try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0)
             guard size == expectedSize else {
                 throw Qwen4ExpCheckpointConverter.ConversionError.sourceMismatch(
-                    "Existing ngram_table.bin has an unexpected size; use --overwrite.")
+                    "Existing n-gram sidecar has an unexpected size; use --overwrite.")
             }
         } else {
             fm.createFile(atPath: url.path, contents: nil)
