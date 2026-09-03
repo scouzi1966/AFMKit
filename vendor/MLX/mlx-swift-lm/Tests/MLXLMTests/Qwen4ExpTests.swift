@@ -2824,6 +2824,42 @@ final class Qwen4ExpTests: XCTestCase {
             actual.asArray(Int32.self), expected.asArray(Int32.self))
     }
 
+    func testFusedCausalPrefillAttentionMatchesMLXSDPA() throws {
+        let queryHeads = 24
+        let keyHeads = 2
+        let sequenceLength = 64
+        let headDimension = 256
+        let scale = pow(Float(headDimension), -0.5)
+        let randomState = MLXRandom.RandomState(seed: 3141)
+        let queries = withRandomState(randomState) {
+            MLXRandom.normal([1, queryHeads, sequenceLength, headDimension])
+                .asType(.bfloat16)
+        }
+        let keys = withRandomState(randomState) {
+            MLXRandom.normal([1, keyHeads, sequenceLength, headDimension])
+                .asType(.bfloat16)
+        }
+        let values = withRandomState(randomState) {
+            MLXRandom.normal([1, keyHeads, sequenceLength, headDimension])
+                .asType(.bfloat16)
+        }
+        let expected = MLXFast.scaledDotProductAttention(
+            queries: queries,
+            keys: keys,
+            values: values,
+            scale: scale,
+            mask: .causal)
+        let actual = try XCTUnwrap(Qwen4ExpQSAMaskedAttention.callCausal(
+            queries: queries,
+            keys: keys,
+            values: values,
+            scale: scale))
+        eval(actual, expected)
+
+        XCTAssertLessThanOrEqual(
+            maximumAbsoluteDifference(actual, expected), 0.02)
+    }
+
     func testQSADecodeAttentionMatchesDenseMask() throws {
         let queryHeads = 24
         let keyHeads = 2
