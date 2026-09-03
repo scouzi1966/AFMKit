@@ -287,6 +287,55 @@ final class Qwen4ExpTests: XCTestCase {
         }
     }
 
+    func testQwenCheckpointAcceptsHuggingFaceSnapshotNGramSymlink() throws {
+        let repository = FileManager.default.temporaryDirectory
+            .appendingPathComponent("models--example--qwen-\(UUID().uuidString)")
+        let directory = repository
+            .appendingPathComponent("snapshots")
+            .appendingPathComponent("revision")
+        let blobs = repository.appendingPathComponent("blobs")
+        try FileManager.default.createDirectory(
+            at: directory, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(
+            at: blobs, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: repository) }
+
+        let blob = blobs.appendingPathComponent("content-hash")
+        try Data([0]).write(to: blob)
+        try FileManager.default.createSymbolicLink(
+            atPath: directory.appendingPathComponent("ngram_table.ngram").path,
+            withDestinationPath: "../../blobs/content-hash")
+        let configuration = Data(
+            #"{"model_type":"qwen4_exp","ngram_table":{"file":"ngram_table.ngram"}}"#.utf8)
+
+        XCTAssertEqual(
+            try resolveQwenNGramTableURL(
+                configurationData: configuration,
+                modelDirectory: directory,
+                explicitURL: nil),
+            blob.resolvingSymlinksInPath())
+    }
+
+    func testQwenCheckpointRejectsEmptyNGramSidecar() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("qwen-ngram-resolver-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(
+            at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try Data().write(to: directory.appendingPathComponent("ngram_table.ngram"))
+        let configuration = Data(
+            #"{"model_type":"qwen4_exp","ngram_table":{"file":"ngram_table.ngram"}}"#.utf8)
+
+        XCTAssertThrowsError(try resolveQwenNGramTableURL(
+            configurationData: configuration,
+            modelDirectory: directory,
+            explicitURL: nil)) { error in
+            guard case QwenNGramTableResolutionError.missingFile = error else {
+                return XCTFail("unexpected error: \(error)")
+            }
+        }
+    }
+
     func testQwenCheckpointRejectsEscapingNGramSidecarPath() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("qwen-ngram-resolver-\(UUID().uuidString)")

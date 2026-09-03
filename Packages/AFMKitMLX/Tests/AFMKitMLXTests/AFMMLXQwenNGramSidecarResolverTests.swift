@@ -139,6 +139,40 @@ final class AFMMLXQwenNGramSidecarResolverTests: XCTestCase {
         }
     }
 
+    func testAcceptsHuggingFaceSnapshotSymlinkIntoOwningBlobStore() throws {
+        let repository = FileManager.default.temporaryDirectory
+            .appendingPathComponent("models--example--qwen-\(UUID().uuidString)")
+        let directory = repository
+            .appendingPathComponent("snapshots")
+            .appendingPathComponent("revision")
+        let blobs = repository.appendingPathComponent("blobs")
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(
+            at: blobs,
+            withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: repository) }
+
+        let blob = blobs.appendingPathComponent("content-hash")
+        try Data([0]).write(to: blob)
+        try FileManager.default.createSymbolicLink(
+            atPath: directory.appendingPathComponent("ngram_table.ngram").path,
+            withDestinationPath: "../../blobs/content-hash")
+        try writeConfiguration(
+            #"{"model_type":"qwen4_exp","ngram_table":{"file":"ngram_table.ngram"}}"#,
+            to: directory)
+
+        let resolved = try AFMMLXQwenNGramSidecarResolver.resolve(
+            modelDirectory: directory,
+            canonicalModelType: "qwen4_exp")
+
+        XCTAssertEqual(resolved, blob.resolvingSymlinksInPath())
+        XCTAssertTrue(
+            AFMMLXQwenNGramSidecarResolver
+                .hasCompleteIntrinsicSidecarIfDeclared(in: directory))
+    }
+
     func testRejectsUnrecognizedSidecarExtension() throws {
         let directory = try makeDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }

@@ -61,15 +61,50 @@ public func resolveQwenNGramTableURL(
     let candidate = root.appendingPathComponent(rawPath)
         .standardizedFileURL
         .resolvingSymlinksInPath()
-    let rootPrefix = root.path.hasSuffix("/") ? root.path : root.path + "/"
-    let extensionName = candidate.pathExtension.lowercased()
-    guard candidate.path.hasPrefix(rootPrefix),
+    // Validate the checkpoint-declared name. A Hugging Face snapshot symlink
+    // resolves to a content-addressed blob with no extension.
+    let extensionName = path.pathExtension.lowercased()
+    guard qwenNGramPathIsInsideCheckpointBoundary(candidate, modelRoot: root),
           extensionName == "ngram" || extensionName == "bin"
     else {
         throw QwenNGramTableResolutionError.unsafePath(rawPath)
     }
-    guard FileManager.default.fileExists(atPath: candidate.path) else {
+    guard let values = try? candidate.resourceValues(
+        forKeys: [.isRegularFileKey, .fileSizeKey]),
+        values.isRegularFile == true,
+        (values.fileSize ?? 0) > 0
+    else {
         throw QwenNGramTableResolutionError.missingFile(candidate.path)
     }
     return candidate
+}
+
+private func qwenNGramPathIsInsideCheckpointBoundary(
+    _ candidate: URL,
+    modelRoot: URL
+) -> Bool {
+    if qwenNGramPath(candidate, isUnder: modelRoot) {
+        return true
+    }
+
+    // Hugging Face snapshot entries are symlinks into the same repository
+    // package's blobs directory. Permit that canonical target, but no sibling
+    // cache package or arbitrary path outside the package.
+    let snapshotsRoot = modelRoot.deletingLastPathComponent()
+    guard snapshotsRoot.lastPathComponent == "snapshots" else {
+        return false
+    }
+    let repositoryRoot = snapshotsRoot.deletingLastPathComponent()
+    guard repositoryRoot.lastPathComponent.hasPrefix("models--") else {
+        return false
+    }
+    let blobsRoot = repositoryRoot.appendingPathComponent("blobs")
+        .standardizedFileURL
+        .resolvingSymlinksInPath()
+    return qwenNGramPath(candidate, isUnder: blobsRoot)
+}
+
+private func qwenNGramPath(_ candidate: URL, isUnder root: URL) -> Bool {
+    let prefix = root.path.hasSuffix("/") ? root.path : root.path + "/"
+    return candidate.path.hasPrefix(prefix)
 }

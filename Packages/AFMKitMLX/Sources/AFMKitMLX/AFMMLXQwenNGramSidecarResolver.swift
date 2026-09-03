@@ -78,9 +78,10 @@ enum AFMMLXQwenNGramSidecarResolver {
         let candidate = root.appendingPathComponent(rawPath)
             .standardizedFileURL
             .resolvingSymlinksInPath()
-        let rootPrefix = root.path.hasSuffix("/") ? root.path : root.path + "/"
-        let extensionName = candidate.pathExtension.lowercased()
-        guard candidate.path.hasPrefix(rootPrefix),
+        // Validate the checkpoint-declared name. A Hugging Face snapshot
+        // symlink resolves to a content-addressed blob with no extension.
+        let extensionName = path.pathExtension.lowercased()
+        guard isInsideCheckpointBoundary(candidate, modelRoot: root),
               extensionName == "ngram" || extensionName == "bin"
         else {
             throw AFMMLXQwenNGramSidecarResolverError.unsafePath(rawPath)
@@ -93,6 +94,36 @@ enum AFMMLXQwenNGramSidecarResolver {
             throw AFMMLXQwenNGramSidecarResolverError.missingFile(candidate.path)
         }
         return candidate
+    }
+
+    private static func isInsideCheckpointBoundary(
+        _ candidate: URL,
+        modelRoot: URL
+    ) -> Bool {
+        if contains(candidate, under: modelRoot) {
+            return true
+        }
+
+        // Hugging Face materializes snapshots as symlinks into the owning
+        // repository package's blobs directory:
+        // snapshots/<revision>/<file> -> ../../blobs/<content-hash>.
+        let snapshotsRoot = modelRoot.deletingLastPathComponent()
+        guard snapshotsRoot.lastPathComponent == "snapshots" else {
+            return false
+        }
+        let repositoryRoot = snapshotsRoot.deletingLastPathComponent()
+        guard repositoryRoot.lastPathComponent.hasPrefix("models--") else {
+            return false
+        }
+        let blobsRoot = repositoryRoot.appendingPathComponent("blobs")
+            .standardizedFileURL
+            .resolvingSymlinksInPath()
+        return contains(candidate, under: blobsRoot)
+    }
+
+    private static func contains(_ candidate: URL, under root: URL) -> Bool {
+        let prefix = root.path.hasSuffix("/") ? root.path : root.path + "/"
+        return candidate.path.hasPrefix(prefix)
     }
 
     /// A checkpoint-declared n-gram table is part of the checkpoint, not an
