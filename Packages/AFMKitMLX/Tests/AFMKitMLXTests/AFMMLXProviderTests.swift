@@ -986,6 +986,21 @@ final class AFMMLXProviderTests: XCTestCase {
         XCTAssertTrue(AFMMLXToolCallPolicy.isToolCallParserDisabled(" NONE "))
         XCTAssertFalse(AFMMLXToolCallPolicy.isToolCallParserDisabled(nil))
         XCTAssertFalse(AFMMLXToolCallPolicy.isToolCallParserDisabled("afm_adaptive_xml"))
+
+        XCTAssertEqual(
+            MLXModelService.generationToolCallFormat(
+                configuredParser: "none",
+                detectedFormat: .xmlFunction
+            ),
+            ToolCallFormat.none
+        )
+        XCTAssertEqual(
+            MLXModelService.generationToolCallFormat(
+                configuredParser: nil,
+                detectedFormat: .xmlFunction
+            ),
+            .xmlFunction
+        )
     }
 
     func testToolPolicyNormalizesAndCoercesArguments() throws {
