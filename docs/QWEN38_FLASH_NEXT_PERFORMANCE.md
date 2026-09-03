@@ -38,7 +38,7 @@ reference at every measured prefill and decode point.
   tok/s at eight-way concurrency**, versus **154.1 tok/s** for the reproduced
   same-checkpoint reference. Eight simultaneous radix-cache hits reached
   **196.6 aggregate tok/s**, with 43 of 44 prompt tokens restored per request.
-- Decode is now 1.2-3.3% faster than the latest reproduced reference across the
+- Decode is now 1.2-2.8% faster than the latest reproduced reference across the
   first-four context curve. Further QSA work is optional headroom rather than a
   parity blocker.
 
@@ -104,7 +104,7 @@ and MTP were disabled for both AFMKit and the saved same-checkpoint reference.
 AFMKit's server-side prefill medians were 898.8, 1039.2, 1183.9, and
 1291.8 tok/s. The fused causal-attention A/B changed client-observed prefill by
 +1.14%, +0.55%, +0.17%, and -0.14% respectively; the final point is within
-run noise. Decode was unchanged, as expected. All 24 saved responses were
+run noise. Decode was unchanged, as expected. All 24 saved AFM responses were
 nonempty and coherent.
 
 The same binary then passed radix-cache and concurrency checks: a repeated
@@ -113,12 +113,13 @@ each restored 50 of 51 tokens, returned HTTP 200, and produced coherent output.
 Three clean model load/run/shutdown cycles completed during the on/off and cache
 qualification.
 
-The table uses the best recorded run for each milestone because the acceptance
-target is defined against the reproduced reference peak under the same
-three-run method. Full CSV files are retained outside the Git checkout under
+The historical acceptance-gate table below uses the best recorded run for each
+milestone because that earlier target was defined against the reproduced
+reference peak under the same three-run method. Full CSV files are retained
+outside the Git checkout under
 `/Volumes/edata/afm-release-artifacts/qwen-next-afm-current/`.
 
-The final default, no-environment-variable four-context comparison is:
+The earlier default, no-environment-variable three-run peak comparison was:
 
 | Context | Reference prefill | AFMKit prefill | Difference | Reference decode | AFMKit decode | Difference |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
