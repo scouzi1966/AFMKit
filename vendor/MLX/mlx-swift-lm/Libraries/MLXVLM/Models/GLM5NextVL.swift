@@ -1224,6 +1224,27 @@ public final class GLM5NextVLModel: Module, VLMModel, KVCacheDimensionProvider,
         languageModel(inputs, cache: cache)
     }
 
+    /// `Module.update` recursively installs the wrapper's checkpoint without
+    /// dispatching to nested module overrides. Mirror the text-only model's
+    /// explicit cache lifecycle so derived projection tensors are prepared
+    /// before this wrapper is returned to inference callers.
+    @discardableResult
+    public override func update(
+        parameters: ModuleParameters,
+        verify: VerifyUpdate,
+        path: [String] = [],
+        modulePath: [String] = []
+    ) throws -> Self {
+        languageModel.invalidatePerformanceCaches()
+        let result = try super.update(
+            parameters: parameters,
+            verify: verify,
+            path: path,
+            modulePath: modulePath)
+        languageModel.preparePerformanceCaches()
+        return result
+    }
+
     public func shouldLoad(weightKey key: String) -> Bool {
         if key.hasPrefix("model.visual.") || key.hasPrefix("vision_model.") {
             return true
