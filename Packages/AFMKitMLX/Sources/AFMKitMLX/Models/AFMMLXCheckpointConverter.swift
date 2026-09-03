@@ -9,6 +9,7 @@ public struct AFMMLXCheckpointConverter {
     public enum ModelKind: String, Sendable, Equatable {
         case deepseekV4 = "deepseek_v4"
         case glm5Next = "glm5_next"
+        case qwen4Exp = "qwen4_exp"
     }
 
     public struct Inspection: Sendable, Equatable {
@@ -103,7 +104,7 @@ public struct AFMMLXCheckpointConverter {
         case ModelKind.deepseekV4.rawValue:
             guard sourceRevision == nil else {
                 throw ConversionError.invalidSource(
-                    "--source-revision is supported only for GLM-5.3 conversion; DeepSeek conversion does not consume Hugging Face revision provenance.")
+                    "--source-revision is supported only for GLM-5.3 and Qwen Next conversion; DeepSeek conversion does not consume Hugging Face revision provenance.")
             }
             let profiles = DeepseekV4CheckpointConverter.Profile.allCases.map(\.rawValue)
             return Inspection(
@@ -121,6 +122,17 @@ public struct AFMMLXCheckpointConverter {
                 modelKind: .glm5Next,
                 defaultProfile: GLM5NextCheckpointConverter.Profile.mlxAffine4.rawValue,
                 supportedProfiles: GLM5NextCheckpointConverter.Profile.allCases.map(\.rawValue),
+                sourceRevision: inspection.sourceRevision,
+                sourceBytes: inspection.sourceBytes,
+                estimatedOutputBytes: inspection.estimatedOutputBytes,
+                requiredDestinationFreeBytes: inspection.requiredDestinationFreeBytes)
+        case ModelKind.qwen4Exp.rawValue:
+            let inspection = try Qwen4ExpCheckpointConverter.inspect(
+                source: source, sourceRevision: sourceRevision)
+            return Inspection(
+                modelKind: .qwen4Exp,
+                defaultProfile: Qwen4ExpCheckpointConverter.Profile.afmMapped4.rawValue,
+                supportedProfiles: Qwen4ExpCheckpointConverter.Profile.allCases.map(\.rawValue),
                 sourceRevision: inspection.sourceRevision,
                 sourceBytes: inspection.sourceBytes,
                 estimatedOutputBytes: inspection.estimatedOutputBytes,
@@ -158,6 +170,15 @@ public struct AFMMLXCheckpointConverter {
             return ResumeInspection(
                 sourceRevision: status.sourceRevision,
                 verifiedCompletedOutputBytes: status.verifiedCompletedOutputBytes)
+        case .qwen4Exp:
+            let status = try Qwen4ExpCheckpointConverter.inspectResume(
+                source: source,
+                output: output,
+                profile: Qwen4ExpCheckpointConverter.Profile(rawValue: selected)!,
+                sourceRevision: inspection.sourceRevision)
+            return ResumeInspection(
+                sourceRevision: status.sourceRevision,
+                verifiedCompletedOutputBytes: status.verifiedCompletedOutputBytes)
         }
     }
 
@@ -185,6 +206,15 @@ public struct AFMMLXCheckpointConverter {
                 output: output,
                 overwrite: overwrite,
                 profile: glmProfile,
+                sourceRevision: inspection.sourceRevision,
+                progress: progress).run()
+        case .qwen4Exp:
+            let qwenProfile = Qwen4ExpCheckpointConverter.Profile(rawValue: selected)!
+            try Qwen4ExpCheckpointConverter(
+                source: source,
+                output: output,
+                overwrite: overwrite,
+                profile: qwenProfile,
                 sourceRevision: inspection.sourceRevision,
                 progress: progress).run()
         }
