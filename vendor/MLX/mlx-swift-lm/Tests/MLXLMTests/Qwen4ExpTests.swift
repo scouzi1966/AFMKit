@@ -2863,6 +2863,14 @@ final class Qwen4ExpTests: XCTestCase {
                 keys: keys,
                 values: values,
                 scale: scale,
+                forceStockNAXAttention: false,
+                keyChunkLengthForTesting: testCase.chunk))
+            XCTAssertNil(Qwen4ExpQSAMaskedAttention.callCausal(
+                queries: queries,
+                keys: keys,
+                values: values,
+                scale: scale,
+                forceStockNAXAttention: true,
                 keyChunkLengthForTesting: testCase.chunk))
             eval(actual, expected)
 
@@ -2970,18 +2978,18 @@ final class Qwen4ExpTests: XCTestCase {
     func testForcedFusedAttentionMatchesAutomaticRouting() {
         let randomState = MLXRandom.RandomState(seed: 9_191)
         let queries = withRandomState(randomState) {
-            MLXRandom.uniform(low: -0.5, high: 0.5, [1, 4, 64, 128])
+            MLXRandom.uniform(low: -0.5, high: 0.5, [1, 4, 64, 256])
                 .asType(.bfloat16)
         }
         let keys = withRandomState(randomState) {
-            MLXRandom.uniform(low: -0.5, high: 0.5, [1, 4, 64, 128])
+            MLXRandom.uniform(low: -0.5, high: 0.5, [1, 4, 64, 256])
                 .asType(.bfloat16)
         }
         let values = withRandomState(randomState) {
-            MLXRandom.uniform(low: -0.5, high: 0.5, [1, 4, 64, 128])
+            MLXRandom.uniform(low: -0.5, high: 0.5, [1, 4, 64, 256])
                 .asType(.bfloat16)
         }
-        let scale = pow(Float(128), -0.5)
+        let scale = pow(Float(256), -0.5)
         let automatic = MLXFast.scaledDotProductAttention(
             queries: queries,
             keys: keys,

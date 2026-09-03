@@ -45,10 +45,17 @@ enum Qwen4ExpQSAMaskedAttention {
         queries: MLXArray, keys: MLXArray
     ) -> Bool {
         guard queries.ndim == 4, keys.ndim == 4 else { return false }
+        let queryLength = queries.dim(2)
+        let keyLength = keys.dim(2)
+        let headDimension = queries.dim(3)
+        guard headDimension == 256,
+              queryLength > 8,
+              queryLength <= keyLength
+        else { return false }
         return shouldForceStockNAXAttention(
-            queryLength: queries.dim(2),
-            keyLength: keys.dim(2),
-            headDimension: queries.dim(3),
+            queryLength: queryLength,
+            keyLength: keyLength,
+            headDimension: headDimension,
             naxAvailable: stockNAXAvailable,
             isGPU: Device.defaultDevice().deviceType == .gpu)
     }
