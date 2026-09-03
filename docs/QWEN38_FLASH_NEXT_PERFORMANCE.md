@@ -654,10 +654,11 @@ Qwen Next checkpoints declare the table through `ngram_table.file` in
 `*.ngram`, which distinguishes the model-specific table from generic binary
 assets. Existing published `*.bin` tables remain fully supported. AFMKit
 downloads both extensions, requires the declared non-empty sidecar for cache
-completeness, and resolves its canonical path within the model directory so a
-checkpoint symlink cannot escape that boundary. The filename does not select a
-different lookup implementation and therefore has no decode-performance
-effect.
+completeness, and requires its canonical path to remain within the checkpoint
+or the owning Hugging Face repository's `blobs/` store. Links into another
+repository or an arbitrary external path are rejected. The filename does not
+select a different lookup implementation and therefore has no
+decode-performance effect.
 
 Both engines synchronize the sampled token at Qwen Next's PLE boundary, hash a
 short EOS-aware history into 16 row IDs, gather 48 quantized rows from the

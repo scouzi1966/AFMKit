@@ -316,6 +316,39 @@ final class Qwen4ExpTests: XCTestCase {
             blob.resolvingSymlinksInPath())
     }
 
+    func testQwenCheckpointRejectsSiblingRepositoryNGramSymlink() throws {
+        let cache = FileManager.default.temporaryDirectory
+            .appendingPathComponent("qwen-ngram-cache-\(UUID().uuidString)")
+        let repository = cache.appendingPathComponent("models--example--qwen")
+        let siblingRepository = cache.appendingPathComponent("models--other--qwen")
+        let directory = repository
+            .appendingPathComponent("snapshots")
+            .appendingPathComponent("revision")
+        let siblingBlobs = siblingRepository.appendingPathComponent("blobs")
+        try FileManager.default.createDirectory(
+            at: directory, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(
+            at: siblingBlobs, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: cache) }
+
+        let siblingBlob = siblingBlobs.appendingPathComponent("content-hash")
+        try Data([0]).write(to: siblingBlob)
+        try FileManager.default.createSymbolicLink(
+            atPath: directory.appendingPathComponent("ngram_table.ngram").path,
+            withDestinationPath: siblingBlob.path)
+        let configuration = Data(
+            #"{"model_type":"qwen4_exp","ngram_table":{"file":"ngram_table.ngram"}}"#.utf8)
+
+        XCTAssertThrowsError(try resolveQwenNGramTableURL(
+            configurationData: configuration,
+            modelDirectory: directory,
+            explicitURL: nil)) { error in
+            guard case QwenNGramTableResolutionError.unsafePath = error else {
+                return XCTFail("unexpected error: \(error)")
+            }
+        }
+    }
+
     func testQwenCheckpointRejectsEmptyNGramSidecar() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("qwen-ngram-resolver-\(UUID().uuidString)")

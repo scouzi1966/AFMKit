@@ -173,6 +173,41 @@ final class AFMMLXQwenNGramSidecarResolverTests: XCTestCase {
                 .hasCompleteIntrinsicSidecarIfDeclared(in: directory))
     }
 
+    func testRejectsHuggingFaceSnapshotSymlinkIntoSiblingBlobStore() throws {
+        let cache = FileManager.default.temporaryDirectory
+            .appendingPathComponent("qwen-ngram-cache-\(UUID().uuidString)")
+        let repository = cache.appendingPathComponent("models--example--qwen")
+        let siblingRepository = cache.appendingPathComponent("models--other--qwen")
+        let directory = repository
+            .appendingPathComponent("snapshots")
+            .appendingPathComponent("revision")
+        let siblingBlobs = siblingRepository.appendingPathComponent("blobs")
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(
+            at: siblingBlobs,
+            withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: cache) }
+
+        let siblingBlob = siblingBlobs.appendingPathComponent("content-hash")
+        try Data([0]).write(to: siblingBlob)
+        try FileManager.default.createSymbolicLink(
+            atPath: directory.appendingPathComponent("ngram_table.ngram").path,
+            withDestinationPath: siblingBlob.path)
+        try writeConfiguration(
+            #"{"model_type":"qwen4_exp","ngram_table":{"file":"ngram_table.ngram"}}"#,
+            to: directory)
+
+        XCTAssertThrowsError(try AFMMLXQwenNGramSidecarResolver.resolve(
+            modelDirectory: directory,
+            canonicalModelType: "qwen4_exp")) { error in
+            guard case AFMMLXQwenNGramSidecarResolverError.unsafePath = error else {
+                return XCTFail("unexpected error: \(error)")
+            }
+        }
+    }
+
     func testRejectsUnrecognizedSidecarExtension() throws {
         let directory = try makeDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
