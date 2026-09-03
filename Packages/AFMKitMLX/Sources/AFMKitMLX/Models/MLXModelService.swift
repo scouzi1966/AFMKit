@@ -1964,6 +1964,18 @@ public final class MLXModelService:
         return (quantization.groupSize, quantization.bits, mode)
     }
 
+    static func modelConfiguration(
+        directory: URL,
+        qwenNGramTableURL: URL?
+    ) -> ModelConfiguration {
+        // The explicit URL is AFM's opt-in override. Automatic resolution must
+        // remain enabled because a self-contained Qwen checkpoint may declare
+        // `ngram_table.file` as part of its intrinsic weight layout.
+        ModelConfiguration(
+            directory: directory,
+            qwenNGramTableURL: qwenNGramTableURL)
+    }
+
     public func ensureLoaded(
         model rawModel: String,
         progress: (@Sendable (Progress) -> Void)? = nil,
@@ -2146,10 +2158,9 @@ public final class MLXModelService:
         if let qwenNGramTableURL {
             print("[\(ts())] [QwenNGram] mapped sidecar enabled: \(qwenNGramTableURL.path)")
         }
-        var config = ModelConfiguration(
+        var config = Self.modelConfiguration(
             directory: directory,
-            qwenNGramTableURL: qwenNGramTableURL,
-            allowsAutomaticQwenNGramTableResolution: false)
+            qwenNGramTableURL: qwenNGramTableURL)
         // Auto-detect tool call format from model type (vendor LLMModelFactory lost this code)
         var detectedFormat = inferToolCallFormat(directory: directory)
         if let fmt = detectedFormat {

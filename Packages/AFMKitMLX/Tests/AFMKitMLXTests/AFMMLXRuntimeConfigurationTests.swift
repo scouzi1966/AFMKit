@@ -20,7 +20,7 @@ final class AFMMLXRuntimeConfigurationTests: XCTestCase {
         XCTAssertEqual(service.prefillStepSize, 2_048)
     }
 
-    func testMappedQwenNGramLoadingIsDisabledByDefault() {
+    func testExplicitQwenNGramOverrideIsDisabledByDefault() {
         let service = MLXModelService(resolver: MLXCacheResolver())
         let configuration = AFMMLXRuntimeConfiguration()
 
@@ -30,7 +30,7 @@ final class AFMMLXRuntimeConfigurationTests: XCTestCase {
         XCTAssertFalse(service.qwenNGramMmapEnabled)
     }
 
-    func testMappedQwenNGramLoadingRequiresExplicitConfiguration() {
+    func testExplicitQwenNGramOverrideRequiresConfiguration() {
         let service = MLXModelService(resolver: MLXCacheResolver())
         let configuration = AFMMLXRuntimeConfiguration(
             qwenNGramMmapEnabled: true)
@@ -39,6 +39,15 @@ final class AFMMLXRuntimeConfigurationTests: XCTestCase {
 
         XCTAssertTrue(service.qwenNGramMmapEnabled)
         XCTAssertFalse(service.mtpEnabled)
+    }
+
+    func testModelConfigurationPreservesCheckpointOwnedQwenNGramResolution() {
+        let configuration = MLXModelService.modelConfiguration(
+            directory: URL(fileURLWithPath: "/model"),
+            qwenNGramTableURL: nil)
+
+        XCTAssertNil(configuration.qwenNGramTableURL)
+        XCTAssertTrue(configuration.allowsAutomaticQwenNGramTableResolution)
     }
 
     func testMappedQwenNGramProviderValueIsExplicitAndIndependentFromMTP() {
