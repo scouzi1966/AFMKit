@@ -24,6 +24,19 @@ final class MLXBatchSchedulerCacheSelectionTests: XCTestCase {
             hasMultimodalInput: true))
     }
 
+    func testMultimodalInputNeverUsesTextOnlyRecurrentReplayBoundary() {
+        XCTAssertFalse(BatchScheduler.shouldCaptureReplayBoundary(
+            prefixCacheEnabled: true,
+            hasRecurrentLayers: true,
+            isMultimodal: true,
+            inputTokenCount: 128))
+        XCTAssertTrue(BatchScheduler.shouldCaptureReplayBoundary(
+            prefixCacheEnabled: true,
+            hasRecurrentLayers: true,
+            isMultimodal: false,
+            inputTokenCount: 128))
+    }
+
     func testEstablishedArrayCachesRemainDenseBatchable() {
         XCTAssertTrue(BatchScheduler.supportsDenseBatchMerge(ArraysCache(size: 2)))
         XCTAssertTrue(BatchScheduler.supportsDenseBatchMerge(MambaCache()))

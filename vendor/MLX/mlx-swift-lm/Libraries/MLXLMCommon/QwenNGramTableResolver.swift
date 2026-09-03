@@ -20,9 +20,11 @@ public enum QwenNGramTableResolutionError: Error, LocalizedError, Equatable {
 public func resolveQwenNGramTableURL(
     configurationData: Data,
     modelDirectory: URL,
-    explicitURL: URL?
+    explicitURL: URL?,
+    allowAutomaticResolution: Bool = true
 ) throws -> URL? {
     if let explicitURL { return explicitURL }
+    guard allowAutomaticResolution else { return nil }
 
     struct RootConfiguration: Decodable {
         struct Descriptor: Decodable { let file: String }

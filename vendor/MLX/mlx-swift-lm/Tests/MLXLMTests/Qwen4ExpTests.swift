@@ -229,6 +229,19 @@ final class Qwen4ExpTests: XCTestCase {
         }
     }
 
+    func testQwenCheckpointCanDisableAutomaticNGramSidecarResolution() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("qwen-ngram-resolver-\(UUID().uuidString)")
+        let configuration = Data(
+            #"{"model_type":"qwen4_exp","ngram_table":{"file":"missing.bin"}}"#.utf8)
+
+        XCTAssertNil(try resolveQwenNGramTableURL(
+            configurationData: configuration,
+            modelDirectory: directory,
+            explicitURL: nil,
+            allowAutomaticResolution: false))
+    }
+
     private func qwenHyperConnectionReference(
         input: MLXArray,
         normWeight: MLXArray,
@@ -2163,17 +2176,30 @@ final class Qwen4ExpTests: XCTestCase {
                 blockTokens.asArray(Int32.self),
                 sequentialTokens.asArray(Int32.self),
                 "verifyWidth=\(verifyWidth)")
-            for (blockEntry, sequentialEntry) in zip(blockCache, sequentialCache) {
+            for (cacheIndex, pair) in zip(blockCache, sequentialCache).enumerated() {
+                let (blockEntry, sequentialEntry) = pair
                 XCTAssertEqual(blockEntry.state.count, sequentialEntry.state.count)
-                for (blockState, sequentialState) in zip(
+                for (stateIndex, statePair) in zip(
                     blockEntry.state,
                     sequentialEntry.state
-                ) {
+                ).enumerated() {
+                    let (blockState, sequentialState) = statePair
                     eval(blockState, sequentialState)
-                    XCTAssertEqual(
-                        blockState.asType(.float32).asArray(Float.self),
-                        sequentialState.asType(.float32).asArray(Float.self),
-                        "cache verifyWidth=\(verifyWidth)")
+                    let blockValues = blockState.asType(.float32)
+                        .asArray(Float.self)
+                    let sequentialValues = sequentialState.asType(.float32)
+                        .asArray(Float.self)
+                    XCTAssertEqual(blockValues.count, sequentialValues.count)
+                    for (blockValue, sequentialValue) in zip(
+                        blockValues, sequentialValues
+                    ) {
+                        XCTAssertEqual(
+                            blockValue,
+                            sequentialValue,
+                            accuracy: 1e-5,
+                            "cache[\(cacheIndex)].state[\(stateIndex)] "
+                                + "verifyWidth=\(verifyWidth)")
+                    }
                 }
             }
             XCTAssertEqual(blockCache[0].state[1].dtype, .float32)

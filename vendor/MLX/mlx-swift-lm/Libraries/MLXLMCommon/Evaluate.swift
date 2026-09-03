@@ -733,6 +733,7 @@ public struct TokenIterator: Sequence, IteratorProtocol {
             asyncEval(token)
 
         case .logits(let result):
+            state = result.state
             y = .init(tokens: convertToToken(logits: result.logits))
             if let y {
                 asyncEval(y.tokens)

@@ -47,6 +47,12 @@ public struct ModelConfiguration: Sendable {
     /// the checkpoint's ordinary resident embedding behavior.
     public var qwenNGramTableURL: URL?
 
+    /// Whether a checkpoint-declared Qwen n-gram sidecar may be selected when
+    /// no explicit URL is supplied. Upstream callers retain self-contained
+    /// checkpoint discovery by default; runtimes with an explicit opt-in flag
+    /// can disable discovery independently of the URL value.
+    public var allowsAutomaticQwenNGramTableResolution: Bool
+
     public init(
         id: String, revision: String = "main",
         tokenizerId: String? = nil, overrideTokenizer: String? = nil,
@@ -54,6 +60,7 @@ public struct ModelConfiguration: Sendable {
         extraEOSTokens: Set<String> = [],
         toolCallFormat: ToolCallFormat? = nil,
         qwenNGramTableURL: URL? = nil,
+        allowsAutomaticQwenNGramTableResolution: Bool = true,
         preparePrompt: (@Sendable (String) -> String)? = nil
     ) {
         self.id = .id(id, revision: revision)
@@ -63,6 +70,8 @@ public struct ModelConfiguration: Sendable {
         self.extraEOSTokens = extraEOSTokens
         self.toolCallFormat = toolCallFormat
         self.qwenNGramTableURL = qwenNGramTableURL
+        self.allowsAutomaticQwenNGramTableResolution =
+            allowsAutomaticQwenNGramTableResolution
     }
 
     public init(
@@ -72,7 +81,8 @@ public struct ModelConfiguration: Sendable {
         extraEOSTokens: Set<String> = [],
         eosTokenIds: Set<Int> = [],
         toolCallFormat: ToolCallFormat? = nil,
-        qwenNGramTableURL: URL? = nil
+        qwenNGramTableURL: URL? = nil,
+        allowsAutomaticQwenNGramTableResolution: Bool = true
     ) {
         self.id = .directory(directory)
         self.tokenizerId = tokenizerId
@@ -82,6 +92,8 @@ public struct ModelConfiguration: Sendable {
         self.eosTokenIds = eosTokenIds
         self.toolCallFormat = toolCallFormat
         self.qwenNGramTableURL = qwenNGramTableURL
+        self.allowsAutomaticQwenNGramTableResolution =
+            allowsAutomaticQwenNGramTableResolution
     }
 
     public func modelDirectory(hub: HubApi = HubApi()) -> URL {

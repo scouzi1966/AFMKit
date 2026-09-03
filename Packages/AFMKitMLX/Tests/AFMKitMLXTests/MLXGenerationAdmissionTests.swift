@@ -30,6 +30,32 @@ final class MLXGenerationAdmissionTests: XCTestCase {
         }
     }
 
+    private final class CompletionProbe: @unchecked Sendable {
+        private let lock = NSLock()
+        private var completions = 0
+
+        func complete() {
+            lock.withLock { completions += 1 }
+        }
+
+        var count: Int { lock.withLock { completions } }
+    }
+
+    func testSchedulerIdentityMustMatchAndModelSwitchMustBeIdle() {
+        XCTAssertTrue(MLXModelService.canUseScheduler(
+            schedulerModelID: "model-a",
+            currentModelID: "model-a",
+            modelSwitchInProgress: false))
+        XCTAssertFalse(MLXModelService.canUseScheduler(
+            schedulerModelID: "model-a",
+            currentModelID: "model-b",
+            modelSwitchInProgress: false))
+        XCTAssertFalse(MLXModelService.canUseScheduler(
+            schedulerModelID: "model-a",
+            currentModelID: "model-a",
+            modelSwitchInProgress: true))
+    }
+
     func testSuccessfulAndCancelledBatchSubmissionsReleaseCapacityExactlyOnce() {
         let capacity = CapacityProbe()
 
@@ -72,6 +98,56 @@ final class MLXGenerationAdmissionTests: XCTestCase {
         let snapshot = capacity.snapshot
         XCTAssertEqual(snapshot.occupied, 0)
         XCTAssertEqual(snapshot.releases, 1)
+    }
+
+    func testOperationOwningStreamCompletesExactlyOnceOnSuccess() async throws {
+        let probe = CompletionProbe()
+        let (source, continuation) = AsyncThrowingStream<Int, Error>.makeStream()
+        let stream = MLXModelService.operationOwningStream(
+            source, onFinish: { probe.complete() })
+
+        continuation.yield(7)
+        continuation.finish()
+        var values: [Int] = []
+        for try await value in stream { values.append(value) }
+
+        XCTAssertEqual(values, [7])
+        XCTAssertEqual(probe.count, 1)
+    }
+
+    func testOperationOwningStreamCompletesExactlyOnceOnError() async {
+        enum ExpectedFailure: Error { case expected }
+        let probe = CompletionProbe()
+        let (source, continuation) = AsyncThrowingStream<Int, Error>.makeStream()
+        let stream = MLXModelService.operationOwningStream(
+            source, onFinish: { probe.complete() })
+
+        continuation.finish(throwing: ExpectedFailure.expected)
+        do {
+            for try await _ in stream {}
+            XCTFail("expected stream failure")
+        } catch is ExpectedFailure {
+            // Expected.
+        } catch {
+            XCTFail("unexpected error: \(error)")
+        }
+        XCTAssertEqual(probe.count, 1)
+    }
+
+    func testOperationOwningStreamCompletesExactlyOnceOnCancellation() async throws {
+        let probe = CompletionProbe()
+        let (source, continuation) = AsyncThrowingStream<Int, Error>.makeStream()
+        let stream = MLXModelService.operationOwningStream(
+            source, onFinish: { probe.complete() })
+        let consumer = Task {
+            for try await _ in stream {}
+        }
+
+        consumer.cancel()
+        _ = try? await consumer.value
+        continuation.finish()
+        try await waitForCompletion(probe)
+        XCTAssertEqual(probe.count, 1)
     }
 
     func testSerialAdmissionQueuesUntilCapacityAndRecordsQueueLatency() async throws {
@@ -198,5 +274,14 @@ final class MLXGenerationAdmissionTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(5))
         }
         XCTFail("telemetry state did not reach expected value")
+    }
+
+    private func waitForCompletion(_ probe: CompletionProbe) async throws {
+        let deadline = ContinuousClock.now + .seconds(1)
+        while ContinuousClock.now < deadline {
+            if probe.count == 1 { return }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        XCTFail("stream completion callback was not invoked")
     }
 }

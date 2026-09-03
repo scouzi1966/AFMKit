@@ -34,6 +34,10 @@ extension Qwen4ExpModel: FixedDecodeCohortModel {
     var requiresFixedDecodeCohorts: Bool { true }
 }
 
+extension Qwen4ExpVL: FixedDecodeCohortModel {
+    var requiresFixedDecodeCohorts: Bool { true }
+}
+
 /// Manages concurrent generation with dynamic slot allocation and request queuing.
 ///
 /// **Phase 2: Dense Batched Decoding**
@@ -73,6 +77,18 @@ actor BatchScheduler {
             >= maximumConsecutiveSuppressedEndOfSequenceTokens ? .stop : .suppress
     }
 
+    static func shouldCaptureReplayBoundary(
+        prefixCacheEnabled: Bool,
+        hasRecurrentLayers: Bool,
+        isMultimodal: Bool,
+        inputTokenCount: Int
+    ) -> Bool {
+        prefixCacheEnabled
+            && hasRecurrentLayers
+            && !isMultimodal
+            && inputTokenCount > 0
+    }
+
     struct ConstraintRuntimeConfiguration: @unchecked Sendable {
         let mode: String
         let matcherHandle: GrammarMatcherHandle?
@@ -92,6 +108,11 @@ actor BatchScheduler {
     /// request can start a one-slot prefill/decode before peer requests created
     /// by the same client batch reach the queue, which looks like serial TTFT.
     static let defaultAdmissionWindowNanoseconds: UInt64 = 8_000_000
+    /// Maximum time an empty fixed-cohort scheduler may spend collecting one
+    /// burst. Additional quiet windows are used only when new requests arrived
+    /// during the previous window, so a singleton still pays exactly one 8 ms
+    /// wait while larger HTTP bursts are not split by connection/parser jitter.
+    static let maximumAdmissionWindowMultiplier: UInt64 = 4
 
     let maxConcurrent: Int
     private let model: any LanguageModel
@@ -170,8 +191,6 @@ actor BatchScheduler {
         let computeLogprobs: Bool
         let topLogprobsCount: Int
         let temperatureForLogprobs: Float
-        /// Buffered logprob data pending dispatch (one token behind, like single-sequence path)
-        var pendingLogprobData: TokenLogprobData? = nil
         let activeStops: [String]
         let maxStopLength: Int
         let thinkStartTag: String?
@@ -646,15 +665,15 @@ actor BatchScheduler {
         }
         self.eosTokenIds = eos
 
-        // Wire gauge readers into the global stats aggregator. `num_running`
-        // is (inflight - waiting), since _inFlightCount covers both actively
-        // decoding and still-pending requests. `num_waiting` reads the
-        // pending queue directly. Both closures read nonisolated state
-        // through existing unfair locks — no actor hop, no async.
-        //
-        // These closures hold weak references to `self` via the unowned
-        // nonisolated lock pointers, so they do not extend scheduler
-        // lifetime beyond MLXModelService's hold.
+    }
+
+    /// Publish gauges only after this scheduler wins the service installation
+    /// race. Registering from `init` lets a concurrently-created loser replace
+    /// the live scheduler's readers immediately before it is shut down.
+    nonisolated func activateMetrics() {
+        // `num_running` is (inflight - waiting), since _inFlightCount covers
+        // both actively decoding and still-pending requests. Both closures
+        // read nonisolated state through their existing unfair locks.
         let pending = self._pendingQueue
         let inflight = self._inFlightCount
         StatsAggregator.shared.registerGaugeReaders(
@@ -746,9 +765,11 @@ actor BatchScheduler {
     }
 
     /// Give same-burst requests a bounded chance to join an empty scheduler.
-    /// This is intentionally tiny and only applies before the first active slot;
-    /// it improves fairness for concurrent/batch clients without adding per-token
-    /// latency once generation is in progress.
+    /// One quiet window preserves the existing singleton behavior. If peers
+    /// arrived during that window, keep collecting until the queue is quiet,
+    /// capacity is reached, or the bounded maximum expires. This avoids
+    /// splitting a large HTTP burst merely because its final connections were
+    /// parsed a few milliseconds after its first connections.
     private func drainAdmissionBatch() async -> [PendingRequest] {
         var requests = drainPendingQueue(limit: maxConcurrent)
         guard slots.isEmpty,
@@ -759,16 +780,28 @@ actor BatchScheduler {
             return requests
         }
 
-        do {
-            try await Task.sleep(nanoseconds: admissionWindowNanoseconds)
-        } catch {
-            // The generation loop is cancelled by shutdown. Return the locally
-            // held requests so the loop can reject them before any GPU work.
-            return requests
-        }
-        let remainingCapacity = max(0, maxConcurrent - requests.count)
-        if remainingCapacity > 0 {
+        let maximumWait = admissionWindowNanoseconds.multipliedReportingOverflow(
+            by: Self.maximumAdmissionWindowMultiplier
+        ).partialValue
+        var waited: UInt64 = 0
+        while requests.count < maxConcurrent && waited < maximumWait {
+            do {
+                try await Task.sleep(nanoseconds: admissionWindowNanoseconds)
+            } catch {
+                // The generation loop is cancelled by shutdown. Return the
+                // locally held requests so the loop can reject them before GPU work.
+                return requests
+            }
+            waited += admissionWindowNanoseconds
+
+            let priorCount = requests.count
+            let remainingCapacity = max(0, maxConcurrent - priorCount)
             requests.append(contentsOf: drainPendingQueue(limit: remainingCapacity))
+
+            // A full quiet window with no new arrivals marks the end of the burst.
+            if requests.count == priorCount {
+                break
+            }
         }
         return requests
     }
@@ -976,6 +1009,58 @@ actor BatchScheduler {
                 continue
             }
 
+            // The dense path overlaps model step N+1 with publication of token
+            // N. If token N will satisfy a request's explicit output cap, publish
+            // that ready token before constructing step N+1 so a short request
+            // never pays for an unobservable extra model forward. Other slots
+            // retain the normal pipeline.
+            if let pendingTokens = dispatchTokens,
+               let pendingIDs = dispatchSlotIDs
+            {
+                var consumed = Array(repeating: false, count: pendingIDs.count)
+                var completedIDs: [UUID] = []
+                for j in pendingIDs.indices {
+                    guard let slot = slots.first(where: { $0.id == pendingIDs[j] }),
+                          let maxTokens = slot.maxTokens,
+                          slot.tokenCount + 1 >= maxTokens
+                    else { continue }
+                    consumed[j] = true
+                    if isCancellationRequested(slot.id) {
+                        completedIDs.append(slot.id)
+                        continue
+                    }
+                    let savedLogits = dispatchLogits.flatMap { values in
+                        j < values.count ? values[j] : nil
+                    }
+                    if dispatchSampledToken(
+                        pendingTokens[j],
+                        processedLogits: savedLogits,
+                        to: slot,
+                        processorAlreadyAdvanced: slot.constraintRuntime != nil,
+                        updateLastTokenArray: false)
+                    {
+                        completedIDs.append(slot.id)
+                    }
+                }
+                for id in completedIDs {
+                    if let index = slots.firstIndex(where: { $0.id == id }) {
+                        finishSlot(at: index)
+                    }
+                }
+                if consumed.contains(true) {
+                    let keep = consumed.indices.filter { !consumed[$0] }
+                    dispatchTokens = keep.isEmpty ? nil : keep.map { pendingTokens[$0] }
+                    dispatchSlotIDs = keep.isEmpty ? nil : keep.map { pendingIDs[$0] }
+                    if let pendingLogits = dispatchLogits {
+                        dispatchLogits = keep.isEmpty
+                            ? nil
+                            : keep.map { pendingLogits[$0] }
+                    }
+                }
+            }
+
+            if slots.isEmpty { break }
+
             // --- Batched decode: build graph from lastTokenArray (CPU, ~2.7ms) ---
             let activeB = slots.count
             if activeB > 1, stepCount == 0 || stepCount % 256 == 0 {
@@ -1002,7 +1087,13 @@ actor BatchScheduler {
             let input = LMInput.Text(tokens: tokens)
 
             let modelStart = debugTiming ? Date() : Date.distantPast
-            let output = model(input, cache: batchCaches, state: batchState)
+            let output = model(
+                input,
+                cache: batchCaches,
+                state: batchState,
+                hostTokenIDs: model.consumesHostTokenIDs
+                    ? slots.map(\.lastTokenId)
+                    : nil)
             batchState = output.state
 
             let logits = output.logits[0..., -1, 0...]
@@ -1065,70 +1156,14 @@ actor BatchScheduler {
                         continue
                     }
 
-                    let tokenArray = prevTokens[j]
-
-                    let token = tokenArray.item(Int.self)
-                    // Constrained processors were advanced immediately after
-                    // sampling so the next token used the current grammar mask.
-                    if slot.constraintRuntime == nil {
-                        slot.processor?.didSample(token: tokenArray)
-                    }
-
-                    // Promote pending logprobs (one token behind — describes THIS token being dispatched)
-                    let logprobsForThisToken: [ResolvedLogprob]?
-                    if let pending = slot.pendingLogprobData {
-                        logprobsForThisToken = [resolveLogprob(pending)]
-                    } else {
-                        logprobsForThisToken = nil
-                    }
-
-                    // Compute logprobs for the NEXT dispatch from this step's logits
-                    if slot.computeLogprobs, let prevLogits = toDispatchLogits?[j] {
-                        slot.pendingLogprobData = computeTokenLogprobs(
-                            logits: prevLogits, tokenId: token,
-                            temperature: slot.temperatureForLogprobs,
-                            topK: slot.topLogprobsCount
-                        )
-                    } else if slot.computeLogprobs {
-                        slot.pendingLogprobData = nil
-                    }
-
-                    if slot.firstTokenTime == 0 {
-                        let now = Date()
-                        slot.firstTokenTime = now.timeIntervalSince(slot.startTime)
-                        slot.firstTokenAt = now
-                    }
-
-                    let disposition = Self.tokenDisposition(
-                        tokenCount: slot.tokenCount,
-                        maxTokens: slot.maxTokens,
-                        tokenID: token,
-                        unknownTokenID: tokenizer.unknownTokenId,
-                        ignoreEndOfSequence: slot.ignoreEndOfSequence,
-                        eosTokenIDs: eosTokenIds,
-                        consecutiveSuppressedEndOfSequenceTokens:
-                            slot.consecutiveSuppressedEndOfSequenceTokens
-                    )
-                    if disposition == .stop || disposition == .length {
+                    if dispatchSampledToken(
+                        prevTokens[j],
+                        processedLogits: toDispatchLogits?[j] ?? nil,
+                        to: slot,
+                        processorAlreadyAdvanced: slot.constraintRuntime != nil,
+                        updateLastTokenArray: false)
+                    {
                         completedIndices.append(i)
-                        continue
-                    }
-
-                    slot.lastTokenId = token
-                    if disposition == .suppress {
-                        slot.consecutiveSuppressedEndOfSequenceTokens += 1
-                        slot.pendingLogprobData = nil
-                        continue
-                    }
-                    slot.consecutiveSuppressedEndOfSequenceTokens = 0
-
-                    slot.tokenCount += 1
-                    StatsAggregator.shared.addGenTokens(1)
-                    slot.detokenizer.append(token: token)
-                    if let chunk = slot.detokenizer.next() {
-                        if yieldTextChunk(chunk, for: slot, logprobs: logprobsForThisToken) {
-                            completedIndices.append(i)
-                        }
                     }
                 }
 
@@ -1176,50 +1211,14 @@ actor BatchScheduler {
             for j in 0..<prevIDs.count {
                 guard let i = slots.firstIndex(where: { $0.id == prevIDs[j] }) else { continue }
                 let slot = slots[i]
-                let token = prevTokens[j].item(Int.self)
-                if slot.constraintRuntime == nil {
-                    slot.processor?.didSample(token: prevTokens[j])
-                }
-
-                // Promote pending logprobs for this token
-                let logprobsForToken: [ResolvedLogprob]?
-                if let pending = slot.pendingLogprobData {
-                    logprobsForToken = [resolveLogprob(pending)]
-                    slot.pendingLogprobData = nil
-                } else {
-                    logprobsForToken = nil
-                }
-
-                let disposition = Self.tokenDisposition(
-                    tokenCount: slot.tokenCount,
-                    maxTokens: slot.maxTokens,
-                    tokenID: token,
-                    unknownTokenID: tokenizer.unknownTokenId,
-                    ignoreEndOfSequence: slot.ignoreEndOfSequence,
-                    eosTokenIDs: eosTokenIds,
-                    consecutiveSuppressedEndOfSequenceTokens:
-                        slot.consecutiveSuppressedEndOfSequenceTokens
-                )
-                if disposition == .stop || disposition == .length {
+                if dispatchSampledToken(
+                    prevTokens[j],
+                    processedLogits: dispatchLogits?[j] ?? nil,
+                    to: slot,
+                    processorAlreadyAdvanced: slot.constraintRuntime != nil,
+                    updateLastTokenArray: false)
+                {
                     finishSlot(at: i)
-                    continue
-                }
-
-                slot.lastTokenId = token
-                if disposition == .suppress {
-                    slot.consecutiveSuppressedEndOfSequenceTokens += 1
-                    slot.pendingLogprobData = nil
-                    continue
-                }
-                slot.consecutiveSuppressedEndOfSequenceTokens = 0
-                slot.tokenCount += 1
-                StatsAggregator.shared.addGenTokens(1)
-                slot.detokenizer.append(token: token)
-                if let chunk = slot.detokenizer.next() {
-                    if yieldTextChunk(chunk, for: slot, logprobs: logprobsForToken) {
-                        finishSlot(at: i)
-                        continue
-                    }
                 }
             }
         }
@@ -1381,16 +1380,21 @@ actor BatchScheduler {
         // Set up per-sequence processor and sampler
         var logitProcessor = req.parameters.processor()
         let logitSampler = req.parameters.sampler()
-        logitProcessor?.prompt(generateInput.text.tokens)
+        // Penalties apply to the complete conversation, including any prefix
+        // restored from the radix cache. Seeding from only the uncached suffix
+        // changes repetition/presence behavior on a cache hit.
+        logitProcessor?.prompt(MLXArray(inputTokens)[.newAxis])
 
         // Hybrid recurrent state (DeepSeek compressor/indexer, Mamba, and
         // GatedDeltaNet) is not safely rewindable from a longer snapshot.
         // Persist the exact prompt-minus-one boundary instead: restore that
         // state later and evaluate the final prompt token to reproduce the
         // original next-token logits.
-        let shouldCaptureReplayBoundary = radixCache != nil
-            && Self.requiresReplayBoundarySnapshot(cache)
-            && !inputTokens.isEmpty
+        let shouldCaptureReplayBoundary = Self.shouldCaptureReplayBoundary(
+            prefixCacheEnabled: radixCache != nil,
+            hasRecurrentLayers: Self.requiresReplayBoundarySnapshot(cache),
+            isMultimodal: isMultimodal,
+            inputTokenCount: inputTokens.count)
         var prefixCacheTokens: [Int]? = nil
         var prefixCacheStates: [[MLXArray]]? = nil
         var prefixCacheMetaStates: [[String]]? = nil
@@ -1415,7 +1419,8 @@ actor BatchScheduler {
                 recurrentState = model(
                     LMInput.Text(tokens: MLXArray(chunk)[.newAxis]),
                     cache: cache,
-                    state: recurrentState
+                    state: recurrentState,
+                    hostTokenIDs: model.consumesHostTokenIDs ? chunk : nil
                 ).state
                 consumed = targetConsumed
 
@@ -1445,10 +1450,31 @@ actor BatchScheduler {
             result = model(
                 LMInput.Text(tokens: MLXArray([finalToken]).reshaped([1, 1])),
                 cache: cache,
-                state: recurrentState)
+                state: recurrentState,
+                hostTokenIDs: model.consumesHostTokenIDs ? [finalToken] : nil)
         } else {
-            let prefillInput = generateInput.text[text: .newAxis]  // [1, seqLen]
-            result = model(prefillInput, cache: cache, state: nil)
+            do {
+                switch try model.prepare(
+                    generateInput,
+                    cache: cache,
+                    windowSize: req.parameters.prefillStepSize)
+                {
+                case .tokens(let remaining):
+                    let hostTokenIDs = model.consumesHostTokenIDs
+                        ? remaining.tokens.reshaped(-1).asArray(Int.self)
+                        : nil
+                    result = model(
+                        remaining[text: .newAxis],
+                        cache: cache,
+                        state: nil,
+                        hostTokenIDs: hostTokenIDs)
+                case .logits(let preparedOutput):
+                    result = preparedOutput
+                }
+            } catch {
+                failPendingRequest(req, error: error)
+                return
+            }
         }
 
         // Extract last-position logits and sample first token.
@@ -1463,6 +1489,7 @@ actor BatchScheduler {
         var evalArrays: [MLXArray] = [tokenArray]
         evalArrays.append(contentsOf: cache.flatMap { $0.innerState() })
         if let s = result.state?.crossAttentionStates { evalArrays.append(s) }
+        if let s = result.state?.positionDeltas { evalArrays.append(s) }
         eval(evalArrays)
 
         let firstToken = tokenArray.item(Int.self)
@@ -1517,7 +1544,9 @@ actor BatchScheduler {
             inputTokens: inputTokens,
             cachedTokens: cachedTokens,
             prefillCaches: cache,
-            prefixCacheTokens: prefixCacheTokens,
+            // Media-conditioned state must never be restored from a text-only
+            // radix key. An empty key also prevents finishSlot from storing it.
+            prefixCacheTokens: isMultimodal ? [] : prefixCacheTokens,
             prefixCacheStates: prefixCacheStates,
             prefixCacheMetaStates: prefixCacheMetaStates,
             modelState: result.state,
@@ -1556,35 +1585,12 @@ actor BatchScheduler {
             temperatureForLogprobs: req.parameters.temperature
         )
 
-        // Compute logprobs for the first token (from prefill)
-        if slot.computeLogprobs {
-            slot.pendingLogprobData = computeTokenLogprobs(
-                logits: logits, tokenId: firstToken,
-                temperature: slot.temperatureForLogprobs,
-                topK: slot.topLogprobsCount
-            )
-        }
-
-        let firstTokenDisposition = Self.tokenDisposition(
-            tokenCount: slot.tokenCount,
-            maxTokens: slot.maxTokens,
-            tokenID: firstToken,
-            unknownTokenID: tokenizer.unknownTokenId,
-            ignoreEndOfSequence: slot.ignoreEndOfSequence,
-            eosTokenIDs: eosTokenIds,
-            consecutiveSuppressedEndOfSequenceTokens: 0
-        )
-        if firstTokenDisposition == .suppress {
-            slot.consecutiveSuppressedEndOfSequenceTokens = 1
-            slot.pendingLogprobData = nil
-        } else if firstTokenDisposition == .emit {
-            slot.tokenCount += 1
-            StatsAggregator.shared.addGenTokens(1)
-            slot.detokenizer.append(token: firstToken)
-            if let firstChunk = slot.detokenizer.next() {
-                _ = yieldTextChunk(firstChunk, for: slot)
-            }
-        }
+        let firstTokenFinished = dispatchSampledToken(
+            tokenArray,
+            processedLogits: slot.computeLogprobs ? processed : nil,
+            to: slot,
+            processorAlreadyAdvanced: true,
+            updateLastTokenArray: true)
 
         // Emit cached token count so the controller can include it in usage
         if cachedTokens > 0 {
@@ -1610,7 +1616,7 @@ actor BatchScheduler {
         print("[\(batchTs())] [ChunkStats] stage=preliminary | stream=true | cached_tokens=\(cachedTokens) | prompt_tokens=pending | completion_tokens=pending | prompt_time=pending | generate_time=pending")
 
         slots.append(slot)
-        if firstTokenDisposition == .stop || firstTokenDisposition == .length {
+        if firstTokenFinished {
             finishSlot(at: slots.count - 1)
             return
         }
@@ -1646,8 +1652,10 @@ actor BatchScheduler {
             let output = model(
                 input,
                 cache: slot.prefillCaches,
-                state: slot.modelState
-            )
+                state: slot.modelState,
+                hostTokenIDs: model.consumesHostTokenIDs
+                    ? [slot.lastTokenId]
+                    : nil)
             slot.modelState = output.state
 
             let logits = output.logits[0, -1, 0...]
@@ -1670,58 +1678,13 @@ actor BatchScheduler {
                 completedIndices.append(slotIndex)
                 continue
             }
-
             let tokenArray = sampledTokens[requestIndex]
-            let token = tokenArray.item(Int.self)
-            slot.processor?.didSample(token: tokenArray)
-
-            let logprobsForToken = slot.pendingLogprobData.map { [resolveLogprob($0)] }
-            if slot.computeLogprobs, let logits = sampledLogits[requestIndex] {
-                slot.pendingLogprobData = computeTokenLogprobs(
-                    logits: logits,
-                    tokenId: token,
-                    temperature: slot.temperatureForLogprobs,
-                    topK: slot.topLogprobsCount
-                )
-            } else if slot.computeLogprobs {
-                slot.pendingLogprobData = nil
-            }
-
-            if slot.firstTokenTime == 0 {
-                let now = Date()
-                slot.firstTokenTime = now.timeIntervalSince(slot.startTime)
-                slot.firstTokenAt = now
-            }
-
-            let disposition = Self.tokenDisposition(
-                tokenCount: slot.tokenCount,
-                maxTokens: slot.maxTokens,
-                tokenID: token,
-                unknownTokenID: tokenizer.unknownTokenId,
-                ignoreEndOfSequence: slot.ignoreEndOfSequence,
-                eosTokenIDs: eosTokenIds,
-                consecutiveSuppressedEndOfSequenceTokens:
-                    slot.consecutiveSuppressedEndOfSequenceTokens
-            )
-            if disposition == .stop || disposition == .length {
-                completedIndices.append(slotIndex)
-                continue
-            }
-
-            slot.lastTokenArray = tokenArray
-            slot.lastTokenId = token
-            if disposition == .suppress {
-                slot.consecutiveSuppressedEndOfSequenceTokens += 1
-                slot.pendingLogprobData = nil
-                continue
-            }
-
-            slot.consecutiveSuppressedEndOfSequenceTokens = 0
-            slot.tokenCount += 1
-            StatsAggregator.shared.addGenTokens(1)
-            slot.detokenizer.append(token: token)
-            if let chunk = slot.detokenizer.next(),
-               yieldTextChunk(chunk, for: slot, logprobs: logprobsForToken)
+            if dispatchSampledToken(
+                tokenArray,
+                processedLogits: sampledLogits[requestIndex],
+                to: slot,
+                processorAlreadyAdvanced: false,
+                updateLastTokenArray: true)
             {
                 completedIndices.append(slotIndex)
             }
@@ -1820,12 +1783,19 @@ actor BatchScheduler {
             fflush(stdout)
         }
         let input = LMInput.Text(tokens: batchTokens)
-        let result = model(input, cache: prefillCaches, state: nil)
+        let result = model(
+            input,
+            cache: prefillCaches,
+            state: nil,
+            hostTokenIDs: model.consumesHostTokenIDs
+                ? paddedTokenRows.flatMap { $0.map(Int.init) }
+                : nil)
 
         // Phase 5: Per-request logit processing and sampling
         // With left-padding, position -1 is the last real token for all sequences
         let logits = result.logits  // [B, maxLen, vocabSize]
         var tokenArrays: [MLXArray] = []
+        var processedLogits: [MLXArray] = []
 
         for i in 0..<B {
             let seqLogits = logits[i, -1, 0...]
@@ -1833,12 +1803,14 @@ actor BatchScheduler {
             let tokenArray = logitSamplers[i].sample(logits: processed)
             logitProcessors[i]?.didSample(token: tokenArray)
             tokenArrays.append(tokenArray)
+            processedLogits.append(processed)
         }
 
         // Materialize caches and tokens (MLX eval for GPU synchronization)
         var evalArrays: [MLXArray] = tokenArrays
         evalArrays.append(contentsOf: prefillCaches.flatMap { $0.innerState() })
         if let s = result.state?.crossAttentionStates { evalArrays.append(s) }
+        if let s = result.state?.positionDeltas { evalArrays.append(s) }
         MLX.eval(evalArrays)
 
         let prefillTime = Date().timeIntervalSince(prefillStart)
@@ -1946,44 +1918,19 @@ actor BatchScheduler {
                 temperatureForLogprobs: req.parameters.temperature
             )
 
-            // Compute logprobs for the first token (from prefill)
-            if slot.computeLogprobs {
-                let seqLogits = logits[i, -1, 0...]
-                let processed = logitProcessors[i]?.process(logits: seqLogits) ?? seqLogits
-                slot.pendingLogprobData = computeTokenLogprobs(
-                    logits: processed, tokenId: firstToken,
-                    temperature: slot.temperatureForLogprobs,
-                    topK: slot.topLogprobsCount
-                )
-            }
-
-            let firstTokenDisposition = Self.tokenDisposition(
-                tokenCount: slot.tokenCount,
-                maxTokens: slot.maxTokens,
-                tokenID: firstToken,
-                unknownTokenID: tokenizer.unknownTokenId,
-                ignoreEndOfSequence: slot.ignoreEndOfSequence,
-                eosTokenIDs: eosTokenIds,
-                consecutiveSuppressedEndOfSequenceTokens: 0
-            )
-            if firstTokenDisposition == .suppress {
-                slot.consecutiveSuppressedEndOfSequenceTokens = 1
-                slot.pendingLogprobData = nil
-            } else if firstTokenDisposition == .emit {
-                slot.tokenCount += 1
-                StatsAggregator.shared.addGenTokens(1)
-                slot.detokenizer.append(token: firstToken)
-                if let firstChunk = slot.detokenizer.next() {
-                    _ = yieldTextChunk(firstChunk, for: slot)
-                }
-            }
+            let firstTokenFinished = dispatchSampledToken(
+                tokenArrays[i],
+                processedLogits: slot.computeLogprobs ? processedLogits[i] : nil,
+                to: slot,
+                processorAlreadyAdvanced: true,
+                updateLastTokenArray: true)
 
             if let constraintRuntime = req.constraintRuntimeConfig {
                 DebugLogger.log("[BatchScheduler] Constrained slot \(slot.id.uuidString.prefix(8)) mode=\(constraintRuntime.mode)")
             }
 
             slots.append(slot)
-            if firstTokenDisposition == .stop || firstTokenDisposition == .length {
+            if firstTokenFinished {
                 finishAfterPrefill.append(slot.id)
             }
         }
@@ -2115,17 +2062,48 @@ actor BatchScheduler {
                 "Native-cache cohorts must not enter dense cache merging")
         }
 
-        // Merge model cross-attention state if present
-        if let newCAS = modelState?.crossAttentionStates {
-            if let existingCAS = batchState?.crossAttentionStates {
-                batchState = .init(crossAttentionStates: concatenated([existingCAS, newCAS], axis: 0))
+        // Merge request-local model state when a native model supports dense
+        // cohorts. Multimodal native-cache requests remain independent, but
+        // text-only VLM requests may still share a uniform cohort.
+        if modelState != nil {
+            let crossAttentionStates: MLXArray?
+            if let existing = batchState?.crossAttentionStates,
+               let added = modelState?.crossAttentionStates
+            {
+                crossAttentionStates = concatenated([existing, added], axis: 0)
             } else {
-                batchState = modelState
+                crossAttentionStates = modelState?.crossAttentionStates
+                    ?? batchState?.crossAttentionStates
             }
+
+            let positionDeltas: MLXArray?
+            if let existing = batchState?.positionDeltas,
+               let added = modelState?.positionDeltas
+            {
+                positionDeltas = concatenated([existing, added], axis: 0)
+            } else {
+                positionDeltas = modelState?.positionDeltas
+                    ?? batchState?.positionDeltas
+            }
+            batchState = .init(
+                crossAttentionStates: crossAttentionStates,
+                positionDeltas: positionDeltas)
         }
     }
 
     // MARK: - Slot Completion
+
+    /// Finish a request that failed before it became an active slot. This is
+    /// the prefill-side counterpart to `finishSlot(at:)` and balances every
+    /// reservation, matcher, and metrics lifecycle exactly once.
+    private func failPendingRequest(_ request: PendingRequest, error: Error) {
+        clearCancellation(request.id)
+        request.constraintRuntimeConfig?.matcherHandle?.release()
+        request.continuation.finish(throwing: error)
+        _inFlightCount.withLock { $0 = max(0, $0 - 1) }
+        StatsAggregator.shared.requestSucceeded(reason: "error")
+        StatsAggregator.shared.requestCompleted()
+    }
 
     /// Finish a completed slot: save prefix cache, yield timing info, remove from batch.
     private func finishSlot(at index: Int) {
@@ -2275,8 +2253,12 @@ actor BatchScheduler {
                         acCache.filter(batchIndices: idxArray)
                     }
                 }
-                if let cas = batchState?.crossAttentionStates {
-                    batchState = .init(crossAttentionStates: cas[idxArray])
+                if batchState != nil {
+                    batchState = .init(
+                        crossAttentionStates:
+                            batchState?.crossAttentionStates.map { $0[idxArray] },
+                        positionDeltas:
+                            batchState?.positionDeltas.map { $0[idxArray] })
                 }
                 // Stay .batched — no demotion (overhead negligible at B=1 after filter)
             case .empty:
@@ -2291,6 +2273,73 @@ actor BatchScheduler {
             DebugLogger.log("[BatchScheduler] finishSlot timing: total=\(String(format: "%.1f", totalTime))ms cache_save=\(String(format: "%.1f", cacheTime))ms")
         }
         slots.remove(at: index)
+    }
+
+    /// Materialize and publish one sampled token. Keeping this in one place
+    /// makes every scheduler path use the exact logits that produced the token,
+    /// publishes logprobs even when the streaming detokenizer buffers text, and
+    /// finishes at the output cap without requiring another model forward.
+    private func dispatchSampledToken(
+        _ tokenArray: MLXArray,
+        processedLogits: MLXArray?,
+        to slot: SlotState,
+        processorAlreadyAdvanced: Bool,
+        updateLastTokenArray: Bool
+    ) -> Bool {
+        let token = tokenArray.item(Int.self)
+        if !processorAlreadyAdvanced {
+            slot.processor?.didSample(token: tokenArray)
+        }
+
+        if slot.firstTokenTime == 0 {
+            let now = Date()
+            slot.firstTokenTime = now.timeIntervalSince(slot.startTime)
+            slot.firstTokenAt = now
+        }
+
+        let disposition = Self.tokenDisposition(
+            tokenCount: slot.tokenCount,
+            maxTokens: slot.maxTokens,
+            tokenID: token,
+            unknownTokenID: tokenizer.unknownTokenId,
+            ignoreEndOfSequence: slot.ignoreEndOfSequence,
+            eosTokenIDs: eosTokenIds,
+            consecutiveSuppressedEndOfSequenceTokens:
+                slot.consecutiveSuppressedEndOfSequenceTokens
+        )
+        if disposition == .stop || disposition == .length {
+            return true
+        }
+
+        if updateLastTokenArray {
+            slot.lastTokenArray = tokenArray
+        }
+        slot.lastTokenId = token
+        if disposition == .suppress {
+            slot.consecutiveSuppressedEndOfSequenceTokens += 1
+            return false
+        }
+
+        slot.consecutiveSuppressedEndOfSequenceTokens = 0
+        slot.tokenCount += 1
+        StatsAggregator.shared.addGenTokens(1)
+        if slot.computeLogprobs, let processedLogits {
+            let resolved = resolveLogprob(computeTokenLogprobs(
+                logits: processedLogits,
+                tokenId: token,
+                temperature: slot.temperatureForLogprobs,
+                topK: slot.topLogprobsCount
+            ))
+            slot.continuation.yield(StreamChunk(text: "", logprobs: [resolved]))
+        }
+
+        slot.detokenizer.append(token: token)
+        if let chunk = slot.detokenizer.next(),
+           yieldTextChunk(chunk, for: slot)
+        {
+            return true
+        }
+        return slot.maxTokens.map { slot.tokenCount >= $0 } ?? false
     }
 
     /// Compute per-token logprob data from processed logits and sampled token.
@@ -2342,11 +2391,7 @@ actor BatchScheduler {
         )
     }
 
-    private func yieldTextChunk(_ chunk: String, for slot: SlotState, logprobs: [ResolvedLogprob]? = nil) -> Bool {
-        // Yield logprobs before the text chunk they correspond to (matches single-sequence pattern)
-        if let logprobs, !logprobs.isEmpty {
-            slot.continuation.yield(StreamChunk(text: "", logprobs: logprobs))
-        }
+    private func yieldTextChunk(_ chunk: String, for slot: SlotState) -> Bool {
         if let toolRuntime = slot.toolRuntime {
             let output = toolRuntime.process(piece: chunk)
             if output.handled {

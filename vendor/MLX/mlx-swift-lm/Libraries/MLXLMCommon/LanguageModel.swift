@@ -123,9 +123,16 @@ public struct LMOutput {
 
     public struct State {
         public let crossAttentionStates: MLXArray?
+        /// Request-local rotary-position delta used by multimodal models whose
+        /// decode positions depend on the prompt's image/video grid.
+        public let positionDeltas: MLXArray?
 
-        public init(crossAttentionStates: MLXArray? = nil) {
+        public init(
+            crossAttentionStates: MLXArray? = nil,
+            positionDeltas: MLXArray? = nil
+        ) {
             self.crossAttentionStates = crossAttentionStates
+            self.positionDeltas = positionDeltas
         }
     }
 

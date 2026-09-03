@@ -41,7 +41,6 @@ public final class Qwen4ExpVL: Module, VLMModel, KVCacheDimensionProvider {
     @ModuleInfo(key: "language_model") private var languageModel: Qwen4ExpModel
 
     private let config: Qwen4ExpVLConfiguration
-    private var ropeDeltas: MLXArray?
 
     public init(_ config: Qwen4ExpVLConfiguration) {
         self.config = config
@@ -56,6 +55,7 @@ public final class Qwen4ExpVL: Module, VLMModel, KVCacheDimensionProvider {
     public var vocabularySize: Int { languageModel.vocabularySize }
     public var kvHeads: [Int] { languageModel.kvHeads }
     public var loraLayers: [Module] { languageModel.loraLayers }
+    public var consumesHostTokenIDs: Bool { languageModel.consumesHostTokenIDs }
 
     public func configureMappedNGramTable(url: URL) throws {
         try languageModel.configureMappedNGramTable(url: url)
@@ -102,8 +102,8 @@ public final class Qwen4ExpVL: Module, VLMModel, KVCacheDimensionProvider {
         inputIDs: MLXArray,
         imageFrames: [THW]?,
         videoFrames: [THW]?
-    ) -> MLXArray {
-        let (positions, deltas) = Qwen3VLLanguage.getRopeIndex(
+    ) -> (positions: MLXArray, deltas: MLXArray) {
+        Qwen3VLLanguage.getRopeIndex(
             inputIds: inputIDs,
             imageGridTHW: imageFrames,
             videoGridTHW: videoFrames,
@@ -112,8 +112,6 @@ public final class Qwen4ExpVL: Module, VLMModel, KVCacheDimensionProvider {
             videoTokenId: config.videoTokenID,
             visionStartTokenId: config.visionStartTokenID,
             attentionMask: nil)
-        ropeDeltas = deltas
-        return positions
     }
 
     public func prepare(
@@ -143,17 +141,34 @@ public final class Qwen4ExpVL: Module, VLMModel, KVCacheDimensionProvider {
                 features: features, embeddings: textEmbeddings, inputIDs: inputIDs)
         }
 
-        let positions = positionIDs(
+        let positionState = positionIDs(
             inputIDs: inputIDs, imageFrames: imageFrames, videoFrames: videoFrames)
         let logits = languageModel.forward(
             inputIDs: inputIDs, inputEmbeddings: embeddings,
-            positionIDs: positions, cache: cache)
-        return .logits(LMOutput(logits: logits))
+            positionIDs: positionState.positions, cache: cache)
+        return .logits(LMOutput(
+            logits: logits,
+            state: .init(positionDeltas: positionState.deltas)))
     }
 
-    public func callAsFunction(_ inputs: MLXArray, cache: [KVCache]?) -> MLXArray {
+    public func callAsFunction(
+        _ input: LMInput.Text,
+        cache: [KVCache]?,
+        state: LMOutput.State?
+    ) -> LMOutput {
+        callAsFunction(
+            input, cache: cache, state: state, hostTokenIDs: nil)
+    }
+
+    public func callAsFunction(
+        _ input: LMInput.Text,
+        cache: [KVCache]?,
+        state: LMOutput.State?,
+        hostTokenIDs: [Int]?
+    ) -> LMOutput {
+        let inputs = input.tokens
         var positions: MLXArray?
-        if let cache, let ropeDeltas {
+        if let cache, let ropeDeltas = state?.positionDeltas {
             let offset = cache.map(\.offset).max() ?? 0
             let batch = inputs.dim(0)
             let length = inputs.dim(1)
@@ -166,8 +181,16 @@ public final class Qwen4ExpVL: Module, VLMModel, KVCacheDimensionProvider {
             positions = broadcast(
                 (base + delta)[.newAxis, 0..., 0...], to: [3, batch, length])
         }
-        return languageModel.forward(
-            inputIDs: inputs, positionIDs: positions, cache: cache)
+        return LMOutput(
+            logits: languageModel.forward(
+                inputIDs: inputs, positionIDs: positions, cache: cache,
+                hostTokenIDs: hostTokenIDs),
+            state: state)
+    }
+
+    public func callAsFunction(_ inputs: MLXArray, cache: [KVCache]?) -> MLXArray {
+        callAsFunction(
+            LMInput.Text(tokens: inputs), cache: cache, state: nil).logits
     }
 
     public func sanitize(weights: [String: MLXArray]) -> [String: MLXArray] {

@@ -548,7 +548,9 @@ public final class LLMModelFactory: ModelFactory {
         let qwenNGramTableURL = try resolveQwenNGramTableURL(
             configurationData: configData,
             modelDirectory: modelDirectory,
-            explicitURL: configuration.qwenNGramTableURL)
+            explicitURL: configuration.qwenNGramTableURL,
+            allowAutomaticResolution:
+                configuration.allowsAutomaticQwenNGramTableResolution)
         if let tableURL = qwenNGramTableURL {
             guard let qwen = model as? Qwen4ExpModel else {
                 throw ModelFactoryError.unsupportedModelType(

@@ -1443,8 +1443,26 @@ private final class Qwen4ExpQSAIndexer: Module {
             let splitPoint = heads * headDim
             let parts = MLX.split(qk, indices: [splitPoint], axis: -1)
             queryRows = parts[0]
-            currentKeys = parts[1].reshaped(batch, length, kvHeads, headDim)
-                .mean(axis: 2)
+            let keyHeads = parts[1].reshaped(
+                batch, length, kvHeads, headDim)
+            if kvHeads == 1 {
+                // A mean over a unit axis is mathematically an identity but
+                // can still select a width-dependent reduction kernel. Avoid
+                // it so strict target verification retains decode-identical
+                // cached index keys.
+                currentKeys = keyHeads.squeezed(axis: 2)
+            } else if verificationPolicy == .strictSingletonEquivalent,
+                      length > 1
+            {
+                currentKeys = concatenated(
+                    (0 ..< length).map { position in
+                        keyHeads[0..., position ..< (position + 1), 0..., 0...]
+                            .mean(axis: 2)
+                    },
+                    axis: 1)
+            } else {
+                currentKeys = keyHeads.mean(axis: 2)
+            }
         }
         let eagerQueries = Self.deferQueryPreparationUntilSparse
             ? nil
@@ -2237,7 +2255,8 @@ private final class Qwen4ExpGatedDeltaNet: Module {
             compileEnabled: Self.compileDecode,
             batchSize: b,
             sequenceLength: l,
-            hasVerificationPolicy: verificationPolicy != nil)
+            hasVerificationPolicy: verificationPolicy != nil),
+           supportsCompiledPrework(input: x)
         {
             let convolutionState = cache?[0] ?? MLXArray.zeros(
                 [b, convKernel - 1, keyDim * 2 + valueDim], dtype: x.dtype)
@@ -2405,6 +2424,27 @@ private final class Qwen4ExpGatedDeltaNet: Module {
             norm(output, gate: z).reshaped(b, l, valueDim),
             verificationPolicy: verificationPolicy,
             role: .gatedDelta)
+    }
+
+    /// The compiled closure contains the narrow fused prework kernel, so its
+    /// eligibility must be established before MLX traces that closure. A
+    /// precondition inside the trace turns otherwise-supported tiny/FP32
+    /// models into a process trap instead of taking the ordinary eager path.
+    private func supportsCompiledPrework(input: MLXArray) -> Bool {
+        let channels = keyDim * 2 + valueDim
+        let supportedType = input.dtype == .bfloat16 || input.dtype == .float16
+        guard supportedType,
+              keyHeadDim == valueHeadDim,
+              keyHeadDim.isMultiple(of: 32),
+              convKernel > 1,
+              conv1d.weight.shape == [channels, convKernel, 1]
+        else { return false }
+        return conv1d.weight.dtype == input.dtype
+            && inProjQKV.weight.dtype == input.dtype
+            && inProjA.weight.dtype == input.dtype
+            && inProjB.weight.dtype == input.dtype
+            && aLog.dtype == input.dtype
+            && dtBias.dtype == input.dtype
     }
 
     /// Restore the recurrent cache to the committed prefix of a target
@@ -4205,11 +4245,13 @@ public final class Qwen4ExpModel: Module, LLMModel, KVCacheDimensionProvider {
         inputIDs: MLXArray,
         inputEmbeddings: MLXArray? = nil,
         positionIDs: MLXArray? = nil,
-        cache: [KVCache]?
+        cache: [KVCache]?,
+        hostTokenIDs: [Int]? = nil
     ) -> MLXArray {
         let hidden = model(
             inputIDs, inputEmbeddings: inputEmbeddings,
-            positionIDs: positionIDs, cache: cache)
+            positionIDs: positionIDs, cache: cache,
+            hostTokenIDs: hostTokenIDs)
         return lmHead?(hidden) ?? model.embedTokens.asLinear(hidden)
     }
 
@@ -4628,6 +4670,7 @@ public final class Qwen4ExpMTPGenerator {
         }
         return output
     }
+
 }
 
 extension Qwen4ExpModel: LoRAModel {

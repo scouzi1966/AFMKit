@@ -414,6 +414,24 @@ class TransformTests: XCTestCase {
         XCTAssertEqual(result, 21)
     }
 
+    func testCompiledFunctionCacheIsReleasedAcrossFunctionLifetimes() {
+        func evaluateFreshFunction(offset: Int) -> Int {
+            let compiled = compile(shapeless: false) { value in
+                value + MLXArray(offset)
+            }
+            let output = compiled(MLXArray(7))
+            eval(output)
+            return output.item(Int.self)
+        }
+
+        // Each iteration creates and retires a distinct compiled function and
+        // its owned cache. If a retired graph survives through identifier or
+        // thread-local cache reuse, a later offset will produce a stale value.
+        for offset in 0 ..< 64 {
+            XCTAssertEqual(evaluateFreshFunction(offset: offset), 7 + offset)
+        }
+    }
+
     func testNestedCompiledFunctionsUseConsistentLockOrdering() async throws {
         let inner = compile(shapeless: false) { value in value * 2 }
         let outer = compile(shapeless: false) { value in inner(value) + 1 }

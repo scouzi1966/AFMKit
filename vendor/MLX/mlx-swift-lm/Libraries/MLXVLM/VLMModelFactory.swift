@@ -323,7 +323,9 @@ public final class VLMModelFactory: ModelFactory {
         let qwenNGramTableURL = try resolveQwenNGramTableURL(
             configurationData: configData,
             modelDirectory: modelDirectory,
-            explicitURL: configuration.qwenNGramTableURL)
+            explicitURL: configuration.qwenNGramTableURL,
+            allowAutomaticResolution:
+                configuration.allowsAutomaticQwenNGramTableResolution)
         if let tableURL = qwenNGramTableURL {
             guard let qwen = model as? Qwen4ExpVL else {
                 throw ModelFactoryError.unsupportedModelType(
