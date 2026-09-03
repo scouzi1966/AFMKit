@@ -539,6 +539,16 @@ public final class MLXModelService:
         AFMMLXToolCallPolicy.isToolCallParserDisabled(parser)
     }
 
+    /// `MLXLMCommon.generateTask` treats a nil format as JSON tool parsing.
+    /// Explicit raw mode must therefore select its passthrough parser instead
+    /// of clearing the inferred format to nil.
+    static func generationToolCallFormat(
+        configuredParser: String?,
+        detectedFormat: ToolCallFormat?
+    ) -> ToolCallFormat? {
+        isToolCallParserDisabled(configuredParser) ? ToolCallFormat.none : detectedFormat
+    }
+
     static func requiresSerialGeneration(canonicalModelType: String) -> Bool {
         switch canonicalModelType {
         case "cohere2_moe", "muse_glimmer":
@@ -2186,7 +2196,10 @@ public final class MLXModelService:
             }
             print("[\(ts())] [ToolCallParser] --tool-call-parser override: \(parser) → \(String(describing: detectedFormat))")
         }
-        config.toolCallFormat = detectedFormat
+        config.toolCallFormat = Self.generationToolCallFormat(
+            configuredParser: toolCallParser,
+            detectedFormat: detectedFormat
+        )
         stage?(.loadingModel)
 
         // Loading strategy:
