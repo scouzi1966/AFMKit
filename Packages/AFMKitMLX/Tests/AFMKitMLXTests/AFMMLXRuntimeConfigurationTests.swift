@@ -29,6 +29,17 @@ final class AFMMLXRuntimeConfigurationTests: XCTestCase {
         XCTAssertTrue(configuration.allowsAutomaticQwenNGramTableResolution)
     }
 
+    func testDeprecatedQwenNGramMmapSettingRemainsSourceCompatible() {
+        let service = MLXModelService(resolver: MLXCacheResolver())
+        let configuration = AFMMLXRuntimeConfiguration(
+            qwenNGramMmapEnabled: true)
+
+        configuration.apply(to: service)
+
+        XCTAssertTrue(configuration.qwenNGramMmapEnabled)
+        XCTAssertTrue(service.qwenNGramMmapEnabled)
+    }
+
     func testMTPModelIDPropagatesToAttachedService() {
         let service = MLXModelService(resolver: MLXCacheResolver())
         let configuration = AFMMLXRuntimeConfiguration(

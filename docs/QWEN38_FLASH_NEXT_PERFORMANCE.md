@@ -666,10 +666,9 @@ Remaining release work is:
 4. Transfer only the generic cache-safety and scheduler changes to other model
    families, with same-checkpoint throughput measurements before enabling any
    architecture-specific batching policy.
-5. Later, close the 4K prefill gap without regressing the first three rows.
-   Keep the architecture-owned 8,192-token step recommendation; the 4K prompt
-   already executes as one pass, so smaller generic chunking is not the likely
-   fix.
+5. Keep the qualified architecture-owned 4,096-token prefill step. It avoids
+   unnecessary full-sequence vocabulary projection while preserving the
+   first-four-context throughput curve.
 6. Later, evaluate owned zero-copy PLE output buffers for hot prefill. Do not expose
    the entire 30 GB mmap as an MLX array, and do not repeat the already-ported
    worker pool.

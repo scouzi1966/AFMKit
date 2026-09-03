@@ -2410,6 +2410,56 @@ final class Qwen4ExpTests: XCTestCase {
             fileSize)
     }
 
+    func testMappedNGramTableWarmCancellationPreservesTableDescriptor() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("qwen-ngram-warm-cancel-\(UUID().uuidString).bin")
+        defer { try? FileManager.default.removeItem(at: url) }
+        try writeTinyMappedNGramTable(to: url)
+        let handle = try FileHandle(forWritingTo: url)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data(repeating: 0xA5, count: 20 * 1_024 * 1_024))
+        try handle.close()
+
+        let table = try Qwen4ExpMappedNGramTable(
+            url: url,
+            expectedRows: 2,
+            expectedDimensions: 8,
+            expectedBits: 4,
+            expectedGroupSize: 4)
+        table.startBackgroundPageCacheWarm()
+        table.startBackgroundPageCacheWarm()
+        let warmedBytes = table.cancelBackgroundPageCacheWarmForTesting()
+        XCTAssertGreaterThanOrEqual(warmedBytes, 0)
+        XCTAssertLessThanOrEqual(
+            warmedBytes,
+            try XCTUnwrap(url.resourceValues(forKeys: [.fileSizeKey]).fileSize))
+
+        // The warmer owns a dup of the descriptor. Closing it must not affect
+        // the descriptor retained by the mapped table for subsequent gathers.
+        let output = try table.gather([0, 1], shape: [1, 2])
+        eval(output)
+        XCTAssertEqual(output.shape, [1, 2, 8])
+        XCTAssertEqual(table.cancelBackgroundPageCacheWarmForTesting(), warmedBytes)
+    }
+
+    func testMappedNGramTableRepeatedWarmLifecycle() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("qwen-ngram-warm-lifecycle-\(UUID().uuidString).bin")
+        defer { try? FileManager.default.removeItem(at: url) }
+        try writeTinyMappedNGramTable(to: url)
+
+        for _ in 0..<16 {
+            var table: Qwen4ExpMappedNGramTable? = try Qwen4ExpMappedNGramTable(
+                url: url,
+                expectedRows: 2,
+                expectedDimensions: 8,
+                expectedBits: 4,
+                expectedGroupSize: 4)
+            table?.startBackgroundPageCacheWarm()
+            table = nil
+        }
+    }
+
     func testNativeMappedNGramGatherExactlyMatchesMappedFallback() throws {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("qwen-ngram-native-\(UUID().uuidString).bin")

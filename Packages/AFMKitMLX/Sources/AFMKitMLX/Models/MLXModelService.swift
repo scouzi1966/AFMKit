@@ -387,8 +387,14 @@ public final class MLXModelService:
     public var kernelEngine: AFMMLXKernelEngine = .native
     public var kvEvictionPolicy: String = "none"  // "none" or "streaming"
     public var enablePrefixCaching: Bool = false
-    /// Explicit opt-in for Qwen Next checkpoints that declare a disk-backed
-    /// ngram_table sidecar. The default resident checkpoint path is unchanged.
+    var qwenNGramMmapCompatibilityValue: Bool = false
+    /// Retained for source compatibility. Qwen Next checkpoints now load their
+    /// declared n-gram sidecar automatically, so this value has no runtime effect.
+    @available(*, deprecated, message: "Qwen Next n-gram sidecars are loaded automatically")
+    public var qwenNGramMmapEnabled: Bool {
+        get { qwenNGramMmapCompatibilityValue }
+        set { qwenNGramMmapCompatibilityValue = newValue }
+    }
     /// MTP self-speculative decoding (--mtp). Qwen 3.8 heads are cached as
     /// separate model repositories so their weights never enter the base loader.
     public var mtpEnabled: Bool = false

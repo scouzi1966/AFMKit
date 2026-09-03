@@ -97,7 +97,14 @@ final class Qwen4ExpMappedNGramTable: @unchecked Sendable {
                         buffer,
                         requested,
                         off_t(offset))
-                    guard readCount > 0 else { return }
+                    if readCount < 0 && errno == EINTR { continue }
+                    guard readCount > 0 else {
+                        if readCount < 0 {
+                            let message = String(cString: strerror(errno))
+                            print("[QwenNGram] page-cache warm stopped: \(message)")
+                        }
+                        return
+                    }
                     offset += readCount
                     lock.lock()
                     warmedBytes = offset
@@ -130,6 +137,13 @@ final class Qwen4ExpMappedNGramTable: @unchecked Sendable {
 
         func waitForCompletionForTesting() -> Int {
             completion.wait()
+            lock.lock()
+            defer { lock.unlock() }
+            return warmedBytes
+        }
+
+        func cancelAndReportProgressForTesting() -> Int {
+            cancelAndWait()
             lock.lock()
             defer { lock.unlock() }
             return warmedBytes
@@ -596,6 +610,10 @@ final class Qwen4ExpMappedNGramTable: @unchecked Sendable {
 
     func waitForBackgroundPageCacheWarmForTesting() -> Int {
         pageCacheWarmer?.waitForCompletionForTesting() ?? 0
+    }
+
+    func cancelBackgroundPageCacheWarmForTesting() -> Int {
+        pageCacheWarmer?.cancelAndReportProgressForTesting() ?? 0
     }
 
     func gather(_ rowIDs: MLXArray) throws -> MLXArray {
