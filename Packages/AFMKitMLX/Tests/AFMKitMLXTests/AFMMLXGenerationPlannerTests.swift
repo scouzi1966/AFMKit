@@ -2,7 +2,8 @@ import XCTest
 @testable import AFMKitMLX
 
 final class AFMMLXGenerationPlannerTests: XCTestCase {
-    func testPrefillPolicyWidensDefaultForQwenNext() {
+    func testPrefillPolicyUsesMeasuredQwenNextStep() {
+        XCTAssertEqual(AFMMLXPrefillPolicy.throughputOptimizedStepSize, 4_096)
         XCTAssertEqual(
             AFMMLXPrefillPolicy.resolve(
                 configuredStepSize: AFMMLXPrefillPolicy.defaultStepSize,

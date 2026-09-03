@@ -2,7 +2,11 @@ import Foundation
 
 public enum AFMMLXPrefillPolicy {
     public static let defaultStepSize = 1_024
-    public static let throughputOptimizedStepSize = 8_192
+    /// Qwen Next's measured prompt split on M3 Ultra. Keeping the large
+    /// cache-only pass at 4K prevents a 4K-class prompt from evaluating an
+    /// unnecessary full-sequence vocabulary projection; the remaining tail
+    /// alone produces logits for sampling.
+    public static let throughputOptimizedStepSize = 4_096
 
     // Keep architecture recommendations centralized so a measured optimum can
     // be reused by future model families without branching in the runtime.
