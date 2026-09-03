@@ -366,6 +366,7 @@ public enum MLXFast {
     public static func scaledDotProductAttention(
         queries: MLXArray, keys: MLXArray, values: MLXArray, scale: Float, mask: MLXArray?,
         sinks: MLXArray? = nil,
+        forceFused: Bool = false,
         memoryEfficientThreshold: Int? = nil, stream: StreamOrDevice = .default
     ) -> MLXArray {
         var result = mlx_array_new()
@@ -375,6 +376,7 @@ public enum MLXFast {
             queries.ctx, keys.ctx, values.ctx, scale,
             "", mask?.ctx ?? MLXArray.mlxNone.ctx,
             (sinks ?? .mlxNone).ctx,
+            forceFused,
             stream.ctx)
         return MLXArray(result)
     }
@@ -452,6 +454,7 @@ public enum MLXFast {
         queries: MLXArray, keys: MLXArray, values: MLXArray, scale: Float,
         mask: ScaledDotProductAttentionMaskMode,
         sinks: MLXArray? = nil,
+        forceFused: Bool = false,
         stream: StreamOrDevice = .default
     ) -> MLXArray {
         var result = mlx_array_new()
@@ -461,6 +464,7 @@ public enum MLXFast {
             queries.ctx, keys.ctx, values.ctx, scale,
             mask.mode, mask.mask?.ctx ?? MLXArray.mlxNone.ctx,
             (sinks ?? .mlxNone).ctx,
+            forceFused,
             stream.ctx)
         return MLXArray(result)
     }

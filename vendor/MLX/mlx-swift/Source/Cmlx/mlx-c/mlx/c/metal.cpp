@@ -4,6 +4,7 @@
 /*                                                    */
 
 #include "mlx/c/metal.h"
+#include "mlx/backend/metal/device.h"
 #include "mlx/backend/metal/metal.h"
 #include "mlx/c/error.h"
 #include "mlx/c/private/mlx.h"
@@ -11,6 +12,15 @@
 extern "C" int mlx_metal_is_available(bool* res) {
   try {
     *res = mlx::core::metal::is_available();
+  } catch (std::exception& e) {
+    mlx_error(e.what());
+    return 1;
+  }
+  return 0;
+}
+extern "C" int mlx_metal_is_nax_available(bool* res) {
+  try {
+    *res = mlx::core::metal::is_nax_available();
   } catch (std::exception& e) {
     mlx_error(e.what());
     return 1;

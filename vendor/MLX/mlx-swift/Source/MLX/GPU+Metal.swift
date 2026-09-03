@@ -21,6 +21,13 @@ public enum GPU {
         mlx_metal_set_metallib_path(path.cString(using: .utf8))
     }
 
+    /// Whether MLX can use the current platform's Neural Accelerators (NAX).
+    public static var isNAXAvailable: Bool {
+        var available = false
+        mlx_metal_is_nax_available(&available)
+        return available
+    }
+
     /// Get the actively used memory in bytes.
     ///
     /// Note, this will not always match memory use reported by the system because

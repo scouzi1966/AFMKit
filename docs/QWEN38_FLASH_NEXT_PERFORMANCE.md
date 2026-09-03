@@ -1,7 +1,7 @@
 # Qwen3.8 Flash Next performance investigation
 
 Status: performance gate passed, compatibility qualification in progress,
-updated 2026-09-02. The implementation on `perf/qwen-next-qsa-gather` now meets
+updated 2026-09-03. The implementation on `perf/qwen-gdn-blocked-prefill` now meets
 the four-context, no-MTP throughput target without feature environment variables.
 Native concurrency and radix-prefix-cache qualification now pass through eight
 simultaneous requests. Model-lifecycle, full API, and MTP qualification remain
@@ -24,9 +24,10 @@ reference at every measured prefill and decode point.
   4K context.
 - AFMKit's initial comparable no-MTP run reached approximately **39.5 decode
   tok/s** and **850 prefill tok/s**.
-- The current default path reaches **893.2/67.44 tok/s** at 0.5K and
-  **1178.1/59.10 tok/s** at 4K in the latest same-checkpoint comparison. It
-  passes all eight prefill/decode floors and its saved responses are coherent.
+- The current default path reaches median client-observed throughput of
+  **883.2/68.22 tok/s** at 0.5K and **1284.2/59.88 tok/s** at 4K across six
+  same-checkpoint trials. It passes all eight prefill/decode floors and its
+  saved responses are coherent.
 - The decisive fix gives every Swift `CompiledFunction` an explicitly owned MLX
   compile cache. This makes compiled Qwen GDN, attention, and layer-tail regions
   safe across Swift executor threads and across model destruction/reload.
@@ -37,7 +38,7 @@ reference at every measured prefill and decode point.
   tok/s at eight-way concurrency**, versus **154.1 tok/s** for the reproduced
   same-checkpoint reference. Eight simultaneous radix-cache hits reached
   **196.6 aggregate tok/s**, with 43 of 44 prompt tokens restored per request.
-- Decode is now 1.2-3.3% faster than the latest reproduced reference across the
+- Decode is now 1.2-2.8% faster than the latest reproduced reference across the
   first-four context curve. Further QSA work is optional headroom rather than a
   parity blocker.
 
@@ -86,12 +87,39 @@ lifecycle, complete API behavior, and MTP remain mandatory release gates.
 
 ## Reproduced results
 
-The table uses the best recorded run for each milestone because the acceptance
-target is defined against the reproduced reference peak under the same
-three-run method. Full CSV files are retained outside the Git checkout under
+### Final causal-attention qualification (2026-09-03)
+
+The final reviewed build at `aa06c899` was measured in six independent trials
+per configuration. The table reports medians from the benchmark client's
+endpoint-latency-adjusted prefill timer and its decode timer. Prefix caching
+and MTP were disabled for both AFMKit and the saved same-checkpoint reference.
+
+| Context | Reference prefill | AFMKit prefill | Difference | Reference decode | AFMKit decode | Difference |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 0.5K | 859.9 | 883.2 | +2.7% | 66.83 | 68.22 | +2.1% |
+| 1K | 1052.6 | 1031.2 | -2.03% | 66.37 | 67.58 | +1.8% |
+| 2K | 1200.2 | 1176.4 | -2.0% | 59.81 | 61.47 | +2.8% |
+| 4K | 1273.4 | 1284.2 | +0.8% | 59.15 | 59.88 | +1.2% |
+
+AFMKit's server-side prefill medians were 898.8, 1039.2, 1183.9, and
+1291.8 tok/s. The fused causal-attention A/B changed client-observed prefill by
++1.14%, +0.55%, +0.17%, and -0.14% respectively; the final point is within
+run noise. Decode was unchanged, as expected. All 24 saved AFM responses were
+nonempty and coherent.
+
+The same binary then passed radix-cache and concurrency checks: a repeated
+request restored 50 of 51 prompt tokens, and four simultaneous cached requests
+each restored 50 of 51 tokens, returned HTTP 200, and produced coherent output.
+Three clean model load/run/shutdown cycles completed during the on/off and cache
+qualification.
+
+The historical acceptance-gate table below uses the best recorded run for each
+milestone because that earlier target was defined against the reproduced
+reference peak under the same three-run method. Full CSV files are retained
+outside the Git checkout under
 `/Volumes/edata/afm-release-artifacts/qwen-next-afm-current/`.
 
-The final default, no-environment-variable four-context comparison is:
+The earlier default, no-environment-variable three-run peak comparison was:
 
 | Context | Reference prefill | AFMKit prefill | Difference | Reference decode | AFMKit decode | Difference |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |

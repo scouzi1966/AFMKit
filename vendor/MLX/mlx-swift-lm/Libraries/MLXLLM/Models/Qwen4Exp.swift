@@ -2065,9 +2065,34 @@ private final class Qwen4ExpAttention: Module {
                     mask: .array(fallbackMask))
             }
         } else {
-            outputHeads = attentionWithCacheUpdate(
-                queries: q, keys: k, values: v, cache: cache, scale: scale,
-                mask: effectiveMask)
+            let cached = cache?.update(keys: k, values: v) ?? (k, v)
+            let usesCausalMask: Bool
+            if case .causal = effectiveMask {
+                usesCausalMask = true
+            } else {
+                usesCausalMask = false
+            }
+            let forceStockNAXAttention = usesCausalMask
+                && Qwen4ExpQSAMaskedAttention.shouldForceStockNAXAttention(
+                    queries: q, keys: cached.0)
+            if usesCausalMask,
+               let fused = Qwen4ExpQSAMaskedAttention.callCausal(
+                   queries: q,
+                   keys: cached.0,
+                   values: cached.1,
+                   scale: scale,
+                   forceStockNAXAttention: forceStockNAXAttention)
+            {
+                outputHeads = fused
+            } else {
+                outputHeads = MLXFast.scaledDotProductAttention(
+                    queries: q,
+                    keys: cached.0,
+                    values: cached.1,
+                    scale: scale,
+                    mask: effectiveMask,
+                    forceFused: forceStockNAXAttention)
+            }
         }
         attentionHostProfiler?.attention()
         attentionProfiler?.lap([outputHeads], stage: "cache-sdpa")
