@@ -30,6 +30,10 @@ extension Gemma4VLM: FixedDecodeCohortModel {
     var requiresFixedDecodeCohorts: Bool { true }
 }
 
+extension Qwen4ExpModel: FixedDecodeCohortModel {
+    var requiresFixedDecodeCohorts: Bool { true }
+}
+
 /// Manages concurrent generation with dynamic slot allocation and request queuing.
 ///
 /// **Phase 2: Dense Batched Decoding**
@@ -141,6 +145,7 @@ actor BatchScheduler {
         let prefillCaches: [KVCache]
         let prefillStates: [[MLXArray]]
         let prefillMetaStates: [[String]]
+        var modelState: LMOutput.State?
 
         // Per-sequence decode state
         var lastTokenId: Int
@@ -189,6 +194,7 @@ actor BatchScheduler {
             prefixCacheTokens: [Int]? = nil,
             prefixCacheStates: [[MLXArray]]? = nil,
             prefixCacheMetaStates: [[String]]? = nil,
+            modelState: LMOutput.State? = nil,
             lastTokenId: Int,
             lastTokenArray: MLXArray,
             sampler: LogitSampler,
@@ -224,6 +230,7 @@ actor BatchScheduler {
             }
             self.prefillMetaStates = prefixCacheMetaStates
                 ?? prefillCaches.map { $0.metaState }
+            self.modelState = modelState
             self.lastTokenId = lastTokenId
             self.lastTokenArray = lastTokenArray
             self.sampler = sampler
@@ -246,8 +253,8 @@ actor BatchScheduler {
     /// Active slots in the batched decode loop.
     private var slots: [SlotState] = []
 
-    /// Per-layer batch caches. Each element is a `BatchKVCacheSimple` with
-    /// `batchSize == slots.count`. Empty when no slots are active.
+    /// Per-layer dense batch caches. Empty for native-cache cohorts, whose
+    /// request-owned concrete caches remain on each SlotState.
     private var batchCaches: [KVCache] = []
 
     /// Model output state (e.g. cross-attention states for VLMs).
@@ -269,11 +276,32 @@ actor BatchScheduler {
     /// batch cache representation. Hybrid caches carry model-specific state and
     /// must provide their own batch implementation before entering this path.
     nonisolated static func supportsDenseBatchMerge(_ cache: KVCache) -> Bool {
-        cache is KVCacheSimple
-            || cache is ArraysCache
+        cache is UniformBatchKVCache
+            || cache is KVCacheSimple
+            || isPlainBatchableArraysCache(cache)
             || cache is CacheList
             || cache is DeepseekV4Cache
             || (cache as? RotatingKVCache)?.isBatchable == true
+    }
+
+    /// A bare `ArraysCache` and its established `MambaCache` specialization
+    /// have the scheduler's simple axis-0 batch semantics. An arbitrary
+    /// subclass may carry private host state or model-specific invariants and
+    /// must opt in through `UniformBatchKVCache` instead of being coerced into
+    /// a `MambaCache` solely because of inheritance.
+    nonisolated static func isPlainBatchableArraysCache(_ cache: KVCache) -> Bool {
+        cache is MambaCache || type(of: cache) == ArraysCache.self
+    }
+
+    /// Uniform recurrent caches can share a dense decode graph only when every
+    /// request begins at the same logical offset. Prompt length is the offset
+    /// proxy for cold text-only admissions; multimodal positions remain on the
+    /// request-owned path until the model supplies an explicit merge contract.
+    nonisolated static func requiresIndependentUniformCacheCohort(
+        promptTokenCounts: [Int],
+        hasMultimodalInput: Bool
+    ) -> Bool {
+        hasMultimodalInput || Set(promptTokenCounts).count > 1
     }
 
     nonisolated static func requiresFixedDecodeCohorts(for modelType: Any.Type) -> Bool {
@@ -574,6 +602,7 @@ actor BatchScheduler {
         case empty      // batchCaches is []
         case unbatched  // batchCaches contains KVCacheSimple (B=1, zero overhead)
         case batched    // batchCaches contains BatchKVCacheSimple (B≥1)
+        case independent // request-owned native caches; graphs submitted as one cohort
     }
     private var cacheMode: CacheMode = .empty
 
@@ -598,11 +627,13 @@ actor BatchScheduler {
             for: type(of: model))
 
         let debug = ProcessInfo.processInfo.environment["AFM_DEBUG"] == "1"
-        self.radixCache = RadixTreeCache(
-            modelID: configuration.name,
-            maxEntries: 64,
-            debugLogging: debug
-        )
+        self.radixCache = enablePrefixCaching
+            ? RadixTreeCache(
+                modelID: configuration.name,
+                maxEntries: 64,
+                debugLogging: debug
+            )
+            : nil
 
         var eos = configuration.eosTokenIds
         if let tokenizerEos = tokenizer.eosTokenId {
@@ -863,6 +894,28 @@ actor BatchScheduler {
                 }
 
                 if accepted.count > 1 {
+                    let cohortCache = model.newCache(parameters: accepted[0].parameters)
+                    let requiresUniformOffsets = cohortCache.contains {
+                        $0 is UniformBatchKVCache
+                    }
+                    if requiresUniformOffsets {
+                        let hasMultimodalInput = accepted.contains {
+                            $0.input.image != nil || $0.input.video != nil
+                        }
+                        let useIndependentCaches =
+                            Self.requiresIndependentUniformCacheCohort(
+                                promptTokenCounts: accepted.map {
+                                    $0.input.text.tokens.size
+                                },
+                                hasMultimodalInput: hasMultimodalInput)
+                        for req in accepted {
+                            prefillOne(
+                                req,
+                                forceIndependentCaches: useIndependentCaches)
+                        }
+                        continue
+                    }
+
                     // Batch only cold, non-multimodal requests. A batched prefill starts
                     // from fresh caches, so routing a reusable radix hit through it would
                     // silently discard the cached prefix and misreport cached_tokens=0.
@@ -901,6 +954,26 @@ actor BatchScheduler {
                 // Drain any in-flight GPU work before exiting so synchronize() won't trap.
                 Stream.gpu.synchronize()
                 return
+            }
+
+            if case .independent = cacheMode {
+                let activeCount = decodeIndependentSlots()
+                totalTokensGenerated += activeCount
+                if activeCount > 0,
+                   totalTokensGenerated % 1024 < activeCount
+                {
+                    Memory.clearCache()
+                }
+                if stepCount % 512 == 0 {
+                    eval(slots.flatMap { slot in
+                        slot.prefillCaches.flatMap { $0.innerState() }
+                    })
+                }
+                stepCount += 1
+                if stepCount % 64 == 0 {
+                    await Task.yield()
+                }
+                continue
             }
 
             // --- Batched decode: build graph from lastTokenArray (CPU, ~2.7ms) ---
@@ -1214,7 +1287,10 @@ actor BatchScheduler {
     }
 
     /// Prefill a single request (B=1), then merge its cache into the batch.
-    private func prefillOne(_ req: PendingRequest) {
+    private func prefillOne(
+        _ req: PendingRequest,
+        forceIndependentCaches: Bool = false
+    ) {
         var cache = model.newCache(parameters: req.parameters)
         var generateInput = req.input
         var cachedTokens = 0
@@ -1397,22 +1473,27 @@ actor BatchScheduler {
                 ? nil
                 : String(describing: type(of: layerCache))
         }
-        if !unsupportedCacheTypes.isEmpty {
+        let usesIndependentCaches = forceIndependentCaches
+            || !unsupportedCacheTypes.isEmpty
+        if usesIndependentCaches {
             let types = Array(Set(unsupportedCacheTypes)).sorted().joined(separator: ",")
-            print("[\(batchTs())] [BatchScheduler] Dense batch cache unsupported (\(types)) — running serial")
-            runSerialGeneration(
-                req: req, cache: cache, modelState: result.state,
-                firstToken: tokenArray, inputTokens: inputTokens,
-                cachedTokens: cachedTokens, prefillStart: prefillStart, prefillTime: prefillTime,
-                cacheOutcome: cacheOutcome, cacheLookupTime: cacheLookupTime,
-                cacheRestoreTime: cacheRestoreTime, cacheTrimTime: cacheTrimTime,
-                cacheTruncateTime: cacheTruncateTime,
-                logitProcessor: logitProcessor, logitSampler: logitSampler
-            )
-            return
+            let reason = types.isEmpty
+                ? "non-uniform offsets or multimodal positions"
+                : "unsupported cache types: \(types)"
+            if case .empty = cacheMode {
+                cacheMode = .independent
+            } else if case .independent = cacheMode {
+                // All slots for one loaded model share the same cache family.
+            } else {
+                preconditionFailure(
+                    "Cannot mix dense and native cache cohorts for one loaded model")
+            }
+            print(
+                "[\(batchTs())] [BatchScheduler] Dense batch cache bypassed "
+                    + "(\(reason)) — retaining native request caches")
+        } else {
+            mergeCacheIntoBatch(individualCache: cache, modelState: result.state)
         }
-
-        mergeCacheIntoBatch(individualCache: cache, modelState: result.state)
 
         // Only count the un-cached suffix in prompt_tokens_total so the
         // counter reflects tokens the GPU actually prefilled, not tokens
@@ -1439,6 +1520,7 @@ actor BatchScheduler {
             prefixCacheTokens: prefixCacheTokens,
             prefixCacheStates: prefixCacheStates,
             prefixCacheMetaStates: prefixCacheMetaStates,
+            modelState: result.state,
             lastTokenId: firstToken,
             lastTokenArray: tokenArray,  // already eval'd — used as model input for first decode step
             sampler: logitSampler,
@@ -1535,147 +1617,120 @@ actor BatchScheduler {
         DebugLogger.log("[BatchScheduler] Prefilled slot req=\(slot.requestId) (B=\(slots.count), \(cachedTokens > 0 ? "cache hit \(cachedTokens) tokens" : "full prefill"), \(String(format: "%.0f", prefillTime * 1000))ms)")
     }
 
-    // MARK: - Serial Generation (non-batchable cache models)
+    // MARK: - Native-cache cohort decode
 
-    /// Run full generation for a model whose cache has no dense batch representation.
-    /// These caches cannot be coerced into BatchKVCacheSimple without corrupting their
-    /// model-specific state layout.
-    /// See: https://github.com/scouzi1966/maclocal-api/issues/66
-    private func runSerialGeneration(
-        req: PendingRequest, cache: [KVCache], modelState: LMOutput.State?,
-        firstToken: MLXArray, inputTokens: [Int],
-        cachedTokens: Int, prefillStart: Date, prefillTime: Double,
-        cacheOutcome: String, cacheLookupTime: Double?,
-        cacheRestoreTime: Double?, cacheTrimTime: Double?,
-        cacheTruncateTime: Double?,
-        logitProcessor: LogitProcessor?, logitSampler: LogitSampler
-    ) {
-        // `submit()` consumes a reservation before this fallback is selected.
-        // Unlike normal batched slots, this request is never appended to
-        // `slots`, so finishSlot(at:) cannot release its capacity or matcher.
-        defer {
-            clearCancellation(req.id)
-            req.constraintRuntimeConfig?.matcherHandle?.release()
-            _inFlightCount.withLock { $0 = max($0 - 1, 0) }
+    /// Advance every active request that owns a model-specific cache by one
+    /// token. Graphs are built with each concrete cache intact, then submitted
+    /// together so requests make fair progress without unsafe state coercion.
+    /// This is the fail-closed concurrency path for hybrid or custom caches;
+    /// architecture-specific dense adapters can still replace it later.
+    @discardableResult
+    private func decodeIndependentSlots() -> Int {
+        var cancelledIndices = slots.indices.filter {
+            isCancellationRequested(slots[$0].id)
         }
-
-        // Emit cached token count
-        if cachedTokens > 0 {
-            req.continuation.yield(StreamChunk(text: "", cachedTokens: cachedTokens))
+        for index in cancelledIndices.sorted().reversed() {
+            finishSlot(at: index)
         }
+        cancelledIndices.removeAll(keepingCapacity: true)
+        guard !slots.isEmpty else { return 0 }
 
-        print("[\(batchTs())] [BatchScheduler] Serial cache generation: prompt=\(inputTokens.count) tokens")
+        let activeSlotIDs = slots.map(\.id)
+        var sampledTokens: [MLXArray] = []
+        var sampledLogits: [MLXArray?] = []
+        sampledTokens.reserveCapacity(slots.count)
+        sampledLogits.reserveCapacity(slots.count)
 
-        // Build EOS set
-        var eosTokenIds = configuration.eosTokenIds
-        if let tokenizerEos = tokenizer.eosTokenId { eosTokenIds.insert(tokenizerEos) }
-        for token in configuration.extraEOSTokens {
-            if let id = tokenizer.convertTokenToId(token) { eosTokenIds.insert(id) }
-        }
-
-        // Decode loop — mirrors the batch decode step logic but for a single sequence
-        var processor = logitProcessor
-        var currentToken = firstToken
-        var state = modelState
-        var tokenCount = 0
-        var consecutiveSuppressedEndOfSequenceTokens = 0
-        let maxTokens = req.parameters.maxTokens ?? 4096
-        var detokenizer = NaiveStreamingDetokenizer(tokenizer: tokenizer)
-        let genStart = Date()
-        var terminalDisposition: TokenDisposition = .stop
-        var wasCancelled = false
-
-        while true {
-            if isCancellationRequested(req.id) {
-                wasCancelled = true
-                break
-            }
-            let tokenId = currentToken.item(Int.self)
-            let disposition = Self.tokenDisposition(
-                tokenCount: tokenCount,
-                maxTokens: maxTokens,
-                tokenID: tokenId,
-                unknownTokenID: tokenizer.unknownTokenId,
-                ignoreEndOfSequence: req.ignoreEndOfSequence,
-                eosTokenIDs: eosTokenIds,
-                consecutiveSuppressedEndOfSequenceTokens:
-                    consecutiveSuppressedEndOfSequenceTokens
+        for slot in slots {
+            let input = LMInput.Text(tokens: slot.lastTokenArray.reshaped([1, 1]))
+            let output = model(
+                input,
+                cache: slot.prefillCaches,
+                state: slot.modelState
             )
-            if disposition == .stop || disposition == .length {
-                terminalDisposition = disposition
-                break
-            }
-
-            if disposition == .suppress {
-                consecutiveSuppressedEndOfSequenceTokens += 1
-            } else {
-                consecutiveSuppressedEndOfSequenceTokens = 0
-                tokenCount += 1
-                detokenizer.append(token: tokenId)
-                if let chunk = detokenizer.next() {
-                    req.continuation.yield(StreamChunk(text: chunk))
-                }
-            }
-
-            // Next token — shape [1, 1] (batch=1, seqLen=1)
-            let input = LMInput.Text(tokens: currentToken.reshaped([1, 1]))
-            let output = model(input, cache: cache, state: state)
-            state = output.state
+            slot.modelState = output.state
 
             let logits = output.logits[0, -1, 0...]
-            let processed = processor?.process(logits: logits) ?? logits
-            currentToken = logitSampler.sample(logits: processed)
-            processor?.didSample(token: currentToken)
-            asyncEval(currentToken)
-            _ = currentToken.item(Int.self)
+            let processed = slot.processor?.process(logits: logits) ?? logits
+            let sampled = slot.sampler.sample(logits: processed)
+            sampledTokens.append(sampled)
+            sampledLogits.append(slot.computeLogprobs ? processed : nil)
         }
 
-        let generateTime = Date().timeIntervalSince(genStart)
-        print("[\(batchTs())] [BatchScheduler] Serial cache generation done: \(tokenCount) tokens, \(String(format: "%.1f", Double(tokenCount) / generateTime)) tok/s")
+        asyncEval(sampledTokens)
 
-        let completedAt = Date()
-        StatsAggregator.shared.observeRequest(
-            StatsAggregator.RequestObservation(
-                queuedAt: req.queuedAt.timeIntervalSince1970,
-                startedAt: prefillStart.timeIntervalSince1970,
-                firstTokenAt: tokenCount > 0 ? genStart.timeIntervalSince1970 : nil,
-                completedAt: completedAt.timeIntervalSince1970,
-                promptTokens: inputTokens.count,
-                generationTokens: tokenCount
+        var completedIndices: [Int] = []
+        for requestIndex in activeSlotIDs.indices {
+            guard let slotIndex = slots.firstIndex(where: {
+                $0.id == activeSlotIDs[requestIndex]
+            }) else { continue }
+            let slot = slots[slotIndex]
+
+            if isCancellationRequested(slot.id) {
+                completedIndices.append(slotIndex)
+                continue
+            }
+
+            let tokenArray = sampledTokens[requestIndex]
+            let token = tokenArray.item(Int.self)
+            slot.processor?.didSample(token: tokenArray)
+
+            let logprobsForToken = slot.pendingLogprobData.map { [resolveLogprob($0)] }
+            if slot.computeLogprobs, let logits = sampledLogits[requestIndex] {
+                slot.pendingLogprobData = computeTokenLogprobs(
+                    logits: logits,
+                    tokenId: token,
+                    temperature: slot.temperatureForLogprobs,
+                    topK: slot.topLogprobsCount
+                )
+            } else if slot.computeLogprobs {
+                slot.pendingLogprobData = nil
+            }
+
+            if slot.firstTokenTime == 0 {
+                let now = Date()
+                slot.firstTokenTime = now.timeIntervalSince(slot.startTime)
+                slot.firstTokenAt = now
+            }
+
+            let disposition = Self.tokenDisposition(
+                tokenCount: slot.tokenCount,
+                maxTokens: slot.maxTokens,
+                tokenID: token,
+                unknownTokenID: tokenizer.unknownTokenId,
+                ignoreEndOfSequence: slot.ignoreEndOfSequence,
+                eosTokenIDs: eosTokenIds,
+                consecutiveSuppressedEndOfSequenceTokens:
+                    slot.consecutiveSuppressedEndOfSequenceTokens
             )
-        )
-        let suffixPromptTokens = max(0, inputTokens.count - cachedTokens)
-        StatsAggregator.shared.addPromptTokens(suffixPromptTokens)
-        StatsAggregator.shared.addGenTokens(tokenCount)
-        if cachedTokens > 0 {
-            StatsAggregator.shared.cacheHit()
-        } else {
-            StatsAggregator.shared.cacheMiss()
+            if disposition == .stop || disposition == .length {
+                completedIndices.append(slotIndex)
+                continue
+            }
+
+            slot.lastTokenArray = tokenArray
+            slot.lastTokenId = token
+            if disposition == .suppress {
+                slot.consecutiveSuppressedEndOfSequenceTokens += 1
+                slot.pendingLogprobData = nil
+                continue
+            }
+
+            slot.consecutiveSuppressedEndOfSequenceTokens = 0
+            slot.tokenCount += 1
+            StatsAggregator.shared.addGenTokens(1)
+            slot.detokenizer.append(token: token)
+            if let chunk = slot.detokenizer.next(),
+               yieldTextChunk(chunk, for: slot, logprobs: logprobsForToken)
+            {
+                completedIndices.append(slotIndex)
+            }
         }
-        StatsAggregator.shared.requestSucceeded(reason: wasCancelled
-            ? "abort"
-            : (terminalDisposition == .length ? "length" : "stop"))
-        StatsAggregator.shared.requestCompleted()
 
-        if wasCancelled {
-            req.continuation.finish(throwing: CancellationError())
-            return
+        for index in Set(completedIndices).sorted().reversed() {
+            finishSlot(at: index)
         }
-
-        // Signal completion
-        req.continuation.yield(StreamChunk(
-            text: "",
-            promptTokens: inputTokens.count,
-            completionTokens: tokenCount,
-            cachedTokens: cachedTokens,
-            promptTime: prefillTime,
-            generateTime: generateTime,
-            stoppedBySequence: false
-        ))
-        req.continuation.finish()
-
-        // Prefix-cache persistence for model-specific hybrid caches requires a
-        // dedicated snapshot contract. Do not reinterpret their state as KVCacheSimple.
+        return activeSlotIDs.count
     }
 
     // MARK: - Batched Prefill
@@ -1700,8 +1755,10 @@ actor BatchScheduler {
         // Individual prefill adds <1% overhead (63ms for 15 requests vs 17s decode).
         let hasRotatingLayers = templateCache.contains { $0 is RotatingKVCache }
         let hasDeepseekHybridLayers = templateCache.contains { $0 is DeepseekV4Cache }
+        let requiresUniformOffsets = templateCache.contains { $0 is UniformBatchKVCache }
         let canBatch = !hasRotatingLayers
             && !hasDeepseekHybridLayers
+            && !requiresUniformOffsets
             && templateCache.allSatisfy(Self.supportsDenseBatchMerge)
         if !canBatch {
             for req in requests { prefillOne(req) }
@@ -1958,13 +2015,18 @@ actor BatchScheduler {
         case .empty:
             // B=0 → B=1: Keep individual caches if all are simple/batchable types (zero overhead)
             let allSimple = individualCache.allSatisfy {
-                $0 is KVCacheSimple || $0 is ArraysCache || $0 is CacheList
+                $0 is UniformBatchKVCache
+                || $0 is KVCacheSimple
+                || Self.isPlainBatchableArraysCache($0)
+                || $0 is CacheList
                 || $0 is DeepseekV4Cache
                 || ($0 as? RotatingKVCache)?.isBatchable == true
             }
             if allSimple {
                 batchCaches = individualCache.map { layerCache in
-                    if layerCache is ArraysCache && !(layerCache is CacheList) {
+                    if layerCache is UniformBatchKVCache {
+                        return layerCache
+                    } else if layerCache is ArraysCache && !(layerCache is CacheList) {
                         let copy = MambaCache()
                         copy.state = layerCache.state
                         return copy as KVCache
@@ -1995,7 +2057,11 @@ actor BatchScheduler {
             // B=1 → B≥2: Promote existing + new to batch caches
             Stream.gpu.synchronize()  // Ensure B=1 cache arrays are fully evaluated
             batchCaches = zip(batchCaches, individualCache).map { existing, new in
-                if existing is DeepseekV4Cache, new is DeepseekV4Cache {
+                if let uniform = existing as? UniformBatchKVCache,
+                   new is UniformBatchKVCache
+                {
+                    return uniform.mergedUniformBatch([existing, new])
+                } else if existing is DeepseekV4Cache, new is DeepseekV4Cache {
                     return BatchDeepseekV4Cache.merge([existing, new]) as KVCache
                 } else if let existingCL = existing as? CacheList, new is CacheList {
                     return BatchCacheList.merge([existingCL, new], leftPadding: [0, 0]) as KVCache
@@ -2014,7 +2080,11 @@ actor BatchScheduler {
         case .batched:
             // B≥2 → B+1: Extend existing batch caches
             for layer in 0..<batchCaches.count where layer < individualCache.count {
-                if let batchDeepseek = batchCaches[layer] as? BatchDeepseekV4Cache,
+                if let uniform = batchCaches[layer] as? UniformBatchKVCache,
+                   individualCache[layer] is UniformBatchKVCache
+                {
+                    uniform.extendUniformBatch(with: individualCache[layer])
+                } else if let batchDeepseek = batchCaches[layer] as? BatchDeepseekV4Cache,
                    let newDeepseek = individualCache[layer] as? DeepseekV4Cache {
                     batchDeepseek.extend(with: newDeepseek)
                 } else if let batchBCL = batchCaches[layer] as? BatchCacheList,
@@ -2039,6 +2109,10 @@ actor BatchScheduler {
                     (batchCaches[layer] as! BatchKVCacheSimple).extend(with: singleBatch)
                 }
             }
+
+        case .independent:
+            preconditionFailure(
+                "Native-cache cohorts must not enter dense cache merging")
         }
 
         // Merge model cross-attention state if present
@@ -2174,10 +2248,15 @@ actor BatchScheduler {
             switch cacheMode {
             case .unbatched:
                 break  // B=1 finishing but keepIndices not empty — unreachable
+            case .independent:
+                // Each surviving slot owns its concrete cache and model state.
+                break
             case .batched:
                 let idxArray = MLXArray(keepIndices.map { Int32($0) })
                 for layer in 0..<batchCaches.count {
-                    if let deepseekCache = batchCaches[layer] as? BatchDeepseekV4Cache {
+                    if let uniform = batchCaches[layer] as? UniformBatchKVCache {
+                        uniform.filterUniformBatch(keepIndices)
+                    } else if let deepseekCache = batchCaches[layer] as? BatchDeepseekV4Cache {
                         deepseekCache.filter(keepIndices)
                     } else if let bclCache = batchCaches[layer] as? BatchCacheList {
                         // Filter each sub-cache inside the CacheList

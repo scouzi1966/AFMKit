@@ -3,7 +3,9 @@
 Status: performance gate passed, compatibility qualification in progress,
 updated 2026-09-02. The implementation on `perf/qwen-next-qsa-gather` now meets
 the four-context, no-MTP throughput target without feature environment variables.
-Cache, concurrency, model-lifecycle, and MTP qualification remain before release.
+Native concurrency and radix-prefix-cache qualification now pass through eight
+simultaneous requests. Model-lifecycle, full API, and MTP qualification remain
+before release; further prefill optimization is deliberately deferred.
 
 This document records why Qwen3.8 Flash Next initially decoded much more slowly
 through AFMKit than through the reproduced reference engine, what has been
@@ -22,18 +24,22 @@ reference at every measured prefill and decode point.
   4K context.
 - AFMKit's initial comparable no-MTP run reached approximately **39.5 decode
   tok/s** and **850 prefill tok/s**.
-- The current default path reaches **909.8/61.7 tok/s** at 0.5K and
-  **1160.0/49.4 tok/s** at 4K. It passes all eight prefill/decode floors and its
-  saved responses are coherent.
+- The current default path reaches **893.2/67.44 tok/s** at 0.5K and
+  **1178.1/59.10 tok/s** at 4K in the latest same-checkpoint comparison. It
+  passes all eight prefill/decode floors and its saved responses are coherent.
 - The decisive fix gives every Swift `CompiledFunction` an explicitly owned MLX
   compile cache. This makes compiled Qwen GDN, attention, and layer-tail regions
   safe across Swift executor threads and across model destruction/reload.
 - On Apple GPU family 9 and newer, those model-owned compiled regions are now the
   default. Environment variables remain diagnostic kill switches, not required
   performance configuration.
-- The remaining parity gap is approximately 0.5-0.6 ms/token at 0.5-1K and
-  1.7 ms/token at 2-4K. Its context-dependent shape points to QSA gather and
-  attention as the next measured boundary; it does not block the 10% gate.
+- The current native-cache scheduler reaches **180.4 aggregate end-to-end
+  tok/s at eight-way concurrency**, versus **154.1 tok/s** for the reproduced
+  same-checkpoint reference. Eight simultaneous radix-cache hits reached
+  **196.6 aggregate tok/s**, with 43 of 44 prompt tokens restored per request.
+- Decode is now 1.2-3.3% faster than the latest reproduced reference across the
+  first-four context curve. Further QSA work is optional headroom rather than a
+  parity blocker.
 
 ## Qualification boundary
 
@@ -73,8 +79,9 @@ four context sizes have now been rerun and pass these 10% floors:
 | 2K | 1185.0 | 1066.5 | 56.9 | 51.21 |
 | 4K | 1246.0 | 1121.4 | 54.1 | 48.69 |
 
-Correctness, radix/prefix-cache behavior, continuous batching, concurrent
-requests, model lifecycle, and MTP remain mandatory release gates.
+Correctness, radix/prefix-cache behavior, and continuous batching now pass
+through eight simultaneous requests. Model lifecycle, complete API behavior,
+and MTP remain mandatory release gates.
 
 ## Reproduced results
 
@@ -559,6 +566,57 @@ Decode therefore meets the parity target across the complete first-four curve.
 Prefill is within two percent through 2K; the remaining performance target is
 the 4K prefill row, not decode.
 
+## Continuous concurrency and radix-cache result
+
+Qwen Next cannot safely enter the generic padded-KV batching path: its cache
+contains attention, GDN convolution/recurrent state, PLE history, QSA index
+state, and host n-gram metadata. AFMKit now exposes an explicit
+`UniformBatchKVCache` contract. Equal-offset text requests merge those native
+caches along batch dimension zero. Mixed offsets and multimodal positions keep
+one concrete cache per request; their lazy graphs are still submitted together
+so every request progresses without a blocking serial fallback.
+
+The compiled GDN decode closure remains active at B=1. MLX currently traces
+that closure for the singleton recurrent shape, so B>1 uses the equivalent
+eager GDN graph rather than reusing a shape-unsafe compiled closure. This split
+preserves the qualified single-request latency while preventing the prior B=2
+process termination.
+
+```mermaid
+flowchart TD
+    A[Admit request cohort] --> B{Native Qwen cache offsets equal?}
+    B -- yes --> C[Merge native cache arrays on batch axis 0]
+    C --> D[Dense batched Qwen decode]
+    D --> E[B=1 compiled GDN or B>1 eager batch-safe GDN]
+    B -- no or multimodal --> F[Retain one concrete cache per request]
+    F --> G[Build independent lazy graphs]
+    G --> H[Submit graph cohort with asyncEval]
+    E --> I[Per-request detokenize, stop, cancellation, and cache save]
+    H --> I
+```
+
+Fresh same-checkpoint measurements used a 44-token prompt, 256 generated
+tokens per request, temperature 0, no MTP or prompt-lookup speculation, and no
+prefix cache. Each width received an unmeasured same-width warmup. Aggregate
+end-to-end throughput is total completed tokens divided by cohort wall time;
+aggregate decode throughput divides the same token total by the slowest
+API-reported decode window.
+
+| Concurrency | Reference e2e tok/s | AFM e2e tok/s | Difference | Reference decode tok/s | AFM decode tok/s | Difference |
+|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 54.990 | 57.957 | +5.4% | 63.941 | 67.930 | +6.2% |
+| 2 | 75.296 | 79.767 | +5.9% | 85.451 | 88.458 | +3.5% |
+| 4 | 114.951 | 125.659 | +9.3% | 131.305 | 136.151 | +3.7% |
+| 8 | 154.081 | 180.408 | +17.1% | 177.459 | 191.283 | +7.8% |
+
+All 30 measured engine responses reached the 256-token cap and retained
+coherent, request-appropriate content. In a separate AFM cache qualification,
+all eight simultaneous requests restored 43/44 prompt tokens, prompt
+processing reached 1,722-2,446 tok/s per request, and aggregate end-to-end
+throughput reached 196.552 tok/s. Raw response JSON, curl timings, launch
+commands, commit IDs, and binary hashes are retained under
+`/Volumes/edata/afm-release-artifacts/qwen-next-afm-current/concurrency-throughput-20260902/`.
+
 ## PLE and n-gram lookup findings
 
 Both engines synchronize the sampled token at Qwen Next's PLE boundary, hash a
@@ -592,36 +650,36 @@ consumed so cancellation, radix restore, and MTP rollback remain exact.
 
 ## Remaining work
 
-The no-MTP decode and saved-response coherence gates are complete. Live checks
-also passed client-disconnect recovery and strict MTP execution. Prefix/radix
-reuse and true concurrent execution for Qwen's model-specific hybrid caches
-remain the next qualification boundary. Remaining release work is:
+The no-MTP decode, saved-response coherence, native concurrency, radix reuse,
+client-disconnect recovery, and strict MTP execution gates are complete.
+Remaining release work is:
 
-1. Close the 4K prefill gap without regressing the first three rows. Keep the
-   architecture-owned 8,192-token step recommendation; the 4K prompt already
-   executes as one pass, so smaller generic chunking is not the likely fix.
-2. Complete prefix/radix-cache reuse and concurrency for the model-specific
-   Qwen attention and recurrent caches without coercing their state layouts.
-3. Exercise repeated model construction/destruction and independently compiled
+1. Exercise repeated model construction/destruction and independently compiled
    closures to prove that graphs do not cross model lifetimes or executors.
-4. Run the complete streaming, tool-calling, structured-output, and evaluation
+2. Run the complete streaming, tool-calling, structured-output, and evaluation
    suites with the ladder enabled by default.
-5. Keep MTP throughput and acceptance separate from base decode. Strict MTP is
+3. Keep MTP throughput and acceptance separate from base decode. Strict MTP is
    functionally correct but materially slower than autoregressive decode and
    needs its own optimization workstream.
-6. Evaluate owned zero-copy PLE output buffers for hot prefill. Do not expose
+4. Transfer only the generic cache-safety and scheduler changes to other model
+   families, with same-checkpoint throughput measurements before enabling any
+   architecture-specific batching policy.
+5. Later, close the 4K prefill gap without regressing the first three rows.
+   Keep the architecture-owned 8,192-token step recommendation; the 4K prompt
+   already executes as one pass, so smaller generic chunking is not the likely
+   fix.
+6. Later, evaluate owned zero-copy PLE output buffers for hot prefill. Do not expose
    the entire 30 GB mmap as an MLX array, and do not repeat the already-ported
    worker pool.
 
 ```mermaid
 flowchart LR
-    A[Decode parity passed] --> B[4K prefill optimization]
-    A --> C[Cache and concurrency qualification]
-    B --> D[Lifecycle and API qualification]
-    C --> D
+    A[Decode parity passed] --> C[Cache and concurrency passed]
+    C --> D[Lifecycle and API qualification]
     D --> E[Full evaluation suite]
     E --> F[Release-ready no-MTP record]
     A --> G[Separate MTP optimization]
+    F --> B[Deferred 4K prefill optimization]
 ```
 
 ## Reproduction and diagnostics

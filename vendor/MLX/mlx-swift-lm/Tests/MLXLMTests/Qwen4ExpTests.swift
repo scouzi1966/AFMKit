@@ -8,6 +8,65 @@ import MLXNN
 import XCTest
 
 final class Qwen4ExpTests: XCTestCase {
+    func testCompiledGDNDecodeRemainsSingleRequestOnly() {
+        XCTAssertTrue(qwen4ExpShouldUseCompiledGDNDecode(
+            compileEnabled: true,
+            batchSize: 1,
+            sequenceLength: 1,
+            hasVerificationPolicy: false))
+        XCTAssertFalse(qwen4ExpShouldUseCompiledGDNDecode(
+            compileEnabled: true,
+            batchSize: 2,
+            sequenceLength: 1,
+            hasVerificationPolicy: false))
+        XCTAssertFalse(qwen4ExpShouldUseCompiledGDNDecode(
+            compileEnabled: true,
+            batchSize: 1,
+            sequenceLength: 2,
+            hasVerificationPolicy: false))
+        XCTAssertFalse(qwen4ExpShouldUseCompiledGDNDecode(
+            compileEnabled: true,
+            batchSize: 1,
+            sequenceLength: 1,
+            hasVerificationPolicy: true))
+    }
+
+    func testQwenAttentionCacheUniformBatchMergeAndFilter() throws {
+        func makeCache(seed: Float) -> Qwen4ExpAttentionCache {
+            let cache = Qwen4ExpAttentionCache(indexerCompressRatio: 4)
+            cache.state = [
+                MLXArray.full([1, 2, 3, 4], values: MLXArray(seed)),
+                MLXArray.full([1, 2, 3, 4], values: MLXArray(seed + 1)),
+                MLXArray.full([1, 3, 5], values: MLXArray(seed + 2)),
+                MLXArray([Int32(0), 1, 2]).reshaped(1, 3),
+            ]
+            return cache
+        }
+
+        let first = makeCache(seed: 10)
+        let second = makeCache(seed: 20)
+        let third = makeCache(seed: 30)
+        let merged = try XCTUnwrap(
+            first.mergedUniformBatch([first, second])
+                as? Qwen4ExpAttentionCache)
+        XCTAssertEqual(merged.offset, 3)
+        XCTAssertEqual(merged.state.map { $0.dim(0) }, [2, 2, 2, 2])
+
+        merged.extendUniformBatch(with: third)
+        XCTAssertEqual(merged.offset, 3)
+        XCTAssertEqual(merged.state.map { $0.dim(0) }, [3, 3, 3, 3])
+
+        merged.filterUniformBatch([2])
+        MLX.eval(merged.state)
+        XCTAssertEqual(merged.state.map { $0.dim(0) }, [1, 1, 1, 1])
+        XCTAssertEqual(
+            merged.state[0].asArray(Float.self),
+            third.state[0].asArray(Float.self))
+        XCTAssertEqual(
+            merged.state[1].asArray(Float.self),
+            third.state[1].asArray(Float.self))
+    }
+
     func testQwenFusedGatedNormMatchesComposedBF16Path() throws {
         let previous = getenv("AFM_QWEN_FUSED_GDN_NORM_GATE")
             .map { String(cString: $0) }

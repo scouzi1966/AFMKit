@@ -517,7 +517,7 @@ final class Qwen4ExpMultimodalRoPE {
     }
 }
 
-final class Qwen4ExpAttentionCache: KVCache {
+final class Qwen4ExpAttentionCache: KVCache, UniformBatchKVCache {
     var offset = 0
     var offsetArray: MLXArray? { nil }
     var maxSize: Int? { nil }
@@ -682,6 +682,46 @@ final class Qwen4ExpAttentionCache: KVCache {
     func innerState() -> [MLXArray] {
         state
     }
+
+    func mergedUniformBatch(_ caches: [KVCache]) -> KVCache {
+        let typed = caches.map {
+            guard let cache = $0 as? Qwen4ExpAttentionCache else {
+                preconditionFailure("Qwen attention cache batch type mismatch")
+            }
+            return cache
+        }
+        precondition(!typed.isEmpty)
+        precondition(typed.allSatisfy { $0.offset == typed[0].offset })
+        let states = typed.map(\.state)
+        precondition(states.allSatisfy { $0.count == states[0].count })
+
+        let merged = Qwen4ExpAttentionCache(
+            indexerCompressRatio: indexerCompressRatio)
+        merged.state = states[0].indices.map { stateIndex in
+            concatenated(states.map { $0[stateIndex] }, axis: 0)
+        }
+        return merged
+    }
+
+    func extendUniformBatch(with cache: KVCache) {
+        guard let cache = cache as? Qwen4ExpAttentionCache else {
+            preconditionFailure("Qwen attention cache batch type mismatch")
+        }
+        precondition(offset == cache.offset)
+        let existingState = state
+        let newState = cache.state
+        precondition(existingState.count == newState.count)
+        state = zip(existingState, newState).map {
+            concatenated([$0.0, $0.1], axis: 0)
+        }
+        clearMTPVerification()
+    }
+
+    func filterUniformBatch(_ indices: [Int]) {
+        let indexArray = MLXArray(indices.map(Int32.init))
+        state = state.map { $0[indexArray] }
+        clearMTPVerification()
+    }
 }
 
 /// Per-layer recurrent cache metadata used to commit a partially accepted
@@ -690,7 +730,7 @@ final class Qwen4ExpAttentionCache: KVCache {
 /// The arrays are lazy, zero-copy references to the pre-verification state
 /// and already-computed projection inputs. A rejected suffix therefore only
 /// reruns the small Gated Delta state transition and PLE rolling buffers.
-private final class Qwen4ExpLayerCache: ArraysCache {
+private final class Qwen4ExpLayerCache: ArraysCache, UniformBatchKVCache {
     struct GatedDeltaRollback {
         let convolutionState: MLXArray
         let recurrentState: MLXArray
@@ -731,6 +771,45 @@ private final class Qwen4ExpLayerCache: ArraysCache {
         gatedDeltaRollback = nil
         pleRollback = nil
         mtpVerificationWidth = nil
+    }
+
+    func mergedUniformBatch(_ caches: [KVCache]) -> KVCache {
+        let typed = caches.map {
+            guard let cache = $0 as? Qwen4ExpLayerCache else {
+                preconditionFailure("Qwen recurrent cache batch type mismatch")
+            }
+            return cache
+        }
+        precondition(!typed.isEmpty)
+        let states = typed.map(\.state)
+        precondition(states.allSatisfy { $0.count == states[0].count })
+
+        let merged = Qwen4ExpLayerCache()
+        merged.state = states[0].indices.map { stateIndex in
+            concatenated(states.map { $0[stateIndex] }, axis: 0)
+        }
+        return merged
+    }
+
+    func extendUniformBatch(with cache: KVCache) {
+        guard let cache = cache as? Qwen4ExpLayerCache else {
+            preconditionFailure("Qwen recurrent cache batch type mismatch")
+        }
+        let existingState = state
+        let newState = cache.state
+        precondition(existingState.count == newState.count)
+        state = zip(existingState, newState).map {
+            concatenated([$0.0, $0.1], axis: 0)
+        }
+        hostNGramHistory = nil
+        clearMTPRollback()
+    }
+
+    func filterUniformBatch(_ indices: [Int]) {
+        let indexArray = MLXArray(indices.map(Int32.init))
+        state = state.map { $0[indexArray] }
+        hostNGramHistory = nil
+        clearMTPRollback()
     }
 }
 
@@ -1993,6 +2072,19 @@ private final class Qwen4ExpAttention: Module {
 
 // MARK: - Gated DeltaNet
 
+@inline(__always)
+func qwen4ExpShouldUseCompiledGDNDecode(
+    compileEnabled: Bool,
+    batchSize: Int,
+    sequenceLength: Int,
+    hasVerificationPolicy: Bool
+) -> Bool {
+    compileEnabled
+        && batchSize == 1
+        && sequenceLength == 1
+        && !hasVerificationPolicy
+}
+
 private final class Qwen4ExpGatedDeltaNet: Module {
     private static let compileDecode =
         ProcessInfo.processInfo.environment["AFM_QWEN_COMPILE_GDN_DECODE"] != "0"
@@ -2136,7 +2228,17 @@ private final class Qwen4ExpGatedDeltaNet: Module {
         verificationPolicy: MTPVerificationPolicy?
     ) -> MLXArray {
         let (b, l) = (x.dim(0), x.dim(1))
-        if Self.compileDecode, verificationPolicy == nil, l == 1 {
+        // The compiled recurrent closure is traced for the single-request
+        // decode shape. Reusing that trace for a dense B>1 cohort currently
+        // terminates inside MLX before Swift can surface an error. Keep the
+        // proven compiled path for latency-sensitive B=1 decode and use the
+        // batch-safe eager GDN graph for concurrent cohorts.
+        if qwen4ExpShouldUseCompiledGDNDecode(
+            compileEnabled: Self.compileDecode,
+            batchSize: b,
+            sequenceLength: l,
+            hasVerificationPolicy: verificationPolicy != nil)
+        {
             let convolutionState = cache?[0] ?? MLXArray.zeros(
                 [b, convKernel - 1, keyDim * 2 + valueDim], dtype: x.dtype)
             let recurrentState = cache?[1] ?? MLXArray.zeros(
