@@ -173,6 +173,165 @@ final class GLM5NextArchitectureTests: XCTestCase {
         XCTAssertEqual(attention.qANorm.eps, 1e-5)
     }
 
+    func testClampedSwiGLUPreservesQuantizedProjectionActivationDType() {
+        let gate = MLXArray([Float(-12), -2, 2, 12]).asType(.bfloat16)
+        let up = MLXArray([Float(-12), -2, 2, 12]).asType(.bfloat16)
+
+        let output = glm5NextClampedSwiGLU(gate: gate, up: up, limit: 10)
+        let expected = silu(minimum(gate, Float(10)))
+            * maximum(minimum(up, Float(10)), Float(-10))
+        MLX.eval(output, expected)
+
+        XCTAssertEqual(output.dtype, .bfloat16)
+        XCTAssertTrue(allClose(output, expected, rtol: 0, atol: 0).item())
+    }
+
+    func testSparseAttentionFastSDPAIsExplicitAndFailsClosed() {
+        XCTAssertTrue(GLM5NextSparseAttention.fastSDPAEnabled(override: nil))
+        XCTAssertFalse(GLM5NextSparseAttention.fastSDPAEnabled(override: "0"))
+        XCTAssertTrue(GLM5NextSparseAttention.fastSDPAEnabled(override: "1"))
+        XCTAssertTrue(GLM5NextSparseAttention.fastSDPAEnabled(override: "TRUE"))
+
+        XCTAssertTrue(GLM5NextSparseAttention.canUseFastSDPA(
+            enabled: true, batch: 1, length: 1,
+            hasSelection: false, hasCacheMask: false))
+        XCTAssertFalse(GLM5NextSparseAttention.canUseFastSDPA(
+            enabled: false, batch: 1, length: 1,
+            hasSelection: false, hasCacheMask: false))
+        XCTAssertFalse(GLM5NextSparseAttention.canUseFastSDPA(
+            enabled: true, batch: 2, length: 1,
+            hasSelection: false, hasCacheMask: false))
+        XCTAssertFalse(GLM5NextSparseAttention.canUseFastSDPA(
+            enabled: true, batch: 1, length: 2,
+            hasSelection: false, hasCacheMask: false))
+        XCTAssertFalse(GLM5NextSparseAttention.canUseFastSDPA(
+            enabled: true, batch: 1, length: 1,
+            hasSelection: true, hasCacheMask: false))
+        XCTAssertFalse(GLM5NextSparseAttention.canUseFastSDPA(
+            enabled: true, batch: 1, length: 1,
+            hasSelection: false, hasCacheMask: true))
+    }
+
+    func testHyperConnectionFusedHC4IsExplicitAndFailsClosed() {
+        XCTAssertFalse(GLM5NextHyperConnection.fusedHC4Enabled(override: nil))
+        XCTAssertFalse(GLM5NextHyperConnection.fusedHC4Enabled(override: "0"))
+        XCTAssertTrue(GLM5NextHyperConnection.fusedHC4Enabled(override: "1"))
+        XCTAssertTrue(GLM5NextHyperConnection.fusedHC4Enabled(override: "TRUE"))
+
+        XCTAssertTrue(GLM5NextHyperConnection.canUseFusedHC4(
+            enabled: true, multiplier: 4, batch: 1, length: 1,
+            dtype: .bfloat16, deviceType: .gpu))
+        XCTAssertFalse(GLM5NextHyperConnection.canUseFusedHC4(
+            enabled: false, multiplier: 4, batch: 1, length: 1,
+            dtype: .bfloat16, deviceType: .gpu))
+        XCTAssertFalse(GLM5NextHyperConnection.canUseFusedHC4(
+            enabled: true, multiplier: 2, batch: 1, length: 1,
+            dtype: .bfloat16, deviceType: .gpu))
+        XCTAssertFalse(GLM5NextHyperConnection.canUseFusedHC4(
+            enabled: true, multiplier: 4, batch: 2, length: 1,
+            dtype: .bfloat16, deviceType: .gpu))
+        XCTAssertFalse(GLM5NextHyperConnection.canUseFusedHC4(
+            enabled: true, multiplier: 4, batch: 1, length: 2,
+            dtype: .bfloat16, deviceType: .gpu))
+        XCTAssertFalse(GLM5NextHyperConnection.canUseFusedHC4(
+            enabled: true, multiplier: 4, batch: 1, length: 1,
+            dtype: .float32, deviceType: .gpu))
+        XCTAssertFalse(GLM5NextHyperConnection.canUseFusedHC4(
+            enabled: true, multiplier: 4, batch: 1, length: 1,
+            dtype: .bfloat16, deviceType: .cpu))
+    }
+
+    func testHyperConnectionFusedHC4MatchesGenericDecodeCollapseAndExpand() throws {
+        MLXRandom.seed(149)
+        let data = try XCTUnwrap(tinyConfigurationData(
+            hiddenSize: 64, hcMultiplier: 4))
+        let config = try JSONDecoder().decode(GLM5NextConfiguration.self, from: data)
+        let ordinary = GLM5NextHyperConnection(
+            config.textConfig, fusedHC4Override: "0")
+        let fused = GLM5NextHyperConnection(
+            config.textConfig, fusedHC4Override: "1")
+
+        ordinary.update(parameters: ordinary.mapParameters { array in
+            let values = MLXRandom.uniform(low: -0.15, high: 0.15, array.shape)
+            return values.asType(.bfloat16)
+        })
+        fused.update(parameters: ordinary.parameters())
+
+        for dtype in [DType.float16, .bfloat16] {
+            let streams = MLXRandom.uniform(low: -0.75, high: 0.75, [1, 1, 4, 64])
+                .asType(dtype)
+            let blockOutput = MLXRandom.uniform(low: -0.5, high: 0.5, [1, 1, 64])
+                .asType(dtype)
+            let expectedCollapse = ordinary.collapse(streams)
+            let actualCollapse = fused.collapse(streams)
+            let expectedExpand = ordinary.expand(
+                blockOutput,
+                residual: streams,
+                post: expectedCollapse.1,
+                combination: expectedCollapse.2)
+            let actualExpand = fused.expand(
+                blockOutput,
+                residual: streams,
+                post: actualCollapse.1,
+                combination: actualCollapse.2)
+            MLX.eval(
+                expectedCollapse.0, expectedCollapse.1, expectedCollapse.2,
+                actualCollapse.0, actualCollapse.1, actualCollapse.2,
+                expectedExpand, actualExpand)
+
+            XCTAssertEqual(actualCollapse.0.dtype, dtype)
+            XCTAssertEqual(actualExpand.dtype, dtype)
+            XCTAssertTrue(allClose(
+                actualCollapse.0, expectedCollapse.0,
+                rtol: 2e-3, atol: 2e-3).item(Bool.self))
+            XCTAssertTrue(allClose(
+                actualCollapse.1, expectedCollapse.1,
+                rtol: 2e-4, atol: 2e-4).item(Bool.self))
+            XCTAssertTrue(allClose(
+                actualCollapse.2, expectedCollapse.2,
+                rtol: 2e-4, atol: 2e-4).item(Bool.self))
+            XCTAssertTrue(allClose(
+                actualExpand, expectedExpand,
+                rtol: 3e-3, atol: 3e-3).item(Bool.self))
+            XCTAssertEqual(
+                argMax(actualExpand.flattened()).item(Int.self),
+                argMax(expectedExpand.flattened()).item(Int.self))
+        }
+    }
+
+    func testSparseAttentionFastSDPAMatchesManualDecodeAndGreedyChoice() throws {
+        let data = try XCTUnwrap(tinyConfigurationData())
+        let config = try JSONDecoder().decode(GLM5NextConfiguration.self, from: data)
+        let attention = GLM5NextSparseAttention(config.textConfig)
+
+        for dtype in [DType.float16, .bfloat16] {
+            let query = MLXArray([
+                Float(0.25), Float(-0.5), Float(0.75), Float(0.125),
+                Float(-0.375), Float(0.625), Float(0.5), Float(-0.25),
+            ]).reshaped(1, 2, 1, 4).asType(dtype)
+            let key = MLXArray((0 ..< 64).map {
+                Float(($0 % 11) - 5) / 13
+            }).reshaped(1, 1, 16, 4).asType(dtype)
+            let value = MLXArray((0 ..< 64).map {
+                Float(($0 % 7) - 3) / 9
+            }).reshaped(1, 1, 16, 4).asType(dtype)
+            let allTrue = MLXArray.ones([1, 1, 1, 16], dtype: .bool)
+
+            let manual = attention.manualAttentionForTesting(
+                query: query, key: key, value: value, mask: allTrue)
+            let fast = attention.fastAttentionForTesting(
+                query: query, key: key, value: value)
+            MLX.eval(manual, fast)
+
+            XCTAssertEqual(fast.shape, manual.shape)
+            XCTAssertEqual(fast.dtype, dtype)
+            XCTAssertTrue(allClose(fast, manual, rtol: 2e-3, atol: 2e-3).item())
+            XCTAssertEqual(
+                argMax(fast.flattened()).item(Int.self),
+                argMax(manual.flattened()).item(Int.self))
+        }
+    }
+
     func testHybridModelCreatesArchitectureSpecificCachesAndRunsTinyForward() throws {
         let data = try XCTUnwrap(tinyConfigurationData())
         let config = try JSONDecoder().decode(GLM5NextConfiguration.self, from: data)
@@ -295,7 +454,425 @@ final class GLM5NextArchitectureTests: XCTestCase {
         XCTAssertEqual(linearCache[1]?.dtype, .float32)
     }
 
+    func testLinearAttentionFusedAffineDecodeProjectionsMatchUnfusedOutputs() throws {
+        let attention = try quantizedLinearAttention(hiddenSize: 64)
+        let input = MLXArray((0 ..< 64).map { Float16(Float($0) / 64) })
+            .reshaped(1, 1, 64)
+
+        let expected = attention.inputProjections(input, useFusion: false)
+        MLX.eval(expected.q, expected.k, expected.v, expected.fA, expected.gA, expected.b)
+        XCTAssertTrue(attention.prepareFusedInputProjections())
+        let actual = attention.inputProjections(input)
+        MLX.eval(actual.q, actual.k, actual.v, actual.fA, actual.gA, actual.b)
+
+        XCTAssertTrue(attention.usesFusedInputProjections)
+        for (fused, unfused) in [
+            (actual.q, expected.q), (actual.k, expected.k), (actual.v, expected.v),
+            (actual.fA, expected.fA), (actual.gA, expected.gA), (actual.b, expected.b),
+        ] {
+            XCTAssertEqual(fused.shape, unfused.shape)
+            XCTAssertEqual(fused.dtype, unfused.dtype)
+            XCTAssertTrue(allClose(fused, unfused, rtol: 0, atol: 0).item(Bool.self))
+        }
+    }
+
+    func testLinearAttentionProductionAffineFusionPreservesParametersAndSerialization() throws {
+        let attention = try quantizedLinearAttention(
+            hiddenSize: 128,
+            groupSize: 64,
+            sourceDType: .bfloat16)
+        let input = MLXArray((0 ..< 128).map { Float($0) / 128 })
+            .asType(.bfloat16)
+            .reshaped(1, 1, 128)
+        let before = Dictionary(uniqueKeysWithValues: attention.parameters().flattened().map {
+            ($0.0, (shape: $0.1.shape, dtype: $0.1.dtype))
+        })
+        let expected = attention.inputProjections(input, useFusion: false)
+        MLX.eval(expected.q, expected.k, expected.v, expected.fA, expected.gA, expected.b)
+
+        XCTAssertTrue(attention.prepareFusedInputProjections())
+        let actual = attention.inputProjections(input)
+        MLX.eval(actual.q, actual.k, actual.v, actual.fA, actual.gA, actual.b)
+        let after = Dictionary(uniqueKeysWithValues: attention.parameters().flattened().map {
+            ($0.0, (shape: $0.1.shape, dtype: $0.1.dtype))
+        })
+
+        XCTAssertEqual(Set(after.keys), Set(before.keys))
+        for (key, metadata) in before {
+            XCTAssertEqual(after[key]?.shape, metadata.shape, key)
+            XCTAssertEqual(after[key]?.dtype, metadata.dtype, key)
+        }
+        let q = try XCTUnwrap(attention.qProj as? QuantizedLinear)
+        XCTAssertEqual(q.weight.dtype, .uint32)
+        XCTAssertEqual(q.scales.dtype, .bfloat16)
+        XCTAssertEqual(q.biases?.dtype, .bfloat16)
+        for (fused, unfused) in [
+            (actual.q, expected.q), (actual.k, expected.k), (actual.v, expected.v),
+            (actual.fA, expected.fA), (actual.gA, expected.gA), (actual.b, expected.b),
+        ] {
+            XCTAssertTrue(allClose(fused, unfused, rtol: 0, atol: 0).item(Bool.self))
+        }
+
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("linear-attention.safetensors")
+        try MLX.save(
+            arrays: Dictionary(uniqueKeysWithValues: attention.parameters().flattened()),
+            url: url)
+        let serialized = try MLX.loadArrays(url: url)
+        XCTAssertEqual(Set(serialized.keys), Set(after.keys))
+        for (key, array) in serialized {
+            XCTAssertEqual(array.shape, after[key]?.shape, key)
+            XCTAssertEqual(array.dtype, after[key]?.dtype, key)
+            let source = try XCTUnwrap(
+                Dictionary(uniqueKeysWithValues: attention.parameters().flattened())[key])
+            XCTAssertTrue(
+                allClose(array, source, rtol: 0, atol: 0).item(Bool.self),
+                "serialized parameter value changed: \(key)")
+        }
+    }
+
+    func testModelParameterUpdateInvalidatesAndRebuildsProjectionFusion() throws {
+        let data = try XCTUnwrap(tinyConfigurationData(hiddenSize: 64))
+        let config = try JSONDecoder().decode(GLM5NextConfiguration.self, from: data)
+        let model = GLM5NextModel(config)
+        quantize(
+            model: model,
+            groupSize: 32,
+            bits: 4,
+            mode: .affine,
+            filter: { path, _ in
+                path.hasPrefix("model.layers.0.self_attn.")
+                    && Self.fusedProjectionPaths.contains(
+                        String(path.dropFirst("model.layers.0.self_attn.".count)))
+            })
+        try model.update(parameters: ModuleParameters(values: [:]), verify: .none)
+        let layer = try XCTUnwrap(model.loraLayers.first as? GLM5NextDecoderLayer)
+        let attention = try XCTUnwrap(layer.attention as? GLM5NextLinearAttention)
+        XCTAssertFalse(model.hasPreparedPerformanceCaches)
+        XCTAssertFalse(attention.usesFusedInputProjections)
+        model.preparePerformanceCaches()
+        XCTAssertTrue(model.hasPreparedPerformanceCaches)
+        XCTAssertTrue(attention.usesFusedInputProjections)
+
+        let input = MLXArray.ones([1, 1, 64], dtype: .float32)
+        let before = attention.inputProjections(input).q
+        MLX.eval(before)
+        let q = try XCTUnwrap(attention.qProj as? QuantizedLinear)
+        try model.update(
+            parameters: ModuleParameters.unflattened([
+                "model.layers.0.self_attn.q_proj.weight": MLXArray.zeros(
+                    q.weight.shape, dtype: .uint32),
+            ]),
+            verify: .none)
+        XCTAssertFalse(model.hasPreparedPerformanceCaches)
+        XCTAssertFalse(attention.usesFusedInputProjections)
+        model.preparePerformanceCaches()
+        let rebuilt = attention.inputProjections(input).q
+        let source = attention.inputProjections(input, useFusion: false).q
+        MLX.eval(rebuilt, source)
+
+        XCTAssertTrue(model.hasPreparedPerformanceCaches)
+        XCTAssertTrue(attention.usesFusedInputProjections)
+        XCTAssertFalse(allClose(before, rebuilt, rtol: 0, atol: 0).item(Bool.self))
+        XCTAssertTrue(allClose(rebuilt, source, rtol: 0, atol: 0).item(Bool.self))
+    }
+
+    func testLoRAModuleReplacementInvalidatesAndUnloadRebuildsPerformanceCaches() throws {
+        let data = try XCTUnwrap(tinyConfigurationData(hiddenSize: 64))
+        let config = try JSONDecoder().decode(GLM5NextConfiguration.self, from: data)
+        let model = GLM5NextModel(config)
+        model.preparePerformanceCaches()
+        XCTAssertTrue(model.hasPreparedPerformanceCaches)
+
+        let container = try LoRAContainer.from(
+            model: model,
+            configuration: LoRAConfiguration(
+                numLayers: config.textConfig.hiddenLayers,
+                loraParameters: .init(
+                    rank: 4,
+                    scale: 8,
+                    keys: ["self_attn.q_proj"])))
+        XCTAssertFalse(model.hasPreparedPerformanceCaches)
+
+        container.unload(from: model)
+        XCTAssertTrue(model.hasPreparedPerformanceCaches)
+    }
+
+    func testLinearAttentionFusionRemainsValidForPrefillAfterDecodePreparation() throws {
+        MLXRandom.seed(71)
+        let fused = try quantizedLinearAttention(hiddenSize: 64)
+        MLXRandom.seed(71)
+        let unfused = try quantizedLinearAttention(hiddenSize: 64)
+        let decode = MLXArray.ones([1, 1, 64], dtype: .float16)
+        let prefill = MLXArray((0 ..< 192).map { Float16(Float($0) / 192) })
+            .reshaped(1, 3, 64)
+
+        let reference = unfused.inputProjections(prefill, useFusion: false)
+        MLX.eval(
+            reference.q, reference.k, reference.v,
+            reference.fA, reference.gA, reference.b)
+        XCTAssertTrue(fused.prepareFusedInputProjections())
+        let prepared = fused.inputProjections(decode)
+        MLX.eval(
+            prepared.q, prepared.k, prepared.v,
+            prepared.fA, prepared.gA, prepared.b)
+        // A later multi-token prefill must take the ordinary source-module path
+        // through the row-sliced tensors installed during decode preparation.
+        let reused = fused.inputProjections(prefill)
+        MLX.eval(reused.q, reused.k, reused.v, reused.fA, reused.gA, reused.b)
+        let sourceViews = fused.sourceInputProjections(prefill)
+        MLX.eval(
+            sourceViews.q, sourceViews.k, sourceViews.v,
+            sourceViews.fA, sourceViews.gA, sourceViews.b)
+
+        XCTAssertTrue(fused.usesFusedInputProjections)
+        for (actual, expected) in [
+            (reused.q, reference.q), (reused.k, reference.k), (reused.v, reference.v),
+            (reused.fA, reference.fA), (reused.gA, reference.gA),
+            (reused.b, reference.b),
+        ] {
+            XCTAssertEqual(actual.shape, expected.shape)
+            XCTAssertEqual(actual.dtype, expected.dtype)
+            XCTAssertTrue(allClose(actual, expected, rtol: 0, atol: 0).item(Bool.self))
+        }
+        for (actual, expected) in [
+            (sourceViews.q, reference.q), (sourceViews.k, reference.k),
+            (sourceViews.v, reference.v), (sourceViews.fA, reference.fA),
+            (sourceViews.gA, reference.gA), (sourceViews.b, reference.b),
+        ] {
+            XCTAssertEqual(actual.shape, expected.shape)
+            XCTAssertEqual(actual.dtype, expected.dtype)
+            XCTAssertTrue(allClose(actual, expected, rtol: 0, atol: 0).item(Bool.self))
+        }
+    }
+
+    func testLinearAttentionProjectionFusionFailsClosedForDenseAndMXFPWeights() throws {
+        let data = try XCTUnwrap(tinyConfigurationData(hiddenSize: 64))
+        let config = try JSONDecoder().decode(GLM5NextConfiguration.self, from: data)
+        let dense = GLM5NextLinearAttention(config.textConfig)
+        XCTAssertFalse(dense.prepareFusedInputProjections())
+        XCTAssertFalse(dense.usesFusedInputProjections)
+
+        let mxfp = GLM5NextLinearAttention(config.textConfig)
+        quantize(
+            model: mxfp,
+            groupSize: 32,
+            bits: 4,
+            mode: .mxfp4,
+            filter: { path, _ in Self.fusedProjectionPaths.contains(path) })
+        XCTAssertFalse(mxfp.prepareFusedInputProjections())
+        XCTAssertFalse(mxfp.usesFusedInputProjections)
+    }
+
+    func testLinearAttentionProjectionFusionRejectsMixedQuantizationSpecs() throws {
+        let data = try XCTUnwrap(tinyConfigurationData(hiddenSize: 64))
+        let config = try JSONDecoder().decode(GLM5NextConfiguration.self, from: data)
+        let mixedGroup = GLM5NextLinearAttention(config.textConfig)
+        quantize(
+            model: mixedGroup,
+            filter: { path, _ in
+                guard Self.fusedProjectionPaths.contains(path) else { return nil }
+                return path == "b_proj"
+                    ? (groupSize: 64, bits: 4, mode: .affine)
+                    : (groupSize: 32, bits: 4, mode: .affine)
+            })
+        XCTAssertFalse(mixedGroup.prepareFusedInputProjections())
+        XCTAssertFalse(mixedGroup.usesFusedInputProjections)
+
+        let mixedBits = GLM5NextLinearAttention(config.textConfig)
+        quantize(
+            model: mixedBits,
+            filter: { path, _ in
+                guard Self.fusedProjectionPaths.contains(path) else { return nil }
+                return path == "b_proj"
+                    ? (groupSize: 32, bits: 8, mode: .affine)
+                    : (groupSize: 32, bits: 4, mode: .affine)
+            })
+        XCTAssertFalse(mixedBits.prepareFusedInputProjections())
+        XCTAssertFalse(mixedBits.usesFusedInputProjections)
+    }
+
+    func testLinearAttentionProjectionFusionRejectsScaleDtypeAndLayoutMismatch() throws {
+        let dtypeMismatch = try quantizedLinearAttention(hiddenSize: 64)
+        let dtypeScales = try XCTUnwrap(
+            (dtypeMismatch.qProj as? QuantizedLinear)?.scales)
+        let mismatchedDtype: DType = dtypeScales.dtype == .float16 ? .float32 : .float16
+        dtypeMismatch.update(parameters: ModuleParameters.unflattened([
+            "q_proj.scales": dtypeScales.asType(mismatchedDtype),
+        ]))
+        XCTAssertFalse(dtypeMismatch.prepareFusedInputProjections())
+
+        let layoutMismatch = try quantizedLinearAttention(hiddenSize: 64)
+        let layoutScales = try XCTUnwrap(
+            (layoutMismatch.qProj as? QuantizedLinear)?.scales)
+        layoutMismatch.update(parameters: ModuleParameters.unflattened([
+            "q_proj.scales": MLXArray.zeros(
+                [layoutScales.dim(0), layoutScales.dim(1) + 1],
+                dtype: layoutScales.dtype),
+        ]))
+        XCTAssertFalse(layoutMismatch.prepareFusedInputProjections())
+
+        let biasMismatch = try quantizedLinearAttention(hiddenSize: 64)
+        let qBiases = try XCTUnwrap((biasMismatch.qProj as? QuantizedLinear)?.biases)
+        biasMismatch.update(parameters: ModuleParameters.unflattened([
+            "q_proj.biases": qBiases.asType(
+                qBiases.dtype == .float16 ? .float32 : .float16),
+        ]))
+        XCTAssertFalse(biasMismatch.prepareFusedInputProjections())
+
+        let packedDtypeMismatch = try quantizedLinearAttention(hiddenSize: 64)
+        let packedWeight = try XCTUnwrap(
+            (packedDtypeMismatch.qProj as? QuantizedLinear)?.weight)
+        packedDtypeMismatch.update(parameters: ModuleParameters.unflattened([
+            "q_proj.weight": packedWeight.asType(.int32),
+        ]))
+        XCTAssertFalse(packedDtypeMismatch.prepareFusedInputProjections())
+    }
+
+    func testLinearAttentionProjectionFusionKillSwitchDefaultsOnAndAcceptsOptOut() {
+        XCTAssertTrue(GLM5NextLinearAttention.inputProjectionFusionEnabled(override: nil))
+        XCTAssertTrue(GLM5NextLinearAttention.inputProjectionFusionEnabled(override: "1"))
+        XCTAssertTrue(GLM5NextLinearAttention.inputProjectionFusionEnabled(override: "true"))
+        XCTAssertFalse(GLM5NextLinearAttention.inputProjectionFusionEnabled(override: "0"))
+        XCTAssertFalse(GLM5NextLinearAttention.inputProjectionFusionEnabled(override: "FALSE"))
+    }
+
+    func testCompiledFFNIsExplicitOptInAndFailsClosedForShapeAndDTypeChanges() throws {
+        let data = try XCTUnwrap(tinyConfigurationData())
+        let config = try JSONDecoder().decode(GLM5NextConfiguration.self, from: data)
+        let layer = GLM5NextDecoderLayer(config.textConfig, layerIndex: 0)
+
+        XCTAssertTrue(GLM5NextDecoderLayer.compiledFFNEnabled(override: nil))
+        XCTAssertFalse(GLM5NextDecoderLayer.compiledFFNEnabled(override: "0"))
+        XCTAssertTrue(GLM5NextDecoderLayer.compiledFFNEnabled(override: "1"))
+        XCTAssertTrue(GLM5NextDecoderLayer.compiledFFNEnabled(override: "TRUE"))
+
+        layer.prepareCompiledFFN(enabled: true)
+        XCTAssertTrue(layer.usesCompiledFFN)
+        let decode = MLXArray((0 ..< 16).map { Float16(Float($0) / 32) })
+            .reshaped(1, 1, 2, 8)
+        let compiled = try XCTUnwrap(layer.compiledFFNBlock(decode))
+        MLX.eval(compiled)
+        XCTAssertEqual(layer.compiledFFNDType, .float16)
+
+        XCTAssertNil(layer.compiledFFNBlock(MLXArray.ones([1, 2, 2, 8], dtype: .float16)))
+        XCTAssertNil(layer.compiledFFNBlock(decode.asType(.float32)))
+    }
+
+    func testCompiledFFNMatchesEagerForTwoDistinctDecodeInputs() throws {
+        MLXRandom.seed(83)
+        let data = try XCTUnwrap(tinyConfigurationData())
+        let config = try JSONDecoder().decode(GLM5NextConfiguration.self, from: data)
+        let layer = GLM5NextDecoderLayer(config.textConfig, layerIndex: 1)
+        layer.update(parameters: layer.mapParameters { array in
+            array.dtype.isFloatingPoint ? array.asType(.float16) : array
+        })
+        let first = MLXArray((0 ..< 16).map { Float16(Float($0 - 8) / 19) })
+            .reshaped(1, 1, 2, 8)
+        let second = MLXArray((0 ..< 16).map { Float16(Float(15 - $0) / 23) })
+            .reshaped(1, 1, 2, 8)
+        let eagerFirst = layer.ffnBlock(first)
+        let eagerSecond = layer.ffnBlock(second)
+        MLX.eval(eagerFirst, eagerSecond)
+
+        layer.prepareCompiledFFN(enabled: true)
+        let compiledFirst = try XCTUnwrap(layer.compiledFFNBlock(first))
+        let compiledSecond = try XCTUnwrap(layer.compiledFFNBlock(second))
+        MLX.eval(compiledFirst, compiledSecond)
+
+        XCTAssertTrue(allClose(compiledFirst, eagerFirst, rtol: 1e-4, atol: 1e-4).item(Bool.self))
+        XCTAssertTrue(allClose(compiledSecond, eagerSecond, rtol: 1e-4, atol: 1e-4).item(Bool.self))
+    }
+
+    func testCompiledFFNMatchesProductionLikeBF16AffineSparsePath() throws {
+        MLXRandom.seed(89)
+        let data = try XCTUnwrap(tinyConfigurationData(hiddenSize: 64))
+        let config = try JSONDecoder().decode(GLM5NextConfiguration.self, from: data)
+        let layer = GLM5NextDecoderLayer(config.textConfig, layerIndex: 1)
+        layer.update(parameters: layer.mapParameters { array in
+            array.dtype.isFloatingPoint ? array.asType(.bfloat16) : array
+        })
+        quantize(
+            model: layer,
+            groupSize: 32,
+            bits: 4,
+            mode: .affine,
+            filter: { path, _ in path.hasPrefix("mlp.") })
+        layer.preparePerformanceCaches()
+
+        let first = MLXArray((0 ..< 128).map { Float32($0 - 64) / 97 })
+            .reshaped(1, 1, 2, 64).asType(.bfloat16)
+        let second = MLXArray((0 ..< 128).map { Float32(127 - $0) / 113 })
+            .reshaped(1, 1, 2, 64).asType(.bfloat16)
+        let eagerFirst = layer.ffnBlock(first)
+        let eagerSecond = layer.ffnBlock(second)
+        MLX.eval(eagerFirst, eagerSecond)
+
+        layer.prepareCompiledFFN(enabled: true)
+        let compiledFirst = try XCTUnwrap(layer.compiledFFNBlock(first))
+        let compiledSecond = try XCTUnwrap(layer.compiledFFNBlock(second))
+        MLX.eval(compiledFirst, compiledSecond)
+
+        XCTAssertEqual(layer.compiledFFNDType, .bfloat16)
+        XCTAssertTrue(allClose(compiledFirst, eagerFirst, rtol: 1e-3, atol: 1e-3).item(Bool.self))
+        XCTAssertTrue(allClose(compiledSecond, eagerSecond, rtol: 1e-3, atol: 1e-3).item(Bool.self))
+    }
+
+    func testCompiledFFNInvalidatesAndRebuildsAfterParameterUpdate() throws {
+        MLXRandom.seed(97)
+        let data = try XCTUnwrap(tinyConfigurationData())
+        let config = try JSONDecoder().decode(GLM5NextConfiguration.self, from: data)
+        let model = GLM5NextModel(config)
+        initializeTinyTarget(model, config: config.textConfig)
+        model.prepareCompiledFFNForTesting(enabled: true)
+        XCTAssertEqual(model.preparedCompiledFFNLayerCount, config.textConfig.hiddenLayers)
+
+        let prompt = MLXArray([1, 2, 3]).reshaped(1, 3)
+        let cache = model.newCache(parameters: nil)
+        let prefill = model(prompt, cache: cache)
+        let decode = model(MLXArray([4]).reshaped(1, 1), cache: cache)
+        MLX.eval(prefill, decode)
+
+        try model.update(
+            parameters: ModuleParameters.unflattened([
+                "model.layers.0.post_attention_layernorm.weight": MLXArray.zeros([8]),
+            ]),
+            verify: .none)
+        // Production preparation follows the explicit environment policy, so
+        // the test-only compiled state cannot survive a parameter mutation.
+        XCTAssertEqual(model.preparedCompiledFFNLayerCount, 0)
+        model.prepareCompiledFFNForTesting(enabled: true)
+        XCTAssertEqual(model.preparedCompiledFFNLayerCount, config.textConfig.hiddenLayers)
+
+        let rebuiltCache = model.newCache(parameters: nil)
+        _ = model(prompt, cache: rebuiltCache)
+        let rebuilt = model(MLXArray([4]).reshaped(1, 1), cache: rebuiltCache)
+        MLX.eval(rebuilt)
+        XCTAssertFalse(allClose(decode, rebuilt, rtol: 0, atol: 0).item(Bool.self))
+    }
+
+    func testCompiledFFNGreedyTokensMatchEagerModel() throws {
+        let data = try XCTUnwrap(tinyConfigurationData(indexTopK: 8))
+        let config = try JSONDecoder().decode(GLM5NextConfiguration.self, from: data)
+        MLXRandom.seed(109)
+        let eager = GLM5NextModel(config)
+        initializeTinyTarget(eager, config: config.textConfig)
+        MLXRandom.seed(109)
+        let compiled = GLM5NextModel(config)
+        initializeTinyTarget(compiled, config: config.textConfig)
+        compiled.prepareCompiledFFNForTesting(enabled: true)
+
+        let prompt = [1, 2, 3]
+        XCTAssertEqual(
+            ordinaryGreedy(model: compiled, prompt: prompt, count: 8),
+            ordinaryGreedy(model: eager, prompt: prompt, count: 8))
+    }
+
     func testSparseCachedDecodeMatchesUncachedForwardWithPublishedPoolingPolicy() throws {
+        MLXRandom.seed(101)
         let data = try XCTUnwrap(tinyConfigurationData(indexTopK: 4))
         let config = try JSONDecoder().decode(GLM5NextConfiguration.self, from: data)
         XCTAssertEqual(config.textConfig.indexTopK, 4)
@@ -308,6 +885,7 @@ final class GLM5NextArchitectureTests: XCTestCase {
         ]))
         model.update(parameters: model.mapParameters { $0.asType(.float16) })
         XCTAssertTrue(model.parameters().flattened().allSatisfy { $0.1.dtype == .float16 })
+        model.preparePerformanceCaches()
 
         let cached = model.newCache(parameters: nil)
         let prefill = model(MLXArray([1, 2, 3, 4]).reshaped(1, 4), cache: cached)
@@ -320,7 +898,18 @@ final class GLM5NextArchitectureTests: XCTestCase {
         let uncached = model(MLXArray([1, 2, 3, 4, 5]).reshaped(1, 5), cache: nil)
         MLX.eval(uncached)
         let finalUncached = uncached[0..., 4 ..< 5, 0...]
-        XCTAssertTrue(allClose(decode, finalUncached, rtol: 1e-3, atol: 1e-3).item(Bool.self))
+        let absoluteDifference = abs(
+            decode.asType(.float32) - finalUncached.asType(.float32))
+        MLX.eval(absoluteDifference)
+        let maximumDifference = absoluteDifference.max().item(Float.self)
+        let cachedToken = argMax(decode[0, 0]).item(Int.self)
+        let uncachedToken = argMax(finalUncached[0, 0]).item(Int.self)
+        XCTAssertEqual(
+            cachedToken, uncachedToken,
+            "cached and uncached greedy tokens differ; max logit delta: \(maximumDifference)")
+        XCTAssertTrue(
+            allClose(decode, finalUncached, rtol: 2e-3, atol: 2e-3).item(Bool.self),
+            "cached and uncached logits exceed tolerance; max delta: \(maximumDifference)")
     }
 
     func testSanitizerMapsPublishedNamespaceAndDropsVisionAndMTP() throws {
@@ -466,15 +1055,49 @@ final class GLM5NextArchitectureTests: XCTestCase {
         XCTAssertEqual(generated, expected)
     }
 
-    func testEmbeddedMTPRejectsUnsupportedRequestedDepth() throws {
+    func testTopLevelParameterUpdateInvalidatesEmbeddedMTPPerformanceCaches() throws {
         let data = try XCTUnwrap(tinyConfigurationData(indexTopK: 8))
         let config = try JSONDecoder().decode(GLM5NextConfiguration.self, from: data)
         let model = GLM5NextModel(config)
         model.installEmbeddedMTPForTesting(initializedMTPHead(config: config.textConfig))
+        model.preparePerformanceCaches()
+        XCTAssertTrue(model.embeddedMTPHasPreparedPerformanceCaches)
 
-        XCTAssertNotNil(GLM5NextMTPGenerator(model: model, depth: 1))
-        XCTAssertNil(GLM5NextMTPGenerator(model: model, depth: 2))
-        XCTAssertNil(GLM5NextMTPGenerator(model: model, depth: 3))
+        try model.update(parameters: ModuleParameters(values: [:]), verify: .none)
+        XCTAssertFalse(model.embeddedMTPHasPreparedPerformanceCaches)
+
+        model.preparePerformanceCaches()
+        XCTAssertTrue(model.embeddedMTPHasPreparedPerformanceCaches)
+    }
+
+    func testEmbeddedMTPTelemetryReportsSpeculativeWork() throws {
+        MLXRandom.seed(71)
+        let data = try XCTUnwrap(tinyConfigurationData(indexTopK: 8))
+        let config = try JSONDecoder().decode(GLM5NextConfiguration.self, from: data)
+        let model = GLM5NextModel(config)
+        initializeTinyTarget(model, config: config.textConfig)
+        model.installEmbeddedMTPForTesting(initializedMTPHead(config: config.textConfig))
+        let prompt = [1, 2, 3]
+        let expected = ordinaryGreedy(model: model, prompt: prompt, count: 9)
+        var profile: GLM5NextMTPTelemetrySnapshot?
+
+        let generated = try XCTUnwrap(GLM5NextMTPGenerator(
+            model: model,
+            telemetrySink: { profile = $0 }
+        )).generate(promptIds: prompt, maxTokens: expected.count)
+
+        XCTAssertEqual(generated, expected)
+        let metrics = try XCTUnwrap(profile)
+        XCTAssertGreaterThan(metrics.draftedTokens, 0)
+        XCTAssertEqual(
+            metrics.hostSynchronizations,
+            1 + 2 * metrics.draftedTokens)
+        XCTAssertEqual(
+            metrics.targetForwards,
+            1 + metrics.draftedTokens + metrics.rejectionReplays)
+        XCTAssertEqual(metrics.emittedTokens, expected.count)
+        XCTAssertGreaterThanOrEqual(metrics.headForwards, metrics.draftedTokens)
+        XCTAssertGreaterThan(metrics.totalSeconds, 0)
     }
 
     func testRepeatedForcedRejectionsRestoreTargetCacheToAROracle() throws {
@@ -523,6 +1146,17 @@ final class GLM5NextArchitectureTests: XCTestCase {
 
         XCTAssertEqual(generated, expectedTokens)
         XCTAssertEqual(rejection, expectedCaches.count)
+    }
+
+    func testEmbeddedMTPRejectsUnsupportedRequestedDepth() throws {
+        let data = try XCTUnwrap(tinyConfigurationData(indexTopK: 8))
+        let config = try JSONDecoder().decode(GLM5NextConfiguration.self, from: data)
+        let model = GLM5NextModel(config)
+        model.installEmbeddedMTPForTesting(initializedMTPHead(config: config.textConfig))
+
+        XCTAssertNotNil(GLM5NextMTPGenerator(model: model, depth: 1))
+        XCTAssertNil(GLM5NextMTPGenerator(model: model, depth: 2))
+        XCTAssertNil(GLM5NextMTPGenerator(model: model, depth: 3))
     }
 
     func testSanitizerSplitsConvertedQuantizedKVProjection() throws {
@@ -674,6 +1308,8 @@ final class GLM5NextArchitectureTests: XCTestCase {
     private func tinyConfigurationData(
         modelType: String = "glm5_next",
         nested: Bool = true,
+        hiddenSize: Int = 8,
+        hcMultiplier: Int = 2,
         kvLoraRank: Int = 4,
         qkNopeHeadDim: Int = 4,
         vHeadDim: Int = 4,
@@ -682,9 +1318,9 @@ final class GLM5NextArchitectureTests: XCTestCase {
         let text: [String: Any] = [
             "model_type": "glm5_next_text",
             "vocab_size": 32,
-            "hidden_size": 8,
-            "intermediate_size": 16,
-            "moe_intermediate_size": 8,
+            "hidden_size": hiddenSize,
+            "intermediate_size": hiddenSize * 2,
+            "moe_intermediate_size": hiddenSize,
             "num_hidden_layers": 2,
             "num_attention_heads": 2,
             "num_key_value_heads": 2,
@@ -718,7 +1354,7 @@ final class GLM5NextArchitectureTests: XCTestCase {
             "attention_bias": false,
             "tie_word_embeddings": false,
             "swiglu_limit": 10.0,
-            "hc_mult": 2,
+            "hc_mult": hcMultiplier,
             "hc_eps": 0.000001,
             "hc_sinkhorn_iters": 2,
             "num_nextn_predict_layers": 1,
@@ -727,6 +1363,32 @@ final class GLM5NextArchitectureTests: XCTestCase {
             ? ["model_type": modelType, "text_config": text]
             : text.merging(["model_type": modelType]) { _, new in new }
         return try? JSONSerialization.data(withJSONObject: object)
+    }
+
+    private static let fusedProjectionPaths: Set<String> = [
+        "q_proj", "k_proj", "v_proj", "forget_gate.f_a_proj", "g_a_proj", "b_proj",
+    ]
+
+    private func quantizedLinearAttention(
+        hiddenSize: Int,
+        groupSize: Int = 32,
+        sourceDType: DType? = nil
+    ) throws -> GLM5NextLinearAttention {
+        let data = try XCTUnwrap(tinyConfigurationData(hiddenSize: hiddenSize))
+        let config = try JSONDecoder().decode(GLM5NextConfiguration.self, from: data)
+        let attention = GLM5NextLinearAttention(config.textConfig)
+        if let sourceDType {
+            attention.update(parameters: attention.mapParameters { array in
+                array.dtype.isFloatingPoint ? array.asType(sourceDType) : array
+            })
+        }
+        quantize(
+            model: attention,
+            groupSize: groupSize,
+            bits: 4,
+            mode: .affine,
+            filter: { path, _ in Self.fusedProjectionPaths.contains(path) })
+        return attention
     }
 
     private func ordinaryGreedy(

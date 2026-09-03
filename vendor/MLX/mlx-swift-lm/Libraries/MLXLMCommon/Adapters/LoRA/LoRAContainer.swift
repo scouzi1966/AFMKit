@@ -109,6 +109,11 @@ public struct LoRAContainer: ModelAdapter, @unchecked Sendable {
         replaceLayers(layers: layers, keys: keys) { (layer: Module) in
             createReplacementLayer(target: layer, configuration: configuration)
         }
+        // Compiled/fused model-local graphs may have captured the replaced
+        // base modules. Training deliberately leaves them invalidated because
+        // adapter parameters will continue to mutate.
+        (model as? LanguageModelPerformanceCachePreparable)?
+            .invalidatePerformanceCaches()
 
         return LoRAContainer(
             configuration: configuration,
@@ -153,6 +158,8 @@ public struct LoRAContainer: ModelAdapter, @unchecked Sendable {
             parameters: parameters,
             verify: .noUnusedKeys
         )
+        (model as? LanguageModelPerformanceCachePreparable)?
+            .preparePerformanceCaches()
     }
 
     /// Permanently fuses the adapter weights into the model's base layers.
@@ -170,6 +177,10 @@ public struct LoRAContainer: ModelAdapter, @unchecked Sendable {
         replaceLayers(layers: layers, keys: keys) { (lora: LoRALayer) in
             lora.fused()
         }
+        if let lifecycle = model as? LanguageModelPerformanceCachePreparable {
+            lifecycle.invalidatePerformanceCaches()
+            lifecycle.preparePerformanceCaches()
+        }
     }
 
     /// Removes adapter layers (LoRA or DoRA) and restores the model to its original form.
@@ -184,6 +195,10 @@ public struct LoRAContainer: ModelAdapter, @unchecked Sendable {
         let keys = configuration.loraParameters.keys ?? lora.loraDefaultKeys
         replaceLayers(layers: layers, keys: keys) { (lora: LoRALayer) in
             lora.reverted()
+        }
+        if let lifecycle = model as? LanguageModelPerformanceCachePreparable {
+            lifecycle.invalidatePerformanceCaches()
+            lifecycle.preparePerformanceCaches()
         }
     }
 }
