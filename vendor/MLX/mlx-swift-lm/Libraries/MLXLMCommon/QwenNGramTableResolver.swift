@@ -7,7 +7,7 @@ public enum QwenNGramTableResolutionError: Error, LocalizedError, Equatable {
     public var errorDescription: String? {
         switch self {
         case .unsafePath(let path):
-            "Qwen n-gram table must be a relative file inside the model directory: \(path)"
+            "Qwen n-gram table must be a .ngram or legacy .bin file inside the model directory: \(path)"
         case .missingFile(let path):
             "Qwen n-gram table does not exist: \(path)"
         }
@@ -17,6 +17,8 @@ public enum QwenNGramTableResolutionError: Error, LocalizedError, Equatable {
 /// Resolves a Qwen Next checkpoint-owned n-gram sidecar. An explicit caller
 /// override remains authoritative; otherwise a `qwen4_exp` checkpoint that
 /// declares `ngram_table.file` is self-contained and loads that local file.
+/// New checkpoints should use `.ngram`; `.bin` remains supported for existing
+/// published checkpoints.
 public func resolveQwenNGramTableURL(
     configurationData: Data,
     modelDirectory: URL,
@@ -55,11 +57,14 @@ public func resolveQwenNGramTableURL(
         throw QwenNGramTableResolutionError.unsafePath(rawPath)
     }
 
-    let root = modelDirectory.standardizedFileURL
-    let candidate = root.appendingPathComponent(rawPath).standardizedFileURL
+    let root = modelDirectory.standardizedFileURL.resolvingSymlinksInPath()
+    let candidate = root.appendingPathComponent(rawPath)
+        .standardizedFileURL
+        .resolvingSymlinksInPath()
     let rootPrefix = root.path.hasSuffix("/") ? root.path : root.path + "/"
+    let extensionName = candidate.pathExtension.lowercased()
     guard candidate.path.hasPrefix(rootPrefix),
-          candidate.pathExtension.lowercased() != "safetensors"
+          extensionName == "ngram" || extensionName == "bin"
     else {
         throw QwenNGramTableResolutionError.unsafePath(rawPath)
     }

@@ -3,6 +3,27 @@ import Foundation
 import XCTest
 
 final class AFMMLXQwenNGramSidecarResolverTests: XCTestCase {
+    func testModelDownloadsIncludePreferredAndLegacySidecarExtensions() {
+        XCTAssertTrue(AFMMLXModelStore.defaultDownloadPatterns.contains("*.ngram"))
+        XCTAssertTrue(AFMMLXModelStore.defaultDownloadPatterns.contains("*.bin"))
+    }
+
+    func testResolvesPreferredNGramSidecarExtension() throws {
+        let directory = try makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let sidecar = directory.appendingPathComponent("ngram_table.ngram")
+        try Data([0]).write(to: sidecar)
+        try writeConfiguration(
+            #"{"model_type":"qwen4_exp","ngram_table":{"file":"ngram_table.ngram","bits":4,"group_size":32}}"#,
+            to: directory)
+
+        let resolved = try AFMMLXQwenNGramSidecarResolver.resolve(
+            modelDirectory: directory,
+            canonicalModelType: "qwen4_exp")
+
+        XCTAssertEqual(resolved, sidecar)
+    }
+
     func testResolvesDeclaredRelativeSidecar() throws {
         let directory = try makeDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -90,6 +111,50 @@ final class AFMMLXQwenNGramSidecarResolverTests: XCTestCase {
             XCTAssertEqual(
                 error as? AFMMLXQwenNGramSidecarResolverError,
                 .unsafePath("../outside.bin"))
+        }
+    }
+
+    func testRejectsSidecarSymlinkThatEscapesModelDirectory() throws {
+        let directory = try makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let outside = FileManager.default.temporaryDirectory
+            .appendingPathComponent("afm-qwen-ngram-outside-\(UUID().uuidString).ngram")
+        defer { try? FileManager.default.removeItem(at: outside) }
+        try Data([0]).write(to: outside)
+        try FileManager.default.createSymbolicLink(
+            at: directory.appendingPathComponent("ngram_table.ngram"),
+            withDestinationURL: outside)
+        try writeConfiguration(
+            #"{"model_type":"qwen4_exp","ngram_table":{"file":"ngram_table.ngram"}}"#,
+            to: directory)
+
+        XCTAssertThrowsError(
+            try AFMMLXQwenNGramSidecarResolver.resolve(
+                modelDirectory: directory,
+                canonicalModelType: "qwen4_exp")
+        ) { error in
+            XCTAssertEqual(
+                error as? AFMMLXQwenNGramSidecarResolverError,
+                .unsafePath("ngram_table.ngram"))
+        }
+    }
+
+    func testRejectsUnrecognizedSidecarExtension() throws {
+        let directory = try makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try Data([0]).write(to: directory.appendingPathComponent("ngram_table.dat"))
+        try writeConfiguration(
+            #"{"model_type":"qwen4_exp","ngram_table":{"file":"ngram_table.dat"}}"#,
+            to: directory)
+
+        XCTAssertThrowsError(
+            try AFMMLXQwenNGramSidecarResolver.resolve(
+                modelDirectory: directory,
+                canonicalModelType: "qwen4_exp")
+        ) { error in
+            XCTAssertEqual(
+                error as? AFMMLXQwenNGramSidecarResolverError,
+                .unsafePath("ngram_table.dat"))
         }
     }
 

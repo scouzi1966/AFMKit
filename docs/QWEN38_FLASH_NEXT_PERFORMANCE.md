@@ -649,6 +649,16 @@ commands, commit IDs, and binary hashes are retained under
 
 ## PLE and n-gram lookup findings
 
+Qwen Next checkpoints declare the table through `ngram_table.file` in
+`config.json`. New or converted checkpoints should name this sidecar
+`*.ngram`, which distinguishes the model-specific table from generic binary
+assets. Existing published `*.bin` tables remain fully supported. AFMKit
+downloads both extensions, requires the declared non-empty sidecar for cache
+completeness, and resolves its canonical path within the model directory so a
+checkpoint symlink cannot escape that boundary. The filename does not select a
+different lookup implementation and therefore has no decode-performance
+effect.
+
 Both engines synchronize the sampled token at Qwen Next's PLE boundary, hash a
 short EOS-aware history into 16 row IDs, gather 48 quantized rows from the
 roughly 30 GB mapped table, dequantize them, and construct the 2,560-element

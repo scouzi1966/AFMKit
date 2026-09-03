@@ -16,7 +16,7 @@ enum AFMMLXQwenNGramSidecarResolverError: Error, LocalizedError, Equatable {
         case .missingDescriptor:
             return "config.json does not declare an ngram_table sidecar"
         case .unsafePath(let path):
-            return "ngram_table file must be a relative path inside the model directory: \(path)"
+            return "ngram_table file must be a .ngram or legacy .bin file inside the model directory: \(path)"
         case .missingFile(let path):
             return "Mapped Qwen n-gram sidecar does not exist: \(path)"
         }
@@ -74,11 +74,14 @@ enum AFMMLXQwenNGramSidecarResolver {
             throw AFMMLXQwenNGramSidecarResolverError.unsafePath(rawPath)
         }
 
-        let root = modelDirectory.standardizedFileURL
-        let candidate = root.appendingPathComponent(rawPath).standardizedFileURL
+        let root = modelDirectory.standardizedFileURL.resolvingSymlinksInPath()
+        let candidate = root.appendingPathComponent(rawPath)
+            .standardizedFileURL
+            .resolvingSymlinksInPath()
         let rootPrefix = root.path.hasSuffix("/") ? root.path : root.path + "/"
+        let extensionName = candidate.pathExtension.lowercased()
         guard candidate.path.hasPrefix(rootPrefix),
-              candidate.pathExtension.lowercased() != "safetensors"
+              extensionName == "ngram" || extensionName == "bin"
         else {
             throw AFMMLXQwenNGramSidecarResolverError.unsafePath(rawPath)
         }
