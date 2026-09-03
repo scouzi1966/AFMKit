@@ -2389,6 +2389,27 @@ final class Qwen4ExpTests: XCTestCase {
             output.asArray(Float.self))
     }
 
+    func testMappedNGramTableWarmsEntireFileInBackground() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("qwen-ngram-warm-\(UUID().uuidString).bin")
+        defer { try? FileManager.default.removeItem(at: url) }
+        try writeTinyMappedNGramTable(to: url)
+
+        let table = try Qwen4ExpMappedNGramTable(
+            url: url,
+            expectedRows: 2,
+            expectedDimensions: 8,
+            expectedBits: 4,
+            expectedGroupSize: 4)
+        table.startBackgroundPageCacheWarm()
+
+        let fileSize = try XCTUnwrap(
+            url.resourceValues(forKeys: [.fileSizeKey]).fileSize)
+        XCTAssertEqual(
+            table.waitForBackgroundPageCacheWarmForTesting(),
+            fileSize)
+    }
+
     func testNativeMappedNGramGatherExactlyMatchesMappedFallback() throws {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("qwen-ngram-native-\(UUID().uuidString).bin")

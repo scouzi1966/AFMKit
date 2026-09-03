@@ -61,6 +61,10 @@ public final class Qwen4ExpVL: Module, VLMModel, KVCacheDimensionProvider {
         try languageModel.configureMappedNGramTable(url: url)
     }
 
+    public func startMappedNGramTablePageCacheWarm() {
+        languageModel.startMappedNGramTablePageCacheWarm()
+    }
+
     public func newCache(parameters: GenerateParameters?) -> [KVCache] {
         languageModel.newCache(parameters: parameters)
     }

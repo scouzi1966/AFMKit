@@ -2833,6 +2833,10 @@ private final class Qwen4ExpNGramEmbedding: Module {
         update(modules: replacements)
     }
 
+    func startMappedTablePageCacheWarm() {
+        mappedNGramTable?.startBackgroundPageCacheWarm()
+    }
+
     private func shifted(_ ids: MLXArray, by shift: Int) -> MLXArray {
         if shift == 0 { return ids }
         let length = ids.dim(1)
@@ -3088,6 +3092,10 @@ private final class Qwen4ExpPLE: Module {
             url: url,
             bits: bits,
             groupSize: groupSize)
+    }
+
+    func startMappedNGramTablePageCacheWarm() {
+        pleEmbedding.startMappedTablePageCacheWarm()
     }
 
     func applyCheckpointMultipliers(_ multipliers: MLXArray) {
@@ -3496,6 +3504,12 @@ final class Qwen4ExpDecoderLayer: Module {
         return true
     }
 
+    func startMappedNGramTablePageCacheWarm() -> Bool {
+        guard let ple else { return false }
+        ple.startMappedNGramTablePageCacheWarm()
+        return true
+    }
+
     func applyCheckpointMultipliers(_ multipliers: MLXArray) {
         ple?.applyCheckpointMultipliers(multipliers)
     }
@@ -3750,6 +3764,12 @@ private final class Qwen4ExpModelInner: Module {
             }
         }
         return configured
+    }
+
+    func startMappedNGramTablePageCacheWarm() {
+        for layer in layers where layer.startMappedNGramTablePageCacheWarm() {
+            return
+        }
     }
 
     func applyCheckpointMultipliers(_ weights: [String: MLXArray]) {
@@ -4135,6 +4155,11 @@ public final class Qwen4ExpModel: Module, LLMModel, KVCacheDimensionProvider {
                 "model has no PLE layers")
         }
         usesMappedNGramTable = true
+    }
+
+    public func startMappedNGramTablePageCacheWarm() {
+        guard usesMappedNGramTable else { return }
+        model.startMappedNGramTablePageCacheWarm()
     }
 
     public var consumesHostTokenIDs: Bool {

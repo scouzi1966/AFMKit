@@ -39,6 +39,103 @@ enum Qwen4ExpMappedNGramTableError: Error, LocalizedError, Equatable {
 /// disk. Decode gathers use parallel positional reads to avoid serial VM page
 /// faults; larger prefill gathers use the mapped data directly.
 final class Qwen4ExpMappedNGramTable: @unchecked Sendable {
+    /// Sequentially reads the sidecar once after weight loading so the first
+    /// prompt does not pay random page faults. This mirrors the 8 MiB
+    /// background warmer in mlx-serve's `src/qwen4_exp.zig`, adapted to keep
+    /// cancellation and descriptor ownership explicit in Swift.
+    private final class PageCacheWarmer: @unchecked Sendable {
+        private static let chunkBytes = 8 * 1_024 * 1_024
+
+        private let descriptor: Int32
+        private let fileSize: Int
+        private let lock = NSLock()
+        private let completion = DispatchGroup()
+        private var started = false
+        private var cancelled = false
+        private var closed = false
+        private var warmedBytes = 0
+
+        init?(descriptor: Int32, fileSize: Int) {
+            let duplicate = Darwin.dup(descriptor)
+            guard duplicate >= 0 else { return nil }
+            self.descriptor = duplicate
+            self.fileSize = fileSize
+        }
+
+        deinit {
+            cancelAndWait()
+        }
+
+        func start() {
+            lock.lock()
+            guard !started, !cancelled else {
+                lock.unlock()
+                return
+            }
+            started = true
+            completion.enter()
+            lock.unlock()
+
+            DispatchQueue.global(qos: .utility).async { [self] in
+                defer { completion.leave() }
+                let buffer = UnsafeMutableRawPointer.allocate(
+                    byteCount: Self.chunkBytes,
+                    alignment: 16)
+                defer { buffer.deallocate() }
+
+                let startedAt = Date.timeIntervalSinceReferenceDate
+                var offset = 0
+                while offset < fileSize {
+                    lock.lock()
+                    let shouldStop = cancelled
+                    lock.unlock()
+                    if shouldStop { return }
+
+                    let requested = min(Self.chunkBytes, fileSize - offset)
+                    let readCount = Darwin.pread(
+                        descriptor,
+                        buffer,
+                        requested,
+                        off_t(offset))
+                    guard readCount > 0 else { return }
+                    offset += readCount
+                    lock.lock()
+                    warmedBytes = offset
+                    lock.unlock()
+                }
+
+                let seconds = Date.timeIntervalSinceReferenceDate - startedAt
+                let gibibytes = Double(fileSize) / Double(1 << 30)
+                print(String(
+                    format: "[QwenNGram] warmed %.1f GiB in %.1f s (page cache)",
+                    gibibytes,
+                    seconds))
+            }
+        }
+
+        func cancelAndWait() {
+            lock.lock()
+            cancelled = true
+            let didStart = started
+            lock.unlock()
+            if didStart { completion.wait() }
+
+            lock.lock()
+            if !closed {
+                Darwin.close(descriptor)
+                closed = true
+            }
+            lock.unlock()
+        }
+
+        func waitForCompletionForTesting() -> Int {
+            completion.wait()
+            lock.lock()
+            defer { lock.unlock() }
+            return warmedBytes
+        }
+    }
+
     /// Native equivalent of the reference's lightweight PLE prefetch pool.
     /// Exact-checkpoint qualification selected 48 workers; `0` retains the
     /// existing mapped path as a fail-closed recovery option.
@@ -314,6 +411,7 @@ final class Qwen4ExpMappedNGramTable: @unchecked Sendable {
     private let parallelReadLimit = 64
     private var nativeReadPool: MLXFast.AffineRowGather?
     private var positionalReadPool: PositionalReadPool?
+    private let pageCacheWarmer: PageCacheWarmer?
 
     init(
         url: URL,
@@ -451,6 +549,9 @@ final class Qwen4ExpMappedNGramTable: @unchecked Sendable {
             self.biasOffset = try Self.checkedAdd(dataOffset, header.biases.dataOffsets[0])
             self.weightBytesPerRow = try Self.checkedMultiply(packedColumns, 4)
             self.scaleBytesPerRow = try Self.checkedMultiply(scaleColumns, 2)
+            self.pageCacheWarmer = PageCacheWarmer(
+                descriptor: descriptor,
+                fileSize: data.count)
             self.nativeReadPool = Self.useNativePositionalReads
                 ? MLXFast.AffineRowGather(
                     fileDescriptor: descriptor,
@@ -482,10 +583,19 @@ final class Qwen4ExpMappedNGramTable: @unchecked Sendable {
     }
 
     deinit {
+        pageCacheWarmer?.cancelAndWait()
         nativeReadPool = nil
         positionalReadPool?.shutdown()
         positionalReadPool = nil
         Darwin.close(fileDescriptor)
+    }
+
+    func startBackgroundPageCacheWarm() {
+        pageCacheWarmer?.start()
+    }
+
+    func waitForBackgroundPageCacheWarmForTesting() -> Int {
+        pageCacheWarmer?.waitForCompletionForTesting() ?? 0
     }
 
     func gather(_ rowIDs: MLXArray) throws -> MLXArray {

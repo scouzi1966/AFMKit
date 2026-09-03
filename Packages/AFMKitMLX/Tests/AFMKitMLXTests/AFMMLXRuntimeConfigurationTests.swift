@@ -20,27 +20,6 @@ final class AFMMLXRuntimeConfigurationTests: XCTestCase {
         XCTAssertEqual(service.prefillStepSize, 2_048)
     }
 
-    func testExplicitQwenNGramOverrideIsDisabledByDefault() {
-        let service = MLXModelService(resolver: MLXCacheResolver())
-        let configuration = AFMMLXRuntimeConfiguration()
-
-        configuration.apply(to: service)
-
-        XCTAssertFalse(configuration.qwenNGramMmapEnabled)
-        XCTAssertFalse(service.qwenNGramMmapEnabled)
-    }
-
-    func testExplicitQwenNGramOverrideRequiresConfiguration() {
-        let service = MLXModelService(resolver: MLXCacheResolver())
-        let configuration = AFMMLXRuntimeConfiguration(
-            qwenNGramMmapEnabled: true)
-
-        configuration.apply(to: service)
-
-        XCTAssertTrue(service.qwenNGramMmapEnabled)
-        XCTAssertFalse(service.mtpEnabled)
-    }
-
     func testModelConfigurationPreservesCheckpointOwnedQwenNGramResolution() {
         let configuration = MLXModelService.modelConfiguration(
             directory: URL(fileURLWithPath: "/model"),
@@ -48,17 +27,6 @@ final class AFMMLXRuntimeConfigurationTests: XCTestCase {
 
         XCTAssertNil(configuration.qwenNGramTableURL)
         XCTAssertTrue(configuration.allowsAutomaticQwenNGramTableResolution)
-    }
-
-    func testMappedQwenNGramProviderValueIsExplicitAndIndependentFromMTP() {
-        let configuration = AFMMLXRuntimeConfiguration(
-            providerConfiguration: AFMProviderConfiguration(values: [
-                "qwenNGramMmapEnabled": .bool(true),
-                "mtpEnabled": .bool(false),
-            ]))
-
-        XCTAssertTrue(configuration.qwenNGramMmapEnabled)
-        XCTAssertFalse(configuration.mtpEnabled)
     }
 
     func testMTPModelIDPropagatesToAttachedService() {

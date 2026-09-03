@@ -170,6 +170,9 @@ public struct MLXCacheResolver: Sendable {
         } else {
             hasWeights = !standaloneWeights.isEmpty
         }
-        return hasConfig && hasWeights
+        return hasConfig
+            && hasWeights
+            && AFMMLXQwenNGramSidecarResolver
+                .hasCompleteIntrinsicSidecarIfDeclared(in: dir)
     }
 }
