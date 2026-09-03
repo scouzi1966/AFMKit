@@ -696,6 +696,37 @@ public final class MLXModelService:
             && schedulerModelID == currentModelID
     }
 
+    static func shouldUseStreamingScheduler(
+        schedulerAvailable: Bool,
+        mtpStreamEligible: Bool,
+        schedulerCanPreserveLogprobVisibility: Bool
+    ) -> Bool {
+        schedulerAvailable
+            && !mtpStreamEligible
+            && schedulerCanPreserveLogprobVisibility
+    }
+
+    static func isGreedySpeculationEligible(
+        parameters: GenerateParameters,
+        hasTools: Bool,
+        hasResponseFormat: Bool,
+        wantsLogprobs: Bool,
+        hasStopSequences: Bool,
+        hasMedia: Bool
+    ) -> Bool {
+        parameters.temperature == 0
+            && parameters.repetitionPenalty == nil
+            && parameters.presencePenalty == 0
+            && parameters.topK == 0
+            && parameters.minP == 0
+            && !parameters.ignoreEndOfSequence
+            && !hasTools
+            && !hasResponseFormat
+            && !wantsLogprobs
+            && !hasStopSequences
+            && !hasMedia
+    }
+
     /// Atomically reserve an execution slot.
     public func tryReserveSlot() -> Bool {
         withStateLock {
@@ -2966,6 +2997,31 @@ public final class MLXModelService:
             maxTokens ?? Self.defaultMaximumResponseTokens
         )
         let ignoreEndOfSequence = AFMGenerationContext.ignoreEndOfSequence
+        let baseParameters = GenerateParameters(
+            maxTokens: effectiveMaxTokens,
+            kvBits: self.kvBits,
+            kvGroupSize: 64,
+            quantizedKVStart: 0,
+            temperature: normalizedTemperature(temperature),
+            topP: normalizedTopP(topP),
+            repetitionPenalty: normalizedRepetitionPenalty(repetitionPenalty),
+            repetitionContextSize: 64,
+            topK: normalizedTopK(topK),
+            minP: normalizedMinP(minP),
+            presencePenalty: normalizedPresencePenalty(presencePenalty),
+            seed: normalizedSeed(seed),
+            computeLogprobs: wantLogprobs,
+            topLogprobsCount: wantLogprobs ? min(max(topLogprobs ?? 0, 0), 20) : 0,
+            ignoreEndOfSequence: ignoreEndOfSequence,
+            prefillStepSize: self.resolvedPrefillStepSize
+        )
+        let greedySpeculationEligible = Self.isGreedySpeculationEligible(
+            parameters: baseParameters,
+            hasTools: !(tools?.isEmpty ?? true),
+            hasResponseFormat: responseFormat != nil,
+            wantsLogprobs: wantLogprobs,
+            hasStopSequences: !(stop?.isEmpty ?? true),
+            hasMedia: !resolvedMedia.mediaKinds.isEmpty)
 
         // Mutable generation state lives in a scratch box so the @Sendable
         // `container.perform` closure (Swift 6) can capture-and-mutate it.
@@ -2982,10 +3038,7 @@ public final class MLXModelService:
         // DeepSeek V4 checkpoints advertise this capability through metadata and carry the
         // drafter weights themselves; no model-id allowlist or separately loaded package.
         let dsparkEligible = afmDSparkEnabled()
-            && (temperature ?? 0) <= 0.0
-            && (tools?.isEmpty ?? true)
-            && responseFormat == nil
-            && !wantLogprobs
+            && greedySpeculationEligible
         if dsparkEligible {
             if let result = try await container.perform({ context -> (String, Int, Int)? in
                 guard let model = context.model as? DeepseekV4Model,
@@ -3024,11 +3077,7 @@ public final class MLXModelService:
         // Eligible when an MTP head is installed and the request is plain greedy generation.
         // Produces output identical to greedy AR (validated P2) but with fewer trunk forwards.
         let mtpEligible = mtpBinding != nil
-            && resolvedMedia.mediaKinds.isEmpty
-            && (temperature ?? 0) <= 0.0
-            && (tools?.isEmpty ?? true)
-            && responseFormat == nil
-            && !wantLogprobs
+            && greedySpeculationEligible
         if mtpEligible {
             if let mtpResult = try await container.perform({ context -> (String, Int, Int)? in
                 guard let gen = mtpBinding?.generator else { return nil }
@@ -3066,10 +3115,7 @@ public final class MLXModelService:
         // Eligible when a drafter is installed and the request is plain greedy generation.
         // Produces output identical to greedy AR (validated P1) with fewer verifier trunk forwards.
         let eagle3Eligible = Eagle3Runtime.shared.active != nil
-            && (temperature ?? 0) <= 0.0
-            && (tools?.isEmpty ?? true)
-            && responseFormat == nil
-            && !wantLogprobs
+            && greedySpeculationEligible
         if eagle3Eligible {
             if let e3Result = try await container.perform({ context -> (String, Int, Int)? in
                 guard let drafter = Eagle3Runtime.shared.active,
@@ -3112,24 +3158,9 @@ public final class MLXModelService:
             isTextOnlyInput: self.isTextOnlyInput(messages)
         )
         if lockFreeGenerationEligible {
-            var params = GenerateParameters(
-                maxTokens: effectiveMaxTokens,
-                kvBits: self.kvBits,
-                kvGroupSize: 64,
-                quantizedKVStart: 0,
-                temperature: normalizedTemperature(temperature),
-                topP: normalizedTopP(topP),
-                repetitionPenalty: normalizedRepetitionPenalty(repetitionPenalty),
-                repetitionContextSize: 64,
-                topK: normalizedTopK(topK),
-                minP: normalizedMinP(minP),
-                presencePenalty: normalizedPresencePenalty(presencePenalty),
-                seed: normalizedSeed(seed),
-                computeLogprobs: false,
-                topLogprobsCount: 0,
-                ignoreEndOfSequence: ignoreEndOfSequence,
-                prefillStepSize: self.resolvedPrefillStepSize
-            )
+            var params = baseParameters
+            params.computeLogprobs = false
+            params.topLogprobsCount = 0
             params.extraProcessor = nil
 
             let input = try await container.prepare(input: scratch.userInput)
@@ -3310,24 +3341,7 @@ public final class MLXModelService:
         }
 
         let generated: String = try await container.perform { context in
-            var params = GenerateParameters(
-                maxTokens: effectiveMaxTokens,
-                kvBits: self.kvBits,
-                kvGroupSize: 64,
-                quantizedKVStart: 0,
-                temperature: normalizedTemperature(temperature),
-                topP: normalizedTopP(topP),
-                repetitionPenalty: normalizedRepetitionPenalty(repetitionPenalty),
-                repetitionContextSize: 64,
-                topK: normalizedTopK(topK),
-                minP: normalizedMinP(minP),
-                presencePenalty: normalizedPresencePenalty(presencePenalty),
-                seed: normalizedSeed(seed),
-                computeLogprobs: wantLogprobs,
-                topLogprobsCount: wantLogprobs ? min(max(topLogprobs ?? 0, 0), 20) : 0,
-                ignoreEndOfSequence: ignoreEndOfSequence,
-                prefillStepSize: self.resolvedPrefillStepSize
-            )
+            var params = baseParameters
             var collectedLogprobs = [TokenLogprobData]()
             var resolvedLogprobs: [ResolvedLogprob]? = nil
             var collectedToolCalls = [ToolCall]()
@@ -3974,7 +3988,7 @@ public final class MLXModelService:
         // task below (the batch path's stats are owned by BatchScheduler).
         let streamQueuedAt = Date()
 
-        var params = GenerateParameters(
+        let baseParameters = GenerateParameters(
             maxTokens: effectiveMaxTokens,
             kvBits: self.kvBits,
             kvGroupSize: 64,
@@ -3992,6 +4006,26 @@ public final class MLXModelService:
             ignoreEndOfSequence: ignoreEndOfSequence,
             prefillStepSize: self.resolvedPrefillStepSize
         )
+        var params = baseParameters
+
+        // Decide speculative eligibility before selecting the execution lane.
+        // Merely loading an MTP head must not serialize AR-only requests such
+        // as sampling, tools, stops, schemas, logprobs, or media.
+        let specGreedyStream = Self.isGreedySpeculationEligible(
+            parameters: baseParameters,
+            hasTools: !(tools?.isEmpty ?? true),
+            hasResponseFormat: responseFormat != nil,
+            wantsLogprobs: wantLogprobs,
+            hasStopSequences: !(stop?.isEmpty ?? true),
+            hasMedia: !resolvedMedia.mediaKinds.isEmpty)
+        let mtpStreamEligible = specGreedyStream && mtpBinding != nil
+
+        // Stop/tool transformation can suppress text after tokenization. Until
+        // the concurrent path owns a joint text/logprob visibility buffer, use
+        // the established serial implementation for this uncommon combination
+        // so hidden tokens never leak standalone logprobs.
+        let schedulerLogprobsAreVisible = !wantLogprobs
+            || ((stop?.isEmpty ?? true) && (tools?.isEmpty ?? true))
 
         // --- Concurrent path: bypass container.perform lock, route through BatchScheduler ---
         // A loaded speculative head is an explicit request to use speculative
@@ -4002,7 +4036,13 @@ public final class MLXModelService:
         let requestScheduler = withStateLock {
             schedulerModelID == modelID ? self.scheduler : nil
         }
-        if let scheduler = requestScheduler, mtpBinding == nil {
+        if let scheduler = requestScheduler,
+           Self.shouldUseStreamingScheduler(
+                schedulerAvailable: true,
+                mtpStreamEligible: mtpStreamEligible,
+                schedulerCanPreserveLogprobVisibility:
+                    schedulerLogprobsAreVisible)
+        {
             let pipelineStart = debugLogging ? Date() : Date.distantPast
 
             // Use scheduler's tokenizer directly — no container lock needed.
@@ -4118,8 +4158,6 @@ public final class MLXModelService:
         // The generator's per-token `onToken` callback drives incremental detokenization, yielding
         // an SSE text delta per emitted token; think-tag extraction is done by the controller from
         // those deltas (we return the think tags). Output matches the non-streaming fast path.
-        let specGreedyStream = (temperature ?? 0) <= 0.0 && (tools?.isEmpty ?? true)
-            && responseFormat == nil && !wantLogprobs && (stop?.isEmpty ?? true)
         let loadedSupportsDSpark: Bool
         if specGreedyStream && afmDSparkEnabled() {
             loadedSupportsDSpark = await container.perform { context in
@@ -4130,8 +4168,6 @@ public final class MLXModelService:
         }
         let dsparkStreamEligible = specGreedyStream && loadedSupportsDSpark
         let eagle3StreamEligible = specGreedyStream && Eagle3Runtime.shared.active != nil
-        let mtpStreamEligible = specGreedyStream && mtpBinding != nil
-            && resolvedMedia.mediaKinds.isEmpty
         if dsparkStreamEligible || eagle3StreamEligible || mtpStreamEligible {
             // Prep prompt ids under the lock; nil => multimodal/empty/wrong-model => fall back to AR.
             // Also detect a template-opened think block (last prompt tokens contain thinkStart): for
@@ -4265,24 +4301,7 @@ public final class MLXModelService:
                         // Local generation params (the outer `params` is a captured
                         // var used by the concurrent path; a fresh local keeps this
                         // @Sendable closure free of captured-var mutation).
-                        var params = GenerateParameters(
-                            maxTokens: effectiveMaxTokens,
-                            kvBits: self.kvBits,
-                            kvGroupSize: 64,
-                            quantizedKVStart: 0,
-                            temperature: normalizedTemperature(temperature),
-                            topP: normalizedTopP(topP),
-                            repetitionPenalty: normalizedRepetitionPenalty(repetitionPenalty),
-                            repetitionContextSize: 64,
-                            topK: normalizedTopK(topK),
-                            minP: normalizedMinP(minP),
-                            presencePenalty: normalizedPresencePenalty(presencePenalty),
-                            seed: normalizedSeed(seed),
-                            computeLogprobs: wantLogprobs,
-                            topLogprobsCount: wantLogprobs ? min(max(topLogprobs ?? 0, 0), 20) : 0,
-                            ignoreEndOfSequence: ignoreEndOfSequence,
-                            prefillStepSize: self.resolvedPrefillStepSize
-                        )
+                        var params = baseParameters
                         // Grammar constraint setup — see non-streaming path for details.
                         let constrainedDecoding = self.setupConstrainedDecodingProcessor(
                             modelID: modelID,

@@ -79,9 +79,10 @@ four context sizes have now been rerun and pass these 10% floors:
 | 2K | 1185.0 | 1066.5 | 56.9 | 51.21 |
 | 4K | 1246.0 | 1121.4 | 54.1 | 48.69 |
 
-Correctness, radix/prefix-cache behavior, and continuous batching now pass
-through eight simultaneous requests. Model lifecycle, complete API behavior,
-and MTP remain mandatory release gates.
+Correctness, radix/prefix-cache behavior, and fixed admission-cohort concurrency
+now pass through eight simultaneous requests. Per-slot continuous admission and
+changing batch membership remain follow-up work tracked by issue #76. Model
+lifecycle, complete API behavior, and MTP remain mandatory release gates.
 
 ## Reproduced results
 
@@ -495,7 +496,8 @@ A fast single request is insufficient. Any accepted optimization must preserve:
 - The per-request KV, GDN, convolution, PLE, and host n-gram cache state.
 - Rollback and truncation used by speculative verification.
 - Radix/prefix-cache snapshot and restore without cross-request host state.
-- Left-padded continuous batches and changing batch membership.
+- Left-padded fixed cohorts with stable membership today; future per-slot
+  membership changes must preserve the same request-local state guarantees.
 - Concurrent requests sharing immutable model weights and compiled kernels.
 - Streaming and non-streaming output equivalence.
 

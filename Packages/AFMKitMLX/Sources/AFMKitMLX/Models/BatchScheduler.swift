@@ -89,6 +89,15 @@ actor BatchScheduler {
             && inputTokenCount > 0
     }
 
+    static func pairedHostTokenIDs(
+        for modelInputTokens: MLXArray,
+        modelConsumesHostTokenIDs: Bool
+    ) -> [Int]? {
+        modelConsumesHostTokenIDs
+            ? modelInputTokens.reshaped(-1).asArray(Int.self)
+            : nil
+    }
+
     struct ConstraintRuntimeConfiguration: @unchecked Sendable {
         let mode: String
         let matcherHandle: GrammarMatcherHandle?
@@ -1085,15 +1094,20 @@ actor BatchScheduler {
                 tokens = stacked(slots.map { $0.lastTokenArray.reshaped([1]) }).reshaped([activeB, 1])
             }
             let input = LMInput.Text(tokens: tokens)
+            // Keep the optional host-side PLE token exactly paired with the
+            // tensor supplied to the model. `lastTokenId` advances during the
+            // deferred publication stage and therefore intentionally trails
+            // `lastTokenArray` while the dense decode pipeline is overlapped.
+            let hostTokenIDs = Self.pairedHostTokenIDs(
+                for: tokens,
+                modelConsumesHostTokenIDs: model.consumesHostTokenIDs)
 
             let modelStart = debugTiming ? Date() : Date.distantPast
             let output = model(
                 input,
                 cache: batchCaches,
                 state: batchState,
-                hostTokenIDs: model.consumesHostTokenIDs
-                    ? slots.map(\.lastTokenId)
-                    : nil)
+                hostTokenIDs: hostTokenIDs)
             batchState = output.state
 
             let logits = output.logits[0..., -1, 0...]

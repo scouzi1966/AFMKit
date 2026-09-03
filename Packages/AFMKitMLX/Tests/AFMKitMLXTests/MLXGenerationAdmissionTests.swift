@@ -1,5 +1,6 @@
 import AFMKitCore
 import AFMKitServices
+import MLXLMCommon
 import XCTest
 
 @testable import AFMKitMLX
@@ -54,6 +55,59 @@ final class MLXGenerationAdmissionTests: XCTestCase {
             schedulerModelID: "model-a",
             currentModelID: "model-a",
             modelSwitchInProgress: true))
+    }
+
+    func testOnlyEligibleMTPStreamsBypassConcurrentScheduler() {
+        XCTAssertFalse(MLXModelService.shouldUseStreamingScheduler(
+            schedulerAvailable: true,
+            mtpStreamEligible: true,
+            schedulerCanPreserveLogprobVisibility: true))
+        XCTAssertTrue(MLXModelService.shouldUseStreamingScheduler(
+            schedulerAvailable: true,
+            mtpStreamEligible: false,
+            schedulerCanPreserveLogprobVisibility: true))
+        XCTAssertFalse(MLXModelService.shouldUseStreamingScheduler(
+            schedulerAvailable: true,
+            mtpStreamEligible: false,
+            schedulerCanPreserveLogprobVisibility: false))
+    }
+
+    func testGreedySpeculationRequiresUnmodifiedArgmaxSemantics() {
+        func eligible(
+            _ parameters: GenerateParameters,
+            hasTools: Bool = false,
+            hasResponseFormat: Bool = false,
+            wantsLogprobs: Bool = false,
+            hasStopSequences: Bool = false,
+            hasMedia: Bool = false
+        ) -> Bool {
+            MLXModelService.isGreedySpeculationEligible(
+                parameters: parameters,
+                hasTools: hasTools,
+                hasResponseFormat: hasResponseFormat,
+                wantsLogprobs: wantsLogprobs,
+                hasStopSequences: hasStopSequences,
+                hasMedia: hasMedia)
+        }
+
+        let greedy = GenerateParameters(temperature: 0)
+        XCTAssertTrue(eligible(greedy))
+        XCTAssertFalse(eligible(GenerateParameters()))
+        XCTAssertFalse(eligible(GenerateParameters(
+            temperature: 0, repetitionPenalty: 1.1)))
+        XCTAssertFalse(eligible(GenerateParameters(
+            temperature: 0, topK: 20)))
+        XCTAssertFalse(eligible(GenerateParameters(
+            temperature: 0, minP: 0.1)))
+        XCTAssertFalse(eligible(GenerateParameters(
+            temperature: 0, presencePenalty: 0.5)))
+        XCTAssertFalse(eligible(GenerateParameters(
+            temperature: 0, ignoreEndOfSequence: true)))
+        XCTAssertFalse(eligible(greedy, hasTools: true))
+        XCTAssertFalse(eligible(greedy, hasResponseFormat: true))
+        XCTAssertFalse(eligible(greedy, wantsLogprobs: true))
+        XCTAssertFalse(eligible(greedy, hasStopSequences: true))
+        XCTAssertFalse(eligible(greedy, hasMedia: true))
     }
 
     func testSuccessfulAndCancelledBatchSubmissionsReleaseCapacityExactlyOnce() {

@@ -2103,6 +2103,46 @@ func qwen4ExpShouldUseCompiledGDNDecode(
         && !hasVerificationPolicy
 }
 
+@inline(__always)
+func qwen4ExpSupportsCompiledGDNPrework(
+    inputDType: DType,
+    convolutionWeightDType: DType,
+    convolutionWeightShape: [Int],
+    qkvProjectionWeightDType: DType,
+    aProjectionWeightDType: DType,
+    bProjectionWeightDType: DType,
+    aLogDType: DType,
+    dtBiasDType: DType,
+    channels: Int,
+    keyHeadDimension: Int,
+    valueHeadDimension: Int,
+    convolutionKernel: Int
+) -> Bool {
+    let supportedInput = inputDType == .bfloat16 || inputDType == .float16
+    // Ordinary Linear weights follow the activation type. QuantizedLinear
+    // stores packed 4-bit weights as UInt32 and dequantizes through the
+    // existing VerifyWidthLinear path before fused prework begins. Keep these
+    // checks scalar: this predicate runs in every one-token GDN layer and must
+    // not allocate an array in the decode hot path.
+    let supportedQKVProjection = qkvProjectionWeightDType == inputDType
+        || qkvProjectionWeightDType == .uint32
+    let supportedAProjection = aProjectionWeightDType == inputDType
+        || aProjectionWeightDType == .uint32
+    let supportedBProjection = bProjectionWeightDType == inputDType
+        || bProjectionWeightDType == .uint32
+    return supportedInput
+        && keyHeadDimension == valueHeadDimension
+        && keyHeadDimension.isMultiple(of: 32)
+        && convolutionKernel > 1
+        && convolutionWeightShape == [channels, convolutionKernel, 1]
+        && convolutionWeightDType == inputDType
+        && supportedQKVProjection
+        && supportedAProjection
+        && supportedBProjection
+        && aLogDType == inputDType
+        && dtBiasDType == inputDType
+}
+
 private final class Qwen4ExpGatedDeltaNet: Module {
     private static let compileDecode =
         ProcessInfo.processInfo.environment["AFM_QWEN_COMPILE_GDN_DECODE"] != "0"
@@ -2432,19 +2472,19 @@ private final class Qwen4ExpGatedDeltaNet: Module {
     /// models into a process trap instead of taking the ordinary eager path.
     private func supportsCompiledPrework(input: MLXArray) -> Bool {
         let channels = keyDim * 2 + valueDim
-        let supportedType = input.dtype == .bfloat16 || input.dtype == .float16
-        guard supportedType,
-              keyHeadDim == valueHeadDim,
-              keyHeadDim.isMultiple(of: 32),
-              convKernel > 1,
-              conv1d.weight.shape == [channels, convKernel, 1]
-        else { return false }
-        return conv1d.weight.dtype == input.dtype
-            && inProjQKV.weight.dtype == input.dtype
-            && inProjA.weight.dtype == input.dtype
-            && inProjB.weight.dtype == input.dtype
-            && aLog.dtype == input.dtype
-            && dtBias.dtype == input.dtype
+        return qwen4ExpSupportsCompiledGDNPrework(
+            inputDType: input.dtype,
+            convolutionWeightDType: conv1d.weight.dtype,
+            convolutionWeightShape: conv1d.weight.shape,
+            qkvProjectionWeightDType: inProjQKV.weight.dtype,
+            aProjectionWeightDType: inProjA.weight.dtype,
+            bProjectionWeightDType: inProjB.weight.dtype,
+            aLogDType: aLog.dtype,
+            dtBiasDType: dtBias.dtype,
+            channels: channels,
+            keyHeadDimension: keyHeadDim,
+            valueHeadDimension: valueHeadDim,
+            convolutionKernel: convKernel)
     }
 
     /// Restore the recurrent cache to the committed prefix of a target

@@ -31,6 +31,35 @@ final class Qwen4ExpTests: XCTestCase {
             hasVerificationPolicy: true))
     }
 
+    func testCompiledGDNPreworkAcceptsPackedFourBitProjectionWeights() {
+        XCTAssertTrue(qwen4ExpSupportsCompiledGDNPrework(
+            inputDType: .float16,
+            convolutionWeightDType: .float16,
+            convolutionWeightShape: [6144, 4, 1],
+            qkvProjectionWeightDType: .uint32,
+            aProjectionWeightDType: .uint32,
+            bProjectionWeightDType: .uint32,
+            aLogDType: .float16,
+            dtBiasDType: .float16,
+            channels: 6144,
+            keyHeadDimension: 128,
+            valueHeadDimension: 128,
+            convolutionKernel: 4))
+        XCTAssertFalse(qwen4ExpSupportsCompiledGDNPrework(
+            inputDType: .float32,
+            convolutionWeightDType: .float32,
+            convolutionWeightShape: [6144, 4, 1],
+            qkvProjectionWeightDType: .uint32,
+            aProjectionWeightDType: .uint32,
+            bProjectionWeightDType: .uint32,
+            aLogDType: .float32,
+            dtBiasDType: .float32,
+            channels: 6144,
+            keyHeadDimension: 128,
+            valueHeadDimension: 128,
+            convolutionKernel: 4))
+    }
+
     func testQwenAttentionCacheUniformBatchMergeAndFilter() throws {
         func makeCache(seed: Float) -> Qwen4ExpAttentionCache {
             let cache = Qwen4ExpAttentionCache(indexerCompressRatio: 4)

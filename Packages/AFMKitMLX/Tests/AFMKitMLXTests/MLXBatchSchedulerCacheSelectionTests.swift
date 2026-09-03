@@ -1,3 +1,4 @@
+import MLX
 import MLXLMCommon
 import XCTest
 
@@ -35,6 +36,18 @@ final class MLXBatchSchedulerCacheSelectionTests: XCTestCase {
             hasRecurrentLayers: true,
             isMultimodal: false,
             inputTokenCount: 128))
+    }
+
+    func testHostTokenIDsRemainPairedWithCurrentPipelinedTensor() {
+        for tokens in [[11, 12], [21, 22], [31, 32]] {
+            let tensor = MLXArray(tokens).reshaped(2, 1)
+            XCTAssertEqual(BatchScheduler.pairedHostTokenIDs(
+                for: tensor,
+                modelConsumesHostTokenIDs: true), tokens)
+        }
+        XCTAssertNil(BatchScheduler.pairedHostTokenIDs(
+            for: MLXArray([41]).reshaped(1, 1),
+            modelConsumesHostTokenIDs: false))
     }
 
     func testEstablishedArrayCachesRemainDenseBatchable() {
