@@ -772,7 +772,9 @@ private final class NGramSidecar {
         let scaleBytes = rows * scaleRowBytes
         let header: [String: Any] = [
             "__metadata__": [
-                "format": "afm-qwen-ngram",
+                // Preserve the established mapped-table wire format consumed
+                // by the self-contained MLX Swift loader.
+                "format": "mlx-serve-ngram",
                 "bits": String(bits),
                 "group_size": String(groupSize),
             ],

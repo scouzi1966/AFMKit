@@ -46,6 +46,10 @@ final class Qwen4ExpCheckpointConverterTests: XCTestCase {
 
         let sidecar = fixture.output.appendingPathComponent("ngram_table.bin")
         let sidecarHeader = try AFMSafetensorHeader(url: sidecar)
+        let sidecarMetadata = try sidecarMetadata(at: sidecar)
+        XCTAssertEqual(sidecarMetadata["format"], "mlx-serve-ngram")
+        XCTAssertEqual(sidecarMetadata["bits"], "4")
+        XCTAssertEqual(sidecarMetadata["group_size"], "32")
         let byName = Dictionary(uniqueKeysWithValues: sidecarHeader.tensors.map { ($0.name, $0) })
         XCTAssertEqual(byName["weight"]?.dtype, .uint32)
         XCTAssertEqual(byName["weight"]?.shape, [128, 20])
@@ -173,5 +177,19 @@ final class Qwen4ExpCheckpointConverterTests: XCTestCase {
     private func constant(rows: Int, columns: Int, value: Float) -> MLXArray {
         MLXArray(Array(repeating: value, count: rows * columns))
             .reshaped([rows, columns]).asType(.bfloat16)
+    }
+
+    private func sidecarMetadata(at url: URL) throws -> [String: String] {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        let prefix = try XCTUnwrap(try handle.read(upToCount: 8))
+        XCTAssertEqual(prefix.count, 8)
+        let length = prefix.enumerated().reduce(UInt64(0)) { result, item in
+            result | (UInt64(item.element) << UInt64(item.offset * 8))
+        }
+        let header = try XCTUnwrap(try handle.read(upToCount: Int(length)))
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: header) as? [String: Any])
+        return try XCTUnwrap(object["__metadata__"] as? [String: String])
     }
 }
