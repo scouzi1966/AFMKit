@@ -6384,7 +6384,7 @@ public final class MLXModelService:
             let cache = HubCache(cacheDirectory: cacheDir)
             print("Download destination: \(cacheDir.path)")
             let client = HuggingFace.HubClient(cache: cache)
-            let patterns = ["*.json", "*.jinja", "*.safetensors", "*.txt", "*.model", "*.tiktoken", "tokenizer*", "*.bpe", "*.bin"]
+            let patterns = AFMMLXModelStore.defaultDownloadPatterns
             let revision = try await client.getModel(repoID).sha
             let manifest = try await client.listFiles(
                 in: repoID,
