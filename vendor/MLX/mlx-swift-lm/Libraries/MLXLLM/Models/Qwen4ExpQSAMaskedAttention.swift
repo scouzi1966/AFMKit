@@ -19,8 +19,25 @@ enum Qwen4ExpQSAMaskedAttention {
     private static let minimumQueryLength = 16
     private static let dispatchWorkBudget = 250_000_000
 
-    static let enabled =
+    static let maskedFusionEnabled =
         ProcessInfo.processInfo.environment["AFM_QWEN_QSA_MASKED_FUSION"] != "0"
+
+    static let causalFusionEnabled =
+        ProcessInfo.processInfo.environment["AFM_QWEN_CAUSAL_PREFILL_FUSION"] != "0"
+
+    private static let stockNAXAttentionPreferred: Bool = {
+        guard #available(macOS 26.2, iOS 26.2, tvOS 26.2, visionOS 26.2, *) else {
+            return false
+        }
+        return isNAXArchitecture(GPU.deviceInfo().architecture)
+    }()
+
+    static func isNAXArchitecture(_ architecture: String) -> Bool {
+        let architecture = architecture.lowercased()
+        return architecture.contains("g17")
+            || architecture.contains("g18")
+            || architecture.contains("g19")
+    }
 
     private static let kernel = MLXFast.metalKernel(
         name: "qwen4_exp_qsa_masked_attention_256",
@@ -359,8 +376,12 @@ enum Qwen4ExpQSAMaskedAttention {
         queries: MLXArray,
         keys: MLXArray,
         values: MLXArray,
-        scale: Float
+        scale: Float,
+        keyChunkLengthForTesting: Int? = nil
     ) -> MLXArray? {
+        guard causalFusionEnabled,
+              !(stockNAXAttentionPreferred && queries.dim(2) >= 1_024)
+        else { return nil }
         let dummyMask = MLXArray([false]).reshaped(1, 1, 1, 1)
         return call(
             queries: queries,
@@ -368,7 +389,8 @@ enum Qwen4ExpQSAMaskedAttention {
             values: values,
             scale: scale,
             mask: dummyMask,
-            usesMask: false)
+            usesMask: false,
+            keyChunkLengthForTesting: keyChunkLengthForTesting)
     }
 
     static func call(
@@ -384,7 +406,8 @@ enum Qwen4ExpQSAMaskedAttention {
             values: values,
             scale: scale,
             mask: mask,
-            usesMask: true)
+            usesMask: true,
+            keyChunkLengthForTesting: nil)
     }
 
     private static func call(
@@ -393,9 +416,10 @@ enum Qwen4ExpQSAMaskedAttention {
         values: MLXArray,
         scale: Float,
         mask: MLXArray,
-        usesMask: Bool
+        usesMask: Bool,
+        keyChunkLengthForTesting: Int?
     ) -> MLXArray? {
-        guard enabled,
+        guard (!usesMask || maskedFusionEnabled),
               Device.defaultDevice().deviceType == .gpu,
               queries.ndim == 4,
               keys.ndim == 4,
@@ -429,7 +453,9 @@ enum Qwen4ExpQSAMaskedAttention {
         let queryLength = queries.dim(2)
         let keyLength = keys.dim(2)
         let queryTiles = (queryLength + queryTile - 1) / queryTile
-        let chunkLength = keyChunkLength(
+        let chunkLength = keyChunkLengthForTesting.map {
+            max(($0 / keyTile) * keyTile, keyTile)
+        } ?? keyChunkLength(
             batch: batch,
             queryHeads: queryHeads,
             queryLength: queryLength,

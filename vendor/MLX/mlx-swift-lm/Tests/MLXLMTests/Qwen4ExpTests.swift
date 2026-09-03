@@ -2827,37 +2827,110 @@ final class Qwen4ExpTests: XCTestCase {
     func testFusedCausalPrefillAttentionMatchesMLXSDPA() throws {
         let queryHeads = 24
         let keyHeads = 2
-        let sequenceLength = 64
         let headDimension = 256
         let scale = pow(Float(headDimension), -0.5)
-        let randomState = MLXRandom.RandomState(seed: 3141)
+        let cases = [
+            (batch: 1, queryLength: 64, keyLength: 64, chunk: nil),
+            (batch: 2, queryLength: 65, keyLength: 97, chunk: nil),
+            (batch: 1, queryLength: 17, keyLength: 81, chunk: 32),
+        ]
+
+        for (index, testCase) in cases.enumerated() {
+            let randomState = MLXRandom.RandomState(seed: UInt64(3141 + index))
+            let queries = withRandomState(randomState) {
+                MLXRandom.uniform(low: -0.5, high: 0.5, [
+                    testCase.batch, queryHeads, testCase.queryLength, headDimension,
+                ]).asType(.bfloat16)
+            }
+            let keys = withRandomState(randomState) {
+                MLXRandom.uniform(low: -0.5, high: 0.5, [
+                    testCase.batch, keyHeads, testCase.keyLength, headDimension,
+                ]).asType(.bfloat16)
+            }
+            let values = withRandomState(randomState) {
+                MLXRandom.uniform(low: -0.5, high: 0.5, [
+                    testCase.batch, keyHeads, testCase.keyLength, headDimension,
+                ]).asType(.bfloat16)
+            }
+            let expected = MLXFast.scaledDotProductAttention(
+                queries: queries,
+                keys: keys,
+                values: values,
+                scale: scale,
+                mask: .causal)
+            let actual = try XCTUnwrap(Qwen4ExpQSAMaskedAttention.callCausal(
+                queries: queries,
+                keys: keys,
+                values: values,
+                scale: scale,
+                keyChunkLengthForTesting: testCase.chunk))
+            eval(actual, expected)
+
+            XCTAssertLessThanOrEqual(
+                maximumAbsoluteDifference(actual, expected), 0.005,
+                "causal case \(index) diverged")
+        }
+    }
+
+    func testFusedMaskedQSAAttentionMatchesDenseMask() throws {
+        let batch = 2
+        let queryHeads = 24
+        let keyHeads = 2
+        let queryLength = 65
+        let keyLength = 97
+        let headDimension = 256
+        let scale = pow(Float(headDimension), -0.5)
+        let randomState = MLXRandom.RandomState(seed: 5772)
         let queries = withRandomState(randomState) {
-            MLXRandom.normal([1, queryHeads, sequenceLength, headDimension])
+            MLXRandom.uniform(
+                low: -0.5, high: 0.5,
+                [batch, queryHeads, queryLength, headDimension])
                 .asType(.bfloat16)
         }
         let keys = withRandomState(randomState) {
-            MLXRandom.normal([1, keyHeads, sequenceLength, headDimension])
+            MLXRandom.uniform(
+                low: -0.5, high: 0.5,
+                [batch, keyHeads, keyLength, headDimension])
                 .asType(.bfloat16)
         }
         let values = withRandomState(randomState) {
-            MLXRandom.normal([1, keyHeads, sequenceLength, headDimension])
+            MLXRandom.uniform(
+                low: -0.5, high: 0.5,
+                [batch, keyHeads, keyLength, headDimension])
                 .asType(.bfloat16)
         }
+        let queryOffset = keyLength - queryLength
+        let maskValues = (0 ..< batch).flatMap { batchIndex in
+            (0 ..< queryLength).flatMap { row in
+                (0 ..< keyLength).map { column in
+                    column <= queryOffset + row
+                        && (column + row + batchIndex).isMultiple(of: 5) == false
+                }
+            }
+        }
+        let mask = MLXArray(maskValues).reshaped(batch, 1, queryLength, keyLength)
         let expected = MLXFast.scaledDotProductAttention(
             queries: queries,
             keys: keys,
             values: values,
             scale: scale,
-            mask: .causal)
-        let actual = try XCTUnwrap(Qwen4ExpQSAMaskedAttention.callCausal(
+            mask: .array(mask))
+        let actual = try XCTUnwrap(Qwen4ExpQSAMaskedAttention.call(
             queries: queries,
             keys: keys,
             values: values,
-            scale: scale))
+            scale: scale,
+            mask: mask))
         eval(actual, expected)
 
         XCTAssertLessThanOrEqual(
-            maximumAbsoluteDifference(actual, expected), 0.02)
+            maximumAbsoluteDifference(actual, expected), 0.005)
+    }
+
+    func testNAXArchitectureDetection() {
+        XCTAssertTrue(Qwen4ExpQSAMaskedAttention.isNAXArchitecture("applegpu_g17s"))
+        XCTAssertTrue(Qwen4ExpQSAMaskedAttention.isNAXArchitecture("applegpu_g18"))
+        XCTAssertFalse(Qwen4ExpQSAMaskedAttention.isNAXArchitecture("applegpu_g16s"))
     }
 
     func testQSADecodeAttentionMatchesDenseMask() throws {
