@@ -2928,38 +2928,77 @@ final class Qwen4ExpTests: XCTestCase {
             maximumAbsoluteDifference(actual, expected), 0.005)
     }
 
-    func testNAXArchitectureDetection() {
-        XCTAssertTrue(Qwen4ExpQSAMaskedAttention.isNAXArchitecture("applegpu_g17s"))
-        XCTAssertTrue(Qwen4ExpQSAMaskedAttention.isNAXArchitecture("applegpu_g18"))
-        XCTAssertFalse(Qwen4ExpQSAMaskedAttention.isNAXArchitecture("applegpu_g16s"))
-
-        let supportedOS = OperatingSystemVersion(
-            majorVersion: 26, minorVersion: 2, patchVersion: 0)
+    func testStockNAXAttentionRouting() {
         XCTAssertTrue(Qwen4ExpQSAMaskedAttention.shouldForceStockNAXAttention(
             queryLength: 16,
             keyLength: 64,
             headDimension: 256,
-            architecture: "applegpu_g17s",
-            operatingSystemVersion: supportedOS))
+            naxAvailable: true,
+            isGPU: true))
         XCTAssertFalse(Qwen4ExpQSAMaskedAttention.shouldForceStockNAXAttention(
             queryLength: 8,
             keyLength: 64,
             headDimension: 256,
-            architecture: "applegpu_g17s",
-            operatingSystemVersion: supportedOS))
+            naxAvailable: true,
+            isGPU: true))
         XCTAssertFalse(Qwen4ExpQSAMaskedAttention.shouldForceStockNAXAttention(
             queryLength: 16,
             keyLength: 64,
             headDimension: 256,
-            architecture: "applegpu_g16s",
-            operatingSystemVersion: supportedOS))
+            naxAvailable: false,
+            isGPU: true))
         XCTAssertFalse(Qwen4ExpQSAMaskedAttention.shouldForceStockNAXAttention(
             queryLength: 16,
             keyLength: 64,
             headDimension: 256,
-            architecture: "applegpu_g17s",
-            operatingSystemVersion: .init(
-                majorVersion: 26, minorVersion: 1, patchVersion: 0)))
+            naxAvailable: true,
+            isGPU: false))
+        XCTAssertFalse(Qwen4ExpQSAMaskedAttention.shouldForceStockNAXAttention(
+            queryLength: 16,
+            keyLength: 64,
+            headDimension: 128,
+            naxAvailable: true,
+            isGPU: true))
+        XCTAssertFalse(Qwen4ExpQSAMaskedAttention.shouldForceStockNAXAttention(
+            queryLength: 65,
+            keyLength: 64,
+            headDimension: 256,
+            naxAvailable: true,
+            isGPU: true))
+    }
+
+    func testForcedFusedAttentionMatchesAutomaticRouting() {
+        let randomState = MLXRandom.RandomState(seed: 9_191)
+        let queries = withRandomState(randomState) {
+            MLXRandom.uniform(low: -0.5, high: 0.5, [1, 4, 64, 128])
+                .asType(.bfloat16)
+        }
+        let keys = withRandomState(randomState) {
+            MLXRandom.uniform(low: -0.5, high: 0.5, [1, 4, 64, 128])
+                .asType(.bfloat16)
+        }
+        let values = withRandomState(randomState) {
+            MLXRandom.uniform(low: -0.5, high: 0.5, [1, 4, 64, 128])
+                .asType(.bfloat16)
+        }
+        let scale = pow(Float(128), -0.5)
+        let automatic = MLXFast.scaledDotProductAttention(
+            queries: queries,
+            keys: keys,
+            values: values,
+            scale: scale,
+            mask: .causal)
+        let forced = MLXFast.scaledDotProductAttention(
+            queries: queries,
+            keys: keys,
+            values: values,
+            scale: scale,
+            mask: .causal,
+            forceFused: true)
+        eval(automatic, forced)
+
+        XCTAssertLessThanOrEqual(
+            maximumAbsoluteDifference(automatic, forced), 0.005)
     }
 
     func testQSADecodeAttentionMatchesDenseMask() throws {

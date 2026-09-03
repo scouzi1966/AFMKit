@@ -25,25 +25,17 @@ enum Qwen4ExpQSAMaskedAttention {
     static let causalFusionEnabled =
         ProcessInfo.processInfo.environment["AFM_QWEN_CAUSAL_PREFILL_FUSION"] != "0"
 
-    static func isNAXArchitecture(_ architecture: String) -> Bool {
-        let architecture = architecture.lowercased()
-        return architecture.contains("g17")
-            || architecture.contains("g18")
-            || architecture.contains("g19")
-    }
+    private static let stockNAXAvailable = GPU.isNAXAvailable
 
     static func shouldForceStockNAXAttention(
         queryLength: Int,
         keyLength: Int,
         headDimension: Int,
-        architecture: String,
-        operatingSystemVersion: OperatingSystemVersion
+        naxAvailable: Bool,
+        isGPU: Bool
     ) -> Bool {
-        let versionSupportsNAX = operatingSystemVersion.majorVersion > 26
-            || (operatingSystemVersion.majorVersion == 26
-                && operatingSystemVersion.minorVersion >= 2)
-        return versionSupportsNAX
-            && isNAXArchitecture(architecture)
+        isGPU
+            && naxAvailable
             && headDimension == 256
             && queryLength > 8
             && queryLength <= keyLength
@@ -57,8 +49,8 @@ enum Qwen4ExpQSAMaskedAttention {
             queryLength: queries.dim(2),
             keyLength: keys.dim(2),
             headDimension: queries.dim(3),
-            architecture: GPU.deviceInfo().architecture,
-            operatingSystemVersion: ProcessInfo.processInfo.operatingSystemVersion)
+            naxAvailable: stockNAXAvailable,
+            isGPU: Device.defaultDevice().deviceType == .gpu)
     }
 
     private static let kernel = MLXFast.metalKernel(
@@ -401,12 +393,14 @@ enum Qwen4ExpQSAMaskedAttention {
         keys: MLXArray,
         values: MLXArray,
         scale: Float,
+        forceStockNAXAttention: Bool? = nil,
         keyChunkLengthForTesting: Int? = nil
     ) -> MLXArray? {
         guard queries.ndim == 4,
               keys.ndim == 4,
               causalFusionEnabled,
-              !shouldForceStockNAXAttention(queries: queries, keys: keys)
+              !(forceStockNAXAttention
+                  ?? shouldForceStockNAXAttention(queries: queries, keys: keys))
         else { return nil }
         let dummyMask = MLXArray([false]).reshaped(1, 1, 1, 1)
         return call(
