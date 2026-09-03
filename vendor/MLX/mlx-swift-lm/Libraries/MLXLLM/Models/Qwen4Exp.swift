@@ -2066,7 +2066,13 @@ private final class Qwen4ExpAttention: Module {
             }
         } else {
             let cached = cache?.update(keys: k, values: v) ?? (k, v)
-            if case .causal = effectiveMask,
+            let usesCausalMask: Bool
+            if case .causal = effectiveMask {
+                usesCausalMask = true
+            } else {
+                usesCausalMask = false
+            }
+            if usesCausalMask,
                let fused = Qwen4ExpQSAMaskedAttention.callCausal(
                    queries: q,
                    keys: cached.0,
@@ -2080,7 +2086,10 @@ private final class Qwen4ExpAttention: Module {
                     keys: cached.0,
                     values: cached.1,
                     scale: scale,
-                    mask: effectiveMask)
+                    mask: effectiveMask,
+                    forceFused: usesCausalMask && Qwen4ExpQSAMaskedAttention
+                        .shouldForceStockNAXAttention(
+                            queries: q, keys: cached.0))
             }
         }
         attentionHostProfiler?.attention()

@@ -25,18 +25,40 @@ enum Qwen4ExpQSAMaskedAttention {
     static let causalFusionEnabled =
         ProcessInfo.processInfo.environment["AFM_QWEN_CAUSAL_PREFILL_FUSION"] != "0"
 
-    private static let stockNAXAttentionPreferred: Bool = {
-        guard #available(macOS 26.2, iOS 26.2, tvOS 26.2, visionOS 26.2, *) else {
-            return false
-        }
-        return isNAXArchitecture(GPU.deviceInfo().architecture)
-    }()
-
     static func isNAXArchitecture(_ architecture: String) -> Bool {
         let architecture = architecture.lowercased()
         return architecture.contains("g17")
             || architecture.contains("g18")
             || architecture.contains("g19")
+    }
+
+    static func shouldForceStockNAXAttention(
+        queryLength: Int,
+        keyLength: Int,
+        headDimension: Int,
+        architecture: String,
+        operatingSystemVersion: OperatingSystemVersion
+    ) -> Bool {
+        let versionSupportsNAX = operatingSystemVersion.majorVersion > 26
+            || (operatingSystemVersion.majorVersion == 26
+                && operatingSystemVersion.minorVersion >= 2)
+        return versionSupportsNAX
+            && isNAXArchitecture(architecture)
+            && headDimension == 256
+            && queryLength > 8
+            && queryLength <= keyLength
+    }
+
+    static func shouldForceStockNAXAttention(
+        queries: MLXArray, keys: MLXArray
+    ) -> Bool {
+        guard queries.ndim == 4, keys.ndim == 4 else { return false }
+        return shouldForceStockNAXAttention(
+            queryLength: queries.dim(2),
+            keyLength: keys.dim(2),
+            headDimension: queries.dim(3),
+            architecture: GPU.deviceInfo().architecture,
+            operatingSystemVersion: ProcessInfo.processInfo.operatingSystemVersion)
     }
 
     private static let kernel = MLXFast.metalKernel(
@@ -210,19 +232,21 @@ enum Qwen4ExpQSAMaskedAttention {
                 const bool tail_k = rows_k < BK;
                 const bool need_causal = kb >= kb_min_causal;
                 const bool need_band = (SW > 0) && (c0 <= q_hi - SW);
-                for (int tile = 0; tile < BK / 8; ++tile) {
-                    for (int element = 0; element < 2; ++element) {
-                        const int column = c0 + tile * 8 + sn + element;
-                        bool masked = false;
-                        if (tail_k && column >= kL) masked = true;
-                        if (need_causal && row_pos < column) masked = true;
-                        if (need_band && (row_pos - column) >= SW) masked = true;
-                        if (QSA && !masked && (!mask_row_ok
-                            || !mask[mask_row0
-                                + (long)column * mask_strides[3]])) {
-                            masked = true;
+                if (QSA || tail_k || need_causal || need_band) {
+                    for (int tile = 0; tile < BK / 8; ++tile) {
+                        for (int element = 0; element < 2; ++element) {
+                            const int column = c0 + tile * 8 + sn + element;
+                            bool masked = false;
+                            if (tail_k && column >= kL) masked = true;
+                            if (need_causal && row_pos < column) masked = true;
+                            if (need_band && (row_pos - column) >= SW) masked = true;
+                            if (QSA && !masked && (!mask_row_ok
+                                || !mask[mask_row0
+                                    + (long)column * mask_strides[3]])) {
+                                masked = true;
+                            }
+                            if (masked) scores[tile][element] = -INFINITY;
                         }
-                        if (masked) scores[tile][element] = -INFINITY;
                     }
                 }
 
@@ -379,8 +403,10 @@ enum Qwen4ExpQSAMaskedAttention {
         scale: Float,
         keyChunkLengthForTesting: Int? = nil
     ) -> MLXArray? {
-        guard causalFusionEnabled,
-              !(stockNAXAttentionPreferred && queries.dim(2) >= 1_024)
+        guard queries.ndim == 4,
+              keys.ndim == 4,
+              causalFusionEnabled,
+              !shouldForceStockNAXAttention(queries: queries, keys: keys)
         else { return nil }
         let dummyMask = MLXArray([false]).reshaped(1, 1, 1, 1)
         return call(
@@ -398,7 +424,8 @@ enum Qwen4ExpQSAMaskedAttention {
         keys: MLXArray,
         values: MLXArray,
         scale: Float,
-        mask: MLXArray
+        mask: MLXArray,
+        keyChunkLengthForTesting: Int? = nil
     ) -> MLXArray? {
         call(
             queries: queries,
@@ -407,7 +434,7 @@ enum Qwen4ExpQSAMaskedAttention {
             scale: scale,
             mask: mask,
             usesMask: true,
-            keyChunkLengthForTesting: nil)
+            keyChunkLengthForTesting: keyChunkLengthForTesting)
     }
 
     private static func call(

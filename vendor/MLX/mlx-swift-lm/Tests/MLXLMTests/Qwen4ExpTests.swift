@@ -2876,8 +2876,8 @@ final class Qwen4ExpTests: XCTestCase {
         let batch = 2
         let queryHeads = 24
         let keyHeads = 2
-        let queryLength = 65
-        let keyLength = 97
+        let queryLength = 70
+        let keyLength = 193
         let headDimension = 256
         let scale = pow(Float(headDimension), -0.5)
         let randomState = MLXRandom.RandomState(seed: 5772)
@@ -2920,7 +2920,8 @@ final class Qwen4ExpTests: XCTestCase {
             keys: keys,
             values: values,
             scale: scale,
-            mask: mask))
+            mask: mask,
+            keyChunkLengthForTesting: 64))
         eval(actual, expected)
 
         XCTAssertLessThanOrEqual(
@@ -2931,6 +2932,34 @@ final class Qwen4ExpTests: XCTestCase {
         XCTAssertTrue(Qwen4ExpQSAMaskedAttention.isNAXArchitecture("applegpu_g17s"))
         XCTAssertTrue(Qwen4ExpQSAMaskedAttention.isNAXArchitecture("applegpu_g18"))
         XCTAssertFalse(Qwen4ExpQSAMaskedAttention.isNAXArchitecture("applegpu_g16s"))
+
+        let supportedOS = OperatingSystemVersion(
+            majorVersion: 26, minorVersion: 2, patchVersion: 0)
+        XCTAssertTrue(Qwen4ExpQSAMaskedAttention.shouldForceStockNAXAttention(
+            queryLength: 16,
+            keyLength: 64,
+            headDimension: 256,
+            architecture: "applegpu_g17s",
+            operatingSystemVersion: supportedOS))
+        XCTAssertFalse(Qwen4ExpQSAMaskedAttention.shouldForceStockNAXAttention(
+            queryLength: 8,
+            keyLength: 64,
+            headDimension: 256,
+            architecture: "applegpu_g17s",
+            operatingSystemVersion: supportedOS))
+        XCTAssertFalse(Qwen4ExpQSAMaskedAttention.shouldForceStockNAXAttention(
+            queryLength: 16,
+            keyLength: 64,
+            headDimension: 256,
+            architecture: "applegpu_g16s",
+            operatingSystemVersion: supportedOS))
+        XCTAssertFalse(Qwen4ExpQSAMaskedAttention.shouldForceStockNAXAttention(
+            queryLength: 16,
+            keyLength: 64,
+            headDimension: 256,
+            architecture: "applegpu_g17s",
+            operatingSystemVersion: .init(
+                majorVersion: 26, minorVersion: 1, patchVersion: 0)))
     }
 
     func testQSADecodeAttentionMatchesDenseMask() throws {
