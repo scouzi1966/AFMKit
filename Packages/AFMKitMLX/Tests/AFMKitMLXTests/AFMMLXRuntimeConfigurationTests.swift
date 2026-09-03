@@ -3,36 +3,41 @@ import AFMKitCore
 import XCTest
 
 final class AFMMLXRuntimeConfigurationTests: XCTestCase {
-    func testMappedQwenNGramLoadingIsDisabledByDefault() {
+    func testAbsentPrefillSettingPreservesArchitectureTuningEligibility() {
         let service = MLXModelService(resolver: MLXCacheResolver())
-        let configuration = AFMMLXRuntimeConfiguration()
 
-        configuration.apply(to: service)
+        AFMMLXRuntimeConfiguration(prefillStepSize: nil).apply(to: service)
 
-        XCTAssertFalse(configuration.qwenNGramMmapEnabled)
-        XCTAssertFalse(service.qwenNGramMmapEnabled)
+        XCTAssertFalse(service.prefillStepSizeIsExplicit)
     }
 
-    func testMappedQwenNGramLoadingRequiresExplicitConfiguration() {
+    func testExplicitPrefillSettingDisablesArchitectureRecommendation() {
+        let service = MLXModelService(resolver: MLXCacheResolver())
+
+        AFMMLXRuntimeConfiguration(prefillStepSize: 2_048).apply(to: service)
+
+        XCTAssertTrue(service.prefillStepSizeIsExplicit)
+        XCTAssertEqual(service.prefillStepSize, 2_048)
+    }
+
+    func testModelConfigurationPreservesCheckpointOwnedQwenNGramResolution() {
+        let configuration = MLXModelService.modelConfiguration(
+            directory: URL(fileURLWithPath: "/model"),
+            qwenNGramTableURL: nil)
+
+        XCTAssertNil(configuration.qwenNGramTableURL)
+        XCTAssertTrue(configuration.allowsAutomaticQwenNGramTableResolution)
+    }
+
+    func testDeprecatedQwenNGramMmapSettingRemainsSourceCompatible() {
         let service = MLXModelService(resolver: MLXCacheResolver())
         let configuration = AFMMLXRuntimeConfiguration(
             qwenNGramMmapEnabled: true)
 
         configuration.apply(to: service)
 
-        XCTAssertTrue(service.qwenNGramMmapEnabled)
-        XCTAssertFalse(service.mtpEnabled)
-    }
-
-    func testMappedQwenNGramProviderValueIsExplicitAndIndependentFromMTP() {
-        let configuration = AFMMLXRuntimeConfiguration(
-            providerConfiguration: AFMProviderConfiguration(values: [
-                "qwenNGramMmapEnabled": .bool(true),
-                "mtpEnabled": .bool(false),
-            ]))
-
         XCTAssertTrue(configuration.qwenNGramMmapEnabled)
-        XCTAssertFalse(configuration.mtpEnabled)
+        XCTAssertTrue(service.qwenNGramMmapEnabled)
     }
 
     func testMTPModelIDPropagatesToAttachedService() {

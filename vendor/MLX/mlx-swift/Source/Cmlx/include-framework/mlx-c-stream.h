@@ -4,6 +4,7 @@
 #define MLX_STREAM_H
 
 #include <stdbool.h>
+#include <stdint.h>
 
 #include <Cmlx/mlx-c-device.h>
 
@@ -23,6 +24,12 @@ extern "C" {
 typedef struct mlx_stream_ {
   void* ctx;
 } mlx_stream;
+
+typedef struct mlx_command_buffer_profile_ {
+  uint64_t buffers;
+  uint64_t ops;
+  uint64_t bytes;
+} mlx_command_buffer_profile;
 
 /**
  * Returns a new empty stream.
@@ -61,6 +68,8 @@ int mlx_stream_get_index(int* index, mlx_stream stream);
  * Synchronize with the provided stream.
  */
 int mlx_synchronize(mlx_stream stream);
+int mlx_command_buffer_profile_since_report(
+    mlx_command_buffer_profile* profile, mlx_stream stream);
 /**
  * Returns the default stream on the given device.
  */

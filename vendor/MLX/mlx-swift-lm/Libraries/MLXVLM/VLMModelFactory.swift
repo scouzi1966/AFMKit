@@ -320,7 +320,13 @@ public final class VLMModelFactory: ModelFactory {
                 configurationURL.lastPathComponent, configuration.name, error)
         }
 
-        if let tableURL = configuration.qwenNGramTableURL {
+        let qwenNGramTableURL = try resolveQwenNGramTableURL(
+            configurationData: configData,
+            modelDirectory: modelDirectory,
+            explicitURL: configuration.qwenNGramTableURL,
+            allowAutomaticResolution:
+                configuration.allowsAutomaticQwenNGramTableResolution)
+        if let tableURL = qwenNGramTableURL {
             guard let qwen = model as? Qwen4ExpVL else {
                 throw ModelFactoryError.unsupportedModelType(
                     "external Qwen n-gram table for \(baseConfig.modelType)")
@@ -353,6 +359,7 @@ public final class VLMModelFactory: ModelFactory {
         try loadWeights(
             modelDirectory: modelDirectory, model: model,
             perLayerQuantization: baseConfig.perLayerQuantization)
+        (model as? Qwen4ExpVL)?.startMappedNGramTablePageCacheWarm()
 
         let tokenizer = try await tokenizerTask
         let processorConfigData: Data

@@ -8,6 +8,7 @@
 #include "mlx/c/error.h"
 #include "mlx/c/private/mlx.h"
 #include "mlx/c/stream.h"
+#include "mlx/backend/metal/device.h"
 
 namespace {
 
@@ -117,6 +118,21 @@ extern "C" int mlx_stream_get_index(int* index, mlx_stream stream) {
 extern "C" int mlx_synchronize(mlx_stream stream) {
   try {
     mlx::core::synchronize(mlx_stream_get_(stream));
+  } catch (std::exception& e) {
+    mlx_error(e.what());
+    return 1;
+  }
+  return 0;
+}
+extern "C" int mlx_command_buffer_profile_since_report(
+    mlx_command_buffer_profile* profile, mlx_stream stream) {
+  try {
+    auto& encoder = mlx::core::metal::get_command_encoder(
+        mlx_stream_get_(stream));
+    const auto result = encoder.command_buffer_profile_since_report();
+    profile->buffers = result.buffers;
+    profile->ops = result.ops;
+    profile->bytes = result.bytes;
   } catch (std::exception& e) {
     mlx_error(e.what());
     return 1;

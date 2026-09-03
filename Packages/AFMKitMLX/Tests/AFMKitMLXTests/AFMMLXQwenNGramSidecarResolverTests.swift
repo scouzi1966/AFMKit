@@ -3,16 +3,7 @@ import Foundation
 import XCTest
 
 final class AFMMLXQwenNGramSidecarResolverTests: XCTestCase {
-    func testDisabledOptionDoesNotInspectModel() throws {
-        let result = try AFMMLXQwenNGramSidecarResolver.resolve(
-            modelDirectory: URL(fileURLWithPath: "/does/not/exist"),
-            canonicalModelType: "not-qwen",
-            enabled: false)
-
-        XCTAssertNil(result)
-    }
-
-    func testEnabledOptionResolvesDeclaredRelativeSidecar() throws {
+    func testResolvesDeclaredRelativeSidecar() throws {
         let directory = try makeDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
         let sidecar = directory.appendingPathComponent("ngram_table.bin")
@@ -23,13 +14,12 @@ final class AFMMLXQwenNGramSidecarResolverTests: XCTestCase {
 
         let resolved = try AFMMLXQwenNGramSidecarResolver.resolve(
             modelDirectory: directory,
-            canonicalModelType: "qwen4_exp",
-            enabled: true)
+            canonicalModelType: "qwen4_exp")
 
         XCTAssertEqual(resolved, sidecar)
     }
 
-    func testEnabledOptionRejectsMissingSidecar() throws {
+    func testRejectsMissingSidecar() throws {
         let directory = try makeDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
         try writeConfiguration(
@@ -39,8 +29,7 @@ final class AFMMLXQwenNGramSidecarResolverTests: XCTestCase {
         XCTAssertThrowsError(
             try AFMMLXQwenNGramSidecarResolver.resolve(
                 modelDirectory: directory,
-                canonicalModelType: "qwen4_exp",
-                enabled: true)
+                canonicalModelType: "qwen4_exp")
         ) { error in
             guard case AFMMLXQwenNGramSidecarResolverError.missingFile = error else {
                 return XCTFail("unexpected error: \(error)")
@@ -48,7 +37,45 @@ final class AFMMLXQwenNGramSidecarResolverTests: XCTestCase {
         }
     }
 
-    func testEnabledOptionRejectsParentTraversal() throws {
+    func testIntrinsicSidecarCompletenessRejectsInterruptedCheckpoint() throws {
+        let directory = try makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try writeConfiguration(
+            #"{"model_type":"qwen4_exp","ngram_table":{"file":"missing.bin"}}"#,
+            to: directory)
+
+        XCTAssertFalse(
+            AFMMLXQwenNGramSidecarResolver
+                .hasCompleteIntrinsicSidecarIfDeclared(in: directory))
+    }
+
+    func testIntrinsicSidecarCompletenessAcceptsNonEmptyRegularFile() throws {
+        let directory = try makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try Data([0]).write(to: directory.appendingPathComponent("ngram_table.bin"))
+        try writeConfiguration(
+            #"{"model_type":"qwen4_exp","ngram_table":{"file":"ngram_table.bin"}}"#,
+            to: directory)
+
+        XCTAssertTrue(
+            AFMMLXQwenNGramSidecarResolver
+                .hasCompleteIntrinsicSidecarIfDeclared(in: directory))
+    }
+
+    func testIntrinsicSidecarCompletenessRejectsEmptyFile() throws {
+        let directory = try makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try Data().write(to: directory.appendingPathComponent("ngram_table.bin"))
+        try writeConfiguration(
+            #"{"model_type":"qwen4_exp","ngram_table":{"file":"ngram_table.bin"}}"#,
+            to: directory)
+
+        XCTAssertFalse(
+            AFMMLXQwenNGramSidecarResolver
+                .hasCompleteIntrinsicSidecarIfDeclared(in: directory))
+    }
+
+    func testRejectsParentTraversal() throws {
         let directory = try makeDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
         try writeConfiguration(
@@ -58,8 +85,7 @@ final class AFMMLXQwenNGramSidecarResolverTests: XCTestCase {
         XCTAssertThrowsError(
             try AFMMLXQwenNGramSidecarResolver.resolve(
                 modelDirectory: directory,
-                canonicalModelType: "qwen4_exp",
-                enabled: true)
+                canonicalModelType: "qwen4_exp")
         ) { error in
             XCTAssertEqual(
                 error as? AFMMLXQwenNGramSidecarResolverError,
@@ -67,7 +93,7 @@ final class AFMMLXQwenNGramSidecarResolverTests: XCTestCase {
         }
     }
 
-    func testEnabledOptionRejectsSidecarThatOrdinaryWeightLoaderWouldEnumerate() throws {
+    func testRejectsSidecarThatOrdinaryWeightLoaderWouldEnumerate() throws {
         let directory = try makeDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
         try Data([0]).write(
@@ -79,8 +105,7 @@ final class AFMMLXQwenNGramSidecarResolverTests: XCTestCase {
         XCTAssertThrowsError(
             try AFMMLXQwenNGramSidecarResolver.resolve(
                 modelDirectory: directory,
-                canonicalModelType: "qwen4_exp",
-                enabled: true)
+                canonicalModelType: "qwen4_exp")
         ) { error in
             XCTAssertEqual(
                 error as? AFMMLXQwenNGramSidecarResolverError,

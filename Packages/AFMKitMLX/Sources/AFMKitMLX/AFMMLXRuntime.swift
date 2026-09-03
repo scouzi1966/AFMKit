@@ -18,7 +18,14 @@ public struct AFMMLXRuntimeConfiguration: Sendable {
     public var kvBits: Int?
     public var enablePrefixCaching: Bool
     public var kernelEngine: AFMMLXKernelEngine
-    public var qwenNGramMmapEnabled: Bool
+    private var qwenNGramMmapCompatibilityValue: Bool
+    /// Retained for source compatibility. Qwen Next checkpoints now load their
+    /// declared n-gram sidecar automatically, so this value has no runtime effect.
+    @available(*, deprecated, message: "Qwen Next n-gram sidecars are loaded automatically")
+    public var qwenNGramMmapEnabled: Bool {
+        get { qwenNGramMmapCompatibilityValue }
+        set { qwenNGramMmapCompatibilityValue = newValue }
+    }
     public var mtpEnabled: Bool
     public var mtpDepth: Int
     public var mtpModelID: String?
@@ -67,7 +74,7 @@ public struct AFMMLXRuntimeConfiguration: Sendable {
         self.kvBits = kvBits
         self.enablePrefixCaching = enablePrefixCaching
         self.kernelEngine = kernelEngine
-        self.qwenNGramMmapEnabled = qwenNGramMmapEnabled
+        self.qwenNGramMmapCompatibilityValue = qwenNGramMmapEnabled
         self.mtpEnabled = mtpEnabled
         self.mtpDepth = mtpDepth
         self.mtpModelID = mtpModelID
@@ -105,7 +112,7 @@ public struct AFMMLXRuntimeConfiguration: Sendable {
             kernelEngine = AFMMLXKernelEngine(configuredValue: value)
         }
         if let value = configuration.bool("qwenNGramMmapEnabled") {
-            qwenNGramMmapEnabled = value
+            qwenNGramMmapCompatibilityValue = value
         }
         if let value = configuration.bool("mtpEnabled") {
             mtpEnabled = value
@@ -167,7 +174,7 @@ public struct AFMMLXRuntimeConfiguration: Sendable {
         service.kvBits = kvBits
         service.enablePrefixCaching = enablePrefixCaching
         service.kernelEngine = kernelEngine
-        service.qwenNGramMmapEnabled = qwenNGramMmapEnabled
+        service.qwenNGramMmapCompatibilityValue = qwenNGramMmapCompatibilityValue
         service.mtpEnabled = mtpEnabled
         service.mtpDepth = mtpDepth
         service.mtpModelID = mtpModelID
@@ -175,7 +182,12 @@ public struct AFMMLXRuntimeConfiguration: Sendable {
         service.maxConcurrent = maxConcurrent >= 2 ? maxConcurrent : 0
         service.toolCallParser = toolCallParser
         service.enableGrammarConstraints = enableGrammarConstraints
-        service.prefillStepSize = prefillStepSize ?? service.prefillStepSize
+        // Leaving the setting absent is semantically different from assigning
+        // the service's current value: the latter marks it as an explicit user
+        // override and prevents architecture-specific tuning after model load.
+        if let prefillStepSize {
+            service.prefillStepSize = prefillStepSize
+        }
         service.kvEvictionPolicy = kvEvictionPolicy
         service.fixToolArgs = fixToolArguments
         service.forceVLM = forceVLM

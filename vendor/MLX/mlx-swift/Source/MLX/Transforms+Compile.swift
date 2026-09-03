@@ -6,8 +6,26 @@ import Foundation
 // Note: this is all immutable state -- the `id` property is only set at init time
 final class CompiledFunction: @unchecked (Sendable) {
 
+    private static let identifierLock = NSLock()
+    nonisolated(unsafe) private static var nextIdentifier: UInt = 1
+
+    private static func makeIdentifier() -> UInt {
+        identifierLock.withLock {
+            let result = nextIdentifier
+            nextIdentifier &+= 1
+            precondition(nextIdentifier != 0, "MLX compiled-function identifier exhausted")
+            return result
+        }
+    }
+
     /// unique (for the lifetime of the object) identifier for the compiled function
-    private var id: UInt!
+    private let id: UInt
+
+    /// A cache owned by this compiled function. Swift tasks may resume on a
+    /// different OS thread between calls, so the default thread-local MLX cache
+    /// cannot safely express the function's lifetime. Keeping the cache here
+    /// also releases graphs and captured model weights when the model dies.
+    private let cache: mlx_detail_compile_cache
 
     let lock = NSLock()
 
@@ -28,17 +46,28 @@ final class CompiledFunction: @unchecked (Sendable) {
         self.inputs = inputs
         self.outputs = outputs
         self.shapeless = shapeless
-        self.id = UInt(bitPattern: Unmanaged.passUnretained(self).toOpaque())
+        self.id = Self.makeIdentifier()
+        self.cache = mlx_detail_compile_cache_new()
+        precondition(cache.ctx != nil, "Unable to create MLX compilation cache")
     }
 
     deinit {
-        // remove the compiled structure from the back end
-        mlx_detail_compile_erase(id)
+        // Releasing the owned cache removes every shape specialization and any
+        // retained model arrays independent of the executor thread running deinit.
+        mlx_detail_compile_cache_free(cache)
     }
 
     func call(_ arguments: [MLXArray]) -> [MLXArray] {
-        lock.withLock {
-            innerCall(arguments)
+        // Keep the global MLX evaluation lock outermost. A compiled closure may
+        // trace another compiled helper. Acquiring a function lock first lets
+        // two concurrent traces invert the order (function A -> eval ->
+        // function B versus function B -> eval) and deadlock. Every other MLX
+        // evaluation entry point already uses evalLock as the serialization
+        // boundary, so use the same order here.
+        evalLock.withLock {
+            lock.withLock {
+                innerCall(arguments)
+            }
         }
     }
 
@@ -86,12 +115,11 @@ final class CompiledFunction: @unchecked (Sendable) {
 
         // note: this will use the cached compile (via the id)
         // but will be able to re-evaluate with fresh state if needed
-        evalLock.lock()
         var compiled = mlx_closure_new()
-        let compileStatus = mlx_detail_compile(&compiled, innerClosure, id, shapeless, [], 0)
+        let compileStatus = mlx_detail_compile_with_cache(
+            &compiled, innerClosure, id, shapeless, [], 0, cache)
         defer {
             mlx_closure_free(compiled)
-            evalLock.unlock()
         }
 
         // mlx_error was already dispatched on failure:

@@ -79,6 +79,19 @@ public protocol KVCache: Evaluatable, Updatable {
     ) -> MLXFast.ScaledDotProductAttentionMaskMode
 }
 
+/// A model-owned cache whose batch dimension can be combined only when every
+/// sequence has the same logical offset. Hybrid recurrent models use this
+/// contract to preserve their concrete cache types while still enabling a
+/// dense decode fast path for uniform request cohorts.
+///
+/// The scheduler must retain a request-owned native-cache path for mixed
+/// offsets; padding recurrent state is not assumed to be semantically valid.
+public protocol UniformBatchKVCache: KVCache {
+    func mergedUniformBatch(_ caches: [KVCache]) -> KVCache
+    func extendUniformBatch(with cache: KVCache)
+    func filterUniformBatch(_ indices: [Int])
+}
+
 public protocol RotatingKVCacheWrapper: KVCache {
     var rotating: RotatingKVCache { get }
 }

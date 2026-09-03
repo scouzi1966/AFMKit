@@ -81,6 +81,12 @@ public struct StreamOrDevice: Sendable, CustomStringConvertible, Equatable {
 /// - ``StreamOrDevice``
 public final class Stream: @unchecked Sendable, Equatable {
 
+    public struct CommandBufferProfile: Sendable {
+        public let buffers: UInt64
+        public let operations: UInt64
+        public let bytes: UInt64
+    }
+
     let ctx: mlx_stream
 
     public static let gpu = Stream(mlx_default_gpu_stream_new())
@@ -142,6 +148,19 @@ public final class Stream: @unchecked Sendable, Equatable {
     public func synchronize() {
         _ = evalLock.withLock {
             mlx_synchronize(ctx)
+        }
+    }
+
+    /// Diagnostic command-buffer counters since the preceding report.
+    /// The query does not synchronize the stream.
+    public func commandBufferProfileSinceReport() -> CommandBufferProfile {
+        evalLock.withLock {
+            var profile = mlx_command_buffer_profile(buffers: 0, ops: 0, bytes: 0)
+            _ = mlx_command_buffer_profile_since_report(&profile, ctx)
+            return CommandBufferProfile(
+                buffers: profile.buffers,
+                operations: profile.ops,
+                bytes: profile.bytes)
         }
     }
 

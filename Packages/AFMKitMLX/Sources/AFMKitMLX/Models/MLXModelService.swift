@@ -368,11 +368,18 @@ public final class MLXModelService:
     private var currentMTPBinding: MTPGeneratorBinding?
     private var activeOperations: Int = 0
     private var isShuttingDown = false
+    /// Blocks new admissions while a different model/container is being
+    /// loaded. Model replacement is deliberately fail-closed when work for
+    /// the prior model is still active.
+    private var modelSwitchInProgress = false
     private var gpuInitialized = false
     var hasInitializedGPU: Bool { withStateLock { gpuInitialized } }
     private var radixCache: RadixTreeCache?
     private var currentToolCallFormat: ToolCallFormat?
-    public var prefillStepSize: Int = 1024
+    private(set) var prefillStepSizeIsExplicit = false
+    public var prefillStepSize: Int = AFMMLXPrefillPolicy.defaultStepSize {
+        didSet { prefillStepSizeIsExplicit = true }
+    }
     public var toolCallParser: String?
     public var fixToolArgs: Bool = false
     public var forceVLM: Bool = false
@@ -380,14 +387,28 @@ public final class MLXModelService:
     public var kernelEngine: AFMMLXKernelEngine = .native
     public var kvEvictionPolicy: String = "none"  // "none" or "streaming"
     public var enablePrefixCaching: Bool = false
-    /// Explicit opt-in for Qwen Next checkpoints that declare a disk-backed
-    /// ngram_table sidecar. The default resident checkpoint path is unchanged.
-    public var qwenNGramMmapEnabled: Bool = false
+    var qwenNGramMmapCompatibilityValue: Bool = false
+    /// Retained for source compatibility. Qwen Next checkpoints now load their
+    /// declared n-gram sidecar automatically, so this value has no runtime effect.
+    @available(*, deprecated, message: "Qwen Next n-gram sidecars are loaded automatically")
+    public var qwenNGramMmapEnabled: Bool {
+        get { qwenNGramMmapCompatibilityValue }
+        set { qwenNGramMmapCompatibilityValue = newValue }
+    }
     /// MTP self-speculative decoding (--mtp). Qwen 3.8 heads are cached as
     /// separate model repositories so their weights never enter the base loader.
     public var mtpEnabled: Bool = false
     public var mtpDepth: Int = 3
     public var mtpModelID: String?
+
+    private var resolvedPrefillStepSize: Int {
+        AFMMLXPrefillPolicy.resolve(
+            configuredStepSize: prefillStepSize,
+            isExplicit: prefillStepSizeIsExplicit,
+            canonicalModelType: withStateLock {
+                currentModelArchitecture?.canonicalModelType
+            })
+    }
     /// EAGLE3 speculative decoding (--eagle3 <drafter-path>). Activates only when the loaded model
     /// is a dense Gemma4 verifier and a drafter loads from the given path; otherwise falls back to AR.
     public var eagle3DrafterPath: String?
@@ -643,6 +664,10 @@ public final class MLXModelService:
     private var xgrammarService: XGrammarService?
     /// Concurrent generation scheduler (nil = serial mode via container.perform).
     private var scheduler: BatchScheduler?
+    /// Model identity captured by `scheduler`. Kept separately from
+    /// `currentModelID` so a stale scheduler can never serve a newly published
+    /// container after a model switch.
+    private var schedulerModelID: String?
     /// Maximum concurrent generations (0 = serial mode, 2+ = batch mode).
     public var maxConcurrent: Int = 0
 
@@ -666,10 +691,57 @@ public final class MLXModelService:
     /// Scheduled teardown work item (cancelled if new batch arrives).
     private var teardownWorkItem: DispatchWorkItem?
 
+    static func canUseScheduler(
+        schedulerModelID: String?,
+        currentModelID: String?,
+        modelSwitchInProgress: Bool
+    ) -> Bool {
+        !modelSwitchInProgress
+            && schedulerModelID != nil
+            && schedulerModelID == currentModelID
+    }
+
+    static func shouldUseStreamingScheduler(
+        schedulerAvailable: Bool,
+        mtpStreamEligible: Bool,
+        schedulerCanPreserveLogprobVisibility: Bool
+    ) -> Bool {
+        schedulerAvailable
+            && !mtpStreamEligible
+            && schedulerCanPreserveLogprobVisibility
+    }
+
+    static func isGreedySpeculationEligible(
+        parameters: GenerateParameters,
+        hasTools: Bool,
+        hasResponseFormat: Bool,
+        wantsLogprobs: Bool,
+        hasStopSequences: Bool,
+        hasMedia: Bool
+    ) -> Bool {
+        parameters.temperature == 0
+            && parameters.repetitionPenalty == nil
+            && parameters.presencePenalty == 0
+            && parameters.topK == 0
+            && parameters.minP == 0
+            && !parameters.ignoreEndOfSequence
+            && !hasTools
+            && !hasResponseFormat
+            && !wantsLogprobs
+            && !hasStopSequences
+            && !hasMedia
+    }
+
     /// Atomically reserve an execution slot.
     public func tryReserveSlot() -> Bool {
         withStateLock {
+            guard !modelSwitchInProgress else { return false }
             if let scheduler {
+                guard Self.canUseScheduler(
+                    schedulerModelID: schedulerModelID,
+                    currentModelID: currentModelID,
+                    modelSwitchInProgress: modelSwitchInProgress)
+                else { return false }
                 return scheduler.tryReserve()
             }
             // Once promotion starts, new callers must wait for the scheduler.
@@ -701,6 +773,11 @@ public final class MLXModelService:
     public func releaseSlot() {
         withStateLock {
             if let scheduler {
+                guard Self.canUseScheduler(
+                    schedulerModelID: schedulerModelID,
+                    currentModelID: currentModelID,
+                    modelSwitchInProgress: modelSwitchInProgress)
+                else { return }
                 scheduler.releaseReservation()
             } else {
                 releaseSerialSlot()
@@ -720,8 +797,18 @@ public final class MLXModelService:
     }
 
     public func admissionSnapshot() async -> AFMAdmissionSnapshot {
-        let scheduler = withStateLock { self.scheduler }
-        let acceptsNewOperations = withStateLock { !isShuttingDown }
+        let admission = withStateLock { () -> (BatchScheduler?, Bool) in
+            let accepts = !isShuttingDown && !modelSwitchInProgress
+            let matchingScheduler = Self.canUseScheduler(
+                schedulerModelID: schedulerModelID,
+                currentModelID: currentModelID,
+                modelSwitchInProgress: modelSwitchInProgress)
+                ? scheduler
+                : nil
+            return (matchingScheduler, accepts)
+        }
+        let scheduler = admission.0
+        let acceptsNewOperations = admission.1
 
         if let scheduler {
             let maximumConcurrentOperations = max(1, maxConcurrent)
@@ -1882,6 +1969,18 @@ public final class MLXModelService:
         return (quantization.groupSize, quantization.bits, mode)
     }
 
+    static func modelConfiguration(
+        directory: URL,
+        qwenNGramTableURL: URL?
+    ) -> ModelConfiguration {
+        // The explicit URL is AFM's opt-in override. Automatic resolution must
+        // remain enabled because a self-contained Qwen checkpoint may declare
+        // `ngram_table.file` as part of its intrinsic weight layout.
+        ModelConfiguration(
+            directory: directory,
+            qwenNGramTableURL: qwenNGramTableURL)
+    }
+
     public func ensureLoaded(
         model rawModel: String,
         progress: (@Sendable (Progress) -> Void)? = nil,
@@ -1906,7 +2005,8 @@ public final class MLXModelService:
         stage?(.checkingCache)
 
         if let cached = withStateLock({ () -> (String, ModelContainer)? in
-            guard let container = currentContainer,
+            guard !modelSwitchInProgress,
+                  let container = currentContainer,
                   AFMMLXMTPRuntimePolicy.canReuseLoadedModel(
                     loadedModelID: currentModelID,
                     requestedModelID: modelID,
@@ -1917,6 +2017,62 @@ public final class MLXModelService:
         }) {
             stage?(.ready)
             return cached.0
+        }
+
+        // A scheduler permanently captures its model, tokenizer, and processor.
+        // Before loading a replacement container, detach the prior scheduler as
+        // one atomic admission boundary. Replacing a model with live work would
+        // either corrupt routing or retain two large model graphs, so fail with
+        // the ordinary capacity signal and let the caller retry after drain.
+        let retiringScheduler = try withStateLock { () -> BatchScheduler? in
+            guard !modelSwitchInProgress else {
+                throw MLXServiceError.serverBusy(max(1, maxConcurrent))
+            }
+            let hasLoadedRuntime = currentContainer != nil || currentModelID != nil
+            if hasLoadedRuntime {
+                let schedulerWork = scheduler?.activeSlotCount ?? 0
+                let serialWork = _serialAdmissionState.withLock { $0.running }
+                guard activeOperations <= 1,
+                      schedulerWork == 0,
+                      serialWork == 0
+                else {
+                    throw MLXServiceError.serverBusy(max(1, maxConcurrent))
+                }
+            }
+
+            modelSwitchInProgress = true
+            let retiring = scheduler
+            scheduler = nil
+            schedulerModelID = nil
+            return retiring
+        }
+        var replacementReady = false
+        defer {
+            var cacheToInvalidate: RadixTreeCache?
+            withStateLock {
+                if !replacementReady {
+                    // The previous scheduler has already been retired. Leaving
+                    // its container published would silently reopen a different
+                    // serial runtime after a failed replacement load.
+                    currentContainer = nil
+                    currentModelID = nil
+                    currentModelArchitecture = nil
+                    currentVisionQualification = nil
+                    currentModelFactory = nil
+                    currentRuntimeDescriptor = nil
+                    currentToolCallFormat = nil
+                    currentMTPBinding = nil
+                    scheduler = nil
+                    schedulerModelID = nil
+                    cacheToInvalidate = radixCache
+                    radixCache = nil
+                }
+                modelSwitchInProgress = false
+            }
+            cacheToInvalidate?.invalidateAll()
+        }
+        if let retiringScheduler {
+            await retiringScheduler.shutdown()
         }
 
         // Loading priority:
@@ -2000,16 +2156,9 @@ public final class MLXModelService:
             )
         }
 
-        let qwenNGramTableURL = try AFMMLXQwenNGramSidecarResolver.resolve(
-            modelDirectory: directory,
-            canonicalModelType: modelArchitecture.canonicalModelType,
-            enabled: qwenNGramMmapEnabled)
-        if let qwenNGramTableURL {
-            print("[\(ts())] [QwenNGram] mapped sidecar enabled: \(qwenNGramTableURL.path)")
-        }
-        var config = ModelConfiguration(
+        var config = Self.modelConfiguration(
             directory: directory,
-            qwenNGramTableURL: qwenNGramTableURL)
+            qwenNGramTableURL: nil)
         // Auto-detect tool call format from model type (vendor LLMModelFactory lost this code)
         var detectedFormat = inferToolCallFormat(directory: directory)
         if let fmt = detectedFormat {
@@ -2177,7 +2326,7 @@ public final class MLXModelService:
                                 )
                                 print("[\(ts())] [MTP] head loaded — self-speculative decoding enabled (depth \(mtpDepth))")
                                 if maxConcurrent >= 2 {
-                                    print("[\(ts())] [MTP] concurrent/batch scheduler uses AR decode; serial requests use MTP")
+                                    print("[\(ts())] [MTP] eligible speculative requests bypass the batch scheduler; incompatible concurrent requests use AR decode")
                                 }
                                 return MTPGeneratorBinding(
                                     modelID: modelID,
@@ -2202,7 +2351,7 @@ public final class MLXModelService:
                                 )
                                 print("[\(ts())] [MTP] Qwen vision head loaded — self-speculative text decoding enabled (depth \(mtpDepth))")
                                 if maxConcurrent >= 2 {
-                                    print("[\(ts())] [MTP] concurrent/batch scheduler uses AR decode; serial requests use MTP")
+                                    print("[\(ts())] [MTP] eligible speculative requests bypass the batch scheduler; incompatible concurrent requests use AR decode")
                                 }
                                 return MTPGeneratorBinding(
                                     modelID: modelID,
@@ -2277,7 +2426,8 @@ public final class MLXModelService:
             )
 
             // Publish the container and its qualified runtime state as one change.
-            // A failed sidecar load leaves the previous model state untouched.
+            // If a later qualification step fails, the outer transaction clears
+            // this replacement rather than reopening the retired prior runtime.
             withStateLock {
                 currentContainer = loaded
                 currentModelID = modelID
@@ -2516,6 +2666,7 @@ public final class MLXModelService:
                 return min(1.0, active / Double(maxWorkingSetBytes))
             }
             try registry.registerModel(modelID)
+            replacementReady = true
             stage?(.ready)
             return modelID
         } catch {
@@ -2528,7 +2679,9 @@ public final class MLXModelService:
     /// mode dives into the container under its actor lock.
     /// Throws `MLXServiceError.noModelLoaded` if no model is currently loaded.
     public func tokenize(text: String) async throws -> [Int] {
-        if let scheduler = self.scheduler {
+        if let scheduler = withStateLock({
+            schedulerModelID == currentModelID ? self.scheduler : nil
+        }) {
             return scheduler.tokenizer.encode(text: text)
         }
         guard let container = withStateLock({ currentContainer }) else {
@@ -2543,17 +2696,48 @@ public final class MLXModelService:
     /// from the container. Must be called after ensureLoaded() and only when maxConcurrent >= 2.
     public func initScheduler() async throws {
         guard maxConcurrent >= 2 else { return }
+        // AFMMLXModel.load() is intentionally idempotent and may be called for
+        // every request. Keep scheduler initialization idempotent as well:
+        // replacing a live scheduler orphans its pending continuations and lets
+        // several schedulers drive the same model concurrently.
+        let matchingSchedulerExists = withStateLock {
+            !modelSwitchInProgress
+                && scheduler != nil
+                && schedulerModelID == currentModelID
+        }
+        if matchingSchedulerExists { return }
+
+        let staleScheduler = try withStateLock { () -> BatchScheduler? in
+            guard !modelSwitchInProgress else {
+                throw MLXServiceError.serverBusy(max(1, maxConcurrent))
+            }
+            guard let scheduler else { return nil }
+            guard scheduler.activeSlotCount == 0 else {
+                throw MLXServiceError.serverBusy(max(1, maxConcurrent))
+            }
+            self.scheduler = nil
+            self.schedulerModelID = nil
+            return scheduler
+        }
+        if let staleScheduler {
+            await staleScheduler.shutdown()
+        }
         if forceSerialGeneration {
             print("[\(ts())] Concurrent mode requested but model requires serial generation — running serially (correct output, requests serialized through model lock)")
             return
         }
-        startedInBatchMode = true
-        guard let container = withStateLock({ currentContainer }) else {
+        guard let runtime = withStateLock({ () -> (String, ModelContainer)? in
+            guard !modelSwitchInProgress,
+                  let currentModelID,
+                  let currentContainer
+            else { return nil }
+            return (currentModelID, currentContainer)
+        }) else {
             throw MLXServiceError.noModelLoaded
         }
         let prefixCaching = self.enablePrefixCaching
         let limit = self.maxConcurrent
-        let sched = await container.perform { context -> BatchScheduler in
+        let sched = await runtime.1.perform { context -> BatchScheduler in
             BatchScheduler(
                 model: context.model,
                 tokenizer: context.tokenizer,
@@ -2564,7 +2748,24 @@ public final class MLXModelService:
                 cacheProfilePath: self.cacheProfilePath
             )
         }
-        self.scheduler = sched
+        let installed = withStateLock { () -> Bool in
+            guard self.scheduler == nil,
+                  self.currentModelID == runtime.0,
+                  !self.modelSwitchInProgress
+            else { return false }
+            self.scheduler = sched
+            self.schedulerModelID = runtime.0
+            self.startedInBatchMode = true
+            return true
+        }
+        guard installed else {
+            // Another concurrent idempotent load won the installation race.
+            // The unused scheduler has no requests and has not published
+            // metric readers. Shut it down without disturbing the winner.
+            await sched.shutdown()
+            return
+        }
+        sched.activateMetrics()
         print("[\(ts())] Concurrent mode: up to \(limit) parallel generations\(prefixCaching ? " (prefix caching enabled)" : "")")
     }
 
@@ -2582,7 +2783,10 @@ public final class MLXModelService:
         // that proves the scheduler still exists. Teardown uses the identical
         // lock order, so it cannot detach the scheduler between those actions.
         if withStateLock({ () -> Bool in
-            guard scheduler != nil else { return false }
+            guard !modelSwitchInProgress,
+                  scheduler != nil,
+                  schedulerModelID == currentModelID
+            else { return false }
             _activeBatchCount.withLock { $0 += 1 }
             teardownWorkItem?.cancel()
             teardownWorkItem = nil
@@ -2593,7 +2797,8 @@ public final class MLXModelService:
 
         // Check if another caller is already promoting
         let shouldPromote = withStateLock { () -> Bool in
-            if scheduler != nil { return false }
+            if modelSwitchInProgress { return false }
+            if scheduler != nil && schedulerModelID == currentModelID { return false }
             if promotionInProgress { return false }
             promotionInProgress = true
             return true
@@ -2607,7 +2812,10 @@ public final class MLXModelService:
             // Acquire the reference atomically with observing the scheduler
             // installed by the other promotion caller.
             let acquired = withStateLock { () -> Bool in
-                guard scheduler != nil else { return false }
+                guard !modelSwitchInProgress,
+                      scheduler != nil,
+                      schedulerModelID == currentModelID
+                else { return false }
                 _activeBatchCount.withLock { $0 += 1 }
                 return true
             }
@@ -2621,12 +2829,18 @@ public final class MLXModelService:
         let limit = max(concurrency, 8)
         self.maxConcurrent = limit
 
-        guard let container = withStateLock({ currentContainer }) else {
+        guard let runtime = withStateLock({ () -> (String, ModelContainer)? in
+            guard !modelSwitchInProgress,
+                  let currentModelID,
+                  let currentContainer
+            else { return nil }
+            return (currentModelID, currentContainer)
+        }) else {
             withStateLock { promotionInProgress = false }
             throw MLXServiceError.noModelLoaded
         }
 
-        let sched = await container.perform { context -> BatchScheduler in
+        let sched = await runtime.1.perform { context -> BatchScheduler in
             BatchScheduler(
                 model: context.model,
                 tokenizer: context.tokenizer,
@@ -2650,11 +2864,22 @@ public final class MLXModelService:
             }
             throw error
         }
-        withStateLock {
+        let installed = withStateLock { () -> Bool in
+            defer { self.promotionInProgress = false }
+            guard self.scheduler == nil,
+                  self.currentModelID == runtime.0,
+                  !self.modelSwitchInProgress
+            else { return false }
             self.scheduler = sched
-            self.promotionInProgress = false
+            self.schedulerModelID = runtime.0
             _activeBatchCount.withLock { $0 += 1 }
+            return true
         }
+        guard installed else {
+            await sched.shutdown()
+            throw MLXServiceError.serverBusy(max(1, maxConcurrent))
+        }
+        sched.activateMetrics()
         print("[\(ts())] Auto-promoted to batch mode: \(limit) concurrent slots (prefix caching enabled)")
     }
 
@@ -2694,6 +2919,7 @@ public final class MLXModelService:
                 return nil
             }
             self.scheduler = nil
+            self.schedulerModelID = nil
             self.maxConcurrent = 0
             return scheduler
         }
@@ -2780,6 +3006,31 @@ public final class MLXModelService:
             maxTokens ?? Self.defaultMaximumResponseTokens
         )
         let ignoreEndOfSequence = AFMGenerationContext.ignoreEndOfSequence
+        let baseParameters = GenerateParameters(
+            maxTokens: effectiveMaxTokens,
+            kvBits: self.kvBits,
+            kvGroupSize: 64,
+            quantizedKVStart: 0,
+            temperature: normalizedTemperature(temperature),
+            topP: normalizedTopP(topP),
+            repetitionPenalty: normalizedRepetitionPenalty(repetitionPenalty),
+            repetitionContextSize: 64,
+            topK: normalizedTopK(topK),
+            minP: normalizedMinP(minP),
+            presencePenalty: normalizedPresencePenalty(presencePenalty),
+            seed: normalizedSeed(seed),
+            computeLogprobs: wantLogprobs,
+            topLogprobsCount: wantLogprobs ? min(max(topLogprobs ?? 0, 0), 20) : 0,
+            ignoreEndOfSequence: ignoreEndOfSequence,
+            prefillStepSize: self.resolvedPrefillStepSize
+        )
+        let greedySpeculationEligible = Self.isGreedySpeculationEligible(
+            parameters: baseParameters,
+            hasTools: !(tools?.isEmpty ?? true),
+            hasResponseFormat: responseFormat != nil,
+            wantsLogprobs: wantLogprobs,
+            hasStopSequences: !(stop?.isEmpty ?? true),
+            hasMedia: !resolvedMedia.mediaKinds.isEmpty)
 
         // Mutable generation state lives in a scratch box so the @Sendable
         // `container.perform` closure (Swift 6) can capture-and-mutate it.
@@ -2796,10 +3047,7 @@ public final class MLXModelService:
         // DeepSeek V4 checkpoints advertise this capability through metadata and carry the
         // drafter weights themselves; no model-id allowlist or separately loaded package.
         let dsparkEligible = afmDSparkEnabled()
-            && (temperature ?? 0) <= 0.0
-            && (tools?.isEmpty ?? true)
-            && responseFormat == nil
-            && !wantLogprobs
+            && greedySpeculationEligible
         if dsparkEligible {
             if let result = try await container.perform({ context -> (String, Int, Int)? in
                 guard let model = context.model as? DeepseekV4Model,
@@ -2838,11 +3086,7 @@ public final class MLXModelService:
         // Eligible when an MTP head is installed and the request is plain greedy generation.
         // Produces output identical to greedy AR (validated P2) but with fewer trunk forwards.
         let mtpEligible = mtpBinding != nil
-            && resolvedMedia.mediaKinds.isEmpty
-            && (temperature ?? 0) <= 0.0
-            && (tools?.isEmpty ?? true)
-            && responseFormat == nil
-            && !wantLogprobs
+            && greedySpeculationEligible
         if mtpEligible {
             if let mtpResult = try await container.perform({ context -> (String, Int, Int)? in
                 guard let gen = mtpBinding?.generator else { return nil }
@@ -2880,10 +3124,7 @@ public final class MLXModelService:
         // Eligible when a drafter is installed and the request is plain greedy generation.
         // Produces output identical to greedy AR (validated P1) with fewer verifier trunk forwards.
         let eagle3Eligible = Eagle3Runtime.shared.active != nil
-            && (temperature ?? 0) <= 0.0
-            && (tools?.isEmpty ?? true)
-            && responseFormat == nil
-            && !wantLogprobs
+            && greedySpeculationEligible
         if eagle3Eligible {
             if let e3Result = try await container.perform({ context -> (String, Int, Int)? in
                 guard let drafter = Eagle3Runtime.shared.active,
@@ -2926,24 +3167,9 @@ public final class MLXModelService:
             isTextOnlyInput: self.isTextOnlyInput(messages)
         )
         if lockFreeGenerationEligible {
-            var params = GenerateParameters(
-                maxTokens: effectiveMaxTokens,
-                kvBits: self.kvBits,
-                kvGroupSize: 64,
-                quantizedKVStart: 0,
-                temperature: normalizedTemperature(temperature),
-                topP: normalizedTopP(topP),
-                repetitionPenalty: normalizedRepetitionPenalty(repetitionPenalty),
-                repetitionContextSize: 64,
-                topK: normalizedTopK(topK),
-                minP: normalizedMinP(minP),
-                presencePenalty: normalizedPresencePenalty(presencePenalty),
-                seed: normalizedSeed(seed),
-                computeLogprobs: false,
-                topLogprobsCount: 0,
-                ignoreEndOfSequence: ignoreEndOfSequence,
-                prefillStepSize: self.prefillStepSize
-            )
+            var params = baseParameters
+            params.computeLogprobs = false
+            params.topLogprobsCount = 0
             params.extraProcessor = nil
 
             let input = try await container.prepare(input: scratch.userInput)
@@ -3124,24 +3350,7 @@ public final class MLXModelService:
         }
 
         let generated: String = try await container.perform { context in
-            var params = GenerateParameters(
-                maxTokens: effectiveMaxTokens,
-                kvBits: self.kvBits,
-                kvGroupSize: 64,
-                quantizedKVStart: 0,
-                temperature: normalizedTemperature(temperature),
-                topP: normalizedTopP(topP),
-                repetitionPenalty: normalizedRepetitionPenalty(repetitionPenalty),
-                repetitionContextSize: 64,
-                topK: normalizedTopK(topK),
-                minP: normalizedMinP(minP),
-                presencePenalty: normalizedPresencePenalty(presencePenalty),
-                seed: normalizedSeed(seed),
-                computeLogprobs: wantLogprobs,
-                topLogprobsCount: wantLogprobs ? min(max(topLogprobs ?? 0, 0), 20) : 0,
-                ignoreEndOfSequence: ignoreEndOfSequence,
-                prefillStepSize: self.prefillStepSize
-            )
+            var params = baseParameters
             var collectedLogprobs = [TokenLogprobData]()
             var resolvedLogprobs: [ResolvedLogprob]? = nil
             var collectedToolCalls = [ToolCall]()
@@ -3788,7 +3997,7 @@ public final class MLXModelService:
         // task below (the batch path's stats are owned by BatchScheduler).
         let streamQueuedAt = Date()
 
-        var params = GenerateParameters(
+        let baseParameters = GenerateParameters(
             maxTokens: effectiveMaxTokens,
             kvBits: self.kvBits,
             kvGroupSize: 64,
@@ -3804,11 +4013,45 @@ public final class MLXModelService:
             computeLogprobs: wantLogprobs,
             topLogprobsCount: wantLogprobs ? min(max(topLogprobs ?? 0, 0), 20) : 0,
             ignoreEndOfSequence: ignoreEndOfSequence,
-            prefillStepSize: self.prefillStepSize
+            prefillStepSize: self.resolvedPrefillStepSize
         )
+        var params = baseParameters
+
+        // Decide speculative eligibility before selecting the execution lane.
+        // Merely loading an MTP head must not serialize AR-only requests such
+        // as sampling, tools, stops, schemas, logprobs, or media.
+        let specGreedyStream = Self.isGreedySpeculationEligible(
+            parameters: baseParameters,
+            hasTools: !(tools?.isEmpty ?? true),
+            hasResponseFormat: responseFormat != nil,
+            wantsLogprobs: wantLogprobs,
+            hasStopSequences: !(stop?.isEmpty ?? true),
+            hasMedia: !resolvedMedia.mediaKinds.isEmpty)
+        let mtpStreamEligible = specGreedyStream && mtpBinding != nil
+
+        // Stop/tool transformation can suppress text after tokenization. Until
+        // the concurrent path owns a joint text/logprob visibility buffer, use
+        // the established serial implementation for this uncommon combination
+        // so hidden tokens never leak standalone logprobs.
+        let schedulerLogprobsAreVisible = !wantLogprobs
+            || ((stop?.isEmpty ?? true) && (tools?.isEmpty ?? true))
 
         // --- Concurrent path: bypass container.perform lock, route through BatchScheduler ---
-        if let scheduler = self.scheduler {
+        // A loaded speculative head is an explicit request to use speculative
+        // decoding. BatchScheduler is autoregressive-only today, so routing an
+        // MTP-backed request through it silently disables the requested engine
+        // while retaining the head's memory cost. Keep those requests on the
+        // serial path until the scheduler supports per-slot rollback.
+        let requestScheduler = withStateLock {
+            schedulerModelID == modelID ? self.scheduler : nil
+        }
+        if let scheduler = requestScheduler,
+           Self.shouldUseStreamingScheduler(
+                schedulerAvailable: true,
+                mtpStreamEligible: mtpStreamEligible,
+                schedulerCanPreserveLogprobVisibility:
+                    schedulerLogprobsAreVisible)
+        {
             let pipelineStart = debugLogging ? Date() : Date.distantPast
 
             // Use scheduler's tokenizer directly — no container lock needed.
@@ -3911,8 +4154,11 @@ public final class MLXModelService:
             // Derive tool call tags (same logic as serial path, below)
             let toolTags = toolRuntimeConfig.map { ($0.startTag, $0.endTag) }
 
+            let operationOwningStream = Self.operationOwningStream(
+                effectiveStream,
+                onFinish: { [weak self] in self?.endOperation() })
             endOperationOnExit = false
-            return (modelID, effectiveStream, preparedPromptTokens, toolTags?.0, toolTags?.1, self.thinkStartTag, self.thinkEndTag)
+            return (modelID, operationOwningStream, preparedPromptTokens, toolTags?.0, toolTags?.1, self.thinkStartTag, self.thinkEndTag)
         }
 
         // --- MTP / EAGLE3 speculative streaming fast path (serial, greedy, text-only) ---
@@ -3921,8 +4167,6 @@ public final class MLXModelService:
         // The generator's per-token `onToken` callback drives incremental detokenization, yielding
         // an SSE text delta per emitted token; think-tag extraction is done by the controller from
         // those deltas (we return the think tags). Output matches the non-streaming fast path.
-        let specGreedyStream = (temperature ?? 0) <= 0.0 && (tools?.isEmpty ?? true)
-            && responseFormat == nil && !wantLogprobs && (stop?.isEmpty ?? true)
         let loadedSupportsDSpark: Bool
         if specGreedyStream && afmDSparkEnabled() {
             loadedSupportsDSpark = await container.perform { context in
@@ -3933,8 +4177,6 @@ public final class MLXModelService:
         }
         let dsparkStreamEligible = specGreedyStream && loadedSupportsDSpark
         let eagle3StreamEligible = specGreedyStream && Eagle3Runtime.shared.active != nil
-        let mtpStreamEligible = specGreedyStream && mtpBinding != nil
-            && resolvedMedia.mediaKinds.isEmpty
         if dsparkStreamEligible || eagle3StreamEligible || mtpStreamEligible {
             // Prep prompt ids under the lock; nil => multimodal/empty/wrong-model => fall back to AR.
             // Also detect a template-opened think block (last prompt tokens contain thinkStart): for
@@ -4068,24 +4310,7 @@ public final class MLXModelService:
                         // Local generation params (the outer `params` is a captured
                         // var used by the concurrent path; a fresh local keeps this
                         // @Sendable closure free of captured-var mutation).
-                        var params = GenerateParameters(
-                            maxTokens: effectiveMaxTokens,
-                            kvBits: self.kvBits,
-                            kvGroupSize: 64,
-                            quantizedKVStart: 0,
-                            temperature: normalizedTemperature(temperature),
-                            topP: normalizedTopP(topP),
-                            repetitionPenalty: normalizedRepetitionPenalty(repetitionPenalty),
-                            repetitionContextSize: 64,
-                            topK: normalizedTopK(topK),
-                            minP: normalizedMinP(minP),
-                            presencePenalty: normalizedPresencePenalty(presencePenalty),
-                            seed: normalizedSeed(seed),
-                            computeLogprobs: wantLogprobs,
-                            topLogprobsCount: wantLogprobs ? min(max(topLogprobs ?? 0, 0), 20) : 0,
-                            ignoreEndOfSequence: ignoreEndOfSequence,
-                            prefillStepSize: self.prefillStepSize
-                        )
+                        var params = baseParameters
                         // Grammar constraint setup — see non-streaming path for details.
                         let constrainedDecoding = self.setupConstrainedDecodingProcessor(
                             modelID: modelID,
@@ -4640,13 +4865,19 @@ public final class MLXModelService:
 
     public func shutdownAndReleaseResources(verbose: Bool = false, timeoutSeconds: TimeInterval = 30) async {
         // Shut down concurrent scheduler first (cancels pending + active)
-        if let scheduler = self.scheduler {
-            await scheduler.shutdown()
+        if let scheduler = withStateLock({ () -> BatchScheduler? in
+            self.isShuttingDown = true
+            let scheduler = self.scheduler
             self.scheduler = nil
+            self.schedulerModelID = nil
+            return scheduler
+        }) {
+            await scheduler.shutdown()
+        } else {
+            withStateLock { isShuttingDown = true }
         }
 
         let start = Date()
-        withStateLock { isShuttingDown = true }
 
         while Date().timeIntervalSince(start) < timeoutSeconds {
             if withStateLock({ activeOperations == 0 }) {
@@ -6077,6 +6308,32 @@ public final class MLXModelService:
         }
     }
 
+    /// Transfers the operation lifetime from `generateStreaming` setup to the
+    /// scheduler-backed stream. The forwarding task owns exactly one matching
+    /// `endOperation()` call across normal completion, scheduler failure, and
+    /// client cancellation.
+    static func operationOwningStream<Element: Sendable>(
+        _ source: AsyncThrowingStream<Element, Error>,
+        onFinish: @escaping @Sendable () -> Void
+    ) -> AsyncThrowingStream<Element, Error> {
+        AsyncThrowingStream { continuation in
+            let forwardingTask = Task {
+                defer { onFinish() }
+                do {
+                    for try await chunk in source {
+                        continuation.yield(chunk)
+                    }
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in
+                forwardingTask.cancel()
+            }
+        }
+    }
+
     private func withStateLock<T>(_ body: () throws -> T) rethrows -> T {
         stateLock.lock()
         defer { stateLock.unlock() }
@@ -7206,9 +7463,14 @@ public final class MLXModelService:
         }
         flushSystemParts()
 
-        // Align with Vesta behavior: always include a base system instruction
-        // when callers don't explicitly provide one.
-        if !hasSystemMessage {
+        // Preserve the Qwen Next model-owned prompt exactly. Its published
+        // reference path does not synthesize a system turn, and adding one
+        // changes both the token sequence and the model's first-token logits.
+        // Keep the established compatibility default for existing families.
+        let promptModelType = withStateLock {
+            currentModelArchitecture?.canonicalModelType
+        }
+        if !hasSystemMessage, promptModelType != "qwen4_exp" {
             chatMessages.insert(.system("You are a helpful assistant!"), at: 0)
         }
 

@@ -285,11 +285,17 @@ public struct AFMMLXAudioModelStore: Sendable {
         }
         guard trimmed.contains("/") else { return false }
         let expanded = NSString(string: trimmed).expandingTildeInPath
-        let shellDirectory = ProcessInfo.processInfo.environment["PWD"]
-            ?? FileManager.default.currentDirectoryPath
-        let candidate = URL(fileURLWithPath: shellDirectory)
-            .appendingPathComponent(expanded)
-            .standardizedFileURL
-        return FileManager.default.fileExists(atPath: candidate.path)
+        let currentDirectory = FileManager.default.currentDirectoryPath
+        var searchRoots = [currentDirectory]
+        if let shellDirectory = ProcessInfo.processInfo.environment["PWD"],
+           shellDirectory != currentDirectory {
+            searchRoots.append(shellDirectory)
+        }
+        return searchRoots.contains { root in
+            let candidate = URL(fileURLWithPath: root)
+                .appendingPathComponent(expanded)
+                .standardizedFileURL
+            return FileManager.default.fileExists(atPath: candidate.path)
+        }
     }
 }

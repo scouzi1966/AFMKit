@@ -70,8 +70,14 @@ public enum AFMMLXRuntimeMemoryController {
             return 256
         case 24..<48:
             return 512
-        default:
+        case 48..<96:
             return 1024
+        case 96..<192:
+            return 2048
+        case 192..<384:
+            return 4096
+        default:
+            return 8192
         }
     }
 

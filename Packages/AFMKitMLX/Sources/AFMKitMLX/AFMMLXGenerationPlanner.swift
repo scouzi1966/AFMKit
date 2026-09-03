@@ -1,5 +1,37 @@
 import Foundation
 
+public enum AFMMLXPrefillPolicy {
+    public static let defaultStepSize = 1_024
+    /// Qwen Next's measured prompt split on M3 Ultra. Keeping the large
+    /// cache-only pass at 4K prevents a 4K-class prompt from evaluating an
+    /// unnecessary full-sequence vocabulary projection; the remaining tail
+    /// alone produces logits for sampling.
+    public static let throughputOptimizedStepSize = 4_096
+
+    // Keep architecture recommendations centralized so a measured optimum can
+    // be reused by future model families without branching in the runtime.
+    // Add an architecture only after a same-checkpoint benchmark establishes
+    // its throughput and memory behavior.
+    private static let architectureRecommendations: [String: Int] = [
+        "qwen4_exp": throughputOptimizedStepSize,
+    ]
+
+    /// Use a benchmarked architecture recommendation when the caller did not
+    /// supply an override. Explicit caller choices always win.
+    public static func resolve(
+        configuredStepSize: Int,
+        isExplicit: Bool,
+        canonicalModelType: String?
+    ) -> Int {
+        guard !isExplicit,
+              let canonicalModelType,
+              let recommendation = architectureRecommendations[canonicalModelType] else {
+            return configuredStepSize
+        }
+        return recommendation
+    }
+}
+
 public struct AFMMLXGenerationHiddenOverrides: Equatable, Sendable {
     public let maxKVSize: Int?
     public let kvBits: Int?

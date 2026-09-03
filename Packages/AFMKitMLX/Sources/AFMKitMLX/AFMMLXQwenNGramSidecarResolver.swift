@@ -40,10 +40,8 @@ enum AFMMLXQwenNGramSidecarResolver {
 
     static func resolve(
         modelDirectory: URL,
-        canonicalModelType: String,
-        enabled: Bool
+        canonicalModelType: String
     ) throws -> URL? {
-        guard enabled else { return nil }
         guard canonicalModelType == "qwen4_exp" else {
             throw AFMMLXQwenNGramSidecarResolverError.unsupportedModelType(
                 canonicalModelType)
@@ -84,9 +82,34 @@ enum AFMMLXQwenNGramSidecarResolver {
         else {
             throw AFMMLXQwenNGramSidecarResolverError.unsafePath(rawPath)
         }
-        guard FileManager.default.fileExists(atPath: candidate.path) else {
+        guard let values = try? candidate.resourceValues(
+            forKeys: [.isRegularFileKey, .fileSizeKey]),
+              values.isRegularFile == true,
+              (values.fileSize ?? 0) > 0
+        else {
             throw AFMMLXQwenNGramSidecarResolverError.missingFile(candidate.path)
         }
         return candidate
+    }
+
+    /// A checkpoint-declared n-gram table is part of the checkpoint, not an
+    /// optional runtime acceleration. Cache discovery must reject an
+    /// interrupted snapshot that contains the model shards but omits this
+    /// intrinsic sidecar.
+    static func hasCompleteIntrinsicSidecarIfDeclared(in modelDirectory: URL) -> Bool {
+        let configurationURL = modelDirectory.appendingPathComponent("config.json")
+        guard let data = try? Data(contentsOf: configurationURL),
+              let configuration = try? JSONDecoder().decode(
+                RootConfiguration.self,
+                from: data)
+        else { return false }
+
+        guard configuration.modelType == "qwen4_exp",
+              configuration.ngramTable != nil
+        else { return true }
+
+        return (try? resolve(
+            modelDirectory: modelDirectory,
+            canonicalModelType: configuration.modelType)) != nil
     }
 }

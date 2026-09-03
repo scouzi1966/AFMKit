@@ -29,8 +29,21 @@ MLX_API ArrayFnWithExtra compile(
 
 // Get the compiler cache of current thread.
 class CompileCache;
+using CompileCachePtr = std::shared_ptr<CompileCache>;
 using CompileCacheWeakPtr = std::weak_ptr<CompileCache>;
 MLX_API CompileCacheWeakPtr compile_cache();
+
+// Create a cache whose lifetime is owned by the caller rather than by the
+// thread that first invokes a compiled function. This is used by language
+// bindings whose task executors may resume on different OS threads.
+MLX_API CompileCachePtr compile_cache_create();
+
+MLX_API std::function<std::vector<array>(const std::vector<array>&)> compile(
+    std::function<std::vector<array>(const std::vector<array>&)> fun,
+    std::uintptr_t fun_id,
+    bool shapeless,
+    std::vector<uint64_t> constants,
+    CompileCachePtr cache);
 
 // Erase cached compile function.
 MLX_API void compile_erase(

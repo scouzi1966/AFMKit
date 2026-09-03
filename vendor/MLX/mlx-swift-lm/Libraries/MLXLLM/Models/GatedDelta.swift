@@ -9,6 +9,9 @@ import Foundation
 import MLX
 import MLXNN
 
+private let packedGatedDeltaEnabled =
+    ProcessInfo.processInfo.environment["AFM_GDN_PACKED"] != "0"
+
 // MARK: - Compute G (decay factor)
 
 /// Compute gating decay factor: exp(-exp(A_log) * softplus(a + dt_bias))
@@ -197,6 +200,116 @@ private func makeGatedDeltaKernel(hasMask: Bool, vectorized: Bool, fuseGating: B
     )
 }
 
+/// Scalar-gate Dk=128 specialization ported from the MIT-licensed
+/// ml-explore/mlx-lm packed GDN implementation (PR #1559, commit e9308d7).
+/// Eight independent value rows share one SIMD group, reducing each row with
+/// four lanes while preserving the explicitly specified butterfly order.
+private func makePackedGatedDeltaKernel() -> MLXFast.MLXFastKernel? {
+    let source = """
+        constexpr int lanes_per_row = 4;
+        constexpr int rows_per_simdgroup = 32 / lanes_per_row;
+        constexpr int values_per_lane = Dk / lanes_per_row;
+        constexpr int partials_per_lane = values_per_lane / 4;
+
+        auto n = thread_position_in_grid.z;
+        auto b_idx = n / Hv;
+        auto hv_idx = n % Hv;
+        auto hk_idx = hv_idx / (Hv / Hk);
+
+        auto lane = thread_index_in_simdgroup;
+        auto row_in_simdgroup = lane / lanes_per_row;
+        auto lane_in_row = lane & (lanes_per_row - 1);
+        auto row_group = thread_position_in_grid.y;
+        auto dv_idx = row_group * rows_per_simdgroup + row_in_simdgroup;
+
+        // q, k: [B, T, Hk, Dk]
+        auto q_ = q + (b_idx * T * Hk + hk_idx) * Dk
+            + lane_in_row * values_per_lane;
+        auto k_ = k + (b_idx * T * Hk + hk_idx) * Dk
+            + lane_in_row * values_per_lane;
+
+        // v, y: [B, T, Hv, Dv]
+        auto v_ = v + (b_idx * T * Hv + hv_idx) * Dv;
+        y += (b_idx * T * Hv + hv_idx) * Dv;
+
+        // state_in, state_out: [B, Hv, Dv, Dk]
+        auto i_state = state_in + (n * Dv + dv_idx) * Dk
+            + lane_in_row * values_per_lane;
+        auto o_state = state_out + (n * Dv + dv_idx) * Dk
+            + lane_in_row * values_per_lane;
+
+        float state[values_per_lane];
+        for (int i = 0; i < values_per_lane; ++i) {
+          state[i] = static_cast<float>(i_state[i]);
+        }
+
+        // g, beta: [B, T, Hv]
+        auto g_ = g + b_idx * T * Hv;
+        auto beta_ = beta + b_idx * T * Hv;
+
+        for (int t = 0; t < T; ++t) {
+          float gt = static_cast<float>(g_[hv_idx]);
+
+          // Each four-element chain matches one original lane's sequential
+          // accumulation. The final two butterfly levels stay within the
+          // four-lane row group.
+          float part[partials_per_lane];
+          for (int pb = 0; pb < partials_per_lane; ++pb) {
+            float acc = 0.0f;
+            for (int i = 0; i < 4; ++i) {
+              int e = pb * 4 + i;
+              state[e] = state[e] * gt;
+              acc += state[e] * static_cast<float>(k_[e]);
+            }
+            part[pb] = acc;
+          }
+          float kv_mem =
+              ((part[0] + part[1]) + (part[2] + part[3])) +
+              ((part[4] + part[5]) + (part[6] + part[7]));
+          kv_mem += simd_shuffle_xor(kv_mem, 1);
+          kv_mem += simd_shuffle_xor(kv_mem, 2);
+
+          auto delta =
+              (static_cast<float>(v_[dv_idx]) - kv_mem) *
+              static_cast<float>(beta_[hv_idx]);
+
+          for (int pb = 0; pb < partials_per_lane; ++pb) {
+            float acc = 0.0f;
+            for (int i = 0; i < 4; ++i) {
+              int e = pb * 4 + i;
+              state[e] = state[e] + static_cast<float>(k_[e]) * delta;
+              acc += state[e] * static_cast<float>(q_[e]);
+            }
+            part[pb] = acc;
+          }
+          float out =
+              ((part[0] + part[1]) + (part[2] + part[3])) +
+              ((part[4] + part[5]) + (part[6] + part[7]));
+          out += simd_shuffle_xor(out, 1);
+          out += simd_shuffle_xor(out, 2);
+          if (lane_in_row == 0) {
+            y[dv_idx] = static_cast<InT>(out);
+          }
+
+          q_ += Hk * Dk;
+          k_ += Hk * Dk;
+          v_ += Hv * Dv;
+          y += Hv * Dv;
+          g_ += Hv;
+          beta_ += Hv;
+        }
+
+        for (int i = 0; i < values_per_lane; ++i) {
+          o_state[i] = static_cast<StT>(state[i]);
+        }
+    """
+    return MLXFast.metalKernel(
+        name: "gated_delta_step_packed_btree",
+        inputNames: ["q", "k", "v", "g", "beta", "state_in", "T"],
+        outputNames: ["y", "state_out"],
+        source: source)
+}
+
 // MARK: - Kernel Manager (Singleton)
 
 private final class GatedDeltaKernelManager: Sendable {
@@ -206,6 +319,7 @@ private final class GatedDeltaKernelManager: Sendable {
     let kernelMasked: MLXFast.MLXFastKernel?
     let kernelVec: MLXFast.MLXFastKernel?
     let kernelVecMasked: MLXFast.MLXFastKernel?
+    let kernelPacked: MLXFast.MLXFastKernel?
 
     // Fused gating variants (compute g + beta inside kernel)
     let kernelFused: MLXFast.MLXFastKernel?
@@ -216,6 +330,7 @@ private final class GatedDeltaKernelManager: Sendable {
         kernelMasked = makeGatedDeltaKernel(hasMask: true, vectorized: false)
         kernelVec = makeGatedDeltaKernel(hasMask: false, vectorized: true)
         kernelVecMasked = makeGatedDeltaKernel(hasMask: true, vectorized: true)
+        kernelPacked = makePackedGatedDeltaKernel()
         // Fused: scalar gating only (vectorized gating is rare for decode)
         kernelFused = makeGatedDeltaKernel(hasMask: false, vectorized: false, fuseGating: true)
         kernelFusedMasked = makeGatedDeltaKernel(hasMask: true, vectorized: false, fuseGating: true)
@@ -338,8 +453,24 @@ func gatedDeltaKernel(
 
     let kernel: MLXFast.MLXFastKernel?
     var inputs: [MLXArray]
+    let packedEligible = packedGatedDeltaEnabled
+        && mask == nil
+        && g.ndim == 3
+        && T >= 16
+        && Dk == 128
+        && Dv.isMultiple(of: 8)
+        && state.dtype == .float32
+        && GatedDeltaKernelManager.shared.kernelPacked != nil
 
-    if g.ndim == 4 {
+    let grid: (Int, Int, Int)
+    let threadGroup: (Int, Int, Int)
+
+    if packedEligible {
+        inputs = [q, k, v, g, beta, state, MLXArray(T)]
+        kernel = GatedDeltaKernelManager.shared.kernelPacked
+        grid = (32, Dv / 8, B * Hv)
+        threadGroup = (32, 2, 1)
+    } else if g.ndim == 4 {
         // Vectorized gating
         inputs = [q, k, v, g, beta, state, MLXArray(T)]
         if let mask {
@@ -348,6 +479,8 @@ func gatedDeltaKernel(
         } else {
             kernel = GatedDeltaKernelManager.shared.kernelVec
         }
+        grid = (32, Dv, B * Hv)
+        threadGroup = (32, 4, 1)
     } else {
         // Scalar gating
         inputs = [q, k, v, g, beta, state, MLXArray(T)]
@@ -357,6 +490,8 @@ func gatedDeltaKernel(
         } else {
             kernel = GatedDeltaKernelManager.shared.kernel
         }
+        grid = (32, Dv, B * Hv)
+        threadGroup = (32, 4, 1)
     }
 
     guard let kernel else {
@@ -373,8 +508,8 @@ func gatedDeltaKernel(
             ("Hk", Hk),
             ("Hv", Hv),
         ],
-        grid: (32, Dv, B * Hv),
-        threadGroup: (32, 4, 1),
+        grid: grid,
+        threadGroup: threadGroup,
         outputShapes: [[B, T, Hv, Dv], state.shape],
         outputDTypes: [inputType, stateType]
     )

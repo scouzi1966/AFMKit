@@ -144,6 +144,10 @@ exact-pinned and match `Package.resolved` without forcing unrelated products
 into `AFMKitMLX` consumers. Clean downstream MLX build measurements and their
 minimal fixture are documented in
 [`docs/MLX_CONSUMER_BUILD.md`](docs/MLX_CONSUMER_BUILD.md).
+The active Qwen3.8 Flash Next performance investigation, reproduced reference
+curve, kernel-source mapping, cache constraints, and remaining decode budget are
+documented in
+[`docs/QWEN38_FLASH_NEXT_PERFORMANCE.md`](docs/QWEN38_FLASH_NEXT_PERFORMANCE.md).
 
 Release qualification creates one AFMKit tag only after all tests pass.
 SwiftPM release tags reject SemVer build metadata. Prerelease GitHub releases are

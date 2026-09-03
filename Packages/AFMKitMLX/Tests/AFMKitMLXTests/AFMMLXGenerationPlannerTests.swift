@@ -2,6 +2,34 @@ import XCTest
 @testable import AFMKitMLX
 
 final class AFMMLXGenerationPlannerTests: XCTestCase {
+    func testPrefillPolicyUsesMeasuredQwenNextStep() {
+        XCTAssertEqual(AFMMLXPrefillPolicy.throughputOptimizedStepSize, 4_096)
+        XCTAssertEqual(
+            AFMMLXPrefillPolicy.resolve(
+                configuredStepSize: AFMMLXPrefillPolicy.defaultStepSize,
+                isExplicit: false,
+                canonicalModelType: "qwen4_exp"),
+            AFMMLXPrefillPolicy.throughputOptimizedStepSize)
+    }
+
+    func testPrefillPolicyPreservesExplicitQwenNextOverride() {
+        XCTAssertEqual(
+            AFMMLXPrefillPolicy.resolve(
+                configuredStepSize: 2_048,
+                isExplicit: true,
+                canonicalModelType: "qwen4_exp"),
+            2_048)
+    }
+
+    func testPrefillPolicyPreservesLegacyModelDefault() {
+        XCTAssertEqual(
+            AFMMLXPrefillPolicy.resolve(
+                configuredStepSize: AFMMLXPrefillPolicy.defaultStepSize,
+                isExplicit: false,
+                canonicalModelType: "qwen3_5_moe"),
+            AFMMLXPrefillPolicy.defaultStepSize)
+    }
+
     func testPlannerSuppressesImplicitReasoningWhenThinkingToggleIsDisabled() {
         let plan = AFMMLXGenerationPlanner.make(
             maxTokens: 64,
