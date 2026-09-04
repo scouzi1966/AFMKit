@@ -292,6 +292,22 @@ final class AFMMLXSpeculativeDecodingTests: XCTestCase {
         XCTAssertTrue(compatibility.mtpCompatible)
     }
 
+    func testQwenNextEmbeddedMTPRequiresQualifiedAssets() {
+        let config: [String: Any] = [
+            "model_type": "qwen4_exp",
+            "text_config": [
+                "model_type": "qwen4_exp_text",
+                "mtp": ["num_hidden_layers": 1],
+            ],
+        ]
+        XCTAssertFalse(AFMMLXSpeculativeModelCompatibility.evaluate(
+            config: config, hasMTPSidecar: false).mtpCompatible)
+        XCTAssertTrue(AFMMLXSpeculativeModelCompatibility.evaluate(
+            config: config,
+            hasMTPSidecar: false,
+            embeddedAssetsPresent: true).mtpCompatible)
+    }
+
     func testGLMEmbeddedMTPIsNotAdvertisedFromConfigAlone() {
         let config: [String: Any] = [
             "model_type": "glm5_next",

@@ -1963,6 +1963,12 @@ public final class MLXModelService:
         groupSize: Int, bits: Int, mode: QuantizationMode
     ) {
         let directory = URL(fileURLWithPath: sidecarPath).deletingLastPathComponent()
+        return mtpQuantization(resourceDirectory: directory)
+    }
+
+    private func mtpQuantization(resourceDirectory directory: URL) -> (
+        groupSize: Int, bits: Int, mode: QuantizationMode
+    ) {
         guard let quantization = AFMMLXSpeculativeRuntimeResourceResolver.mtpQuantization(
             resourceDirectory: directory
         ) else {
@@ -2134,7 +2140,10 @@ public final class MLXModelService:
         let usesEmbeddedMTP = AFMMLXMTPRuntimePolicy.usesEmbeddedHead(
             canonicalModelType: modelArchitecture.canonicalModelType,
             embeddedAssetsPresent: embeddedCompatibility.mtpCompatible)
-        if mtpEnabled && usesEmbeddedMTP && mtpDepth != 1 {
+        if mtpEnabled && usesEmbeddedMTP,
+           modelArchitecture.canonicalModelType == "glm5_next",
+           mtpDepth != 1
+        {
             throw MLXServiceError.loadFailed(
                 "GLM-5.3 has one qualified NextN predictor; use --mtp-depth 1 (requested \(mtpDepth))"
             )
@@ -2272,35 +2281,87 @@ public final class MLXModelService:
                 print("[\(ts())] [ModelArchitecture] actualFactory=VLM (LLM fallback)")
             }
             // Load speculative resources only after the base model has loaded.
-            // Qwen uses an external sidecar; GLM explicitly loads its structural
-            // NextN layer into the already-selected text or vision container.
+            // Qwen Next and GLM load native predictors from their main
+            // checkpoint. Earlier Qwen generations continue using sidecars.
             var loadedMTPBinding: MTPGeneratorBinding?
             if mtpEnabled {
                 if usesEmbeddedMTP {
+                    guard let runtimeModelKind = AFMMLXMTPRuntimePolicy.compatibleModelKind(
+                        mtpEnabled: mtpEnabled,
+                        factory: actualFactory,
+                        canonicalModelType: modelArchitecture.canonicalModelType
+                    ) else {
+                        throw MLXServiceError.loadFailed(
+                            "Embedded MTP requires a compatible text or vision architecture")
+                    }
+                    let quantization = mtpQuantization(resourceDirectory: directory)
                     loadedMTPBinding = try await loaded.perform {
                         (context: ModelContext) async throws -> MTPGeneratorBinding in
-                        let generator: GLM5NextMTPGenerator?
-                        let containerKind: String
-                        if let glm = context.model as? GLM5NextModel {
-                            try glm.loadEmbeddedMTP(modelDirectory: directory)
-                            generator = GLM5NextMTPGenerator(model: glm, depth: mtpDepth)
-                            containerKind = "text"
-                        } else if let glm = context.model as? GLM5NextVLModel {
-                            try glm.loadEmbeddedMTP(modelDirectory: directory)
-                            generator = glm.makeEmbeddedMTPGenerator(depth: mtpDepth)
-                            containerKind = "vision"
-                        } else {
+                        switch runtimeModelKind {
+                        case .glmEmbedded:
+                            let generator: GLM5NextMTPGenerator?
+                            let containerKind: String
+                            if let glm = context.model as? GLM5NextModel {
+                                try glm.loadEmbeddedMTP(modelDirectory: directory)
+                                generator = GLM5NextMTPGenerator(model: glm, depth: mtpDepth)
+                                containerKind = "text"
+                            } else if let glm = context.model as? GLM5NextVLModel {
+                                try glm.loadEmbeddedMTP(modelDirectory: directory)
+                                generator = glm.makeEmbeddedMTPGenerator(depth: mtpDepth)
+                                containerKind = "vision"
+                            } else {
+                                throw MLXServiceError.loadFailed(
+                                    "GLM embedded MTP selected, but loaded \(type(of: context.model))")
+                            }
+                            guard let generator else {
+                                throw MLXServiceError.loadFailed(
+                                    "GLM checkpoint advertises MTP but its embedded NextN layer is incomplete")
+                            }
+                            print("[\(ts())] [MTP] GLM embedded NextN layer loaded into \(containerKind) container — self-speculative text decoding enabled (depth 1)")
+                            return MTPGeneratorBinding(
+                                modelID: modelID, generator: .glm(generator))
+
+                        case .qwenNextText:
+                            guard let qwen = context.model as? Qwen4ExpModel else {
+                                throw MLXServiceError.loadFailed(
+                                    "Qwen Next embedded MTP selected, but loaded \(type(of: context.model))")
+                            }
+                            let head = try qwen.loadEmbeddedMTPHead(
+                                modelDirectory: directory,
+                                groupSize: quantization.groupSize,
+                                bits: quantization.bits,
+                                mode: quantization.mode)
+                            let verificationPolicy =
+                                AFMMLXMTPRuntimePolicy.qwenNextVerificationPolicy()
+                            let generator = Qwen4ExpMTPGenerator(
+                                model: qwen, head: head, depth: mtpDepth,
+                                verificationPolicy: verificationPolicy)
+                            print("[\(ts())] [MTP] Qwen Next in-checkpoint head loaded — self-speculative decoding enabled (depth \(mtpDepth))")
+                            return MTPGeneratorBinding(
+                                modelID: modelID, generator: .qwenNext(generator))
+
+                        case .qwenNextVision:
+                            guard let qwen = context.model as? Qwen4ExpVL else {
+                                throw MLXServiceError.loadFailed(
+                                    "Qwen Next vision MTP selected, but loaded \(type(of: context.model))")
+                            }
+                            let verificationPolicy =
+                                AFMMLXMTPRuntimePolicy.qwenNextVerificationPolicy()
+                            let generator = try qwen.makeEmbeddedMTPGenerator(
+                                modelDirectory: directory,
+                                depth: mtpDepth,
+                                groupSize: quantization.groupSize,
+                                bits: quantization.bits,
+                                mode: quantization.mode,
+                                verificationPolicy: verificationPolicy)
+                            print("[\(ts())] [MTP] Qwen Next in-checkpoint head loaded through vision container — self-speculative text decoding enabled (depth \(mtpDepth))")
+                            return MTPGeneratorBinding(
+                                modelID: modelID, generator: .qwenNext(generator))
+
+                        case .qwenText, .qwenVision:
                             throw MLXServiceError.loadFailed(
-                                "GLM embedded MTP selected, but loaded \(type(of: context.model))"
-                            )
+                                "Sidecar Qwen MTP cannot use the embedded-head path")
                         }
-                        guard let generator else {
-                            throw MLXServiceError.loadFailed(
-                                "GLM checkpoint advertises MTP but its embedded NextN layer is incomplete"
-                            )
-                        }
-                        print("[\(ts())] [MTP] GLM embedded NextN layer loaded into \(containerKind) container — self-speculative text decoding enabled (depth 1)")
-                        return MTPGeneratorBinding(modelID: modelID, generator: .glm(generator))
                     }
                 } else if let sidecar = resolvedMTPSidecar {
                     do {
@@ -2404,6 +2465,10 @@ public final class MLXModelService:
                                     modelID: modelID,
                                     generator: .qwenNext(generator)
                                 )
+                            case .qwenNextVision:
+                                throw MLXServiceError.loadFailed(
+                                    "Qwen Next vision MTP is embedded and must not resolve a sidecar"
+                                )
                             case .glmEmbedded:
                                 throw MLXServiceError.loadFailed(
                                     "GLM embedded MTP must not resolve a sidecar"
@@ -2419,7 +2484,7 @@ public final class MLXModelService:
                     )
                 }
             } else if usesEmbeddedMTP {
-                print("[\(ts())] [MTP] embedded GLM NextN layer available; pass --mtp to enable serial speculative decoding")
+                print("[\(ts())] [MTP] embedded native predictor available; pass --mtp to enable serial speculative decoding")
             } else if resolvedMTPSidecar != nil {
                 print("[\(ts())] [MTP] matching head cached; pass --mtp to enable serial speculative decoding")
             }

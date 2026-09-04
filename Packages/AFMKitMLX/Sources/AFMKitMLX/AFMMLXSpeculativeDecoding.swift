@@ -145,7 +145,7 @@ public struct AFMMLXSpeculativeModelCompatibility: Equatable, Sendable {
     ) -> AFMMLXSpeculativeModelCompatibility {
         AFMMLXSpeculativeModelCompatibility(
             mtpCompatible: (hasMTPSidecar && isMTPCompatibleConfiguration(config))
-                || (embeddedAssetsPresent && hasEmbeddedGLMMTPConfiguration(config)),
+                || (embeddedAssetsPresent && hasEmbeddedMTPConfiguration(config)),
             denseGemma4Verifier: isDenseGemma4VerifierConfiguration(config)
         )
     }
@@ -162,6 +162,8 @@ public struct AFMMLXSpeculativeModelCompatibility: Equatable, Sendable {
         )
         let hasEmbeddedAssets = hasCompleteEmbeddedGLMMTP(
             modelDirectory: modelDirectory, config: config)
+            || hasCompleteEmbeddedQwenNextMTP(
+                modelDirectory: modelDirectory, config: config)
         return evaluate(
             config: config,
             hasMTPSidecar: hasMTPSidecar,
@@ -193,6 +195,70 @@ public struct AFMMLXSpeculativeModelCompatibility: Equatable, Sendable {
         let text = config["text_config"] as? [String: Any] ?? config
         let count = (text["num_nextn_predict_layers"] as? NSNumber)?.intValue ?? 0
         return topLevelType == "glm5_next" && count == 1
+    }
+
+    private static func hasEmbeddedMTPConfiguration(_ config: [String: Any]) -> Bool {
+        if hasEmbeddedGLMMTPConfiguration(config) { return true }
+        let topLevelType = AFMMLXModelArchitecture.canonicalModelType(
+            config["model_type"] as? String ?? "")
+        let text = config["text_config"] as? [String: Any] ?? config
+        let textType = AFMMLXModelArchitecture.canonicalModelType(
+            text["model_type"] as? String ?? "")
+        let mtp = text["mtp"] as? [String: Any]
+        let layers = (mtp?["num_hidden_layers"] as? NSNumber)?.intValue ?? 0
+        return (topLevelType == "qwen4_exp" || textType == "qwen4_exp_text")
+            && layers == 1
+    }
+
+    private static func hasCompleteEmbeddedQwenNextMTP(
+        modelDirectory: URL,
+        config: [String: Any]
+    ) -> Bool {
+        guard hasEmbeddedMTPConfiguration(config) else { return false }
+        let prefixes = ["language_model.mtp.", "mtp."]
+        let requiredSuffixes = [
+            "fc_embedding.weight",
+            "fc_hidden.weight",
+            "layers.0.self_attn.q_proj.weight",
+            "layers.0.mlp.switch_mlp.gate_proj.weight",
+            "hyper_connection_mixer.hc_norm.weight",
+        ]
+
+        let indexURL = modelDirectory.appendingPathComponent(
+            "model.safetensors.index.json")
+        if FileManager.default.fileExists(atPath: indexURL.path) {
+            guard let data = boundedData(
+                at: indexURL, maximumBytes: 128 * 1_024 * 1_024),
+                let object = try? JSONSerialization.jsonObject(with: data)
+                    as? [String: Any],
+                let map = object["weight_map"] as? [String: String],
+                let prefix = prefixes.first(where: { candidate in
+                    requiredSuffixes.allSatisfy { map[candidate + $0] != nil }
+                })
+            else { return false }
+
+            for suffix in requiredSuffixes {
+                let key = prefix + suffix
+                guard let shard = map[key],
+                      let shardURL = containedShardURL(
+                        named: shard, modelDirectory: modelDirectory),
+                      let header = safeTensorHeader(at: shardURL),
+                      hasSaneOffsets(header),
+                      header.tensors.contains(where: { $0.name == key })
+                else { return false }
+            }
+            return true
+        }
+
+        guard let tensorURL = containedShardURL(
+            named: "model.safetensors", modelDirectory: modelDirectory),
+            let header = safeTensorHeader(at: tensorURL),
+            hasSaneOffsets(header)
+        else { return false }
+        let names = Set(header.tensors.map(\.name))
+        return prefixes.contains { prefix in
+            requiredSuffixes.allSatisfy { names.contains(prefix + $0) }
+        }
     }
 
     private static func hasCompleteEmbeddedGLMMTP(

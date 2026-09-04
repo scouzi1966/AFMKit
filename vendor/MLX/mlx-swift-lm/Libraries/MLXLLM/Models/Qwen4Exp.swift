@@ -3981,6 +3981,96 @@ private final class Qwen4ExpModelInner: Module {
 
 // MARK: - Native MTP head
 
+/// Resolves Qwen Next's native predictor from the main checkpoint without
+/// sweeping unrelated model shards. This follows the in-checkpoint layout
+/// used by the official Qwen release and the MIT-licensed ddalcu/mlx-serve
+/// loader: only shards assigned to `language_model.mtp.*` are opened.
+private struct Qwen4ExpEmbeddedMTPCheckpoint {
+    static let prefix = "language_model.mtp."
+
+    let shardURLs: [URL]
+    let indexedKeys: Set<String>
+
+    init(modelDirectory: URL) throws {
+        let indexURL = modelDirectory.appendingPathComponent(
+            "model.safetensors.index.json")
+        let data = try Data(contentsOf: indexURL, options: [.mappedIfSafe])
+        guard data.count <= 128 * 1_024 * 1_024,
+              let object = try JSONSerialization.jsonObject(with: data)
+                as? [String: Any],
+              let weightMap = object["weight_map"] as? [String: String]
+        else {
+            throw Self.error("Qwen Next safetensor index is missing or malformed")
+        }
+
+        let assignments = weightMap.filter { $0.key.hasPrefix(Self.prefix) }
+        let requiredMarkers = [
+            "fc_embedding.weight",
+            "fc_hidden.weight",
+            "layers.0.self_attn.q_proj.weight",
+            "layers.0.mlp.switch_mlp.gate_proj.weight",
+            "hyper_connection_mixer.hc_norm.weight",
+        ]
+        guard requiredMarkers.allSatisfy({ assignments[Self.prefix + $0] != nil })
+        else {
+            throw Self.error("Qwen Next checkpoint has no complete native MTP head")
+        }
+
+        indexedKeys = Set(assignments.keys)
+        var seen = Set<String>()
+        var urls = [URL]()
+        for shard in assignments.values.sorted() where seen.insert(shard).inserted {
+            urls.append(try Self.containedShardURL(
+                named: shard, modelDirectory: modelDirectory))
+        }
+        shardURLs = urls
+    }
+
+    func loadArrays() throws -> [String: MLXArray] {
+        var selected = [String: MLXArray]()
+        for url in shardURLs {
+            let arrays = try MLX.loadArrays(url: url)
+            for (key, value) in arrays where indexedKeys.contains(key) {
+                guard selected.updateValue(value, forKey: key) == nil else {
+                    throw Self.error("Qwen Next MTP tensor appears in multiple shards: \(key)")
+                }
+            }
+        }
+        guard Set(selected.keys) == indexedKeys else {
+            throw Self.error("Qwen Next MTP index and shard payloads disagree")
+        }
+        return selected
+    }
+
+    private static func containedShardURL(
+        named name: String,
+        modelDirectory: URL
+    ) throws -> URL {
+        guard !name.isEmpty, !name.hasPrefix("/"),
+              !name.split(separator: "/").contains("..")
+        else { throw error("Unsafe Qwen Next shard path in safetensor index") }
+
+        let root = modelDirectory.resolvingSymlinksInPath()
+            .standardizedFileURL.path + "/"
+        let candidate = modelDirectory.appendingPathComponent(name)
+            .standardizedFileURL
+        guard FileManager.default.fileExists(atPath: candidate.path) else {
+            throw error("Qwen Next MTP tensor shard is missing: \(name)")
+        }
+        let resolved = candidate.resolvingSymlinksInPath()
+        guard resolved.path.hasPrefix(root) else {
+            throw error("Qwen Next shard path escapes the model directory")
+        }
+        return resolved
+    }
+
+    private static func error(_ message: String) -> NSError {
+        NSError(
+            domain: "Qwen4ExpEmbeddedMTP", code: 1,
+            userInfo: [NSLocalizedDescriptionKey: message])
+    }
+}
+
 /// Qwen3.8-Flash-Next's one-layer native multi-token-prediction head.
 ///
 /// Unlike the earlier Qwen MTP head, `fc_hidden` is shared across each of the
@@ -4107,6 +4197,31 @@ public final class Qwen4ExpMTPHead: Module {
         return weights
     }
 
+    /// Converted in-checkpoint weights already use AFM/MLX module names and
+    /// affine triples. Only the zero-centered norm convention needs restoring
+    /// after the converter folded it for checkpoint portability.
+    static func prepareEmbeddedCheckpointWeights(
+        _ raw: [String: MLXArray]
+    ) -> [String: MLXArray] {
+        let zeroCenteredNormSuffixes = [
+            ".hc_norm.weight",
+            ".q_norm.weight",
+            ".k_norm.weight",
+            ".q_layernorm.weight",
+            ".k_layernorm.weight",
+        ]
+        return Dictionary(uniqueKeysWithValues: raw.map { originalKey, value in
+            let key = originalKey.hasPrefix(Qwen4ExpEmbeddedMTPCheckpoint.prefix)
+                ? String(originalKey.dropFirst(
+                    Qwen4ExpEmbeddedMTPCheckpoint.prefix.count))
+                : originalKey
+            let prepared = zeroCenteredNormSuffixes.contains(where: key.hasSuffix)
+                ? value - 1
+                : value
+            return (key, prepared)
+        })
+    }
+
     fileprivate static func load(
         sidecarPath: String,
         config: Qwen4ExpTextConfiguration,
@@ -4123,6 +4238,29 @@ public final class Qwen4ExpMTPHead: Module {
         // Quantize only after assigning the real tensors so no random placeholder
         // is quantized and no 5.2 GB FP16 expert layer remains on the decode path.
         quantize(model: head, groupSize: groupSize, bits: bits, mode: mode)
+        eval(head)
+        return head
+    }
+
+    fileprivate static func loadEmbedded(
+        modelDirectory: URL,
+        config: Qwen4ExpTextConfiguration,
+        groupSize: Int,
+        bits: Int,
+        mode: QuantizationMode
+    ) throws -> Qwen4ExpMTPHead {
+        let checkpoint = try Qwen4ExpEmbeddedMTPCheckpoint(
+            modelDirectory: modelDirectory)
+        let weights = prepareEmbeddedCheckpointWeights(
+            try checkpoint.loadArrays())
+        let head = Qwen4ExpMTPHead(config)
+        quantize(model: head, filter: { path, _ in
+            weights["\(path).scales"] != nil
+                ? (groupSize, bits, mode)
+                : nil
+        })
+        try head.update(
+            parameters: ModuleParameters.unflattened(weights), verify: [.all])
         eval(head)
         return head
     }
@@ -4329,6 +4467,20 @@ public final class Qwen4ExpModel: Module, LLMModel, KVCacheDimensionProvider {
             bits: bits,
             mode: mode
         )
+    }
+
+    public func loadEmbeddedMTPHead(
+        modelDirectory: URL,
+        groupSize: Int = 64,
+        bits: Int = 4,
+        mode: QuantizationMode = .affine
+    ) throws -> Qwen4ExpMTPHead {
+        try Qwen4ExpMTPHead.loadEmbedded(
+            modelDirectory: modelDirectory,
+            config: configuration,
+            groupSize: groupSize,
+            bits: bits,
+            mode: mode)
     }
 
     public func forward(
