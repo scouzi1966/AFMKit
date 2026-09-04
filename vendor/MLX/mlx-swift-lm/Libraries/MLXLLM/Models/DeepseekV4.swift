@@ -2251,9 +2251,9 @@ public class DeepseekV4ModelInner: Module {
     private static let decodeAsyncLadderStride: Int = {
         guard let raw = ProcessInfo.processInfo.environment[
             "VMLX_DSV4_DECODE_ASYNC_LADDER"
-        ] else { return 8 }
-        if raw == "auto" { return 8 }
-        return max(Int(raw) ?? 8, 0)
+        ] else { return 4 }
+        if raw == "auto" { return 4 }
+        return max(Int(raw) ?? 4, 0)
     }()
 
     let config: DeepseekV4Configuration
@@ -3012,6 +3012,15 @@ public class DeepseekV4Model: Module, LLMModel, KVCacheDimensionProvider, LoRAMo
 public final class DeepseekV4DSparkGenerator {
     public static let defaultConfidenceThreshold: Float = 0.7
 
+    /// Keep verifier cache/captured state on the dependency graph instead of
+    /// forcing a second device-to-host synchronization after the token decision.
+    /// This follows the graph scheduling proven by Qwen Next: request-owned
+    /// state is submitted asynchronously and its next consumer provides the
+    /// ordering dependency. The diagnostic switch permits same-binary A/B.
+    private static let asyncVerifierStateEvaluation =
+        DeepseekV4RuntimeOptions.enabled(
+            "VMLX_DSV4_ASYNC_STATE_EVAL", default: true)
+
     private let model: DeepseekV4Model
     public let draftLimit: Int
     public let confidenceThreshold: Float
@@ -3044,7 +3053,12 @@ public final class DeepseekV4DSparkGenerator {
         captured: MLXArray,
         cache: [KVCache]
     ) {
-        MLX.eval([captured] + cache.flatMap { $0.innerState() })
+        let state = [captured] + cache.flatMap { $0.innerState() }
+        if Self.asyncVerifierStateEvaluation {
+            asyncEval(state)
+        } else {
+            MLX.eval(state)
+        }
     }
 
     public func generate(
