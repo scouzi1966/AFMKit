@@ -367,6 +367,38 @@ final class AFMMLXSpeculativeDecodingTests: XCTestCase {
                 embeddedAssetsPresent: false))
     }
 
+    func testDeepseekEmbeddedDSparkIsRecognizedAsMTPRuntime() {
+        let config: [String: Any] = [
+            "model_type": "deepseek_v4",
+            "num_hidden_layers": 2,
+            "compress_ratios": [0, 4, 0, 0, 0],
+            "dspark_block_size": 5,
+            "dspark_noise_token_id": 7,
+            "dspark_target_layer_ids": [0, 1],
+            "dspark_markov_rank": 16,
+            "vocab_size": 32,
+        ]
+
+        XCTAssertFalse(
+            AFMMLXSpeculativeModelCompatibility.evaluate(
+                config: config, hasMTPSidecar: false).mtpCompatible)
+        XCTAssertTrue(
+            AFMMLXSpeculativeModelCompatibility.evaluate(
+                config: config,
+                hasMTPSidecar: false,
+                embeddedAssetsPresent: true).mtpCompatible)
+        XCTAssertEqual(
+            AFMMLXMTPRuntimePolicy.compatibleModelKind(
+                mtpEnabled: true,
+                factory: .llm,
+                canonicalModelType: "deepseek_v4"),
+            .deepseekEmbedded)
+        XCTAssertTrue(
+            AFMMLXMTPRuntimePolicy.usesEmbeddedHead(
+                canonicalModelType: "deepseek_v4",
+                embeddedAssetsPresent: true))
+    }
+
     func testEmbeddedMTPShardPathsCannotEscapeModelDirectory() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)

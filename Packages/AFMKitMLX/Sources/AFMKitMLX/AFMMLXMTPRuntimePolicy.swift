@@ -8,6 +8,7 @@ enum AFMMLXMTPRuntimeModelKind: Equatable, Sendable {
     case qwenNextText
     case qwenNextVision
     case glmEmbedded
+    case deepseekEmbedded
 }
 
 /// Pure lifecycle decisions shared by model loading and request dispatch.
@@ -61,6 +62,9 @@ enum AFMMLXMTPRuntimePolicy {
         if canonicalModelType == "glm5_next" {
             return .glmEmbedded
         }
+        if canonicalModelType == "deepseek_v4" {
+            return .deepseekEmbedded
+        }
         if canonicalModelType == "qwen4_exp" {
             return factory == .vlm ? .qwenNextVision : .qwenNextText
         }
@@ -73,7 +77,8 @@ enum AFMMLXMTPRuntimePolicy {
         canonicalModelType: String,
         embeddedAssetsPresent: Bool
     ) -> Bool {
-        (canonicalModelType == "glm5_next" || canonicalModelType == "qwen4_exp")
+        (canonicalModelType == "glm5_next" || canonicalModelType == "qwen4_exp"
+            || canonicalModelType == "deepseek_v4")
             && embeddedAssetsPresent
     }
 
