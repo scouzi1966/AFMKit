@@ -31,6 +31,35 @@ The published template accepts `reasoning_effort` values of `low`, `high`, or
 documented lowest available setting, `reasoning_effort=low`, rather than sending
 the unrelated `enable_thinking` flag.
 
+## Decode submission ladder
+
+GLM decode uses a four-layer asynchronous submission ladder. The model still
+constructs exactly the same lazy MLX graph and updates the same per-request
+caches; the intermediate `asyncEval` calls only let GPU execution begin while
+Swift constructs later layers. The ladder is restricted to single-token decode,
+so prefill graph structure and throughput are unchanged. Set
+`VMLX_GLM53_DECODE_ASYNC_LADDER=0` to recover the unsplit diagnostic path.
+
+The default stride was selected on an M3 Ultra with the same local
+`GLM-5.3-Flash-oQ4e` checkpoint, temperature zero, prefix reuse disabled, and
+byte-for-byte output checks:
+
+| Decode configuration | 128-token mean | 256-token mean | Output |
+| --- | ---: | ---: | --- |
+| Unsplit control | 25.24 tok/s | 24.86 tok/s | reference |
+| Ladder stride 2 | 28.68 tok/s | — | identical |
+| Ladder stride 4 | 28.69 tok/s | 28.52 tok/s | identical |
+| Ladder stride 8 | 28.56 tok/s | — | identical |
+| Ladder stride 12 | 27.71 tok/s | — | identical |
+
+Stride four improved the longer serial control by 14.7%. A two-request
+continuous-batch check improved aggregate throughput from 29.65 to 39.50 tok/s
+(33.2%) with identical output for both lanes. Stride four was preferred over
+the statistically tied stride two because it introduces half as many explicit
+submission points. This is an architecture-specific policy: the same ladder
+was neutral on Qwen3.8-27B and DeepSeek-V4-Flash-0731 and was not enabled for
+either model.
+
 ## Checkpoint scope
 
 The official upstream repository publishes FP8 Transformers shards, not a
