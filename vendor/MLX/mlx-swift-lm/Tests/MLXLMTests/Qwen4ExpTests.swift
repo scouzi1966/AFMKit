@@ -2537,25 +2537,6 @@ final class Qwen4ExpTests: XCTestCase {
             fileSize)
     }
 
-    func testMappedNGramTableCanLockAndGather() throws {
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("qwen-ngram-lock-\(UUID().uuidString).bin")
-        defer { try? FileManager.default.removeItem(at: url) }
-        try writeTinyMappedNGramTable(to: url)
-
-        let table = try Qwen4ExpMappedNGramTable(
-            url: url,
-            expectedRows: 2,
-            expectedDimensions: 8,
-            expectedBits: 4,
-            expectedGroupSize: 4)
-        try table.applyResidency(.locked)
-
-        let output = try table.gather([0, 1], shape: [1, 2])
-        eval(output)
-        XCTAssertEqual(output.shape, [1, 2, 8])
-    }
-
     func testMappedNGramTableWarmCancellationPreservesTableDescriptor() throws {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("qwen-ngram-warm-cancel-\(UUID().uuidString).bin")

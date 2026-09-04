@@ -17,7 +17,6 @@ public enum AFMMLXKernelEngine: String, CaseIterable, Sendable {
 public enum AFMMLXQwenNGramResidency: String, CaseIterable, Sendable {
     case mapped
     case prewarm
-    case locked
 
     public init(configuredValue: String?) {
         let normalized = configuredValue?

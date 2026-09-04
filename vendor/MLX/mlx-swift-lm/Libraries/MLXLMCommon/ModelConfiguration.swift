@@ -10,8 +10,6 @@ public enum QwenNGramResidencyPolicy: String, CaseIterable, Sendable {
     case mapped
     /// Read the complete table into the filesystem page cache before use.
     case prewarm
-    /// Fault in and pin the complete mapping for the lifetime of the model.
-    case locked
 }
 
 /// Configuration for a given model name with overrides for prompts and tokens.

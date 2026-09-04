@@ -32,7 +32,7 @@ final class AFMMLXRuntimeConfigurationTests: XCTestCase {
 
     func testQwenNGramResidencyPropagatesToModelConfiguration() {
         let service = MLXModelService(resolver: MLXCacheResolver())
-        let runtime = AFMMLXRuntimeConfiguration(qwenNGramResidency: .locked)
+        let runtime = AFMMLXRuntimeConfiguration(qwenNGramResidency: .prewarm)
 
         runtime.apply(to: service)
         let configuration = MLXModelService.modelConfiguration(
@@ -40,8 +40,8 @@ final class AFMMLXRuntimeConfigurationTests: XCTestCase {
             qwenNGramTableURL: nil,
             qwenNGramResidency: service.qwenNGramResidency)
 
-        XCTAssertEqual(service.qwenNGramResidency, .locked)
-        XCTAssertEqual(configuration.qwenNGramResidency, .locked)
+        XCTAssertEqual(service.qwenNGramResidency, .prewarm)
+        XCTAssertEqual(configuration.qwenNGramResidency, .prewarm)
     }
 
     func testDeprecatedQwenNGramMmapSettingRemainsSourceCompatible() {

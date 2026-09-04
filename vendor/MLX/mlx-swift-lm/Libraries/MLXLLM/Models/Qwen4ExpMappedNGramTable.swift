@@ -7,7 +7,6 @@ import MLXLMCommon
 enum Qwen4ExpMappedNGramTableError: Error, LocalizedError, Equatable {
     case cannotOpen(String)
     case cannotMap(String)
-    case cannotLock(String, String)
     case cannotWarm(expectedBytes: Int, actualBytes: Int)
     case notRegularFile(String)
     case truncated
@@ -22,8 +21,6 @@ enum Qwen4ExpMappedNGramTableError: Error, LocalizedError, Equatable {
             return "Cannot open Qwen n-gram table at \(path)"
         case .cannotMap(let path):
             return "Cannot memory-map Qwen n-gram table at \(path)"
-        case .cannotLock(let path, let detail):
-            return "Cannot lock Qwen n-gram table at \(path): \(detail)"
         case .cannotWarm(let expectedBytes, let actualBytes):
             return "Cannot prewarm complete Qwen n-gram table (expected \(expectedBytes) bytes, read \(actualBytes))"
         case .notRegularFile(let path):
@@ -181,8 +178,6 @@ final class Qwen4ExpMappedNGramTable: @unchecked Sendable {
     private final class MappedBuffer: @unchecked Sendable {
         let pointer: UnsafeRawPointer
         let count: Int
-        private let path: String
-        private var isLocked = false
 
         init(descriptor: Int32, path: String) throws {
             var info = stat()
@@ -196,7 +191,6 @@ final class Qwen4ExpMappedNGramTable: @unchecked Sendable {
                 throw Qwen4ExpMappedNGramTableError.truncated
             }
             count = Int(info.st_size)
-            self.path = path
             guard let mapping = Darwin.mmap(
                 nil, count, PROT_READ, MAP_PRIVATE, descriptor, 0),
                 mapping != MAP_FAILED
@@ -207,21 +201,7 @@ final class Qwen4ExpMappedNGramTable: @unchecked Sendable {
         }
 
         deinit {
-            if isLocked {
-                Darwin.munlock(pointer, count)
-            }
             Darwin.munmap(UnsafeMutableRawPointer(mutating: pointer), count)
-        }
-
-        func lockResident() throws -> TimeInterval {
-            guard !isLocked else { return 0 }
-            let startedAt = Date.timeIntervalSinceReferenceDate
-            guard Darwin.mlock(pointer, count) == 0 else {
-                let detail = String(cString: strerror(errno))
-                throw Qwen4ExpMappedNGramTableError.cannotLock(path, detail)
-            }
-            isLocked = true
-            return Date.timeIntervalSinceReferenceDate - startedAt
         }
 
         func withUnsafeBytes<R>(
@@ -645,13 +625,6 @@ final class Qwen4ExpMappedNGramTable: @unchecked Sendable {
                     expectedBytes: mappedData.count,
                     actualBytes: warmedBytes)
             }
-        case .locked:
-            let seconds = try mappedData.lockResident()
-            let gibibytes = Double(mappedData.count) / Double(1 << 30)
-            print(String(
-                format: "[QwenNGram] residency=locked %.1f GiB in %.2f s",
-                gibibytes,
-                seconds))
         }
     }
 
