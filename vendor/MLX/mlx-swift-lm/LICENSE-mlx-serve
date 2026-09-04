@@ -20,6 +20,8 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-The Qwen affine MoE Metal kernel adaptation in
-Libraries/MLXLMCommon/QwenAffineMoEKernels.swift derives from:
+AFMKit's Qwen Next checkpoint converter and the Qwen runtime/kernel
+adaptations identified in source comments derive from these MIT-licensed
+mlx-serve revisions:
+https://github.com/ddalcu/mlx-serve/tree/805807669565d359188b329c659f9f45d6358cd7
 https://github.com/ddalcu/mlx-serve/tree/7d0120363c98e7daa9b9894b6fb71cc8d7e84c5e

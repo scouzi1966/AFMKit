@@ -136,6 +136,42 @@ final class Qwen4ExpCheckpointConverterTests: XCTestCase {
         }
     }
 
+    func testInspectionRejectsMissingRequiredSupportAssetBeforeConversion() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        try FileManager.default.removeItem(
+            at: fixture.source.appendingPathComponent("tokenizer.json"))
+
+        XCTAssertThrowsError(try Qwen4ExpCheckpointConverter.inspect(
+            source: fixture.source, sourceRevision: revision)) { error in
+            XCTAssertTrue(error.localizedDescription.contains("tokenizer.json"))
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.output.path))
+    }
+
+    func testResumeRejectsMutatedSourceShard() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        try Qwen4ExpCheckpointConverter(
+            source: fixture.source,
+            output: fixture.output,
+            sourceRevision: revision).run()
+        let shard = fixture.source.appendingPathComponent(
+            "model-00001-of-00001.safetensors")
+        let handle = try FileHandle(forUpdating: shard)
+        defer { try? handle.close() }
+        let end = try handle.seekToEnd()
+        try handle.seek(toOffset: end - 1)
+        try handle.write(contentsOf: Data([0x7f]))
+
+        XCTAssertThrowsError(try Qwen4ExpCheckpointConverter.inspectResume(
+            source: fixture.source,
+            output: fixture.output,
+            sourceRevision: revision)) { error in
+            XCTAssertTrue(error.localizedDescription.contains("shards"))
+        }
+    }
+
     private func makeFixture(ngramCount: Int = 128) throws -> (
         root: URL, source: URL, output: URL
     ) {

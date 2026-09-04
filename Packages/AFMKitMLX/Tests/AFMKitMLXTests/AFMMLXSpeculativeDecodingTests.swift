@@ -308,6 +308,21 @@ final class AFMMLXSpeculativeDecodingTests: XCTestCase {
             embeddedAssetsPresent: true).mtpCompatible)
     }
 
+    func testQwenNextEmbeddedMTPRequiresEveryRuntimeTensor() throws {
+        let complete = try Self.makeEmbeddedQwenNextMTPDirectory()
+        defer { try? FileManager.default.removeItem(at: complete) }
+        XCTAssertTrue(
+            AFMMLXSpeculativeModelCompatibility.evaluate(modelDirectory: complete)
+                .mtpCompatible)
+
+        let missing = try Self.makeEmbeddedQwenNextMTPDirectory(
+            omitting: "layers.0.mlp_hyper_connection.block_inject_weight.weight")
+        defer { try? FileManager.default.removeItem(at: missing) }
+        XCTAssertFalse(
+            AFMMLXSpeculativeModelCompatibility.evaluate(modelDirectory: missing)
+                .mtpCompatible)
+    }
+
     func testGLMEmbeddedMTPIsNotAdvertisedFromConfigAlone() {
         let config: [String: Any] = [
             "model_type": "glm5_next",
@@ -589,6 +604,33 @@ final class AFMMLXSpeculativeDecodingTests: XCTestCase {
         ]
         try JSONSerialization.data(withJSONObject: config).write(
             to: directory.appendingPathComponent("config.json"))
+    }
+
+    private static func makeEmbeddedQwenNextMTPDirectory(
+        omitting omitted: String? = nil
+    ) throws -> URL {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let config: [String: Any] = [
+            "model_type": "qwen4_exp",
+            "text_config": [
+                "model_type": "qwen4_exp_text",
+                "mtp": ["num_hidden_layers": 1],
+            ],
+        ]
+        try JSONSerialization.data(withJSONObject: config).write(
+            to: directory.appendingPathComponent("config.json"))
+        let prefix = "language_model.mtp."
+        let tensors = Dictionary(uniqueKeysWithValues:
+            AFMMLXSpeculativeModelCompatibility.embeddedQwenNextMTPRequiredSuffixes
+                .filter { $0 != omitted }
+                .map { suffix in
+                    (prefix + suffix, ("BF16", [1]))
+                })
+        try writeSafetensorMetadata(
+            tensors, to: directory.appendingPathComponent("model.safetensors"))
+        return directory
     }
 
     private enum ShardedManifestMutation {

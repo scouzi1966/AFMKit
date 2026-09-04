@@ -216,13 +216,7 @@ public struct AFMMLXSpeculativeModelCompatibility: Equatable, Sendable {
     ) -> Bool {
         guard hasEmbeddedMTPConfiguration(config) else { return false }
         let prefixes = ["language_model.mtp.", "mtp."]
-        let requiredSuffixes = [
-            "fc_embedding.weight",
-            "fc_hidden.weight",
-            "layers.0.self_attn.q_proj.weight",
-            "layers.0.mlp.switch_mlp.gate_proj.weight",
-            "hyper_connection_mixer.hc_norm.weight",
-        ]
+        let requiredSuffixes = embeddedQwenNextMTPRequiredSuffixes
 
         let indexURL = modelDirectory.appendingPathComponent(
             "model.safetensors.index.json")
@@ -260,6 +254,43 @@ public struct AFMMLXSpeculativeModelCompatibility: Equatable, Sendable {
             requiredSuffixes.allSatisfy { names.contains(prefix + $0) }
         }
     }
+
+    static let embeddedQwenNextMTPRequiredSuffixes: [String] = {
+        let quantizedBases = [
+            "fc_embedding", "fc_hidden",
+            "hyper_connection_mixer.input_mix_weight_down",
+            "hyper_connection_mixer.input_mix_weight_up",
+            "layers.0.attn_hyper_connection.input_mix_weight_down",
+            "layers.0.attn_hyper_connection.input_mix_weight_up",
+            "layers.0.mlp.gate", "layers.0.mlp.shared_expert.down_proj",
+            "layers.0.mlp.shared_expert.gate_proj",
+            "layers.0.mlp.shared_expert.up_proj",
+            "layers.0.mlp.switch_mlp.down_proj",
+            "layers.0.mlp.switch_mlp.gate_proj",
+            "layers.0.mlp.switch_mlp.up_proj",
+            "layers.0.mlp_hyper_connection.input_mix_weight_down",
+            "layers.0.mlp_hyper_connection.input_mix_weight_up",
+            "layers.0.self_attn.indexer.index_qk_proj",
+            "layers.0.self_attn.k_proj", "layers.0.self_attn.o_proj",
+            "layers.0.self_attn.q_proj", "layers.0.self_attn.v_proj",
+        ]
+        let unquantized = [
+            "hyper_connection_mixer.hc_norm.weight",
+            "layers.0.attn_hyper_connection.block_inject_weight.weight",
+            "layers.0.attn_hyper_connection.hc_norm.weight",
+            "layers.0.mlp.shared_expert_gate.weight",
+            "layers.0.mlp_hyper_connection.block_inject_weight.weight",
+            "layers.0.mlp_hyper_connection.hc_norm.weight",
+            "layers.0.self_attn.indexer.k_layernorm.weight",
+            "layers.0.self_attn.indexer.q_layernorm.weight",
+            "layers.0.self_attn.k_norm.weight",
+            "layers.0.self_attn.q_norm.weight",
+            "pre_fc_norm_embedding.weight", "pre_fc_norm_hidden.weight",
+        ]
+        return quantizedBases.flatMap { base in
+            ["\(base).weight", "\(base).scales", "\(base).biases"]
+        } + unquantized
+    }()
 
     private static func hasCompleteEmbeddedGLMMTP(
         modelDirectory: URL,

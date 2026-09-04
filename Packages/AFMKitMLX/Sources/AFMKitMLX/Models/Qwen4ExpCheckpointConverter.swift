@@ -14,7 +14,7 @@ public struct Qwen4ExpCheckpointConverter {
     public typealias ProgressHandler = (String) -> Void
 
     public static let officialModelID = "Qwen/Qwen3.8-Flash-Next"
-    private static let currentFormatVersion = 2
+    private static let currentFormatVersion = 3
     private static let groupSize = 64
     private static let bits = 4
     private static let lmHeadBits = 8
@@ -85,6 +85,11 @@ public struct Qwen4ExpCheckpointConverter {
         let byteCount: Int64
     }
 
+    private struct SourceShardFingerprint: Codable, Equatable {
+        let size: Int64
+        let contentSHA256: String
+    }
+
     private struct SourceCheckpoint {
         let root: URL
         let revision: String
@@ -93,6 +98,8 @@ public struct Qwen4ExpCheckpointConverter {
         let config: [String: Any]
         let tensors: [String: TensorReference]
         let shards: [String]
+        let shardFingerprints: [String: SourceShardFingerprint]
+        let assetSHA256: [String: String]
         let sourceBytes: Int64
     }
 
@@ -112,6 +119,8 @@ public struct Qwen4ExpCheckpointConverter {
         var sourceRevision: String
         var configSHA256: String
         var indexSHA256: String
+        var sourceShards: [String: SourceShardFingerprint]
+        var sourceAssets: [String: String]
         var completed: [String: CompletedShard] = [:]
         var weightMap: [String: String] = [:]
     }
@@ -226,7 +235,9 @@ public struct Qwen4ExpCheckpointConverter {
             state = State(
                 sourceRevision: checkpoint.revision,
                 configSHA256: configHash,
-                indexSHA256: indexHash)
+                indexSHA256: indexHash,
+                sourceShards: checkpoint.shardFingerprints,
+                sourceAssets: checkpoint.assetSHA256)
             try saveState(state)
         }
 
@@ -382,7 +393,17 @@ public struct Qwen4ExpCheckpointConverter {
         }
         let shards = Set(weightMap.values).sorted()
         var references = [String: TensorReference]()
+        var shardFingerprints = [String: SourceShardFingerprint]()
+        var assetSHA256 = [String: String]()
         var sourceBytes: Int64 = 0
+        for name in requiredSupportFiles {
+            let url = root.appendingPathComponent(name)
+            guard FileManager.default.fileExists(atPath: url.path) else {
+                throw ConversionError.invalidSource(
+                    "Required tokenizer or multimodal asset \(name) is missing.")
+            }
+            assetSHA256[name] = try sha256File(url)
+        }
         for shard in shards {
             guard URL(fileURLWithPath: shard).lastPathComponent == shard else {
                 throw ConversionError.invalidSource("Unsafe source shard path \(shard).")
@@ -391,8 +412,11 @@ public struct Qwen4ExpCheckpointConverter {
             guard FileManager.default.fileExists(atPath: url.path) else {
                 throw ConversionError.invalidSource("Source shard is missing: \(shard).")
             }
-            sourceBytes += Int64(
+            let size = Int64(
                 try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0)
+            sourceBytes += size
+            shardFingerprints[shard] = SourceShardFingerprint(
+                size: size, contentSHA256: try sha256File(url))
             let header = try AFMSafetensorHeader(url: url)
             for tensor in header.tensors {
                 guard weightMap[tensor.name] == shard else { continue }
@@ -423,6 +447,8 @@ public struct Qwen4ExpCheckpointConverter {
             config: config,
             tensors: references,
             shards: shards,
+            shardFingerprints: shardFingerprints,
+            assetSHA256: assetSHA256,
             sourceBytes: sourceBytes)
     }
 
@@ -564,18 +590,17 @@ public struct Qwen4ExpCheckpointConverter {
         source: URL,
         output: URL
     ) throws -> (source: URL, output: URL) {
-        let source = source.standardizedFileURL
-        let output = output.standardizedFileURL
-        guard source.isFileURL, output.isFileURL,
-              source.path != "/", output.path != "/",
-              source.path != output.path,
-              !output.path.hasPrefix(source.path + "/"),
-              !source.path.hasPrefix(output.path + "/")
-        else {
+        do {
+            let paths = try CheckpointConversionPathSafety.validate(
+                source: source, output: output)
+            return (paths.source, paths.output)
+        } catch CheckpointConversionPathSafety.PathError.nonLocal {
+            throw ConversionError.invalidSource(
+                "Qwen Next conversion requires local filesystem paths; remote download is not supported.")
+        } catch {
             throw ConversionError.unsafeOutput(
-                "Source and output must be distinct, non-nested local directories.")
+                "Conversion output cannot be a filesystem or volume root, and source/output must be separate directories with neither containing the other, including through symlinks.")
         }
-        return (source, output)
     }
 
     private static func resolveRevision(root: URL, explicit: String?) throws -> String {
@@ -724,10 +749,12 @@ public struct Qwen4ExpCheckpointConverter {
               state.sourceRevision == checkpoint.revision,
               state.configSHA256 == sha256(checkpoint.configData),
               state.indexSHA256 == sha256(checkpoint.indexData),
+              state.sourceShards == checkpoint.shardFingerprints,
+              state.sourceAssets == checkpoint.assetSHA256,
               state.completed.keys.allSatisfy({ checkpoint.shards.contains($0) })
         else {
             throw ConversionError.sourceMismatch(
-                "Source configuration, index, revision, profile, or conversion format changed; use --overwrite after verification.")
+                "Source configuration, index, shards, support assets, revision, profile, or conversion format changed; use --overwrite after verification.")
         }
     }
 
