@@ -37,10 +37,10 @@ import MLXLMCommon
 import MLXNN
 
 private enum DeepseekV4PerformanceProfile {
-    static var enabled: Bool {
+    static let enabled: Bool = {
         guard let value = getenv("VMLX_DSV4_STAGE_PROFILE") else { return false }
         return String(cString: value) == "1"
-    }
+    }()
 }
 
 private final class DeepseekV4OuterProfile: @unchecked Sendable {
@@ -130,18 +130,18 @@ private enum DeepseekV4RuntimeOptions {
         return value != "0" && value != "false" && value != "off"
     }
 
-    static var dsparkNativeHeadEnabled: Bool {
+    static let dsparkNativeHeadEnabled: Bool = {
         let environment = ProcessInfo.processInfo.environment
         let kernels = (environment["AFM_MLX_KERNELS"]
             ?? environment["VMLX_DSV4_KERNELS"] ?? "native")
             .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         return kernels == "native"
             && enabled("VMLX_DSV4_DSPARK_HEAD_GEMV", default: true)
-    }
+    }()
 
-    static var dwarfStarCacheBatchingEnabled: Bool {
+    static let dwarfStarCacheBatchingEnabled: Bool = {
         enabled("VMLX_DSV4_DWARFSTAR_CACHE_BATCH", default: true)
-    }
+    }()
 }
 
 private enum DeepseekV4NumericTrace {
