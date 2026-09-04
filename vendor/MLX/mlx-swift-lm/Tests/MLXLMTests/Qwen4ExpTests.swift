@@ -2533,7 +2533,7 @@ final class Qwen4ExpTests: XCTestCase {
         let fileSize = try XCTUnwrap(
             url.resourceValues(forKeys: [.fileSizeKey]).fileSize)
         XCTAssertEqual(
-            table.waitForBackgroundPageCacheWarmForTesting(),
+            table.waitForBackgroundPageCacheWarm(),
             fileSize)
     }
 

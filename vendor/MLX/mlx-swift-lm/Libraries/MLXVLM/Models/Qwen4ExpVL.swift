@@ -61,8 +61,34 @@ public final class Qwen4ExpVL: Module, VLMModel, KVCacheDimensionProvider {
         try languageModel.configureMappedNGramTable(url: url)
     }
 
-    public func startMappedNGramTablePageCacheWarm() {
-        languageModel.startMappedNGramTablePageCacheWarm()
+    public func applyMappedNGramResidency(
+        _ policy: QwenNGramResidencyPolicy
+    ) throws {
+        try languageModel.applyMappedNGramResidency(policy)
+    }
+
+    /// Loads the text trunk's in-checkpoint native MTP head while preserving
+    /// this multimodal container. Text-only requests may use the returned
+    /// generator; requests carrying media continue through ordinary VLM
+    /// generation.
+    public func makeEmbeddedMTPGenerator(
+        modelDirectory: URL,
+        depth: Int = 3,
+        groupSize: Int = 64,
+        bits: Int = 4,
+        mode: QuantizationMode = .affine,
+        verificationPolicy: MTPVerificationPolicy = .strictSingletonEquivalent
+    ) throws -> Qwen4ExpMTPGenerator {
+        let head = try languageModel.loadEmbeddedMTPHead(
+            modelDirectory: modelDirectory,
+            groupSize: groupSize,
+            bits: bits,
+            mode: mode)
+        return Qwen4ExpMTPGenerator(
+            model: languageModel,
+            head: head,
+            depth: depth,
+            verificationPolicy: verificationPolicy)
     }
 
     public func newCache(parameters: GenerateParameters?) -> [KVCache] {

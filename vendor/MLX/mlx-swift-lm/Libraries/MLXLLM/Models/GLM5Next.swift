@@ -1402,6 +1402,17 @@ final class GLM5NextMTPHead: Module {
 }
 
 private final class GLM5NextModelInner: Module {
+    /// Submit the lazy decode graph in bounded layer groups so CPU graph
+    /// construction overlaps GPU execution. Exact-checkpoint A/Bs selected a
+    /// GLM-specific stride of four; set the environment value to zero to
+    /// recover the unsplit diagnostic path.
+    private static let decodeAsyncLadderStride: Int = {
+        guard let raw = ProcessInfo.processInfo.environment[
+            "VMLX_GLM53_DECODE_ASYNC_LADDER"
+        ] else { return 4 }
+        return max(Int(raw) ?? 0, 0)
+    }()
+
     let hcMultiplier: Int
     @ModuleInfo(key: "embed_tokens") var embedTokens: Embedding
     @ModuleInfo var layers: [GLM5NextDecoderLayer]
@@ -1443,8 +1454,16 @@ private final class GLM5NextModelInner: Module {
         let validMask = firstLinear.flatMap {
             (layerCaches[$0] as? ArraysCache)?.makeMask(N: inputIDs.dim(1))
         }
+        let decodeAsyncLadderStride = Self.decodeAsyncLadderStride
+        let useDecodeAsyncLadder = decodeAsyncLadderStride > 0 && inputIDs.dim(1) == 1
         for (index, layer) in layers.enumerated() {
             hidden = layer(hidden, validMask: validMask, cache: layerCaches[index])
+            if useDecodeAsyncLadder,
+               index + 1 < layers.count,
+               (index + 1).isMultiple(of: decodeAsyncLadderStride)
+            {
+                asyncEval(hidden)
+            }
         }
         return norm(hidden.mean(axis: -2))
     }
