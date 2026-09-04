@@ -67,6 +67,7 @@ final class Qwen4ExpCheckpointConverterTests: XCTestCase {
         XCTAssertNotNil(weightMap["language_model.model.layers.0.mlp.switch_mlp.gate_proj.weight"])
         XCTAssertNotNil(weightMap["language_model.model.layers.0.mlp.switch_mlp.up_proj.weight"])
         XCTAssertNotNil(weightMap["language_model.model.layers.0.mlp.switch_mlp.down_proj.weight"])
+        XCTAssertNotNil(weightMap["language_model.model.layers.0.ple.ple_embedding.layer_multipliers"])
         XCTAssertNotNil(weightMap["model.visual.probe"])
         XCTAssertNil(weightMap["model.visual.probe.scales"])
 
@@ -79,6 +80,9 @@ final class Qwen4ExpCheckpointConverterTests: XCTestCase {
             [64, 4, 1])
         XCTAssertEqual(arrays["model.visual.probe"]?.dtype, .bfloat16)
         XCTAssertEqual(arrays["model.visual.probe"]?.shape, [32, 64])
+        XCTAssertEqual(
+            arrays["language_model.model.layers.0.ple.ple_embedding.layer_multipliers"]?.dtype,
+            .int64)
 
         // A completed conversion is resumable and does not rewrite valid units.
         let before = try Data(contentsOf: sidecar)
@@ -175,6 +179,8 @@ final class Qwen4ExpCheckpointConverterTests: XCTestCase {
             .reshaped([64, 1, 4]).asType(.bfloat16)
         arrays["model.language_model.layers.0.self_attn.q_norm.weight"] = MLXArray(
             Array(repeating: Float(0.1), count: 64)).asType(.bfloat16)
+        arrays["model.language_model.layers.0.ple.ple_embedding.layer_multipliers"] =
+            MLXArray([Int64(1), Int64(2), Int64(3)])
         arrays["model.visual.probe"] = constant(rows: 32, columns: 64, value: 1)
         arrays["mtp.probe"] = MLXArray([Float(2)]).asType(.bfloat16)
 

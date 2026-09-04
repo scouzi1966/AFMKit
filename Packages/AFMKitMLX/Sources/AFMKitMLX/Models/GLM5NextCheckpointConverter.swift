@@ -284,6 +284,8 @@ public struct GLM5NextCheckpointConverter {
         let sourceURL = paths.source
         let outputURL = paths.output
 
+        try MLXMetalLibrary.ensureAvailable(verbose: true)
+
         let checkpoint = try Self.loadSource(
             sourceURL, explicitRevision: sourceRevision, fingerprintContents: true)
         let inspection = Self.inspection(for: checkpoint)

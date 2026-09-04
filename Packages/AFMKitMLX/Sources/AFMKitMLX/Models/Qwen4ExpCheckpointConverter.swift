@@ -191,6 +191,7 @@ public struct Qwen4ExpCheckpointConverter {
     public func run() throws {
         let fm = FileManager.default
         let paths = try Self.validatedPaths(source: source, output: output)
+        try MLXMetalLibrary.ensureAvailable(verbose: true)
         let checkpoint = try Self.loadSource(
             paths.source, explicitRevision: sourceRevision)
         let details = Self.inspection(checkpoint)
@@ -430,11 +431,18 @@ public struct Qwen4ExpCheckpointConverter {
         value: MLXArray,
         into output: inout [String: MLXArray]
     ) throws {
+        let mapped = mappedName(name)
+        // The official checkpoint carries three small I64 PLE routing tables.
+        // They are runtime metadata, not quantizable parameters, and the
+        // reference conversion preserves them byte-for-byte.
+        if value.dtype == .int64 {
+            output[mapped] = contiguous(value)
+            return
+        }
         guard value.dtype == .bfloat16 || value.dtype == .float16 || value.dtype == .float32 else {
             throw ConversionError.unsupportedTensor(
                 "Unsupported source dtype \(value.dtype) for \(name).")
         }
-        let mapped = mappedName(name)
         // Preserve the multimodal tower exactly as the reference pack does.
         // Quantizing these matrices changes vision behavior and is outside the
         // fast Qwen Next text-runtime profile.
