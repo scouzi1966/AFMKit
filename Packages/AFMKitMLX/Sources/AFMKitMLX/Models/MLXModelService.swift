@@ -385,6 +385,7 @@ public final class MLXModelService:
     public var forceVLM: Bool = false
     public var kvBits: Int?
     public var kernelEngine: AFMMLXKernelEngine = .native
+    public var qwenNGramResidency: AFMMLXQwenNGramResidency = .mapped
     public var kvEvictionPolicy: String = "none"  // "none" or "streaming"
     public var enablePrefixCaching: Bool = false
     var qwenNGramMmapCompatibilityValue: Bool = false
@@ -1987,14 +1988,17 @@ public final class MLXModelService:
 
     static func modelConfiguration(
         directory: URL,
-        qwenNGramTableURL: URL?
+        qwenNGramTableURL: URL?,
+        qwenNGramResidency: AFMMLXQwenNGramResidency = .mapped
     ) -> ModelConfiguration {
         // The explicit URL is AFM's opt-in override. Automatic resolution must
         // remain enabled because a self-contained Qwen checkpoint may declare
         // `ngram_table.file` as part of its intrinsic weight layout.
         ModelConfiguration(
             directory: directory,
-            qwenNGramTableURL: qwenNGramTableURL)
+            qwenNGramTableURL: qwenNGramTableURL,
+            qwenNGramResidency: QwenNGramResidencyPolicy(
+                rawValue: qwenNGramResidency.rawValue) ?? .mapped)
     }
 
     public func ensureLoaded(
@@ -2177,7 +2181,8 @@ public final class MLXModelService:
 
         var config = Self.modelConfiguration(
             directory: directory,
-            qwenNGramTableURL: nil)
+            qwenNGramTableURL: nil,
+            qwenNGramResidency: qwenNGramResidency)
         // Auto-detect tool call format from model type (vendor LLMModelFactory lost this code)
         var detectedFormat = inferToolCallFormat(directory: directory)
         if let fmt = detectedFormat {

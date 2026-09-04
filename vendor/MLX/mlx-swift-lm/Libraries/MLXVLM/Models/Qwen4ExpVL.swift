@@ -61,8 +61,10 @@ public final class Qwen4ExpVL: Module, VLMModel, KVCacheDimensionProvider {
         try languageModel.configureMappedNGramTable(url: url)
     }
 
-    public func startMappedNGramTablePageCacheWarm() {
-        languageModel.startMappedNGramTablePageCacheWarm()
+    public func applyMappedNGramResidency(
+        _ policy: QwenNGramResidencyPolicy
+    ) throws {
+        try languageModel.applyMappedNGramResidency(policy)
     }
 
     /// Loads the text trunk's in-checkpoint native MTP head while preserving

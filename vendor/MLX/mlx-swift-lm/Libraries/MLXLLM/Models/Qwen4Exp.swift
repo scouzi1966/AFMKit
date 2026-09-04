@@ -2858,8 +2858,10 @@ private final class Qwen4ExpNGramEmbedding: Module {
         update(modules: replacements)
     }
 
-    func startMappedTablePageCacheWarm() {
-        mappedNGramTable?.startBackgroundPageCacheWarm()
+    func applyMappedTableResidency(
+        _ policy: QwenNGramResidencyPolicy
+    ) throws {
+        try mappedNGramTable?.applyResidency(policy)
     }
 
     private func shifted(_ ids: MLXArray, by shift: Int) -> MLXArray {
@@ -3119,8 +3121,10 @@ private final class Qwen4ExpPLE: Module {
             groupSize: groupSize)
     }
 
-    func startMappedNGramTablePageCacheWarm() {
-        pleEmbedding.startMappedTablePageCacheWarm()
+    func applyMappedNGramResidency(
+        _ policy: QwenNGramResidencyPolicy
+    ) throws {
+        try pleEmbedding.applyMappedTableResidency(policy)
     }
 
     func applyCheckpointMultipliers(_ multipliers: MLXArray) {
@@ -3529,9 +3533,11 @@ final class Qwen4ExpDecoderLayer: Module {
         return true
     }
 
-    func startMappedNGramTablePageCacheWarm() -> Bool {
+    func applyMappedNGramResidency(
+        _ policy: QwenNGramResidencyPolicy
+    ) throws -> Bool {
         guard let ple else { return false }
-        ple.startMappedNGramTablePageCacheWarm()
+        try ple.applyMappedNGramResidency(policy)
         return true
     }
 
@@ -3791,8 +3797,10 @@ private final class Qwen4ExpModelInner: Module {
         return configured
     }
 
-    func startMappedNGramTablePageCacheWarm() {
-        for layer in layers where layer.startMappedNGramTablePageCacheWarm() {
+    func applyMappedNGramResidency(
+        _ policy: QwenNGramResidencyPolicy
+    ) throws {
+        for layer in layers where try layer.applyMappedNGramResidency(policy) {
             return
         }
     }
@@ -4320,9 +4328,11 @@ public final class Qwen4ExpModel: Module, LLMModel, KVCacheDimensionProvider {
         usesMappedNGramTable = true
     }
 
-    public func startMappedNGramTablePageCacheWarm() {
+    public func applyMappedNGramResidency(
+        _ policy: QwenNGramResidencyPolicy
+    ) throws {
         guard usesMappedNGramTable else { return }
-        model.startMappedNGramTablePageCacheWarm()
+        try model.applyMappedNGramResidency(policy)
     }
 
     public var consumesHostTokenIDs: Bool {

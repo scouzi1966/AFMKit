@@ -14,10 +14,24 @@ public enum AFMMLXKernelEngine: String, CaseIterable, Sendable {
     }
 }
 
+public enum AFMMLXQwenNGramResidency: String, CaseIterable, Sendable {
+    case mapped
+    case prewarm
+    case locked
+
+    public init(configuredValue: String?) {
+        let normalized = configuredValue?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        self = Self(rawValue: normalized ?? "") ?? .mapped
+    }
+}
+
 public struct AFMMLXRuntimeConfiguration: Sendable {
     public var kvBits: Int?
     public var enablePrefixCaching: Bool
     public var kernelEngine: AFMMLXKernelEngine
+    public var qwenNGramResidency: AFMMLXQwenNGramResidency
     private var qwenNGramMmapCompatibilityValue: Bool
     /// Retained for source compatibility. Qwen Next checkpoints now load their
     /// declared n-gram sidecar automatically, so this value has no runtime effect.
@@ -50,6 +64,7 @@ public struct AFMMLXRuntimeConfiguration: Sendable {
         kvBits: Int? = nil,
         enablePrefixCaching: Bool = true,
         kernelEngine: AFMMLXKernelEngine = .native,
+        qwenNGramResidency: AFMMLXQwenNGramResidency = .mapped,
         qwenNGramMmapEnabled: Bool = false,
         mtpEnabled: Bool = false,
         mtpDepth: Int = 3,
@@ -74,6 +89,7 @@ public struct AFMMLXRuntimeConfiguration: Sendable {
         self.kvBits = kvBits
         self.enablePrefixCaching = enablePrefixCaching
         self.kernelEngine = kernelEngine
+        self.qwenNGramResidency = qwenNGramResidency
         self.qwenNGramMmapCompatibilityValue = qwenNGramMmapEnabled
         self.mtpEnabled = mtpEnabled
         self.mtpDepth = mtpDepth
@@ -110,6 +126,9 @@ public struct AFMMLXRuntimeConfiguration: Sendable {
         }
         if let value = configuration.string("mlxKernels") ?? configuration.string("kernelEngine") {
             kernelEngine = AFMMLXKernelEngine(configuredValue: value)
+        }
+        if let value = configuration.string("qwenNGramResidency") {
+            qwenNGramResidency = AFMMLXQwenNGramResidency(configuredValue: value)
         }
         if let value = configuration.bool("qwenNGramMmapEnabled") {
             qwenNGramMmapCompatibilityValue = value
@@ -174,6 +193,7 @@ public struct AFMMLXRuntimeConfiguration: Sendable {
         service.kvBits = kvBits
         service.enablePrefixCaching = enablePrefixCaching
         service.kernelEngine = kernelEngine
+        service.qwenNGramResidency = qwenNGramResidency
         service.qwenNGramMmapCompatibilityValue = qwenNGramMmapCompatibilityValue
         service.mtpEnabled = mtpEnabled
         service.mtpDepth = mtpDepth

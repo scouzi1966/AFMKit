@@ -359,7 +359,8 @@ public final class VLMModelFactory: ModelFactory {
         try loadWeights(
             modelDirectory: modelDirectory, model: model,
             perLayerQuantization: baseConfig.perLayerQuantization)
-        (model as? Qwen4ExpVL)?.startMappedNGramTablePageCacheWarm()
+        try (model as? Qwen4ExpVL)?.applyMappedNGramResidency(
+            configuration.qwenNGramResidency)
 
         let tokenizer = try await tokenizerTask
         let processorConfigData: Data

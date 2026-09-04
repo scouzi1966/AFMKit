@@ -4,6 +4,16 @@ import Foundation
 import Hub
 import Tokenizers
 
+/// Residency policy for a checkpoint-declared Qwen mapped n-gram table.
+public enum QwenNGramResidencyPolicy: String, CaseIterable, Sendable {
+    /// Demand-page the read-only table and allow macOS to evict pages normally.
+    case mapped
+    /// Read the complete table into the filesystem page cache before use.
+    case prewarm
+    /// Fault in and pin the complete mapping for the lifetime of the model.
+    case locked
+}
+
 /// Configuration for a given model name with overrides for prompts and tokens.
 ///
 /// See e.g. `MLXLM.ModelRegistry` for an example of use.
@@ -53,6 +63,9 @@ public struct ModelConfiguration: Sendable {
     /// can disable discovery independently of the URL value.
     public var allowsAutomaticQwenNGramTableResolution: Bool
 
+    /// Memory residency policy for a resolved Qwen n-gram sidecar.
+    public var qwenNGramResidency: QwenNGramResidencyPolicy
+
     public init(
         id: String, revision: String = "main",
         tokenizerId: String? = nil, overrideTokenizer: String? = nil,
@@ -61,6 +74,7 @@ public struct ModelConfiguration: Sendable {
         toolCallFormat: ToolCallFormat? = nil,
         qwenNGramTableURL: URL? = nil,
         allowsAutomaticQwenNGramTableResolution: Bool = true,
+        qwenNGramResidency: QwenNGramResidencyPolicy = .mapped,
         preparePrompt: (@Sendable (String) -> String)? = nil
     ) {
         self.id = .id(id, revision: revision)
@@ -72,6 +86,7 @@ public struct ModelConfiguration: Sendable {
         self.qwenNGramTableURL = qwenNGramTableURL
         self.allowsAutomaticQwenNGramTableResolution =
             allowsAutomaticQwenNGramTableResolution
+        self.qwenNGramResidency = qwenNGramResidency
     }
 
     public init(
@@ -82,7 +97,8 @@ public struct ModelConfiguration: Sendable {
         eosTokenIds: Set<Int> = [],
         toolCallFormat: ToolCallFormat? = nil,
         qwenNGramTableURL: URL? = nil,
-        allowsAutomaticQwenNGramTableResolution: Bool = true
+        allowsAutomaticQwenNGramTableResolution: Bool = true,
+        qwenNGramResidency: QwenNGramResidencyPolicy = .mapped
     ) {
         self.id = .directory(directory)
         self.tokenizerId = tokenizerId
@@ -94,6 +110,7 @@ public struct ModelConfiguration: Sendable {
         self.qwenNGramTableURL = qwenNGramTableURL
         self.allowsAutomaticQwenNGramTableResolution =
             allowsAutomaticQwenNGramTableResolution
+        self.qwenNGramResidency = qwenNGramResidency
     }
 
     public func modelDirectory(hub: HubApi = HubApi()) -> URL {
