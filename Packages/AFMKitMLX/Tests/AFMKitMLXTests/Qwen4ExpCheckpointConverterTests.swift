@@ -67,6 +67,8 @@ final class Qwen4ExpCheckpointConverterTests: XCTestCase {
         XCTAssertNotNil(weightMap["language_model.model.layers.0.mlp.switch_mlp.gate_proj.weight"])
         XCTAssertNotNil(weightMap["language_model.model.layers.0.mlp.switch_mlp.up_proj.weight"])
         XCTAssertNotNil(weightMap["language_model.model.layers.0.mlp.switch_mlp.down_proj.weight"])
+        XCTAssertNotNil(weightMap["model.visual.probe"])
+        XCTAssertNil(weightMap["model.visual.probe.scales"])
 
         let shard = try XCTUnwrap(weightMap["language_model.lm_head.weight"])
         let arrays = try loadArrays(url: fixture.output.appendingPathComponent(shard))
@@ -75,6 +77,8 @@ final class Qwen4ExpCheckpointConverterTests: XCTestCase {
         XCTAssertEqual(
             arrays["language_model.model.layers.0.self_attn.conv1d.weight"]?.shape,
             [64, 4, 1])
+        XCTAssertEqual(arrays["model.visual.probe"]?.dtype, .bfloat16)
+        XCTAssertEqual(arrays["model.visual.probe"]?.shape, [32, 64])
 
         // A completed conversion is resumable and does not rewrite valid units.
         let before = try Data(contentsOf: sidecar)
@@ -83,6 +87,24 @@ final class Qwen4ExpCheckpointConverterTests: XCTestCase {
             output: fixture.output,
             sourceRevision: revision).run()
         XCTAssertEqual(try Data(contentsOf: sidecar), before)
+    }
+
+    func testResumeRegeneratesMissingNGramSidecar() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+
+        let converter = Qwen4ExpCheckpointConverter(
+            source: fixture.source,
+            output: fixture.output,
+            sourceRevision: revision)
+        try converter.run()
+        let sidecar = fixture.output.appendingPathComponent("ngram_table.ngram")
+        let expected = try Data(contentsOf: sidecar)
+        try FileManager.default.removeItem(at: sidecar)
+
+        try converter.run()
+
+        XCTAssertEqual(try Data(contentsOf: sidecar), expected)
     }
 
     func testDispatcherAdvertisesMappedProfile() throws {
@@ -153,7 +175,7 @@ final class Qwen4ExpCheckpointConverterTests: XCTestCase {
             .reshaped([64, 1, 4]).asType(.bfloat16)
         arrays["model.language_model.layers.0.self_attn.q_norm.weight"] = MLXArray(
             Array(repeating: Float(0.1), count: 64)).asType(.bfloat16)
-        arrays["model.visual.probe"] = MLXArray([Float(1)]).asType(.bfloat16)
+        arrays["model.visual.probe"] = constant(rows: 32, columns: 64, value: 1)
         arrays["mtp.probe"] = MLXArray([Float(2)]).asType(.bfloat16)
 
         let shard = "model-00001-of-00001.safetensors"
@@ -166,7 +188,7 @@ final class Qwen4ExpCheckpointConverterTests: XCTestCase {
             withJSONObject: index, options: [.prettyPrinted, .sortedKeys])
             .write(to: source.appendingPathComponent("model.safetensors.index.json"))
         for name in [
-            "chat_template.jinja", "processor_config.json", "tokenizer.json",
+            "chat_template.jinja", "preprocessor_config.json", "tokenizer.json",
             "tokenizer_config.json",
         ] {
             try Data("{}".utf8).write(to: source.appendingPathComponent(name))

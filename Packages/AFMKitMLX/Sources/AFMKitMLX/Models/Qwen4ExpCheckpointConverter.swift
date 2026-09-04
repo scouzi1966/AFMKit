@@ -14,7 +14,7 @@ public struct Qwen4ExpCheckpointConverter {
     public typealias ProgressHandler = (String) -> Void
 
     public static let officialModelID = "Qwen/Qwen3.8-Flash-Next"
-    private static let currentFormatVersion = 1
+    private static let currentFormatVersion = 2
     private static let groupSize = 64
     private static let bits = 4
     private static let lmHeadBits = 8
@@ -25,7 +25,7 @@ public struct Qwen4ExpCheckpointConverter {
     private static let minimumDestinationFreeBytes: Int64 = 140_000_000_000
     private static let ngramMarker = ".ple.ple_embedding.ngram_embedding.shard_"
     private static let requiredSupportFiles = [
-        "chat_template.jinja", "processor_config.json", "tokenizer.json",
+        "chat_template.jinja", "preprocessor_config.json", "tokenizer.json",
         "tokenizer_config.json",
     ]
     private static let copiedSupportFiles = [
@@ -96,11 +96,13 @@ public struct Qwen4ExpCheckpointConverter {
         let sourceBytes: Int64
     }
 
-    private struct CompletedShard: Codable {
+    fileprivate struct CompletedShard: Codable {
         let outputFile: String?
         let outputSize: Int64
         let outputSHA256: String?
         let outputKeys: [String]
+        let ngramRanges: [NGramRange]
+        let ngramSHA256: String?
     }
 
     private struct State: Codable {
@@ -114,10 +116,12 @@ public struct Qwen4ExpCheckpointConverter {
         var weightMap: [String: String] = [:]
     }
 
-    private struct NGramLocation {
+    fileprivate struct NGramRange: Codable, Equatable {
         let rowOffset: Int
         let rowCount: Int
     }
+
+    private typealias NGramLocation = NGramRange
 
     private let source: URL
     private let output: URL
@@ -240,22 +244,30 @@ public struct Qwen4ExpCheckpointConverter {
 
         for (position, shard) in checkpoint.shards.enumerated() {
             if let completed = state.completed[shard] {
+                let outputIsValid: Bool
                 if let file = completed.outputFile {
-                    let url = paths.output.appendingPathComponent(file)
-                    if try Self.completedOutputIsValid(completed, at: url) {
-                        report("[\(position + 1)/\(checkpoint.shards.count)] \(shard): already converted")
-                        continue
-                    }
+                    outputIsValid = try Self.completedOutputIsValid(
+                        completed, at: paths.output.appendingPathComponent(file))
                 } else {
+                    outputIsValid = completed.outputSize == 0
+                        && completed.outputSHA256 == nil
+                        && completed.outputKeys.isEmpty
+                }
+                if outputIsValid,
+                   try sidecar.completedRangesAreValid(completed)
+                {
                     report("[\(position + 1)/\(checkpoint.shards.count)] \(shard): already converted")
                     continue
                 }
+                for key in completed.outputKeys { state.weightMap.removeValue(forKey: key) }
+                report("[\(position + 1)/\(checkpoint.shards.count)] \(shard): resume data invalid; regenerating")
             }
 
             report("[\(position + 1)/\(checkpoint.shards.count)] \(shard): converting")
             let sourceURL = checkpoint.root.appendingPathComponent(shard)
             let loaded = try loadArrays(url: sourceURL)
             var converted = [String: MLXArray]()
+            var writtenNGramRanges = [NGramRange]()
             for name in loaded.keys.sorted() {
                 guard let value = loaded[name] else { continue }
                 if Self.isNGram(name) {
@@ -271,6 +283,7 @@ public struct Qwen4ExpCheckpointConverter {
                         weight: quantized.weight,
                         scales: quantized.scales,
                         biases: quantized.biases)
+                    writtenNGramRanges.append(location)
                     continue
                 }
                 try Self.convert(name: name, value: value, into: &converted)
@@ -303,11 +316,14 @@ public struct Qwen4ExpCheckpointConverter {
                 outputHash = try Self.sha256File(destination)
                 for key in converted.keys { state.weightMap[key] = outputName! }
             }
+            writtenNGramRanges.sort { $0.rowOffset < $1.rowOffset }
             state.completed[shard] = CompletedShard(
                 outputFile: outputName,
                 outputSize: outputSize,
                 outputSHA256: outputHash,
-                outputKeys: converted.keys.sorted())
+                outputKeys: converted.keys.sorted(),
+                ngramRanges: writtenNGramRanges,
+                ngramSHA256: try sidecar.sha256(ranges: writtenNGramRanges))
             try saveState(state)
             Memory.clearCache()
         }
@@ -419,6 +435,13 @@ public struct Qwen4ExpCheckpointConverter {
                 "Unsupported source dtype \(value.dtype) for \(name).")
         }
         let mapped = mappedName(name)
+        // Preserve the multimodal tower exactly as the reference pack does.
+        // Quantizing these matrices changes vision behavior and is outside the
+        // fast Qwen Next text-runtime profile.
+        if mapped.hasPrefix("model.visual.") {
+            output[mapped] = contiguous(value)
+            return
+        }
         if mapped.hasSuffix(".mlp.experts.gate_up_proj") {
             guard value.ndim == 3, value.shape[1].isMultiple(of: 2) else {
                 throw ConversionError.unsupportedTensor("Invalid fused expert shape for \(name).")
@@ -801,13 +824,20 @@ private final class NGramSidecar {
         let expectedSize = biasesOffset + UInt64(scaleBytes)
 
         let fm = FileManager.default
-        if resume, fm.fileExists(atPath: url.path) {
+        var reuseExisting = resume && fm.fileExists(atPath: url.path)
+        if reuseExisting {
             let size = UInt64(try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0)
-            guard size == expectedSize else {
-                throw Qwen4ExpCheckpointConverter.ConversionError.sourceMismatch(
-                    "Existing n-gram sidecar has an unexpected size; use --overwrite.")
+            let input = try FileHandle(forReadingFrom: url)
+            let prefix = try input.read(upToCount: Int(dataOffset)) ?? Data()
+            try input.close()
+            var littleEndian = UInt64(headerData.count).littleEndian
+            let expectedPrefix = withUnsafeBytes(of: &littleEndian) {
+                Data($0) + headerData
             }
-        } else {
+            reuseExisting = size == expectedSize && prefix == expectedPrefix
+        }
+        if !reuseExisting {
+            try? fm.removeItem(at: url)
             fm.createFile(atPath: url.path, contents: nil)
             let output = try FileHandle(forWritingTo: url)
             var littleEndian = UInt64(headerData.count).littleEndian
@@ -845,5 +875,56 @@ private final class NGramSidecar {
         try handle.seek(toOffset: biasesOffset + UInt64(rowOffset * scaleRowBytes))
         try handle.write(contentsOf: biasesData)
         try handle.synchronize()
+    }
+
+    func completedRangesAreValid(
+        _ completed: Qwen4ExpCheckpointConverter.CompletedShard
+    ) throws -> Bool {
+        guard !completed.ngramRanges.isEmpty else {
+            return completed.ngramSHA256 == nil
+        }
+        guard let expected = completed.ngramSHA256 else { return false }
+        return try sha256(ranges: completed.ngramRanges) == expected
+    }
+
+    func sha256(
+        ranges: [Qwen4ExpCheckpointConverter.NGramRange]
+    ) throws -> String? {
+        guard !ranges.isEmpty else { return nil }
+        try handle.synchronize()
+        var digest = SHA256()
+        for range in ranges.sorted(by: { $0.rowOffset < $1.rowOffset }) {
+            try update(
+                &digest,
+                offset: weightOffset + UInt64(range.rowOffset * weightRowBytes),
+                byteCount: range.rowCount * weightRowBytes)
+            try update(
+                &digest,
+                offset: scalesOffset + UInt64(range.rowOffset * scaleRowBytes),
+                byteCount: range.rowCount * scaleRowBytes)
+            try update(
+                &digest,
+                offset: biasesOffset + UInt64(range.rowOffset * scaleRowBytes),
+                byteCount: range.rowCount * scaleRowBytes)
+        }
+        return digest.finalize().map { String(format: "%02x", $0) }.joined()
+    }
+
+    private func update(
+        _ digest: inout SHA256,
+        offset: UInt64,
+        byteCount: Int
+    ) throws {
+        try handle.seek(toOffset: offset)
+        var remaining = byteCount
+        while remaining > 0 {
+            let requested = min(remaining, 4 * 1024 * 1024)
+            guard let data = try handle.read(upToCount: requested), !data.isEmpty else {
+                throw Qwen4ExpCheckpointConverter.ConversionError.sourceMismatch(
+                    "The n-gram sidecar ended inside a completed range.")
+            }
+            digest.update(data: data)
+            remaining -= data.count
+        }
     }
 }
