@@ -87,7 +87,7 @@ public struct Qwen4ExpCheckpointConverter {
 
     private struct SourceShardFingerprint: Codable, Equatable {
         let size: Int64
-        let contentSHA256: String
+        let contentSHA256: String?
     }
 
     private struct SourceCheckpoint {
@@ -163,7 +163,8 @@ public struct Qwen4ExpCheckpointConverter {
         source: URL,
         sourceRevision: String? = nil
     ) throws -> Inspection {
-        let checkpoint = try loadSource(source, explicitRevision: sourceRevision)
+        let checkpoint = try loadSource(
+            source, explicitRevision: sourceRevision, fingerprintContents: false)
         return inspection(checkpoint)
     }
 
@@ -174,13 +175,16 @@ public struct Qwen4ExpCheckpointConverter {
         sourceRevision: String? = nil
     ) throws -> ResumeInspection {
         let paths = try validatedPaths(source: source, output: output)
-        let checkpoint = try loadSource(paths.source, explicitRevision: sourceRevision)
         let stateURL = paths.output.appendingPathComponent(".afm-mlx-conversion.json")
         guard FileManager.default.fileExists(atPath: stateURL.path) else {
+            let checkpoint = try loadSource(
+                paths.source, explicitRevision: sourceRevision, fingerprintContents: false)
             return ResumeInspection(
                 sourceRevision: checkpoint.revision,
                 verifiedCompletedOutputBytes: 0)
         }
+        let checkpoint = try loadSource(
+            paths.source, explicitRevision: sourceRevision, fingerprintContents: true)
         let state = try decodeState(at: stateURL)
         try validate(state: state, checkpoint: checkpoint, profile: profile)
         var bytes: Int64 = 0
@@ -202,7 +206,7 @@ public struct Qwen4ExpCheckpointConverter {
         let paths = try Self.validatedPaths(source: source, output: output)
         try MLXMetalLibrary.ensureAvailable(verbose: true)
         let checkpoint = try Self.loadSource(
-            paths.source, explicitRevision: sourceRevision)
+            paths.source, explicitRevision: sourceRevision, fingerprintContents: true)
         let details = Self.inspection(checkpoint)
         report("Converting \(Self.officialModelID) at \(details.sourceRevision)")
         report("  source: \(paths.source.path)")
@@ -370,7 +374,8 @@ public struct Qwen4ExpCheckpointConverter {
 
     private static func loadSource(
         _ source: URL,
-        explicitRevision: String?
+        explicitRevision: String?,
+        fingerprintContents: Bool
     ) throws -> SourceCheckpoint {
         let root = source.standardizedFileURL
         let configURL = root.appendingPathComponent("config.json")
@@ -416,7 +421,8 @@ public struct Qwen4ExpCheckpointConverter {
                 try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0)
             sourceBytes += size
             shardFingerprints[shard] = SourceShardFingerprint(
-                size: size, contentSHA256: try sha256File(url))
+                size: size,
+                contentSHA256: fingerprintContents ? try sha256File(url) : nil)
             let header = try AFMSafetensorHeader(url: url)
             for tensor in header.tensors {
                 guard weightMap[tensor.name] == shard else { continue }
