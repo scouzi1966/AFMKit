@@ -275,7 +275,24 @@ class DeepseekV4Attention: Module {
 
     private lazy var compiledAttentionPreDecode: @Sendable ([MLXArray]) -> [MLXArray] = {
         let body: ([MLXArray]) -> [MLXArray] = { [unowned self] args in
-            self.projectAttentionInputs(args[0], cos: args[1], sin: args[2])
+            // Carry forward the graph-boundary lesson from Qwen Next: capture
+            // every cache-independent projection in one model-owned compiled
+            // region, but leave request-owned cache mutation outside it. This
+            // reduces per-token graph construction without hiding compressor
+            // or indexer state from radix-cache and batching lifecycles.
+            var projected = self.projectAttentionInputs(
+                args[0], cos: args[1], sin: args[2])
+            if let compressor = self.compressor {
+                let compressorProjection = compressor.project(args[0])
+                projected.append(compressorProjection.kv)
+                projected.append(compressorProjection.gate)
+            }
+            if let indexer = self.indexer {
+                let indexerProjection = indexer.compressor.project(args[0])
+                projected.append(indexerProjection.kv)
+                projected.append(indexerProjection.gate)
+            }
+            return projected
         }
         return compile(shapeless: false, body)
     }()
@@ -616,6 +633,10 @@ class DeepseekV4Attention: Module {
                 q: projected[0],
                 kv: projected[1],
                 qResidual: projected[2],
+                compressorKV: compressor == nil ? nil : projected[3],
+                compressorGate: compressor == nil ? nil : projected[4],
+                indexerCompressorKV: indexer == nil ? nil : projected[5],
+                indexerCompressorGate: indexer == nil ? nil : projected[6],
                 cosT: cosT,
                 sinT: sinT,
                 mask: mask,
@@ -697,6 +718,10 @@ class DeepseekV4Attention: Module {
             q: q,
             kv: kv,
             qResidual: qResidual,
+            compressorKV: nil,
+            compressorGate: nil,
+            indexerCompressorKV: nil,
+            indexerCompressorGate: nil,
             cosT: cosT,
             sinT: sinT,
             mask: mask,
@@ -912,6 +937,10 @@ class DeepseekV4Attention: Module {
         q: MLXArray,
         kv: MLXArray,
         qResidual: MLXArray,
+        compressorKV: MLXArray?,
+        compressorGate: MLXArray?,
+        indexerCompressorKV: MLXArray?,
+        indexerCompressorGate: MLXArray?,
         cosT: MLXArray,
         sinT: MLXArray,
         mask: MLXFast.ScaledDotProductAttentionMaskMode,
@@ -958,7 +987,19 @@ class DeepseekV4Attention: Module {
             let v4Cache = cache as? DeepseekV4Cache
             if v4Cache != nil || L >= compressRatio {
                 if let comp = compressor {
-                    var pooled = comp(x, rope: rope, v4Cache: v4Cache, startPos: offset)
+                    var pooled: MLXArray
+                    if let compressorKV, let compressorGate {
+                        pooled = comp.updateProjected(
+                            kv: compressorKV,
+                            gate: compressorGate,
+                            inputDType: x.dtype,
+                            rope: rope,
+                            v4Cache: v4Cache,
+                            startPos: offset)
+                    } else {
+                        pooled = comp(
+                            x, rope: rope, v4Cache: v4Cache, startPos: offset)
+                    }
                     // pooled shape: (B, W, headDim) where W = pooled count.
                     let W = pooled.dim(1)
                     var topK: MLXArray? = nil
@@ -968,9 +1009,21 @@ class DeepseekV4Attention: Module {
                         // emits its first complete row, so partial windows and
                         // all pre-topK history are present when learned
                         // selection first activates.
-                        topK = idx(
-                            x, qResidual: qResidual, rope: rope,
-                            positionRope: rope, v4Cache: v4Cache, startPos: offset)
+                        if let indexerCompressorKV, let indexerCompressorGate {
+                            topK = idx.callAsFunctionProjected(
+                                x,
+                                qResidual: qResidual,
+                                compressorKV: indexerCompressorKV,
+                                compressorGate: indexerCompressorGate,
+                                rope: rope,
+                                positionRope: rope,
+                                v4Cache: v4Cache,
+                                startPos: offset)
+                        } else {
+                            topK = idx(
+                                x, qResidual: qResidual, rope: rope,
+                                positionRope: rope, v4Cache: v4Cache, startPos: offset)
+                        }
                     }
                     if W > 0 {
 
