@@ -5,6 +5,51 @@ import XCTest
 @testable import AFMKitMLX
 
 final class DeepseekV4ArchitectureTests: XCTestCase {
+    func testCompressedSnapshotRestoresItsEvictedLocalWindow() {
+        let cache = DeepseekV4Cache(slidingWindow: 4, compressRatio: 4)
+        for value in 0..<9 {
+            let row = MLXArray([Float(value)]).reshaped([1, 1, 1, 1])
+            _ = cache.local.update(keys: row, values: row)
+        }
+        MLX.eval(cache.local.state)
+        let expectedState = cache.local.state.map { $0.asArray(Float.self) }
+        let expectedMetadata = cache.local.metaState
+        let snapshot = cache.captureSpeculativeSnapshot()
+        let draft = MLXArray([Float(100), 101, 102]).reshaped([1, 1, 3, 1])
+        _ = cache.local.update(keys: draft, values: draft)
+        MLX.eval(cache.local.state)
+        cache.rollbackSpeculative(rejected: 3, to: snapshot)
+        XCTAssertEqual(cache.local.metaState, expectedMetadata)
+        XCTAssertEqual(cache.local.state.map { $0.asArray(Float.self) }, expectedState)
+    }
+
+    func testSpeculativeRollbackRestoresRotatingWindowAfterEviction() {
+        for prefixLength in [3, 4, 7, 12] {
+            let cache = RotatingKVCache(maxSize: 4, keep: 0, step: 4)
+            let reference = RotatingKVCache(maxSize: 4, keep: 0, step: 4)
+            func append(_ values: [Int], to target: RotatingKVCache) -> [MLXArray] {
+                let array = MLXArray(values.map(Float.init)).reshaped([1, 1, values.count, 1])
+                let result = target.update(keys: array, values: array)
+                MLX.eval(result.0, result.1)
+                return [result.0, result.1]
+            }
+            for value in 0..<prefixLength {
+                _ = append([value], to: cache)
+                _ = append([value], to: reference)
+            }
+            let snapshot = DeepseekV4RotatingSnapshot(cache)
+            _ = append([100, 101, 102], to: cache)
+            snapshot.restore(cache)
+            XCTAssertEqual(cache.metaState, reference.metaState)
+            let actual = append([prefixLength], to: cache)
+            let expected = append([prefixLength], to: reference)
+            for (a, b) in zip(actual, expected) {
+                XCTAssertEqual(a.shape, b.shape)
+                XCTAssertEqual(a.asArray(Float.self), b.asArray(Float.self))
+            }
+        }
+    }
+
     override func setUpWithError() throws {
         try MLXMetalLibrary.ensureAvailable(verbose: false)
     }

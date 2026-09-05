@@ -3058,6 +3058,24 @@ public class DeepseekV4Model: Module, LLMModel, KVCacheDimensionProvider, LoRAMo
 
 // MARK: - Embedded DSpARK speculative generator
 
+/// Retains array handles and cursor metadata before a verifier append. A trim
+/// cannot recover entries evicted from a full rotating window. No evaluation
+/// or device-to-host copy is needed to capture this functional MLX state.
+struct DeepseekV4RotatingSnapshot {
+    let state: [MLXArray]
+    let metadata: [String]
+
+    init(_ cache: RotatingKVCache) {
+        state = cache.state.map { $0[.ellipsis] }
+        metadata = cache.metaState
+    }
+
+    func restore(_ cache: RotatingKVCache) {
+        cache.state = state.map { $0[.ellipsis] }
+        cache.metaState = metadata
+    }
+}
+
 /// Exact greedy speculative decoding for DeepSeek V4 checkpoints carrying an
 /// embedded DSpARK drafter. The target model remains authoritative: only the
 /// longest draft prefix matching target argmax is committed, followed by the
@@ -3269,6 +3287,9 @@ public final class DeepseekV4DSparkGenerator {
             let snapshots: [DeepseekV4Cache.SpeculativeSnapshot?] = verifierCache.map {
                 ($0 as? DeepseekV4Cache)?.captureSpeculativeSnapshot()
             }
+            let rotatingSnapshots = verifierCache.map {
+                ($0 as? RotatingKVCache).map { DeepseekV4RotatingSnapshot($0) }
+            }
             guard let verified = model.forwardDSparkVerifier(
                 verifyIds, cache: verifierCache)
             else { break }
@@ -3289,7 +3310,8 @@ public final class DeepseekV4DSparkGenerator {
             var committedCapture = verified.captured[
                 0..., 0..<(accepted + 1), 0...]
             if rejected > 0 {
-                if snapshots.contains(where: { $0 != nil }) {
+                if snapshots.contains(where: { $0 != nil })
+                    || verifierCache.contains(where: { !$0.isTrimmable }) {
                     // Compressed pools cannot retain only part of a verifier
                     // append. Restore the complete pre-verify snapshot, then
                     // replay the target-authoritative committed prefix.
@@ -3299,6 +3321,9 @@ public final class DeepseekV4DSparkGenerator {
                         {
                             deepseekCache.rollbackSpeculative(
                                 rejected: count + 1, to: snapshot)
+                        } else if let rotating = cache as? RotatingKVCache,
+                                  let snapshot = rotatingSnapshots[index] {
+                            snapshot.restore(rotating)
                         } else {
                             _ = cache.trim(count + 1)
                         }
