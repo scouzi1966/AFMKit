@@ -5728,6 +5728,11 @@
     },
     {
       "kind": "memberOf",
+      "source": "s:15AFMOpenAICompat21ChatCompletionRequestV10CodingKeysO1nyA2EmF",
+      "target": "s:15AFMOpenAICompat21ChatCompletionRequestV10CodingKeysO"
+    },
+    {
+      "kind": "memberOf",
       "source": "s:15AFMOpenAICompat21ChatCompletionRequestV10CodingKeysO4minPyA2EmF",
       "target": "s:15AFMOpenAICompat21ChatCompletionRequestV10CodingKeysO"
     },
@@ -5876,6 +5881,11 @@
     },
     {
       "kind": "memberOf",
+      "source": "s:15AFMOpenAICompat21ChatCompletionRequestV1nSiSgvp",
+      "target": "s:15AFMOpenAICompat21ChatCompletionRequestV"
+    },
+    {
+      "kind": "memberOf",
       "source": "s:15AFMOpenAICompat21ChatCompletionRequestV21includeStreamingUsageSbvp",
       "target": "s:15AFMOpenAICompat21ChatCompletionRequestV"
     },
@@ -5925,12 +5935,12 @@
     },
     {
       "kind": "memberOf",
-      "source": "s:15AFMOpenAICompat21ChatCompletionRequestV5model8messages11temperature9maxTokens0idJ04topP17repetitionPenalty06repeatM009frequencyM008presenceM00K1K4minP4seed8logprobs0K8Logprobs4stop6stream0V7Options4user5tools10toolChoice17parallelToolCalls14responseFormat18chatTemplateKwargs15reasoningEffort9ignoreEOSACSSSg_SayAA7MessageVGSdSgSiSgA7_A6_A6_A6_A6_A6_A7_A6_A7_SbSgA7_SaySSGSgA8_AA06StreamW0VSgA2_SayAA0E4ToolVGSgAA10ToolChoiceOSgA8_AA14ResponseFormatVSgSDySSAA10AnyCodableVGSgA2_A8_tcfc",
+      "source": "s:15AFMOpenAICompat21ChatCompletionRequestV5model8messages11temperature9maxTokens0idJ04topP17repetitionPenalty06repeatM009frequencyM008presenceM00K1K4minP4seed8logprobs0K8Logprobs1n4stop6stream0V7Options4user5tools10toolChoice17parallelToolCalls14responseFormat18chatTemplateKwargs15reasoningEffort9ignoreEOSACSSSg_SayAA7MessageVGSdSgSiSgA8_A7_A7_A7_A7_A7_A8_A7_A8_SbSgA8_A8_SaySSGSgA9_AA06StreamW0VSgA3_SayAA0E4ToolVGSgAA10ToolChoiceOSgA9_AA14ResponseFormatVSgSDySSAA10AnyCodableVGSgA3_A9_tcfc",
       "target": "s:15AFMOpenAICompat21ChatCompletionRequestV"
     },
     {
       "kind": "memberOf",
-      "source": "s:15AFMOpenAICompat21ChatCompletionRequestV5model8messages11temperature9maxTokens0idJ04topP17repetitionPenalty06repeatM009frequencyM008presenceM00K1K4minP4seed8logprobs0K8Logprobs4stop6stream0V7Options4user5tools10toolChoice17parallelToolCalls14responseFormat18chatTemplateKwargs15reasoningEffortACSSSg_SayAA7MessageVGSdSgSiSgA6_A5_A5_A5_A5_A5_A6_A5_A6_SbSgA6_SaySSGSgA7_AA06StreamW0VSgA1_SayAA0E4ToolVGSgAA10ToolChoiceOSgA7_AA14ResponseFormatVSgSDySSAA10AnyCodableVGSgA1_tcfc",
+      "source": "s:15AFMOpenAICompat21ChatCompletionRequestV5model8messages11temperature9maxTokens0idJ04topP17repetitionPenalty06repeatM009frequencyM008presenceM00K1K4minP4seed8logprobs0K8Logprobs1n4stop6stream0V7Options4user5tools10toolChoice17parallelToolCalls14responseFormat18chatTemplateKwargs15reasoningEffortACSSSg_SayAA7MessageVGSdSgSiSgA7_A6_A6_A6_A6_A6_A7_A6_A7_SbSgA7_A7_SaySSGSgA8_AA06StreamW0VSgA2_SayAA0E4ToolVGSgAA10ToolChoiceOSgA8_AA14ResponseFormatVSgSDySSAA10AnyCodableVGSgA2_tcfc",
       "target": "s:15AFMOpenAICompat21ChatCompletionRequestV"
     },
     {
@@ -58079,6 +58089,53 @@
         },
         {
           "kind": "identifier",
+          "spelling": "n"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:15AFMOpenAICompat21ChatCompletionRequestV10CodingKeysO1nyA2EmF"
+      },
+      "kind": {
+        "displayName": "Case",
+        "identifier": "swift.enum.case"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "case"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "n"
+          }
+        ],
+        "title": "ChatCompletionRequest.CodingKeys.n"
+      },
+      "pathComponents": [
+        "ChatCompletionRequest",
+        "CodingKeys",
+        "n"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "case"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
           "spelling": "minP"
         }
       ],
@@ -59762,6 +59819,86 @@
       "declarationFragments": [
         {
           "kind": "keyword",
+          "spelling": "let"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "n"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Si",
+          "spelling": "Int"
+        },
+        {
+          "kind": "text",
+          "spelling": "?"
+        }
+      ],
+      "docComment": {
+        "lines": [
+          {
+            "text": "Requested choice count; provider validation determines supported values."
+          }
+        ],
+        "module": "AFMOpenAICompat"
+      },
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:15AFMOpenAICompat21ChatCompletionRequestV1nSiSgvp"
+      },
+      "kind": {
+        "displayName": "Instance Property",
+        "identifier": "swift.property"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "let"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "n"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Si",
+            "spelling": "Int"
+          },
+          {
+            "kind": "text",
+            "spelling": "?"
+          }
+        ],
+        "title": "n"
+      },
+      "pathComponents": [
+        "ChatCompletionRequest",
+        "n"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
           "spelling": "var"
         },
         {
@@ -60815,6 +60952,23 @@
         },
         {
           "kind": "externalParam",
+          "spelling": "n"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Si",
+          "spelling": "Int"
+        },
+        {
+          "kind": "text",
+          "spelling": "? = nil, "
+        },
+        {
+          "kind": "externalParam",
           "spelling": "stop"
         },
         {
@@ -61346,6 +61500,28 @@
             "declarationFragments": [
               {
                 "kind": "identifier",
+                "spelling": "n"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:Si",
+                "spelling": "Int"
+              },
+              {
+                "kind": "text",
+                "spelling": "?"
+              }
+            ],
+            "name": "n"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
                 "spelling": "stop"
               },
               {
@@ -61597,7 +61773,7 @@
       },
       "identifier": {
         "interfaceLanguage": "swift",
-        "precise": "s:15AFMOpenAICompat21ChatCompletionRequestV5model8messages11temperature9maxTokens0idJ04topP17repetitionPenalty06repeatM009frequencyM008presenceM00K1K4minP4seed8logprobs0K8Logprobs4stop6stream0V7Options4user5tools10toolChoice17parallelToolCalls14responseFormat18chatTemplateKwargs15reasoningEffort9ignoreEOSACSSSg_SayAA7MessageVGSdSgSiSgA7_A6_A6_A6_A6_A6_A7_A6_A7_SbSgA7_SaySSGSgA8_AA06StreamW0VSgA2_SayAA0E4ToolVGSgAA10ToolChoiceOSgA8_AA14ResponseFormatVSgSDySSAA10AnyCodableVGSgA2_A8_tcfc"
+        "precise": "s:15AFMOpenAICompat21ChatCompletionRequestV5model8messages11temperature9maxTokens0idJ04topP17repetitionPenalty06repeatM009frequencyM008presenceM00K1K4minP4seed8logprobs0K8Logprobs1n4stop6stream0V7Options4user5tools10toolChoice17parallelToolCalls14responseFormat18chatTemplateKwargs15reasoningEffort9ignoreEOSACSSSg_SayAA7MessageVGSdSgSiSgA8_A7_A7_A7_A7_A7_A8_A7_A8_SbSgA8_A8_SaySSGSgA9_AA06StreamW0VSgA3_SayAA0E4ToolVGSgAA10ToolChoiceOSgA9_AA14ResponseFormatVSgSDySSAA10AnyCodableVGSgA3_A9_tcfc"
       },
       "kind": {
         "displayName": "Initializer",
@@ -61870,6 +62046,23 @@
           },
           {
             "kind": "externalParam",
+            "spelling": "n"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Si",
+            "spelling": "Int"
+          },
+          {
+            "kind": "text",
+            "spelling": "?, "
+          },
+          {
+            "kind": "externalParam",
             "spelling": "stop"
           },
           {
@@ -62065,11 +62258,11 @@
             "spelling": "?)"
           }
         ],
-        "title": "init(model:messages:temperature:maxTokens:maxCompletionTokens:topP:repetitionPenalty:repeatPenalty:frequencyPenalty:presencePenalty:topK:minP:seed:logprobs:topLogprobs:stop:stream:streamOptions:user:tools:toolChoice:parallelToolCalls:responseFormat:chatTemplateKwargs:reasoningEffort:ignoreEOS:)"
+        "title": "init(model:messages:temperature:maxTokens:maxCompletionTokens:topP:repetitionPenalty:repeatPenalty:frequencyPenalty:presencePenalty:topK:minP:seed:logprobs:topLogprobs:n:stop:stream:streamOptions:user:tools:toolChoice:parallelToolCalls:responseFormat:chatTemplateKwargs:reasoningEffort:ignoreEOS:)"
       },
       "pathComponents": [
         "ChatCompletionRequest",
-        "init(model:messages:temperature:maxTokens:maxCompletionTokens:topP:repetitionPenalty:repeatPenalty:frequencyPenalty:presencePenalty:topK:minP:seed:logprobs:topLogprobs:stop:stream:streamOptions:user:tools:toolChoice:parallelToolCalls:responseFormat:chatTemplateKwargs:reasoningEffort:ignoreEOS:)"
+        "init(model:messages:temperature:maxTokens:maxCompletionTokens:topP:repetitionPenalty:repeatPenalty:frequencyPenalty:presencePenalty:topK:minP:seed:logprobs:topLogprobs:n:stop:stream:streamOptions:user:tools:toolChoice:parallelToolCalls:responseFormat:chatTemplateKwargs:reasoningEffort:ignoreEOS:)"
       ]
     },
     {
@@ -62337,6 +62530,23 @@
         {
           "kind": "text",
           "spelling": "?, "
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "n"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Si",
+          "spelling": "Int"
+        },
+        {
+          "kind": "text",
+          "spelling": "? = nil, "
         },
         {
           "kind": "externalParam",
@@ -62854,6 +63064,28 @@
             "declarationFragments": [
               {
                 "kind": "identifier",
+                "spelling": "n"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:Si",
+                "spelling": "Int"
+              },
+              {
+                "kind": "text",
+                "spelling": "?"
+              }
+            ],
+            "name": "n"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
                 "spelling": "stop"
               },
               {
@@ -63083,7 +63315,7 @@
       },
       "identifier": {
         "interfaceLanguage": "swift",
-        "precise": "s:15AFMOpenAICompat21ChatCompletionRequestV5model8messages11temperature9maxTokens0idJ04topP17repetitionPenalty06repeatM009frequencyM008presenceM00K1K4minP4seed8logprobs0K8Logprobs4stop6stream0V7Options4user5tools10toolChoice17parallelToolCalls14responseFormat18chatTemplateKwargs15reasoningEffortACSSSg_SayAA7MessageVGSdSgSiSgA6_A5_A5_A5_A5_A5_A6_A5_A6_SbSgA6_SaySSGSgA7_AA06StreamW0VSgA1_SayAA0E4ToolVGSgAA10ToolChoiceOSgA7_AA14ResponseFormatVSgSDySSAA10AnyCodableVGSgA1_tcfc"
+        "precise": "s:15AFMOpenAICompat21ChatCompletionRequestV5model8messages11temperature9maxTokens0idJ04topP17repetitionPenalty06repeatM009frequencyM008presenceM00K1K4minP4seed8logprobs0K8Logprobs1n4stop6stream0V7Options4user5tools10toolChoice17parallelToolCalls14responseFormat18chatTemplateKwargs15reasoningEffortACSSSg_SayAA7MessageVGSdSgSiSgA7_A6_A6_A6_A6_A6_A7_A6_A7_SbSgA7_A7_SaySSGSgA8_AA06StreamW0VSgA2_SayAA0E4ToolVGSgAA10ToolChoiceOSgA8_AA14ResponseFormatVSgSDySSAA10AnyCodableVGSgA2_tcfc"
       },
       "kind": {
         "displayName": "Initializer",
@@ -63356,6 +63588,23 @@
           },
           {
             "kind": "externalParam",
+            "spelling": "n"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Si",
+            "spelling": "Int"
+          },
+          {
+            "kind": "text",
+            "spelling": "?, "
+          },
+          {
+            "kind": "externalParam",
             "spelling": "stop"
           },
           {
@@ -63534,11 +63783,11 @@
             "spelling": "?)"
           }
         ],
-        "title": "init(model:messages:temperature:maxTokens:maxCompletionTokens:topP:repetitionPenalty:repeatPenalty:frequencyPenalty:presencePenalty:topK:minP:seed:logprobs:topLogprobs:stop:stream:streamOptions:user:tools:toolChoice:parallelToolCalls:responseFormat:chatTemplateKwargs:reasoningEffort:)"
+        "title": "init(model:messages:temperature:maxTokens:maxCompletionTokens:topP:repetitionPenalty:repeatPenalty:frequencyPenalty:presencePenalty:topK:minP:seed:logprobs:topLogprobs:n:stop:stream:streamOptions:user:tools:toolChoice:parallelToolCalls:responseFormat:chatTemplateKwargs:reasoningEffort:)"
       },
       "pathComponents": [
         "ChatCompletionRequest",
-        "init(model:messages:temperature:maxTokens:maxCompletionTokens:topP:repetitionPenalty:repeatPenalty:frequencyPenalty:presencePenalty:topK:minP:seed:logprobs:topLogprobs:stop:stream:streamOptions:user:tools:toolChoice:parallelToolCalls:responseFormat:chatTemplateKwargs:reasoningEffort:)"
+        "init(model:messages:temperature:maxTokens:maxCompletionTokens:topP:repetitionPenalty:repeatPenalty:frequencyPenalty:presencePenalty:topK:minP:seed:logprobs:topLogprobs:n:stop:stream:streamOptions:user:tools:toolChoice:parallelToolCalls:responseFormat:chatTemplateKwargs:reasoningEffort:)"
       ]
     },
     {
