@@ -717,7 +717,7 @@ private struct EmbeddedGLMMTPDimensions {
         } else {
             guard validateLinear(
                 name: prefix + "self_attn.embed_q",
-                leading: [attentionHeads, qLora],
+                leading: [attentionHeads, kvLora],
                 input: qkNopeHead,
                 tensors: tensors),
                 validateLinear(
