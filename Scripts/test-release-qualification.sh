@@ -103,6 +103,16 @@ for product in products:
     assert manifest.count(f'.product(name: "{public_product}", package: "AFMKit")') == 1
     assert any(f"import {public_product}" in path.read_text(encoding="utf-8") for path in sources)
 PY
+# Exercise the terminal count check with the generated inventory, without
+# recompiling consumers. The real downstream gate separately builds each one.
+TERMINAL_CHECK="$SANDBOX/downstream-count-check.sh"
+sed -n '/^EXPECTED_TOTAL=/,$p' "$ROOT/Scripts/check-downstream-example.sh" > "$TERMINAL_CHECK"
+CONSUMER="$GENERATOR_FIXTURE" TOTAL=16 bash "$TERMINAL_CHECK"
+if CONSUMER="$GENERATOR_FIXTURE" TOTAL=15 bash "$TERMINAL_CHECK" > "$SANDBOX/count.log" 2>&1; then
+    echo "Release qualification regression failed: incomplete product count accepted." >&2
+    exit 1
+fi
+grep -q 'expected 16' "$SANDBOX/count.log"
 PASSED=$((PASSED + 1))
 
 printf '%s\n' '{"dependencies":[{"fileSystem":[{"identity":"local","path":"/tmp/local"}]}]}' \
