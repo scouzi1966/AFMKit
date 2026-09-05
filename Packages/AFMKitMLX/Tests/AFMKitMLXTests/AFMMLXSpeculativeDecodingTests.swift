@@ -399,6 +399,93 @@ final class AFMMLXSpeculativeDecodingTests: XCTestCase {
                 embeddedAssetsPresent: true))
     }
 
+    func testDeepseekEmbeddedDSparkAcceptsSupportedExpertLayouts() throws {
+        for indexed in [false, true] {
+            for layout in ["stacked", "official", "normalized"] {
+                let directory = try Self.makeDeepseekDSparkDirectory(
+                    layout: layout, indexed: indexed)
+                defer { try? FileManager.default.removeItem(at: directory) }
+                XCTAssertTrue(
+                    AFMMLXSpeculativeModelCompatibility.evaluate(modelDirectory: directory)
+                        .mtpCompatible,
+                    "layout=\(layout), indexed=\(indexed)")
+            }
+        }
+    }
+
+    func testDeepseekEmbeddedDSparkRejectsIncompleteExpertLayouts() throws {
+        for indexed in [false, true] {
+            for layout in ["stacked", "official", "normalized"] {
+                let directory = try Self.makeDeepseekDSparkDirectory(
+                    layout: layout, indexed: indexed, omitFinalProjection: true)
+                defer { try? FileManager.default.removeItem(at: directory) }
+                XCTAssertFalse(
+                    AFMMLXSpeculativeModelCompatibility.evaluate(modelDirectory: directory)
+                        .mtpCompatible,
+                    "layout=\(layout), indexed=\(indexed)")
+            }
+        }
+    }
+
+    func testDeepseekEmbeddedDSparkBoundsDeclaredExpertCount() throws {
+        for indexed in [false, true] {
+            for experts in [0, -1, Int.max] {
+                let directory = try Self.makeDeepseekDSparkDirectory(
+                    layout: "official", indexed: indexed, declaredExperts: experts)
+                defer { try? FileManager.default.removeItem(at: directory) }
+                XCTAssertFalse(
+                    AFMMLXSpeculativeModelCompatibility.evaluate(modelDirectory: directory)
+                        .mtpCompatible)
+            }
+        }
+    }
+
+    private static func makeDeepseekDSparkDirectory(
+        layout: String, indexed: Bool, omitFinalProjection: Bool = false,
+        declaredExperts: Int = 2
+    ) throws -> URL {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let config: [String: Any] = [
+            "model_type": "deepseek_v4", "num_hidden_layers": 2,
+            "compress_ratios": [0, 4, 0, 0], "dspark_block_size": 5,
+            "dspark_noise_token_id": 7, "dspark_target_layer_ids": [0, 1],
+            "dspark_markov_rank": 16, "vocab_size": 32,
+            "n_routed_experts": declaredExperts,
+        ]
+        try JSONSerialization.data(withJSONObject: config)
+            .write(to: directory.appendingPathComponent("config.json"))
+        var names: [String] = []
+        for stage in 0..<2 {
+            let prefix = "mtp.\(stage)."
+            names += ["attn_norm.weight", "ffn_norm.weight", "attn.wq_a.weight",
+                      "ffn.gate.weight"].map { prefix + $0 }
+            let projections = layout == "official"
+                ? ["w1", "w2", "w3"] : ["gate_proj", "down_proj", "up_proj"]
+            for expert in 0..<(layout == "stacked" ? 1 : 2) {
+                for (index, projection) in projections.enumerated() {
+                    if omitFinalProjection && stage == 1 && index == 2
+                        && expert == (layout == "stacked" ? 0 : 1) { continue }
+                    let owner = layout == "stacked" ? "switch_mlp" : "experts.\(expert)"
+                    names.append(prefix + "ffn.\(owner).\(projection).weight")
+                }
+            }
+        }
+        names += ["mtp.0.main_proj.weight", "mtp.0.main_norm.weight"]
+        names += ["norm.weight", "markov_head.markov_w1.weight",
+                  "markov_head.markov_w2.weight", "confidence_head.proj.weight",
+                  "hc_head_fn", "hc_head_base", "hc_head_scale"].map { "mtp.1." + $0 }
+        let tensors = Dictionary(uniqueKeysWithValues: names.map { ($0, ("F32", [1])) })
+        try writeSafetensorMetadata(tensors, to: directory.appendingPathComponent("model.safetensors"))
+        if indexed {
+            let map = Dictionary(uniqueKeysWithValues: names.map { ($0, "model.safetensors") })
+            try JSONSerialization.data(withJSONObject: ["weight_map": map])
+                .write(to: directory.appendingPathComponent("model.safetensors.index.json"))
+        }
+        return directory
+    }
+
     func testEmbeddedMTPShardPathsCannotEscapeModelDirectory() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
