@@ -256,7 +256,6 @@ public struct AFMMLXSpeculativeModelCompatibility: Equatable, Sendable {
             "ffn_norm.weight",
             "attn.wq_a.weight",
             "ffn.gate.weight",
-            "ffn.switch_mlp.gate_proj.weight",
         ]
         let finalStage = stageCount - 1
         var required = (0..<stageCount).flatMap { stage in
@@ -274,13 +273,38 @@ public struct AFMMLXSpeculativeModelCompatibility: Equatable, Sendable {
             "mtp.\(finalStage).hc_head_scale",
         ]
 
+        func hasRequiredWeights(_ names: Set<String>) -> Bool {
+            guard required.allSatisfy(names.contains) else { return false }
+            let projections = [("gate_proj", "w1"), ("down_proj", "w2"), ("up_proj", "w3")]
+            let experts = (config["n_routed_experts"] as? NSNumber)?.intValue ?? 0
+            return (0..<stageCount).allSatisfy { stage in
+                let prefix = "mtp.\(stage).ffn"
+                if projections.allSatisfy({
+                    names.contains("\(prefix).switch_mlp.\($0.0).weight")
+                }) { return true }
+
+                // sanitize accepts official w1/w2/w3 and normalized per-expert
+                // names, then stacks them. Inspect names only, bounding work
+                // by the available metadata even for malformed expert counts.
+                guard experts > 0, experts <= names.count / projections.count else {
+                    return false
+                }
+                return (0..<experts).allSatisfy { expert in
+                    projections.allSatisfy { projection, official in
+                        names.contains("\(prefix).experts.\(expert).\(projection).weight")
+                            || names.contains("\(prefix).experts.\(expert).\(official).weight")
+                    }
+                }
+            }
+        }
+
         let indexURL = modelDirectory.appendingPathComponent(
             "model.safetensors.index.json")
         if let data = boundedData(at: indexURL, maximumBytes: 128 * 1_024 * 1_024),
            let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
            let map = object["weight_map"] as? [String: String]
         {
-            return required.allSatisfy { map[$0] != nil }
+            return hasRequiredWeights(Set(map.keys))
         }
 
         guard let tensorURL = containedShardURL(
@@ -288,7 +312,7 @@ public struct AFMMLXSpeculativeModelCompatibility: Equatable, Sendable {
             let header = safeTensorHeader(at: tensorURL), hasSaneOffsets(header)
         else { return false }
         let names = Set(header.tensors.map(\.name))
-        return required.allSatisfy(names.contains)
+        return hasRequiredWeights(names)
     }
 
     private static func hasCompleteEmbeddedQwenNextMTP(
