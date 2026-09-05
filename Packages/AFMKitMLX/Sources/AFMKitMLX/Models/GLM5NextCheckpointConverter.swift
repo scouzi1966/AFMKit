@@ -13,7 +13,7 @@ public struct GLM5NextCheckpointConverter {
 
     public static let officialModelID = "zai-org/GLM-5.3-Flash"
     public static let minimumDestinationFreeBytes: Int64 = 600_000_000_000
-    private static let currentFormatVersion = 2
+    private static let currentFormatVersion = 3
     private static let fp8BlockRows = 128
     private static let fp8BlockColumns = 128
     private static let affineGroupSize = 64
@@ -102,7 +102,6 @@ public struct GLM5NextCheckpointConverter {
         var weightMap: [String: String] = [:]
         var quantization: [String: Quantization] = [:]
         var skippedQuantization: [String] = []
-        var omittedMTP: [String] = []
     }
 
     private struct Configuration {
@@ -294,7 +293,7 @@ public struct GLM5NextCheckpointConverter {
         report("  output: \(outputURL.path)")
         report("  profile: \(profile.rawValue)")
         report("  source shards: \(inspection.shardCount)")
-        report("  MTP tensors omitted: \(inspection.omittedMTPTensorCount)")
+        report("  embedded NextN layers preserved: \(checkpoint.config.sourceMTPCount)")
 
         if overwrite, fm.fileExists(atPath: outputURL.path) {
             try fm.removeItem(at: outputURL)
@@ -407,9 +406,6 @@ public struct GLM5NextCheckpointConverter {
             loader.release()
         }
 
-        state.omittedMTP = checkpoint.tensors.keys.filter {
-            Self.layerIndex(in: $0).map { $0 >= checkpoint.config.hiddenLayers } ?? false
-        }.sorted()
         try copySupportFiles(from: checkpoint.root, to: outputURL)
         try writeOutputConfiguration(checkpoint: checkpoint, state: state)
         try writeOutputIndex(state: state, output: outputURL)
@@ -660,6 +656,7 @@ public struct GLM5NextCheckpointConverter {
                 "SafeTensor headers are missing indexed tensors: \(missing.sorted().prefix(5).joined(separator: ", ")).")
         }
         try validateTensorFormats(tensors, config: config)
+        try validateEmbeddedMTP(tensors: tensors, config: config)
         return SourceCheckpoint(
             root: root,
             configURL: configURL,
@@ -748,18 +745,76 @@ public struct GLM5NextCheckpointConverter {
         }
     }
 
+    private static func validateEmbeddedMTP(
+        tensors: [String: TensorReference],
+        config: Configuration
+    ) throws {
+        let prefix = "model.language_model.layers.\(config.hiddenLayers)."
+        let structuralLayerNames = tensors.keys.filter {
+            layerIndex(in: $0) == config.hiddenLayers
+        }
+
+        guard config.sourceMTPCount == 0 || config.sourceMTPCount == 1 else {
+            throw ConversionError.invalidSource(
+                "GLM-5.3 supports zero or one embedded NextN layer, found \(config.sourceMTPCount).")
+        }
+        if config.sourceMTPCount == 0 {
+            guard structuralLayerNames.isEmpty else {
+                throw ConversionError.invalidSource(
+                    "Configuration advertises no NextN layer but structural layer \(config.hiddenLayers) is present.")
+            }
+            return
+        }
+        guard !structuralLayerNames.isEmpty else {
+            throw ConversionError.invalidSource(
+                "Configuration advertises one NextN layer but structural layer \(config.hiddenLayers) is missing.")
+        }
+
+        var required = Set([
+            "eh_proj.weight",
+            "enorm.weight",
+            "hnorm.weight",
+            "input_layernorm.weight",
+            "post_attention_layernorm.weight",
+            "mlp.gate.weight",
+            "mlp.gate.e_score_correction_bias",
+            "self_attn.indexer.index_kpool_compress_ape",
+            "self_attn.indexer.index_kpool_compress_gate",
+            "self_attn.indexer.k_norm.bias",
+            "self_attn.indexer.k_norm.weight",
+            "self_attn.indexer.weights_proj.weight",
+            "self_attn.indexer.wk.weight",
+            "self_attn.indexer.wq_b.weight",
+            "self_attn.kv_a_layernorm.weight",
+            "self_attn.kv_a_proj_with_mqa.weight",
+            "self_attn.kv_b_proj.weight",
+            "self_attn.o_proj.weight",
+            "self_attn.q_a_layernorm.weight",
+            "self_attn.q_a_proj.weight",
+            "self_attn.q_b_proj.weight",
+            "shared_head.norm.weight",
+        ])
+        for expert in 0 ..< config.routedExperts {
+            for projection in ["gate_proj", "up_proj", "down_proj"] {
+                required.insert("mlp.experts.\(expert).\(projection).weight")
+            }
+        }
+        for projection in ["gate_proj", "up_proj", "down_proj"] {
+            required.insert("mlp.shared_experts.\(projection).weight")
+        }
+
+        let missing = required.filter { tensors[prefix + $0] == nil }.sorted()
+        guard missing.isEmpty else {
+            throw ConversionError.invalidSource(
+                "Embedded NextN layer is incomplete; missing \(missing.prefix(5).joined(separator: ", ")).")
+        }
+    }
+
     private static func inspection(for checkpoint: SourceCheckpoint) -> Inspection {
         var estimated: Int64 = 0
         var vision = 0
         var fp8 = 0
-        var omittedMTP = 0
         for reference in checkpoint.tensors.values {
-            if let layer = layerIndex(in: reference.name),
-               layer >= checkpoint.config.hiddenLayers
-            {
-                omittedMTP += 1
-                continue
-            }
             if reference.name.hasSuffix(".weight_scale_inv") { continue }
             if reference.name.hasPrefix("model.visual.") { vision += 1 }
             if reference.dtype == .float8E4M3 {
@@ -782,18 +837,13 @@ public struct GLM5NextCheckpointConverter {
             tensorCount: checkpoint.tensors.count,
             visionTensorCount: vision,
             fp8TensorCount: fp8,
-            omittedMTPTensorCount: omittedMTP)
+            omittedMTPTensorCount: 0)
     }
 
     private static func makePlan(checkpoint: SourceCheckpoint) throws -> [ConversionUnit] {
         var ordinary = [String: [TensorReference]]()
         var experts = [String: [TensorReference]]()
         for reference in checkpoint.tensors.values.sorted(by: { $0.name < $1.name }) {
-            if let layer = layerIndex(in: reference.name),
-               layer >= checkpoint.config.hiddenLayers
-            {
-                continue
-            }
             if reference.name.hasSuffix(".weight_scale_inv") { continue }
             if let expert = expertIdentity(reference.name) {
                 let key = "\(expert.layer):\(expert.projection)"
@@ -1310,10 +1360,6 @@ public struct GLM5NextCheckpointConverter {
     ) throws {
         var object = checkpoint.config.object
         object.removeValue(forKey: "quantization_config")
-        if var text = object["text_config"] as? [String: Any] {
-            text["num_nextn_predict_layers"] = 0
-            object["text_config"] = text
-        }
         var quantization: [String: Any] = [
             "group_size": Self.affineGroupSize,
             "bits": Self.affineBits,
@@ -1341,8 +1387,8 @@ public struct GLM5NextCheckpointConverter {
             "vision_preserved": true,
             "processor_assets_copied": true,
             "source_num_nextn_predict_layers": checkpoint.config.sourceMTPCount,
-            "mtp_omitted": true,
-            "omitted_mtp_tensor_count": state.omittedMTP.count,
+            "mtp_omitted": false,
+            "omitted_mtp_tensor_count": 0,
         ]
         let data = try JSONSerialization.data(
             withJSONObject: object, options: [.prettyPrinted, .sortedKeys])

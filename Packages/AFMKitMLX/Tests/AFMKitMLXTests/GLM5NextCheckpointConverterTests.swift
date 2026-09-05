@@ -1,5 +1,6 @@
 import Foundation
 import MLX
+@testable import MLXLLM
 @testable import AFMKitMLX
 import XCTest
 
@@ -254,7 +255,7 @@ final class GLM5NextCheckpointConverterTests: XCTestCase {
         XCTAssertNotNil(repairedMap["language_model.model.layers.1.mlp.gate.weight"])
     }
 
-    func testTinyMultimodalConversionReconstructsCrossShardExpertsAndOmitsMTP() throws {
+    func testTinyMultimodalConversionReconstructsCrossShardExpertsAndPreservesMTP() throws {
         let source = try makeFixture()
         let output = source.deletingLastPathComponent()
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -270,7 +271,7 @@ final class GLM5NextCheckpointConverterTests: XCTestCase {
         XCTAssertEqual(inspection.shardCount, 2)
         XCTAssertGreaterThan(inspection.fp8TensorCount, 0)
         XCTAssertGreaterThan(inspection.visionTensorCount, 0)
-        XCTAssertGreaterThan(inspection.omittedMTPTensorCount, 0)
+        XCTAssertEqual(inspection.omittedMTPTensorCount, 0)
         XCTAssertEqual(
             inspection.requiredDestinationFreeBytes,
             GLM5NextCheckpointConverter.minimumDestinationFreeBytes)
@@ -306,8 +307,16 @@ final class GLM5NextCheckpointConverterTests: XCTestCase {
             "language_model.model.layers.1.self_attn.embed_q.weight"])
         XCTAssertNotNil(weightMap[
             "language_model.model.layers.1.self_attn.unembed_out.weight"])
-        XCTAssertFalse(weightMap.keys.contains { $0.contains("layers.2") })
+        let mtpPrefix = "language_model.model.layers.2."
+        XCTAssertTrue(weightMap.keys.contains { $0.hasPrefix(mtpPrefix) })
+        XCTAssertNotNil(weightMap[mtpPrefix + "eh_proj.weight"])
+        XCTAssertNotNil(weightMap[mtpPrefix + "mlp.switch_mlp.gate_proj.weight"])
+        XCTAssertNotNil(weightMap[mtpPrefix + "shared_head.norm.weight"])
         XCTAssertFalse(weightMap.keys.contains { $0.hasSuffix("weight_scale_inv") })
+        let modelConfig = try JSONDecoder().decode(
+            GLM5NextConfiguration.self,
+            from: Data(contentsOf: output.appendingPathComponent("config.json"))
+        )
 
         let expertKey = "language_model.model.layers.1.mlp.switch_mlp.gate_proj"
         let expertShard = try XCTUnwrap(weightMap["\(expertKey).weight"])
@@ -330,12 +339,29 @@ final class GLM5NextCheckpointConverterTests: XCTestCase {
         XCTAssertNil(config["quantization_config"])
         let provenance = try XCTUnwrap(config["afm_conversion"] as? [String: Any])
         XCTAssertEqual(provenance["source_revision"] as? String, revision)
-        XCTAssertEqual(provenance["mtp_omitted"] as? Bool, true)
+        XCTAssertEqual(provenance["mtp_omitted"] as? Bool, false)
         XCTAssertEqual(provenance["vision_preserved"] as? Bool, true)
         let text = try XCTUnwrap(config["text_config"] as? [String: Any])
-        XCTAssertEqual(text["num_nextn_predict_layers"] as? Int, 0)
+        XCTAssertEqual(text["num_nextn_predict_layers"] as? Int, 1)
+        XCTAssertTrue(
+            AFMMLXSpeculativeModelCompatibility.evaluate(modelDirectory: output)
+                .mtpCompatible)
+        let model = GLM5NextModel(modelConfig)
+        try model.loadEmbeddedMTP(modelDirectory: output)
+        XCTAssertTrue(model.supportsEmbeddedMTP)
         XCTAssertTrue(FileManager.default.fileExists(
             atPath: output.appendingPathComponent("processor_config.json").path))
+    }
+
+    func testIncompleteEmbeddedMTPFailsClosed() throws {
+        let source = try makeFixture(omittingMTPTensor: "eh_proj.weight")
+        defer { try? FileManager.default.removeItem(at: source) }
+
+        XCTAssertThrowsError(try GLM5NextCheckpointConverter.inspect(
+            source: source,
+            sourceRevision: String(repeating: "a", count: 40))) { error in
+                XCTAssertTrue(error.localizedDescription.contains("NextN layer is incomplete"))
+            }
     }
 
     func testResumeRejectsChangedSourceRevision() throws {
@@ -662,7 +688,8 @@ final class GLM5NextCheckpointConverterTests: XCTestCase {
     private func makeFixture(
         rawExpertDType: String = "F8_E4M3",
         includeExpertScales: Bool = true,
-        expertScaleDType: String = "F32"
+        expertScaleDType: String = "F32",
+        omittingMTPTensor: String? = nil
     ) throws -> URL {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -673,12 +700,26 @@ final class GLM5NextCheckpointConverterTests: XCTestCase {
             "model_type": "glm5_next",
             "text_config": [
                 "model_type": "glm5_next_text",
+                "vocab_size": 32,
                 "num_hidden_layers": 2,
+                "hidden_size": 128,
+                "intermediate_size": 128,
                 "n_routed_experts": 12,
+                "n_shared_experts": 1,
+                "moe_intermediate_size": 128,
                 "kv_lora_rank": 128,
+                "q_lora_rank": 128,
                 "num_attention_heads": 2,
+                "num_key_value_heads": 2,
                 "qk_nope_head_dim": 64,
+                "qk_rope_head_dim": 0,
                 "v_head_dim": 64,
+                "num_experts_per_tok": 1,
+                "index_n_heads": 4,
+                "index_head_dim": 16,
+                "index_kpool": 16,
+                "layer_types": ["linear_attention", "deepseek_sparse_attention"],
+                "mlp_layer_types": ["dense", "sparse"],
                 "num_nextn_predict_layers": 1,
             ],
             "vision_config": ["model_type": "glm5_next_vision"],
@@ -739,10 +780,46 @@ final class GLM5NextCheckpointConverterTests: XCTestCase {
             dtype: "BF16",
             shape: [1024, 3, 2, 14, 14],
             data: Data(repeating: 0, count: 1024 * 3 * 2 * 14 * 14 * 2))
-        shardTwo["model.language_model.layers.2.mtp_projection.weight"] = FixtureTensor(
-            dtype: "BF16",
-            shape: [4, 4],
-            data: Data(repeating: 0, count: 4 * 4 * 2))
+
+        func addEmbeddedMTP(_ name: String, shape: [Int]) {
+            guard name != omittingMTPTensor else { return }
+            shardTwo["model.language_model.layers.2." + name] = FixtureTensor(
+                dtype: "BF16",
+                shape: shape,
+                data: Data(repeating: 0, count: shape.reduce(1, *) * 2))
+        }
+        addEmbeddedMTP("eh_proj.weight", shape: [128, 256])
+        addEmbeddedMTP("enorm.weight", shape: [128])
+        addEmbeddedMTP("hnorm.weight", shape: [128])
+        addEmbeddedMTP("input_layernorm.weight", shape: [128])
+        addEmbeddedMTP("post_attention_layernorm.weight", shape: [128])
+        addEmbeddedMTP("mlp.gate.weight", shape: [12, 128])
+        addEmbeddedMTP("mlp.gate.e_score_correction_bias", shape: [12])
+        addEmbeddedMTP(
+            "self_attn.indexer.index_kpool_compress_ape", shape: [16, 16])
+        addEmbeddedMTP(
+            "self_attn.indexer.index_kpool_compress_gate", shape: [16, 128])
+        addEmbeddedMTP("self_attn.indexer.k_norm.bias", shape: [16])
+        addEmbeddedMTP("self_attn.indexer.k_norm.weight", shape: [16])
+        addEmbeddedMTP("self_attn.indexer.weights_proj.weight", shape: [4, 128])
+        addEmbeddedMTP("self_attn.indexer.wk.weight", shape: [16, 128])
+        addEmbeddedMTP("self_attn.indexer.wq_b.weight", shape: [64, 128])
+        addEmbeddedMTP("self_attn.kv_a_layernorm.weight", shape: [128])
+        addEmbeddedMTP("self_attn.kv_a_proj_with_mqa.weight", shape: [128, 128])
+        addEmbeddedMTP("self_attn.kv_b_proj.weight", shape: [256, 128])
+        addEmbeddedMTP("self_attn.o_proj.weight", shape: [128, 128])
+        addEmbeddedMTP("self_attn.q_a_layernorm.weight", shape: [128])
+        addEmbeddedMTP("self_attn.q_a_proj.weight", shape: [128, 128])
+        addEmbeddedMTP("self_attn.q_b_proj.weight", shape: [128, 128])
+        addEmbeddedMTP("shared_head.norm.weight", shape: [128])
+        for projection in ["gate_proj", "up_proj", "down_proj"] {
+            addEmbeddedMTP(
+                "mlp.shared_experts.\(projection).weight", shape: [128, 128])
+            for expert in 0..<12 {
+                addEmbeddedMTP(
+                    "mlp.experts.\(expert).\(projection).weight", shape: [128, 128])
+            }
+        }
 
         let shardOneName = "model-00001-of-00002.safetensors"
         let shardTwoName = "model-00002-of-00002.safetensors"

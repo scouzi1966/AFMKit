@@ -664,6 +664,10 @@ private struct EmbeddedGLMMTPDimensions {
            let bits = (rawQuantization["bits"] as? NSNumber)?.intValue,
            groupSize > 0, bits > 0, bits <= 16 {
             quantization = Quantization(groupSize: groupSize, bits: bits)
+        } else if let rawQuantization,
+                  (rawQuantization["fmt"] as? String)?.lowercased() == "e4m3",
+                  (rawQuantization["weight_block_size"] as? [NSNumber])?.map(\.intValue) == [128, 128] {
+            quantization = nil
         } else if rawQuantization != nil {
             return nil
         } else {
@@ -703,16 +707,52 @@ private struct EmbeddedGLMMTPDimensions {
             "self_attn.q_a_proj": (qLora, hidden),
             "self_attn.q_b_proj": (queryWidth, qLora),
             "self_attn.kv_a_proj_with_mqa": (kvLora, hidden),
-            "self_attn.kv_b_proj": (keyValueWidth, kvLora),
             "self_attn.o_proj": (hidden, outputWidth),
             "self_attn.indexer.wq_b": (indexQueryWidth, qLora),
             "self_attn.indexer.wk": (indexHead, hidden),
             "self_attn.indexer.weights_proj": (indexHeads, hidden),
         ]
+        if tensors[prefix + "self_attn.kv_b_proj.weight"] != nil {
+            linearShapes["self_attn.kv_b_proj"] = (keyValueWidth, kvLora)
+        } else {
+            guard validateLinear(
+                name: prefix + "self_attn.embed_q",
+                leading: [attentionHeads, qLora],
+                input: qkNopeHead,
+                tensors: tensors),
+                validateLinear(
+                    name: prefix + "self_attn.unembed_out",
+                    leading: [attentionHeads, valueHead],
+                    input: kvLora,
+                    tensors: tensors) else { return false }
+        }
         for expert in 0 ..< experts {
             linearShapes["mlp.experts.\(expert).gate_proj"] = (moeIntermediate, hidden)
             linearShapes["mlp.experts.\(expert).up_proj"] = (moeIntermediate, hidden)
             linearShapes["mlp.experts.\(expert).down_proj"] = (hidden, moeIntermediate)
+        }
+        let hasStackedExperts = ["gate_proj", "up_proj", "down_proj"].allSatisfy {
+            tensors[prefix + "mlp.switch_mlp.\($0).weight"] != nil
+        }
+        if hasStackedExperts {
+            for (name, _) in linearShapes where name.hasPrefix("mlp.experts.") {
+                linearShapes.removeValue(forKey: name)
+            }
+            guard validateLinear(
+                name: prefix + "mlp.switch_mlp.gate_proj",
+                leading: [experts, moeIntermediate],
+                input: hidden,
+                tensors: tensors),
+                validateLinear(
+                    name: prefix + "mlp.switch_mlp.up_proj",
+                    leading: [experts, moeIntermediate],
+                    input: hidden,
+                    tensors: tensors),
+                validateLinear(
+                    name: prefix + "mlp.switch_mlp.down_proj",
+                    leading: [experts, hidden],
+                    input: moeIntermediate,
+                    tensors: tensors) else { return false }
         }
         if sharedExperts > 0 {
             linearShapes["mlp.shared_experts.gate_proj"] = (sharedWidth, hidden)
@@ -746,11 +786,19 @@ private struct EmbeddedGLMMTPDimensions {
         input: Int,
         tensors: [String: AFMSafetensorHeader.Tensor]
     ) -> Bool {
+        validateLinear(name: name, leading: [output], input: input, tensors: tensors)
+    }
+
+    private func validateLinear(
+        name: String,
+        leading: [Int],
+        input: Int,
+        tensors: [String: AFMSafetensorHeader.Tensor]
+    ) -> Bool {
         guard let weight = tensors[name + ".weight"] else { return false }
         let scales = tensors[name + ".scales"]
         let biases = tensors[name + ".biases"]
         guard (scales == nil) == (biases == nil) else { return false }
-
         if weight.dtype == .uint32 {
             guard let packedBits = multiplied(input, quantization?.bits ?? 0) else {
                 return false
@@ -758,16 +806,22 @@ private struct EmbeddedGLMMTPDimensions {
             guard let quantization,
                   input % quantization.groupSize == 0,
                   packedBits % 32 == 0,
-                  weight.shape == [output, packedBits / 32],
+                  weight.shape.count >= 2,
+                  Array(weight.shape.dropLast()) == leading,
+                  weight.shape.last == packedBits / 32,
                   let scales, let biases,
-                  scales.shape == [output, input / quantization.groupSize],
+                  scales.shape.count >= 2,
+                  Array(scales.shape.dropLast()) == leading,
+                  scales.shape.last == input / quantization.groupSize,
                   biases.shape == scales.shape,
                   scales.dtype.isFloatingPoint,
                   biases.dtype.isFloatingPoint else { return false }
             return true
         }
 
-        return weight.shape == [output, input]
+        return weight.shape.count >= 2
+            && Array(weight.shape.dropLast()) == leading
+            && weight.shape.last == input
             && weight.dtype.isFloatingPoint
             && scales == nil
     }
