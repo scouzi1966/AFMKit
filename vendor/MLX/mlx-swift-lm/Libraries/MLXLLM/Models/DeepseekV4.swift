@@ -37,10 +37,10 @@ import MLXLMCommon
 import MLXNN
 
 private enum DeepseekV4PerformanceProfile {
-    static var enabled: Bool {
+    static let enabled: Bool = {
         guard let value = getenv("VMLX_DSV4_STAGE_PROFILE") else { return false }
         return String(cString: value) == "1"
-    }
+    }()
 }
 
 private final class DeepseekV4OuterProfile: @unchecked Sendable {
@@ -130,18 +130,18 @@ private enum DeepseekV4RuntimeOptions {
         return value != "0" && value != "false" && value != "off"
     }
 
-    static var dsparkNativeHeadEnabled: Bool {
+    static let dsparkNativeHeadEnabled: Bool = {
         let environment = ProcessInfo.processInfo.environment
         let kernels = (environment["AFM_MLX_KERNELS"]
             ?? environment["VMLX_DSV4_KERNELS"] ?? "native")
             .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         return kernels == "native"
             && enabled("VMLX_DSV4_DSPARK_HEAD_GEMV", default: true)
-    }
+    }()
 
-    static var dwarfStarCacheBatchingEnabled: Bool {
+    static let dwarfStarCacheBatchingEnabled: Bool = {
         enabled("VMLX_DSV4_DWARFSTAR_CACHE_BATCH", default: true)
-    }
+    }()
 }
 
 private enum DeepseekV4NumericTrace {
@@ -275,7 +275,24 @@ class DeepseekV4Attention: Module {
 
     private lazy var compiledAttentionPreDecode: @Sendable ([MLXArray]) -> [MLXArray] = {
         let body: ([MLXArray]) -> [MLXArray] = { [unowned self] args in
-            self.projectAttentionInputs(args[0], cos: args[1], sin: args[2])
+            // Carry forward the graph-boundary lesson from Qwen Next: capture
+            // every cache-independent projection in one model-owned compiled
+            // region, but leave request-owned cache mutation outside it. This
+            // reduces per-token graph construction without hiding compressor
+            // or indexer state from radix-cache and batching lifecycles.
+            var projected = self.projectAttentionInputs(
+                args[0], cos: args[1], sin: args[2])
+            if let compressor = self.compressor {
+                let compressorProjection = compressor.project(args[0])
+                projected.append(compressorProjection.kv)
+                projected.append(compressorProjection.gate)
+            }
+            if let indexer = self.indexer {
+                let indexerProjection = indexer.compressor.project(args[0])
+                projected.append(indexerProjection.kv)
+                projected.append(indexerProjection.gate)
+            }
+            return projected
         }
         return compile(shapeless: false, body)
     }()
@@ -616,6 +633,10 @@ class DeepseekV4Attention: Module {
                 q: projected[0],
                 kv: projected[1],
                 qResidual: projected[2],
+                compressorKV: compressor == nil ? nil : projected[3],
+                compressorGate: compressor == nil ? nil : projected[4],
+                indexerCompressorKV: indexer == nil ? nil : projected[5],
+                indexerCompressorGate: indexer == nil ? nil : projected[6],
                 cosT: cosT,
                 sinT: sinT,
                 mask: mask,
@@ -697,6 +718,10 @@ class DeepseekV4Attention: Module {
             q: q,
             kv: kv,
             qResidual: qResidual,
+            compressorKV: nil,
+            compressorGate: nil,
+            indexerCompressorKV: nil,
+            indexerCompressorGate: nil,
             cosT: cosT,
             sinT: sinT,
             mask: mask,
@@ -912,6 +937,10 @@ class DeepseekV4Attention: Module {
         q: MLXArray,
         kv: MLXArray,
         qResidual: MLXArray,
+        compressorKV: MLXArray?,
+        compressorGate: MLXArray?,
+        indexerCompressorKV: MLXArray?,
+        indexerCompressorGate: MLXArray?,
         cosT: MLXArray,
         sinT: MLXArray,
         mask: MLXFast.ScaledDotProductAttentionMaskMode,
@@ -958,7 +987,19 @@ class DeepseekV4Attention: Module {
             let v4Cache = cache as? DeepseekV4Cache
             if v4Cache != nil || L >= compressRatio {
                 if let comp = compressor {
-                    var pooled = comp(x, rope: rope, v4Cache: v4Cache, startPos: offset)
+                    var pooled: MLXArray
+                    if let compressorKV, let compressorGate {
+                        pooled = comp.updateProjected(
+                            kv: compressorKV,
+                            gate: compressorGate,
+                            inputDType: x.dtype,
+                            rope: rope,
+                            v4Cache: v4Cache,
+                            startPos: offset)
+                    } else {
+                        pooled = comp(
+                            x, rope: rope, v4Cache: v4Cache, startPos: offset)
+                    }
                     // pooled shape: (B, W, headDim) where W = pooled count.
                     let W = pooled.dim(1)
                     var topK: MLXArray? = nil
@@ -968,9 +1009,21 @@ class DeepseekV4Attention: Module {
                         // emits its first complete row, so partial windows and
                         // all pre-topK history are present when learned
                         // selection first activates.
-                        topK = idx(
-                            x, qResidual: qResidual, rope: rope,
-                            positionRope: rope, v4Cache: v4Cache, startPos: offset)
+                        if let indexerCompressorKV, let indexerCompressorGate {
+                            topK = idx.callAsFunctionProjected(
+                                x,
+                                qResidual: qResidual,
+                                compressorKV: indexerCompressorKV,
+                                compressorGate: indexerCompressorGate,
+                                rope: rope,
+                                positionRope: rope,
+                                v4Cache: v4Cache,
+                                startPos: offset)
+                        } else {
+                            topK = idx(
+                                x, qResidual: qResidual, rope: rope,
+                                positionRope: rope, v4Cache: v4Cache, startPos: offset)
+                        }
                     }
                     if W > 0 {
 
@@ -1142,12 +1195,10 @@ class DeepseekV4Attention: Module {
 
     /// DSpARK attention persists target hidden-state KV only; draft KV is
     /// temporary to the current proposal block.
-    func dsparkForward(
-        _ x: MLXArray,
-        mainX: MLXArray,
+    private func appendDSparkMainKV(
+        _ mainX: MLXArray,
         cache: KVCache
-    ) -> MLXArray {
-        precondition(compressRatio == 0, "DSpARK attention must use local KV")
+    ) -> (offset: Int, persistentKV: MLXArray) {
         let offset = cache.offset
         let B = mainX.dim(0)
         let mainLength = mainX.dim(1)
@@ -1161,8 +1212,29 @@ class DeepseekV4Attention: Module {
             mainKV = DeepseekV4Math.e4m3KVActivationRoundTrip(mainKV, ropeDim: ropeDim)
         }
         let (persistentKV, _) = cache.update(keys: mainKV, values: mainKV)
+        return (offset, persistentKV)
+    }
+
+    /// Advance only the persistent target-hidden ring while speculative
+    /// proposals are paused. This mirrors DwarfStar's DSpark ring-maintenance
+    /// path and avoids executing the draft attention/FFN block.
+    func maintainDSparkCache(_ mainX: MLXArray, cache: KVCache) {
+        _ = appendDSparkMainKV(mainX, cache: cache)
+    }
+
+    func dsparkForward(
+        _ x: MLXArray,
+        mainX: MLXArray,
+        cache: KVCache
+    ) -> MLXArray {
+        precondition(compressRatio == 0, "DSpARK attention must use local KV")
+        let appended = appendDSparkMainKV(mainX, cache: cache)
+        let offset = appended.offset
+        let persistentKV = appended.persistentKV
         if offset == 0 { return x }
 
+        let B = mainX.dim(0)
+        let mainLength = mainX.dim(1)
         let blockLength = x.dim(1)
         let draftOffset = offset + mainLength
         var q = wqB(qNorm(wqA(x))).reshaped(B, blockLength, numHeads, headDim)
@@ -1242,14 +1314,22 @@ class DeepseekV4DSparkMarkovHead: Module {
             bias: false)
     }
 
-    func callAsFunction(_ tokenIds: MLXArray) -> (logits: MLXArray, embedding: MLXArray) {
-        let embedding = markovW1(tokenIds)
+    func embedding(_ tokenIds: MLXArray) -> MLXArray {
+        markovW1(tokenIds)
+    }
+
+    func logits(_ embedding: MLXArray) -> MLXArray {
         if DeepseekV4RuntimeOptions.dsparkNativeHeadEnabled,
            let logits = DeepseekV4Math.dsparkHeadFp32(embedding, linear: markovW2)
         {
-            return (logits, embedding)
+            return logits
         }
-        return (markovW2(embedding), embedding)
+        return markovW2(embedding)
+    }
+
+    func callAsFunction(_ tokenIds: MLXArray) -> (logits: MLXArray, embedding: MLXArray) {
+        let embedding = embedding(tokenIds)
+        return (logits(embedding), embedding)
     }
 }
 
@@ -1344,7 +1424,18 @@ class DeepseekV4DSparkStage: Module {
         let draftIds = concatenated([anchors.asType(.int32), noise], axis: 1)
         var hidden = embedding(draftIds).expandedDimensions(axis: -2)
         hidden = repeated(hidden, count: config.hcMult, axis: -2)
-        return (hidden, mainNorm(mainProjection(mainHidden)))
+        return (hidden, prepareMain(mainHidden))
+    }
+
+    func prepareMain(_ mainHidden: MLXArray) -> MLXArray {
+        guard let mainProjection, let mainNorm else {
+            preconditionFailure("Only DSpARK stage zero can prepare target hidden state")
+        }
+        return mainNorm(mainProjection(mainHidden))
+    }
+
+    func maintainCache(_ main: MLXArray, cache: KVCache) {
+        attention.maintainDSparkCache(main, cache: cache)
     }
 
     func forward(
@@ -1377,7 +1468,8 @@ class DeepseekV4DSparkStage: Module {
     func makeProposal(
         _ hidden: MLXArray,
         anchorTokenIds: MLXArray,
-        lmHead: Linear
+        lmHead: Linear,
+        confidenceThreshold: Float
     ) -> DeepseekV4DSparkProposal {
         guard let outputNorm, let markovHead, let confidenceHead,
             let headFn, let headBase, let headScale
@@ -1400,6 +1492,22 @@ class DeepseekV4DSparkStage: Module {
             coefficients.asType(hidden.dtype).expandedDimensions(axis: -1) * hidden
         ).sum(axis: -2)
         let normalizedHead = outputNorm(reduced)
+
+        var outputIds = anchorTokenIds.reshaped(batch, 1).asType(.int32)
+        let firstMarkovEmbedding = markovHead.embedding(outputIds[0..., 0])
+        let firstConfidence = confidenceHead(
+            reduced[0..., 0, 0...], markovEmbedding: firstMarkovEmbedding)
+        if confidenceThreshold > 0 {
+            let firstProbability = sigmoid(firstConfidence.asType(.float32))
+            MLX.eval(firstProbability)
+            if firstProbability.item(Float.self) < confidenceThreshold {
+                return DeepseekV4DSparkProposal(
+                    tokenIds: outputIds,
+                    logits: MLXArray.zeros([batch, 0, config.vocabSize], dtype: hidden.dtype),
+                    confidence: firstConfidence.expandedDimensions(axis: 1))
+            }
+        }
+
         let baseLogits: MLXArray
         if DeepseekV4RuntimeOptions.dsparkNativeHeadEnabled,
            let native = DeepseekV4Math.dsparkHeadFp32(normalizedHead, linear: lmHead)
@@ -1408,15 +1516,15 @@ class DeepseekV4DSparkStage: Module {
         } else {
             baseLogits = DeepseekV4Math.lmHeadFp32(normalizedHead, lmHead: lmHead)
         }
-        var outputIds = anchorTokenIds.reshaped(batch, 1).asType(.int32)
         var biasedLogits: [MLXArray] = []
         var markovEmbeddings: [MLXArray] = []
         for index in 0..<config.dsparkBlockSize {
             let current = outputIds[0..., index]
-            let markov = markovHead(current)
-            let logits = baseLogits[0..., index, 0...] + markov.logits
+            let markovEmbedding = index == 0
+                ? firstMarkovEmbedding : markovHead.embedding(current)
+            let logits = baseLogits[0..., index, 0...] + markovHead.logits(markovEmbedding)
             biasedLogits.append(logits)
-            markovEmbeddings.append(markov.embedding)
+            markovEmbeddings.append(markovEmbedding)
             let next = argMax(logits, axis: -1).asType(.int32).expandedDimensions(axis: 1)
             outputIds = concatenated([outputIds, next], axis: 1)
         }
@@ -2187,6 +2295,20 @@ class DeepseekV4DecoderLayer: Module {
 // MARK: - Inner model
 
 public class DeepseekV4ModelInner: Module {
+    /// Decode-side submission ladder. Submit dependency-ready prefixes while
+    /// Swift continues constructing later layers, overlapping host graph
+    /// construction with Metal execution. This scheduling technique follows
+    /// ddalcu/mlx-serve's `Transformer.ladderStep` (MIT) and the qualified
+    /// Qwen Next AFM implementation. Batched DSpARK verification deliberately
+    /// stays on its original synchronous path.
+    private static let decodeAsyncLadderStride: Int = {
+        guard let raw = ProcessInfo.processInfo.environment[
+            "VMLX_DSV4_DECODE_ASYNC_LADDER"
+        ] else { return 4 }
+        if raw == "auto" { return 4 }
+        return max(Int(raw) ?? 4, 0)
+    }()
+
     let config: DeepseekV4Configuration
     @ModuleInfo(key: "embed_tokens") var embedTokens: Embedding
     var layers: [DeepseekV4DecoderLayer]
@@ -2221,6 +2343,8 @@ public class DeepseekV4ModelInner: Module {
             h: hFlat2,
             cache: firstCache,
             returnArray: inputs.dim(1) > 1 && (firstCache?.offset ?? 0) > 0)
+        let ladderStride = Self.decodeAsyncLadderStride
+        let useDecodeAsyncLadder = inputs.dim(1) == 1 && ladderStride > 0
 
         for (i, layer) in layers.enumerated() {
             h = layer(
@@ -2229,6 +2353,12 @@ public class DeepseekV4ModelInner: Module {
                 cache: cache?[i],
                 inputIds: inputs)
             DeepseekV4NumericTrace.tensor("layer.\(i)", h)
+            if useDecodeAsyncLadder,
+               i + 1 < layers.count,
+               (i + 1).isMultiple(of: ladderStride)
+            {
+                asyncEval(h)
+            }
         }
 
         // HyperHead reduce: (B, L, hcMult, H) → (B, L, H)
@@ -2269,6 +2399,8 @@ public class DeepseekV4ModelInner: Module {
             cache: firstCache,
             returnArray: inputs.dim(1) > 1 && (firstCache?.offset ?? 0) > 0)
         var capturedByLayer: [Int: MLXArray] = [:]
+        let ladderStride = Self.decodeAsyncLadderStride
+        let useDecodeAsyncLadder = inputs.dim(1) == 1 && ladderStride > 0
 
         for (i, layer) in layers.enumerated() {
             h = layer(
@@ -2278,6 +2410,12 @@ public class DeepseekV4ModelInner: Module {
                 inputIds: inputs)
             if requested.contains(i) {
                 capturedByLayer[i] = h.mean(axis: -2)
+            }
+            if useDecodeAsyncLadder,
+               i + 1 < layers.count,
+               (i + 1).isMultiple(of: ladderStride)
+            {
+                asyncEval(h)
             }
         }
 
@@ -2501,7 +2639,8 @@ public class DeepseekV4Model: Module, LLMModel, KVCacheDimensionProvider, LoRAMo
     public func proposeDSpark(
         anchorTokenIds: MLXArray,
         capturedHidden: MLXArray,
-        cache: [KVCache]
+        cache: [KVCache],
+        confidenceThreshold: Float = 0
     ) -> DeepseekV4DSparkProposal? {
         guard !mtp.isEmpty, cache.count == mtp.count else { return nil }
         let prepared = mtp[0].prepareDraft(
@@ -2514,7 +2653,25 @@ public class DeepseekV4Model: Module, LLMModel, KVCacheDimensionProvider, LoRAMo
                 anchorTokenIds: anchorTokenIds, cache: cache[index])
         }
         return mtp[mtp.count - 1].makeProposal(
-            hidden, anchorTokenIds: anchorTokenIds, lmHead: lmHead)
+            hidden, anchorTokenIds: anchorTokenIds, lmHead: lmHead,
+            confidenceThreshold: confidenceThreshold)
+    }
+
+    /// Advance the DSpARK persistent target-hidden rings without executing a
+    /// proposal. Required when the adaptive scheduler temporarily falls back
+    /// to target-only decoding.
+    @discardableResult
+    public func maintainDSparkCache(
+        capturedHidden: MLXArray,
+        cache: [KVCache]
+    ) -> Bool {
+        guard !mtp.isEmpty, cache.count == mtp.count else { return false }
+        let main = mtp[0].prepareMain(capturedHidden)
+        for (index, stage) in mtp.enumerated() {
+            stage.maintainCache(main, cache: cache[index])
+        }
+        MLX.eval(cache.flatMap { $0.innerState() })
+        return true
     }
 
     /// Weight sanitize — remap DSV4 bundle key names to match module
@@ -2901,19 +3058,54 @@ public class DeepseekV4Model: Module, LLMModel, KVCacheDimensionProvider, LoRAMo
 
 // MARK: - Embedded DSpARK speculative generator
 
+/// Retains array handles and cursor metadata before a verifier append. A trim
+/// cannot recover entries evicted from a full rotating window. No evaluation
+/// or device-to-host copy is needed to capture this functional MLX state.
+struct DeepseekV4RotatingSnapshot {
+    let state: [MLXArray]
+    let metadata: [String]
+
+    init(_ cache: RotatingKVCache) {
+        state = cache.state.map { $0[.ellipsis] }
+        metadata = cache.metaState
+    }
+
+    func restore(_ cache: RotatingKVCache) {
+        cache.state = state.map { $0[.ellipsis] }
+        cache.metaState = metadata
+    }
+}
+
 /// Exact greedy speculative decoding for DeepSeek V4 checkpoints carrying an
 /// embedded DSpARK drafter. The target model remains authoritative: only the
 /// longest draft prefix matching target argmax is committed, followed by the
 /// target's replacement/bonus token.
 public final class DeepseekV4DSparkGenerator {
+    public static let defaultConfidenceThreshold: Float = 0.7
+
+    /// Keep verifier cache/captured state on the dependency graph instead of
+    /// forcing a second device-to-host synchronization after the token decision.
+    /// This follows the graph scheduling proven by Qwen Next: request-owned
+    /// state is submitted asynchronously and its next consumer provides the
+    /// ordering dependency. The diagnostic switch permits same-binary A/B.
+    private static let asyncVerifierStateEvaluation =
+        DeepseekV4RuntimeOptions.enabled(
+            "VMLX_DSV4_ASYNC_STATE_EVAL", default: true)
+
     private let model: DeepseekV4Model
     public let draftLimit: Int
+    public let confidenceThreshold: Float
 
-    public init(model: DeepseekV4Model, draftLimit: Int? = nil) {
+    public init(
+        model: DeepseekV4Model,
+        draftLimit: Int? = nil,
+        confidenceThreshold: Float = defaultConfidenceThreshold
+    ) {
         self.model = model
         self.draftLimit = max(
             1, min(draftLimit ?? model.config.dsparkBlockSize,
                    model.config.dsparkBlockSize))
+        self.confidenceThreshold = min(max(confidenceThreshold, 0), 1)
     }
 
     private func tokens(_ ids: [Int]) -> MLXArray {
@@ -2932,7 +3124,12 @@ public final class DeepseekV4DSparkGenerator {
         captured: MLXArray,
         cache: [KVCache]
     ) {
-        MLX.eval([captured] + cache.flatMap { $0.innerState() })
+        let state = [captured] + cache.flatMap { $0.innerState() }
+        if Self.asyncVerifierStateEvaluation {
+            asyncEval(state)
+        } else {
+            MLX.eval(state)
+        }
     }
 
     public func generate(
@@ -2962,6 +3159,13 @@ public final class DeepseekV4DSparkGenerator {
         var rounds = 0
         var draftedTotal = 0
         var acceptedTotal = 0
+        var schedulerCycles = 0
+        var schedulerAccepted = 0
+        var schedulerNoDraft = 0
+        var schedulerSkip = 0
+        var lifetimeAccepted = 0
+        var longAcceptSeen = false
+        var schedulerSkips = 0
 
         func emit(_ value: Int) -> Bool {
             output.append(value)
@@ -2985,20 +3189,106 @@ public final class DeepseekV4DSparkGenerator {
         var contextForDrafter = warmup.captured
         if !emit(pending) { return output }
 
+        func noteScheduler(accepted: Int, noDraft: Bool, firstConfidence: Float?) {
+            schedulerCycles += 1
+            schedulerAccepted += accepted
+            if noDraft { schedulerNoDraft += 1 }
+            lifetimeAccepted += accepted
+            if accepted > 2 { longAcceptSeen = true }
+
+            if noDraft {
+                var skip = 3
+                if lifetimeAccepted > 0 && !longAcceptSeen {
+                    skip = 4
+                } else if lifetimeAccepted == 0,
+                          let firstConfidence,
+                          firstConfidence <= 0.5
+                {
+                    skip = 7
+                }
+                schedulerSkip = max(schedulerSkip, skip)
+            }
+
+            guard schedulerCycles >= 4 else { return }
+            let average = Double(schedulerAccepted) / Double(schedulerCycles)
+            let manyNoDraft = schedulerNoDraft * 2 >= schedulerCycles
+            if average < 1.5 || manyNoDraft {
+                schedulerSkip = max(schedulerSkip, manyNoDraft ? 4 : 2)
+            }
+            schedulerCycles = 0
+            schedulerAccepted = 0
+            schedulerNoDraft = 0
+        }
+
+        func advanceTargetOnly(maintainDrafter: Bool) -> Bool {
+            if maintainDrafter,
+               !model.maintainDSparkCache(
+                   capturedHidden: contextForDrafter, cache: drafterCache)
+            {
+                return false
+            }
+            guard let fallback = model.forwardDSparkVerifier(
+                token(pending), cache: verifierCache)
+            else { return false }
+            pending = argmaxLast(fallback.logits)
+            materializeVerifierState(
+                captured: fallback.captured, cache: verifierCache)
+            contextForDrafter = fallback.captured
+            rounds += 1
+            return emit(pending)
+        }
+
         while output.count < maxTokens {
+            let remaining = maxTokens - output.count
+            if schedulerSkip > 0 || remaining < 10 {
+                if schedulerSkip > 0 { schedulerSkip -= 1 }
+                schedulerSkips += 1
+                if !advanceTargetOnly(maintainDrafter: true) { break }
+                continue
+            }
+
             guard let proposal = model.proposeDSpark(
                 anchorTokenIds: token(pending),
                 capturedHidden: contextForDrafter,
-                cache: drafterCache)
+                cache: drafterCache,
+                confidenceThreshold: confidenceThreshold)
             else { break }
 
             let available = proposal.tokenIds.dim(1) - 1
-            let count = min(draftLimit, available, maxTokens - output.count)
-            if count <= 0 { break }
+            let proposedCount = min(draftLimit, available, maxTokens - output.count)
+            if proposedCount <= 0 {
+                let firstConfidence: Float? = proposal.confidence.size > 0
+                    ? sigmoid(proposal.confidence.asType(.float32)).item(Float.self)
+                    : nil
+                noteScheduler(
+                    accepted: 0, noDraft: true, firstConfidence: firstConfidence)
+                if !advanceTargetOnly(maintainDrafter: false) { break }
+                continue
+            }
+            let confidence = sigmoid(
+                proposal.confidence[0, 0..<proposedCount].asType(.float32))
+            MLX.eval(confidence)
+            let confidenceValues = confidence.reshaped([proposedCount]).asArray(Float.self)
+            let count = confidenceThreshold > 0
+                ? confidenceValues.prefix { $0 >= confidenceThreshold }.count
+                : proposedCount
+            if count <= 0 {
+                // The checkpoint explicitly predicts that its first draft is
+                // unreliable. Advance one authoritative target token instead
+                // of paying for a speculative verifier batch that cannot win.
+                let firstConfidence = confidenceValues.first
+                noteScheduler(
+                    accepted: 0, noDraft: true, firstConfidence: firstConfidence)
+                if !advanceTargetOnly(maintainDrafter: false) { break }
+                continue
+            }
             let draftArray = proposal.tokenIds[0..., 1..<(count + 1)].asType(.int32)
             let verifyIds = concatenated([token(pending), draftArray], axis: 1)
             let snapshots: [DeepseekV4Cache.SpeculativeSnapshot?] = verifierCache.map {
                 ($0 as? DeepseekV4Cache)?.captureSpeculativeSnapshot()
+            }
+            let rotatingSnapshots = verifierCache.map {
+                ($0 as? RotatingKVCache).map { DeepseekV4RotatingSnapshot($0) }
             }
             guard let verified = model.forwardDSparkVerifier(
                 verifyIds, cache: verifierCache)
@@ -3020,7 +3310,8 @@ public final class DeepseekV4DSparkGenerator {
             var committedCapture = verified.captured[
                 0..., 0..<(accepted + 1), 0...]
             if rejected > 0 {
-                if snapshots.contains(where: { $0 != nil }) {
+                if snapshots.contains(where: { $0 != nil })
+                    || verifierCache.contains(where: { !$0.isTrimmable }) {
                     // Compressed pools cannot retain only part of a verifier
                     // append. Restore the complete pre-verify snapshot, then
                     // replay the target-authoritative committed prefix.
@@ -3030,6 +3321,9 @@ public final class DeepseekV4DSparkGenerator {
                         {
                             deepseekCache.rollbackSpeculative(
                                 rejected: count + 1, to: snapshot)
+                        } else if let rotating = cache as? RotatingKVCache,
+                                  let snapshot = rotatingSnapshots[index] {
+                            snapshot.restore(rotating)
                         } else {
                             _ = cache.trim(count + 1)
                         }
@@ -3056,6 +3350,7 @@ public final class DeepseekV4DSparkGenerator {
             draftedTotal += count
             acceptedTotal += accepted
             contextForDrafter = committedCapture
+            noteScheduler(accepted: accepted, noDraft: false, firstConfidence: nil)
 
             var committed = accepted > 0 ? Array(drafts.prefix(accepted)) : []
             committed.append(targets[accepted])
@@ -3075,8 +3370,9 @@ public final class DeepseekV4DSparkGenerator {
                 ? Double(acceptedTotal) / Double(draftedTotal) : 0
             let perRound = rounds > 0 ? Double(output.count) / Double(rounds) : 0
             print(String(format:
-                "[DSpARK] rounds=%d accept=%d/%d (%.1f%%) tok/round=%.2f",
-                rounds, acceptedTotal, draftedTotal, acceptance * 100, perRound))
+                "[DSpARK] rounds=%d accept=%d/%d (%.1f%%) tok/round=%.2f scheduler_skips=%d",
+                rounds, acceptedTotal, draftedTotal, acceptance * 100, perRound,
+                schedulerSkips))
         }
         return output
     }

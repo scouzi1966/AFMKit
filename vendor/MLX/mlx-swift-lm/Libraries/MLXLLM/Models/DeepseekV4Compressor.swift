@@ -287,9 +287,11 @@ private final class DeepseekV4PoolStorage {
 public final class DeepseekV4Cache: QuantizedHybridPoolCache, CacheRetainedByteCountProviding {
     /// Lightweight checkpoint for speculative verification. Pool appends replace
     /// storage arrays instead of mutating them in place, so retaining these views
-    /// is enough to restore the compressed context without copying the bounded
-    /// rotating K/V window on every speculative round.
+    /// is enough to restore the compressed context. The local window also needs
+    /// retained views: a verifier append can evict entries that trim cannot undo.
     public struct SpeculativeSnapshot {
+        fileprivate let localState: [MLXArray]
+        fileprivate let localMetadata: [String]
         fileprivate let compPool: DeepseekV4PoolStorage
         fileprivate let idxPool: DeepseekV4PoolStorage
         fileprivate let compBufferKV: MLXArray?
@@ -476,6 +478,8 @@ public final class DeepseekV4Cache: QuantizedHybridPoolCache, CacheRetainedByteC
 
     public func captureSpeculativeSnapshot() -> SpeculativeSnapshot {
         SpeculativeSnapshot(
+            localState: local.state.map { $0[.ellipsis] },
+            localMetadata: local.metaState,
             compPool: compPool.copy(),
             idxPool: idxPool.copy(),
             compBufferKV: compBufferKV?[.ellipsis],
@@ -484,15 +488,15 @@ public final class DeepseekV4Cache: QuantizedHybridPoolCache, CacheRetainedByteC
             idxBufferGate: idxBufferGate?[.ellipsis])
     }
 
-    /// Roll back only rejected verifier rows. The local rotating cache can
-    /// rewind its logical offset even after reaching the window size; restoring
-    /// the checkpoint separately preserves every previously committed pool row.
+    /// Restore the entire pre-verification state, including entries evicted by
+    /// the local rotating window. The caller replays its committed prefix.
     public func rollbackSpeculative(
         rejected: Int,
         to snapshot: SpeculativeSnapshot
     ) {
         guard rejected > 0 else { return }
-        _ = local.trim(rejected)
+        local.state = snapshot.localState.map { $0[.ellipsis] }
+        local.metaState = snapshot.localMetadata
         compPool = snapshot.compPool
         idxPool = snapshot.idxPool
         compBufferKV = snapshot.compBufferKV

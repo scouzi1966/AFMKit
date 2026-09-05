@@ -164,6 +164,8 @@ public struct AFMMLXSpeculativeModelCompatibility: Equatable, Sendable {
             modelDirectory: modelDirectory, config: config)
             || hasCompleteEmbeddedQwenNextMTP(
                 modelDirectory: modelDirectory, config: config)
+            || hasCompleteEmbeddedDeepseekDSpark(
+                modelDirectory: modelDirectory, config: config)
         return evaluate(
             config: config,
             hasMTPSidecar: hasMTPSidecar,
@@ -199,6 +201,7 @@ public struct AFMMLXSpeculativeModelCompatibility: Equatable, Sendable {
 
     private static func hasEmbeddedMTPConfiguration(_ config: [String: Any]) -> Bool {
         if hasEmbeddedGLMMTPConfiguration(config) { return true }
+        if hasEmbeddedDeepseekDSparkConfiguration(config) { return true }
         let topLevelType = AFMMLXModelArchitecture.canonicalModelType(
             config["model_type"] as? String ?? "")
         let text = config["text_config"] as? [String: Any] ?? config
@@ -208,6 +211,84 @@ public struct AFMMLXSpeculativeModelCompatibility: Equatable, Sendable {
         let layers = (mtp?["num_hidden_layers"] as? NSNumber)?.intValue ?? 0
         return (topLevelType == "qwen4_exp" || textType == "qwen4_exp_text")
             && layers == 1
+    }
+
+    private static func hasEmbeddedDeepseekDSparkConfiguration(
+        _ config: [String: Any]
+    ) -> Bool {
+        let modelType = AFMMLXModelArchitecture.canonicalModelType(
+            config["model_type"] as? String ?? "")
+        guard modelType == "deepseek_v4" else { return false }
+
+        let hiddenLayers = (config["num_hidden_layers"] as? NSNumber)?.intValue ?? 0
+        let compressRatios = config["compress_ratios"] as? [NSNumber] ?? []
+        let stageCount = max(0, compressRatios.count - hiddenLayers)
+        let blockSize = (config["dspark_block_size"] as? NSNumber)?.intValue ?? 0
+        let vocabSize = (config["vocab_size"] as? NSNumber)?.intValue ?? 0
+        let noiseToken = (config["dspark_noise_token_id"] as? NSNumber)?.intValue ?? -1
+        let markovRank = (config["dspark_markov_rank"] as? NSNumber)?.intValue ?? 0
+        let targetLayers = config["dspark_target_layer_ids"] as? [NSNumber] ?? []
+
+        return hiddenLayers > 0
+            && stageCount > 0
+            && blockSize > 1
+            && vocabSize > 0
+            && noiseToken >= 0 && noiseToken < vocabSize
+            && markovRank > 0
+            && !targetLayers.isEmpty
+            && targetLayers.allSatisfy {
+                $0.intValue >= 0 && $0.intValue < hiddenLayers
+            }
+    }
+
+    private static func hasCompleteEmbeddedDeepseekDSpark(
+        modelDirectory: URL,
+        config: [String: Any]
+    ) -> Bool {
+        guard hasEmbeddedDeepseekDSparkConfiguration(config) else { return false }
+        let hiddenLayers = (config["num_hidden_layers"] as? NSNumber)?.intValue ?? 0
+        let compressRatios = config["compress_ratios"] as? [NSNumber] ?? []
+        let stageCount = max(0, compressRatios.count - hiddenLayers)
+        guard stageCount > 0 else { return false }
+
+        let requiredByEveryStage = [
+            "attn_norm.weight",
+            "ffn_norm.weight",
+            "attn.wq_a.weight",
+            "ffn.gate.weight",
+            "ffn.switch_mlp.gate_proj.weight",
+        ]
+        let finalStage = stageCount - 1
+        var required = (0..<stageCount).flatMap { stage in
+            requiredByEveryStage.map { "mtp.\(stage).\($0)" }
+        }
+        required += [
+            "mtp.0.main_proj.weight",
+            "mtp.0.main_norm.weight",
+            "mtp.\(finalStage).norm.weight",
+            "mtp.\(finalStage).markov_head.markov_w1.weight",
+            "mtp.\(finalStage).markov_head.markov_w2.weight",
+            "mtp.\(finalStage).confidence_head.proj.weight",
+            "mtp.\(finalStage).hc_head_fn",
+            "mtp.\(finalStage).hc_head_base",
+            "mtp.\(finalStage).hc_head_scale",
+        ]
+
+        let indexURL = modelDirectory.appendingPathComponent(
+            "model.safetensors.index.json")
+        if let data = boundedData(at: indexURL, maximumBytes: 128 * 1_024 * 1_024),
+           let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let map = object["weight_map"] as? [String: String]
+        {
+            return required.allSatisfy { map[$0] != nil }
+        }
+
+        guard let tensorURL = containedShardURL(
+            named: "model.safetensors", modelDirectory: modelDirectory),
+            let header = safeTensorHeader(at: tensorURL), hasSaneOffsets(header)
+        else { return false }
+        let names = Set(header.tensors.map(\.name))
+        return required.allSatisfy(names.contains)
     }
 
     private static func hasCompleteEmbeddedQwenNextMTP(

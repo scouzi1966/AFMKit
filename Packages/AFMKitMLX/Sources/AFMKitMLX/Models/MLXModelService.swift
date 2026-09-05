@@ -42,6 +42,7 @@ private enum MTPGeneratorRuntime: @unchecked Sendable {
     case vlm(MTPGenerator)
     case qwenNext(Qwen4ExpMTPGenerator)
     case glm(GLM5NextMTPGenerator)
+    case deepseek(DeepseekV4DSparkGenerator)
 
     func generate(
         promptIds: [Int],
@@ -72,6 +73,13 @@ private enum MTPGeneratorRuntime: @unchecked Sendable {
                 onToken: onToken
             )
         case .glm(let generator):
+            generator.generate(
+                promptIds: promptIds,
+                maxTokens: maxTokens,
+                eosIds: eosIds,
+                onToken: onToken
+            )
+        case .deepseek(let generator):
             generator.generate(
                 promptIds: promptIds,
                 maxTokens: maxTokens,
@@ -2303,6 +2311,18 @@ public final class MLXModelService:
                     loadedMTPBinding = try await loaded.perform {
                         (context: ModelContext) async throws -> MTPGeneratorBinding in
                         switch runtimeModelKind {
+                        case .deepseekEmbedded:
+                            guard let deepseek = context.model as? DeepseekV4Model,
+                                  deepseek.supportsEmbeddedDSpark
+                            else {
+                                throw MLXServiceError.loadFailed(
+                                    "DeepSeek V4 checkpoint advertises DSpARK but its embedded stages are incomplete")
+                            }
+                            let generator = DeepseekV4DSparkGenerator(model: deepseek)
+                            print("[\(ts())] [MTP] DeepSeek V4 embedded DSpARK stages loaded — speculative decoding enabled (draft \(generator.draftLimit))")
+                            return MTPGeneratorBinding(
+                                modelID: modelID, generator: .deepseek(generator))
+
                         case .glmEmbedded:
                             let generator: GLM5NextMTPGenerator?
                             let containerKind: String
@@ -2477,6 +2497,10 @@ public final class MLXModelService:
                             case .glmEmbedded:
                                 throw MLXServiceError.loadFailed(
                                     "GLM embedded MTP must not resolve a sidecar"
+                                )
+                            case .deepseekEmbedded:
+                                throw MLXServiceError.loadFailed(
+                                    "DeepSeek V4 embedded DSpARK must not resolve a sidecar"
                                 )
                             }
                         }
