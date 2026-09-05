@@ -333,6 +333,19 @@ public struct GLM5NextCheckpointConverter {
         }
 
         let loader = TensorLoader(root: checkpoint.root)
+        // Repair earlier conversions that treated the raw FP32 router parameter
+        // as a QuantizedLinear. Rebuild only the affected ordinary-layer units;
+        // the verified, expensive expert projections remain resumable.
+        let routerUnits = state.completed.filter { _, unit in
+            unit.outputKeys.contains { $0.hasSuffix(".mlp.gate.scales") }
+        }
+        for (id, unit) in routerUnits {
+            state.completed.removeValue(forKey: id)
+            for key in unit.outputKeys { state.weightMap.removeValue(forKey: key) }
+            for key in unit.outputKeys where key.hasSuffix(".mlp.gate.scales") {
+                state.quantization.removeValue(forKey: String(key.dropLast(".scales".count)))
+            }
+        }
         for (position, unit) in plan.enumerated() {
             let destination = outputURL.appendingPathComponent(unit.outputFile)
             if let completed = state.completed[unit.id],
@@ -617,7 +630,8 @@ public struct GLM5NextCheckpointConverter {
             guard fm.fileExists(atPath: url.path) else {
                 throw ConversionError.invalidSource("Missing source shard \(shard).")
             }
-            let values = try url.resourceValues(
+            // Hub snapshots link to blobs; fingerprint the target, not the link.
+            let values = try url.resolvingSymlinksInPath().resourceValues(
                 forKeys: [.fileSizeKey, .contentModificationDateKey])
             let size = Int64(values.fileSize ?? 0)
             fingerprints[shard] = SourceShardFingerprint(
@@ -985,6 +999,7 @@ public struct GLM5NextCheckpointConverter {
 
     private static func shouldQuantize(_ reference: TensorReference) -> Bool {
         guard reference.name.hasSuffix(".weight"),
+              !reference.name.hasSuffix(".mlp.gate.weight"),
               !reference.name.hasPrefix("model.visual."),
               reference.dtype != .float8E4M3,
               reference.dtype.isFloatingPoint,
@@ -1070,6 +1085,12 @@ public struct GLM5NextCheckpointConverter {
                 "The conversion resume manifest contains units outside the current conversion plan.")
         }
         for (id, completed) in state.completed {
+            let expected = planned[id].map { expectedOutputKeys(for: $0, checkpoint: checkpoint) } ?? []
+            var legacyRouterKeys = expected
+            for key in expected where key.hasSuffix(".mlp.gate.weight") {
+                let base = String(key.dropLast(".weight".count))
+                legacyRouterKeys.formUnion([base + ".scales", base + ".biases"])
+            }
             guard let unit = planned[id], completed.outputFile == unit.outputFile,
                   URL(fileURLWithPath: completed.outputFile).lastPathComponent
                     == completed.outputFile,
@@ -1077,8 +1098,7 @@ public struct GLM5NextCheckpointConverter {
                   isSHA256(completed.outputSHA256),
                   !completed.outputKeys.isEmpty,
                   Set(completed.outputKeys).count == completed.outputKeys.count,
-                  Set(completed.outputKeys) == expectedOutputKeys(
-                    for: unit, checkpoint: checkpoint),
+                  (Set(completed.outputKeys) == expected || Set(completed.outputKeys) == legacyRouterKeys),
                   completed.outputSize <= maximumOutputBytes(
                     for: unit, checkpoint: checkpoint),
                   completed.outputKeys.allSatisfy({ key in
@@ -1403,9 +1423,14 @@ public struct GLM5NextCheckpointConverter {
         let handle = try FileHandle(forReadingFrom: url)
         defer { try? handle.close() }
         var digest = SHA256()
-        while let chunk = try handle.read(upToCount: 4 * 1024 * 1024), !chunk.isEmpty {
+        // FileHandle's Foundation buffers may be autoreleased. Drain each
+        // chunk so validating hundreds of GB does not retain the whole input.
+        while try autoreleasepool(invoking: {
+            guard let chunk = try handle.read(upToCount: 4 * 1024 * 1024),
+                  !chunk.isEmpty else { return false }
             digest.update(data: chunk)
-        }
+            return true
+        }) {}
         return digest.finalize().map { String(format: "%02x", $0) }.joined()
     }
 }
@@ -1459,7 +1484,7 @@ struct AFMSafetensorHeader {
 
     init(url: URL) throws {
         let fileSize = Int64(
-            try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0)
+            try url.resolvingSymlinksInPath().resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0)
         let handle = try FileHandle(forReadingFrom: url)
         defer { try? handle.close() }
         guard let prefix = try handle.read(upToCount: 8), prefix.count == 8 else {
