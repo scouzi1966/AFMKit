@@ -10,10 +10,6 @@ jobs:
   regenerate:
     name: Regenerate normalized public symbol snapshots
     runs-on: ${{ vars.AFMKIT_XCODE27_RUNNER || 'xcode-27' }}
-    env:
-      AFMKIT_BUILD_ROOT: ${{ runner.temp }}/afmkit-baselines
-      AFMKIT_API_BASELINE_ROOT: ${{ runner.temp }}/comparison-baselines
-      REGENERATED_ROOT: ${{ runner.temp }}/regenerated-baselines
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
@@ -26,6 +22,10 @@ jobs:
           xcrun --sdk macosx --show-sdk-build-version
           swift --version
       - name: Regenerate all public symbol snapshots
+        env:
+          AFMKIT_BUILD_ROOT: ${{ runner.temp }}/afmkit-baselines
+          AFMKIT_API_BASELINE_ROOT: ${{ runner.temp }}/comparison-baselines
+          REGENERATED_ROOT: ${{ runner.temp }}/regenerated-baselines
         run: |
           set -euo pipefail
           mkdir -p "$AFMKIT_API_BASELINE_ROOT" "$REGENERATED_ROOT"
@@ -47,6 +47,8 @@ jobs:
           echo "API_BASELINE_DIFFERENCES=$differences" >> "$GITHUB_ENV"
       - name: Preserve normalized snapshot differences
         if: ${{ env.API_BASELINE_DIFFERENCES != '0' }}
+        env:
+          REGENERATED_ROOT: ${{ runner.temp }}/regenerated-baselines
         run: |
           for snapshot in "$REGENERATED_ROOT"/*.symbols.json; do
             name="$(basename "$snapshot")"
@@ -55,7 +57,7 @@ jobs:
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: regenerated-api-baselines-${{ github.run_id }}
-          path: ${{ env.REGENERATED_ROOT }}/*.symbols.json
+          path: ${{ runner.temp }}/regenerated-baselines/*.symbols.json
           if-no-files-found: error
           retention-days: 7
       - name: Fail when hosted snapshots differ
