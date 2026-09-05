@@ -59819,86 +59819,6 @@
       "declarationFragments": [
         {
           "kind": "keyword",
-          "spelling": "let"
-        },
-        {
-          "kind": "text",
-          "spelling": " "
-        },
-        {
-          "kind": "identifier",
-          "spelling": "n"
-        },
-        {
-          "kind": "text",
-          "spelling": ": "
-        },
-        {
-          "kind": "typeIdentifier",
-          "preciseIdentifier": "s:Si",
-          "spelling": "Int"
-        },
-        {
-          "kind": "text",
-          "spelling": "?"
-        }
-      ],
-      "docComment": {
-        "lines": [
-          {
-            "text": "Requested choice count; provider validation determines supported values."
-          }
-        ],
-        "module": "AFMOpenAICompat"
-      },
-      "identifier": {
-        "interfaceLanguage": "swift",
-        "precise": "s:15AFMOpenAICompat21ChatCompletionRequestV1nSiSgvp"
-      },
-      "kind": {
-        "displayName": "Instance Property",
-        "identifier": "swift.property"
-      },
-      "names": {
-        "subHeading": [
-          {
-            "kind": "keyword",
-            "spelling": "let"
-          },
-          {
-            "kind": "text",
-            "spelling": " "
-          },
-          {
-            "kind": "identifier",
-            "spelling": "n"
-          },
-          {
-            "kind": "text",
-            "spelling": ": "
-          },
-          {
-            "kind": "typeIdentifier",
-            "preciseIdentifier": "s:Si",
-            "spelling": "Int"
-          },
-          {
-            "kind": "text",
-            "spelling": "?"
-          }
-        ],
-        "title": "n"
-      },
-      "pathComponents": [
-        "ChatCompletionRequest",
-        "n"
-      ]
-    },
-    {
-      "accessLevel": "public",
-      "declarationFragments": [
-        {
-          "kind": "keyword",
           "spelling": "var"
         },
         {
@@ -59972,6 +59892,86 @@
       "pathComponents": [
         "ChatCompletionRequest",
         "effectiveMaxTokens"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "let"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "n"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Si",
+          "spelling": "Int"
+        },
+        {
+          "kind": "text",
+          "spelling": "?"
+        }
+      ],
+      "docComment": {
+        "lines": [
+          {
+            "text": "Requested choice count; provider validation determines supported values."
+          }
+        ],
+        "module": "AFMOpenAICompat"
+      },
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:15AFMOpenAICompat21ChatCompletionRequestV1nSiSgvp"
+      },
+      "kind": {
+        "displayName": "Instance Property",
+        "identifier": "swift.property"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "let"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "n"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Si",
+            "spelling": "Int"
+          },
+          {
+            "kind": "text",
+            "spelling": "?"
+          }
+        ],
+        "title": "n"
+      },
+      "pathComponents": [
+        "ChatCompletionRequest",
+        "n"
       ]
     },
     {
