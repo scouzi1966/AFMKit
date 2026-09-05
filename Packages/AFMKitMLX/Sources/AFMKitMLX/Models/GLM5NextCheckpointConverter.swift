@@ -617,7 +617,8 @@ public struct GLM5NextCheckpointConverter {
             guard fm.fileExists(atPath: url.path) else {
                 throw ConversionError.invalidSource("Missing source shard \(shard).")
             }
-            let values = try url.resourceValues(
+            // Hub snapshots link to blobs; fingerprint the target, not the link.
+            let values = try url.resolvingSymlinksInPath().resourceValues(
                 forKeys: [.fileSizeKey, .contentModificationDateKey])
             let size = Int64(values.fileSize ?? 0)
             fingerprints[shard] = SourceShardFingerprint(
@@ -1403,9 +1404,14 @@ public struct GLM5NextCheckpointConverter {
         let handle = try FileHandle(forReadingFrom: url)
         defer { try? handle.close() }
         var digest = SHA256()
-        while let chunk = try handle.read(upToCount: 4 * 1024 * 1024), !chunk.isEmpty {
+        // FileHandle's Foundation buffers may be autoreleased. Drain each
+        // chunk so validating hundreds of GB does not retain the whole input.
+        while try autoreleasepool(invoking: {
+            guard let chunk = try handle.read(upToCount: 4 * 1024 * 1024),
+                  !chunk.isEmpty else { return false }
             digest.update(data: chunk)
-        }
+            return true
+        }) {}
         return digest.finalize().map { String(format: "%02x", $0) }.joined()
     }
 }
@@ -1459,7 +1465,7 @@ struct AFMSafetensorHeader {
 
     init(url: URL) throws {
         let fileSize = Int64(
-            try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0)
+            try url.resolvingSymlinksInPath().resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0)
         let handle = try FileHandle(forReadingFrom: url)
         defer { try? handle.close() }
         guard let prefix = try handle.read(upToCount: 8), prefix.count == 8 else {
