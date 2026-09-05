@@ -113,8 +113,8 @@ all other dependencies remain exact public HTTPS pins.
 
 ## Qualification
 
-The checked-in API baselines use Xcode 27 build `27A5228h`, macOS SDK 27.0
-build `26A5388f`, and the compiler identity in
+The checked-in API baselines use Xcode 27 build `27A5252f`, macOS SDK 27.0
+build `26A5419a`, and the compiler identity in
 `docs/api-baselines/toolchain.env`. Baseline coverage discovers all sixteen modules
 from the root manifest. The current DwarfStar baseline contains 42 normalized
 public symbols.
