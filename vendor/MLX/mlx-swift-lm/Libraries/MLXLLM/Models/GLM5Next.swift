@@ -2105,7 +2105,7 @@ public final class GLM5NextModel: Module, LLMModel, KVCacheDimensionProvider, Lo
             "input_layernorm.weight", "post_attention_layernorm.weight",
             "self_attn.q_a_proj.weight", "self_attn.q_a_layernorm.weight",
             "self_attn.q_b_proj.weight", "self_attn.kv_a_proj_with_mqa.weight",
-            "self_attn.kv_a_layernorm.weight", "self_attn.kv_b_proj.weight",
+            "self_attn.kv_a_layernorm.weight",
             "self_attn.o_proj.weight", "self_attn.indexer.wq_b.weight",
             "self_attn.indexer.wk.weight", "self_attn.indexer.k_norm.weight",
             "self_attn.indexer.k_norm.bias", "self_attn.indexer.weights_proj.weight",
@@ -2114,16 +2114,40 @@ public final class GLM5NextModel: Module, LLMModel, KVCacheDimensionProvider, Lo
             "mlp.gate.weight",
             "mlp.gate.e_score_correction_bias", "shared_head.norm.weight",
         ])
-        var quantizedLinears = Set([
+        let baseQuantizedLinears = Set([
             "eh_proj", "self_attn.q_a_proj", "self_attn.q_b_proj",
-            "self_attn.kv_a_proj_with_mqa", "self_attn.kv_b_proj", "self_attn.o_proj",
+            "self_attn.kv_a_proj_with_mqa", "self_attn.o_proj",
             "self_attn.indexer.wq_b", "self_attn.indexer.wk",
             "self_attn.indexer.weights_proj",
         ])
+        var quantizedLinears = baseQuantizedLinears
+        let convertedKVStorage = weights[prefix + "self_attn.embed_q.weight"] != nil
+            && weights[prefix + "self_attn.unembed_out.weight"] != nil
+        let rawKVStorage = weights[prefix + "self_attn.kv_b_proj.weight"] != nil
+        guard rawKVStorage || convertedKVStorage else { return false }
+        if rawKVStorage {
+            quantizedLinears.insert("self_attn.kv_b_proj")
+        } else {
+            quantizedLinears.insert("self_attn.embed_q")
+            quantizedLinears.insert("self_attn.unembed_out")
+        }
+
+        var rawExperts = Set<String>()
         for expert in 0 ..< config.routedExperts {
             for projection in ["gate_proj", "up_proj", "down_proj"] {
-                quantizedLinears.insert("mlp.experts.\(expert).\(projection)")
+                rawExperts.insert("mlp.experts.\(expert).\(projection)")
             }
+        }
+        let stackedExperts = Set(["gate_proj", "up_proj", "down_proj"])
+            .filter { projection in
+                weights[prefix + "mlp.switch_mlp.\(projection).weight"] != nil
+            }
+        if stackedExperts.count == 3 {
+            for projection in stackedExperts {
+                quantizedLinears.insert("mlp.switch_mlp.\(projection)")
+            }
+        } else {
+            quantizedLinears.formUnion(rawExperts)
         }
         if config.sharedExperts > 0 {
             for projection in ["gate_proj", "up_proj", "down_proj"] {
