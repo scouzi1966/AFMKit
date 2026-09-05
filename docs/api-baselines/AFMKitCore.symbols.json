@@ -1043,6 +1043,55 @@
     },
     {
       "kind": "conformsTo",
+      "source": "s:10AFMKitCore17AFMGeneratedImageV",
+      "target": "s:SH",
+      "targetFallback": "Swift.Hashable"
+    },
+    {
+      "kind": "conformsTo",
+      "source": "s:10AFMKitCore17AFMGeneratedImageV",
+      "target": "s:SQ",
+      "targetFallback": "Swift.Equatable"
+    },
+    {
+      "kind": "conformsTo",
+      "source": "s:10AFMKitCore17AFMGeneratedImageV",
+      "target": "s:s16SendableMetatypeP",
+      "targetFallback": "Swift.SendableMetatype"
+    },
+    {
+      "kind": "conformsTo",
+      "source": "s:10AFMKitCore17AFMGeneratedImageV",
+      "target": "s:s8SendableP",
+      "targetFallback": "Swift.Sendable"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:10AFMKitCore17AFMGeneratedImageV4data10Foundation4DataVvp",
+      "target": "s:10AFMKitCore17AFMGeneratedImageV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:10AFMKitCore17AFMGeneratedImageV4data9mediaType5width6heightAC10Foundation4DataV_SSS2itcfc",
+      "target": "s:10AFMKitCore17AFMGeneratedImageV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:10AFMKitCore17AFMGeneratedImageV5widthSivp",
+      "target": "s:10AFMKitCore17AFMGeneratedImageV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:10AFMKitCore17AFMGeneratedImageV6heightSivp",
+      "target": "s:10AFMKitCore17AFMGeneratedImageV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:10AFMKitCore17AFMGeneratedImageV9mediaTypeSSvp",
+      "target": "s:10AFMKitCore17AFMGeneratedImageV"
+    },
+    {
+      "kind": "conformsTo",
       "source": "s:10AFMKitCore17AFMTextTokenizingP",
       "target": "s:s16SendableMetatypeP",
       "targetFallback": "Swift.SendableMetatype"
@@ -1232,6 +1281,28 @@
     },
     {
       "kind": "conformsTo",
+      "source": "s:10AFMKitCore18AFMImageGeneratingP",
+      "target": "s:s16SendableMetatypeP",
+      "targetFallback": "Swift.SendableMetatype"
+    },
+    {
+      "kind": "conformsTo",
+      "source": "s:10AFMKitCore18AFMImageGeneratingP",
+      "target": "s:s8SendableP",
+      "targetFallback": "Swift.Sendable"
+    },
+    {
+      "kind": "requirementOf",
+      "source": "s:10AFMKitCore18AFMImageGeneratingP10editImages3forSayAA17AFMGeneratedImageVGAA0C11EditRequestV_tYaKF",
+      "target": "s:10AFMKitCore18AFMImageGeneratingP"
+    },
+    {
+      "kind": "requirementOf",
+      "source": "s:10AFMKitCore18AFMImageGeneratingP14generateImages3forSayAA17AFMGeneratedImageVGAA0C17GenerationRequestV_tYaKF",
+      "target": "s:10AFMKitCore18AFMImageGeneratingP"
+    },
+    {
+      "kind": "conformsTo",
       "source": "s:10AFMKitCore18AFMModelDescriptorV",
       "target": "s:SH",
       "targetFallback": "Swift.Hashable"
@@ -1401,6 +1472,65 @@
       "kind": "requirementOf",
       "source": "s:10AFMKitCore18AFMProviderFactoryP9makeModel2id13configurationAA11AnyAFMModelVAA0J2IDV_AA0C13ConfigurationVtKF",
       "target": "s:10AFMKitCore18AFMProviderFactoryP"
+    },
+    {
+      "kind": "conformsTo",
+      "source": "s:10AFMKitCore19AFMImageEditRequestV",
+      "target": "s:SH",
+      "targetFallback": "Swift.Hashable"
+    },
+    {
+      "kind": "conformsTo",
+      "source": "s:10AFMKitCore19AFMImageEditRequestV",
+      "target": "s:SQ",
+      "targetFallback": "Swift.Equatable"
+    },
+    {
+      "kind": "conformsTo",
+      "source": "s:10AFMKitCore19AFMImageEditRequestV",
+      "target": "s:s16SendableMetatypeP",
+      "targetFallback": "Swift.SendableMetatype"
+    },
+    {
+      "kind": "conformsTo",
+      "source": "s:10AFMKitCore19AFMImageEditRequestV",
+      "target": "s:s8SendableP",
+      "targetFallback": "Swift.Sendable"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:10AFMKitCore19AFMImageEditRequestV4seeds6UInt64VSgvp",
+      "target": "s:10AFMKitCore19AFMImageEditRequestV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:10AFMKitCore19AFMImageEditRequestV5countSivp",
+      "target": "s:10AFMKitCore19AFMImageEditRequestV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:10AFMKitCore19AFMImageEditRequestV5widthSivp",
+      "target": "s:10AFMKitCore19AFMImageEditRequestV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:10AFMKitCore19AFMImageEditRequestV6heightSivp",
+      "target": "s:10AFMKitCore19AFMImageEditRequestV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:10AFMKitCore19AFMImageEditRequestV6imagesSay10Foundation4DataVGvp",
+      "target": "s:10AFMKitCore19AFMImageEditRequestV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:10AFMKitCore19AFMImageEditRequestV6prompt6images5width6height5count4seedACSS_Say10Foundation4DataVGS3is6UInt64VSgtcfc",
+      "target": "s:10AFMKitCore19AFMImageEditRequestV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:10AFMKitCore19AFMImageEditRequestV6promptSSvp",
+      "target": "s:10AFMKitCore19AFMImageEditRequestV"
     },
     {
       "kind": "conformsTo",
@@ -2773,6 +2903,60 @@
       "kind": "memberOf",
       "source": "s:10AFMKitCore24AnyAFMGenerationAdmitterVyACxcAA0D9AdmittingRzlufc",
       "target": "s:10AFMKitCore24AnyAFMGenerationAdmitterV"
+    },
+    {
+      "kind": "conformsTo",
+      "source": "s:10AFMKitCore25AFMImageGenerationRequestV",
+      "target": "s:SH",
+      "targetFallback": "Swift.Hashable"
+    },
+    {
+      "kind": "conformsTo",
+      "source": "s:10AFMKitCore25AFMImageGenerationRequestV",
+      "target": "s:SQ",
+      "targetFallback": "Swift.Equatable"
+    },
+    {
+      "kind": "conformsTo",
+      "source": "s:10AFMKitCore25AFMImageGenerationRequestV",
+      "target": "s:s16SendableMetatypeP",
+      "targetFallback": "Swift.SendableMetatype"
+    },
+    {
+      "kind": "conformsTo",
+      "source": "s:10AFMKitCore25AFMImageGenerationRequestV",
+      "target": "s:s8SendableP",
+      "targetFallback": "Swift.Sendable"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:10AFMKitCore25AFMImageGenerationRequestV4seeds6UInt64VSgvp",
+      "target": "s:10AFMKitCore25AFMImageGenerationRequestV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:10AFMKitCore25AFMImageGenerationRequestV5countSivp",
+      "target": "s:10AFMKitCore25AFMImageGenerationRequestV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:10AFMKitCore25AFMImageGenerationRequestV5widthSivp",
+      "target": "s:10AFMKitCore25AFMImageGenerationRequestV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:10AFMKitCore25AFMImageGenerationRequestV6heightSivp",
+      "target": "s:10AFMKitCore25AFMImageGenerationRequestV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:10AFMKitCore25AFMImageGenerationRequestV6prompt5width6height5count4seedACSS_S3is6UInt64VSgtcfc",
+      "target": "s:10AFMKitCore25AFMImageGenerationRequestV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:10AFMKitCore25AFMImageGenerationRequestV6promptSSvp",
+      "target": "s:10AFMKitCore25AFMImageGenerationRequestV"
     },
     {
       "kind": "conformsTo",
@@ -13793,6 +13977,563 @@
       "declarationFragments": [
         {
           "kind": "keyword",
+          "spelling": "struct"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "AFMGeneratedImage"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:10AFMKitCore17AFMGeneratedImageV"
+      },
+      "kind": {
+        "displayName": "Structure",
+        "identifier": "swift.struct"
+      },
+      "names": {
+        "navigator": [
+          {
+            "kind": "identifier",
+            "spelling": "AFMGeneratedImage"
+          }
+        ],
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "struct"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "AFMGeneratedImage"
+          }
+        ],
+        "title": "AFMGeneratedImage"
+      },
+      "pathComponents": [
+        "AFMGeneratedImage"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "var"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "data"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:10Foundation4DataV",
+          "spelling": "Data"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:10AFMKitCore17AFMGeneratedImageV4data10Foundation4DataVvp"
+      },
+      "kind": {
+        "displayName": "Instance Property",
+        "identifier": "swift.property"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "var"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "data"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:10Foundation4DataV",
+            "spelling": "Data"
+          }
+        ],
+        "title": "data"
+      },
+      "pathComponents": [
+        "AFMGeneratedImage",
+        "data"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "init"
+        },
+        {
+          "kind": "text",
+          "spelling": "("
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "data"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:10Foundation4DataV",
+          "spelling": "Data"
+        },
+        {
+          "kind": "text",
+          "spelling": ", "
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "mediaType"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:SS",
+          "spelling": "String"
+        },
+        {
+          "kind": "text",
+          "spelling": " = \"image/png\", "
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "width"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Si",
+          "spelling": "Int"
+        },
+        {
+          "kind": "text",
+          "spelling": ", "
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "height"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Si",
+          "spelling": "Int"
+        },
+        {
+          "kind": "text",
+          "spelling": ")"
+        }
+      ],
+      "functionSignature": {
+        "parameters": [
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "data"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:10Foundation4DataV",
+                "spelling": "Data"
+              }
+            ],
+            "name": "data"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "mediaType"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:SS",
+                "spelling": "String"
+              }
+            ],
+            "name": "mediaType"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "width"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:Si",
+                "spelling": "Int"
+              }
+            ],
+            "name": "width"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "height"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:Si",
+                "spelling": "Int"
+              }
+            ],
+            "name": "height"
+          }
+        ]
+      },
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:10AFMKitCore17AFMGeneratedImageV4data9mediaType5width6heightAC10Foundation4DataV_SSS2itcfc"
+      },
+      "kind": {
+        "displayName": "Initializer",
+        "identifier": "swift.init"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "init"
+          },
+          {
+            "kind": "text",
+            "spelling": "("
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "data"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:10Foundation4DataV",
+            "spelling": "Data"
+          },
+          {
+            "kind": "text",
+            "spelling": ", "
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "mediaType"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:SS",
+            "spelling": "String"
+          },
+          {
+            "kind": "text",
+            "spelling": ", "
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "width"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Si",
+            "spelling": "Int"
+          },
+          {
+            "kind": "text",
+            "spelling": ", "
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "height"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Si",
+            "spelling": "Int"
+          },
+          {
+            "kind": "text",
+            "spelling": ")"
+          }
+        ],
+        "title": "init(data:mediaType:width:height:)"
+      },
+      "pathComponents": [
+        "AFMGeneratedImage",
+        "init(data:mediaType:width:height:)"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "var"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "width"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Si",
+          "spelling": "Int"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:10AFMKitCore17AFMGeneratedImageV5widthSivp"
+      },
+      "kind": {
+        "displayName": "Instance Property",
+        "identifier": "swift.property"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "var"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "width"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Si",
+            "spelling": "Int"
+          }
+        ],
+        "title": "width"
+      },
+      "pathComponents": [
+        "AFMGeneratedImage",
+        "width"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "var"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "height"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Si",
+          "spelling": "Int"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:10AFMKitCore17AFMGeneratedImageV6heightSivp"
+      },
+      "kind": {
+        "displayName": "Instance Property",
+        "identifier": "swift.property"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "var"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "height"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Si",
+            "spelling": "Int"
+          }
+        ],
+        "title": "height"
+      },
+      "pathComponents": [
+        "AFMGeneratedImage",
+        "height"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "var"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "mediaType"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:SS",
+          "spelling": "String"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:10AFMKitCore17AFMGeneratedImageV9mediaTypeSSvp"
+      },
+      "kind": {
+        "displayName": "Instance Property",
+        "identifier": "swift.property"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "var"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "mediaType"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:SS",
+            "spelling": "String"
+          }
+        ],
+        "title": "mediaType"
+      },
+      "pathComponents": [
+        "AFMGeneratedImage",
+        "mediaType"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
           "spelling": "protocol"
         },
         {
@@ -16382,6 +17123,434 @@
       "declarationFragments": [
         {
           "kind": "keyword",
+          "spelling": "protocol"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "AFMImageGenerating"
+        },
+        {
+          "kind": "text",
+          "spelling": " : "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:s8SendableP",
+          "spelling": "Sendable"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:10AFMKitCore18AFMImageGeneratingP"
+      },
+      "kind": {
+        "displayName": "Protocol",
+        "identifier": "swift.protocol"
+      },
+      "names": {
+        "navigator": [
+          {
+            "kind": "identifier",
+            "spelling": "AFMImageGenerating"
+          }
+        ],
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "protocol"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "AFMImageGenerating"
+          }
+        ],
+        "title": "AFMImageGenerating"
+      },
+      "pathComponents": [
+        "AFMImageGenerating"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "func"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "editImages"
+        },
+        {
+          "kind": "text",
+          "spelling": "("
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "for"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "internalParam",
+          "spelling": "request"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:10AFMKitCore19AFMImageEditRequestV",
+          "spelling": "AFMImageEditRequest"
+        },
+        {
+          "kind": "text",
+          "spelling": ") "
+        },
+        {
+          "kind": "keyword",
+          "spelling": "async"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "keyword",
+          "spelling": "throws"
+        },
+        {
+          "kind": "text",
+          "spelling": " -> ["
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:10AFMKitCore17AFMGeneratedImageV",
+          "spelling": "AFMGeneratedImage"
+        },
+        {
+          "kind": "text",
+          "spelling": "]"
+        }
+      ],
+      "functionSignature": {
+        "parameters": [
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "request"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:10AFMKitCore19AFMImageEditRequestV",
+                "spelling": "AFMImageEditRequest"
+              }
+            ],
+            "internalName": "request",
+            "name": "for"
+          }
+        ],
+        "returns": [
+          {
+            "kind": "text",
+            "spelling": "["
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:10AFMKitCore17AFMGeneratedImageV",
+            "spelling": "AFMGeneratedImage"
+          },
+          {
+            "kind": "text",
+            "spelling": "]"
+          }
+        ]
+      },
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:10AFMKitCore18AFMImageGeneratingP10editImages3forSayAA17AFMGeneratedImageVGAA0C11EditRequestV_tYaKF"
+      },
+      "kind": {
+        "displayName": "Instance Method",
+        "identifier": "swift.method"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "func"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "editImages"
+          },
+          {
+            "kind": "text",
+            "spelling": "("
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "for"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:10AFMKitCore19AFMImageEditRequestV",
+            "spelling": "AFMImageEditRequest"
+          },
+          {
+            "kind": "text",
+            "spelling": ") "
+          },
+          {
+            "kind": "keyword",
+            "spelling": "async"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "keyword",
+            "spelling": "throws"
+          },
+          {
+            "kind": "text",
+            "spelling": " -> ["
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:10AFMKitCore17AFMGeneratedImageV",
+            "spelling": "AFMGeneratedImage"
+          },
+          {
+            "kind": "text",
+            "spelling": "]"
+          }
+        ],
+        "title": "editImages(for:)"
+      },
+      "pathComponents": [
+        "AFMImageGenerating",
+        "editImages(for:)"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "func"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "generateImages"
+        },
+        {
+          "kind": "text",
+          "spelling": "("
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "for"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "internalParam",
+          "spelling": "request"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:10AFMKitCore25AFMImageGenerationRequestV",
+          "spelling": "AFMImageGenerationRequest"
+        },
+        {
+          "kind": "text",
+          "spelling": ") "
+        },
+        {
+          "kind": "keyword",
+          "spelling": "async"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "keyword",
+          "spelling": "throws"
+        },
+        {
+          "kind": "text",
+          "spelling": " -> ["
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:10AFMKitCore17AFMGeneratedImageV",
+          "spelling": "AFMGeneratedImage"
+        },
+        {
+          "kind": "text",
+          "spelling": "]"
+        }
+      ],
+      "functionSignature": {
+        "parameters": [
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "request"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:10AFMKitCore25AFMImageGenerationRequestV",
+                "spelling": "AFMImageGenerationRequest"
+              }
+            ],
+            "internalName": "request",
+            "name": "for"
+          }
+        ],
+        "returns": [
+          {
+            "kind": "text",
+            "spelling": "["
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:10AFMKitCore17AFMGeneratedImageV",
+            "spelling": "AFMGeneratedImage"
+          },
+          {
+            "kind": "text",
+            "spelling": "]"
+          }
+        ]
+      },
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:10AFMKitCore18AFMImageGeneratingP14generateImages3forSayAA17AFMGeneratedImageVGAA0C17GenerationRequestV_tYaKF"
+      },
+      "kind": {
+        "displayName": "Instance Method",
+        "identifier": "swift.method"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "func"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "generateImages"
+          },
+          {
+            "kind": "text",
+            "spelling": "("
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "for"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:10AFMKitCore25AFMImageGenerationRequestV",
+            "spelling": "AFMImageGenerationRequest"
+          },
+          {
+            "kind": "text",
+            "spelling": ") "
+          },
+          {
+            "kind": "keyword",
+            "spelling": "async"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "keyword",
+            "spelling": "throws"
+          },
+          {
+            "kind": "text",
+            "spelling": " -> ["
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:10AFMKitCore17AFMGeneratedImageV",
+            "spelling": "AFMGeneratedImage"
+          },
+          {
+            "kind": "text",
+            "spelling": "]"
+          }
+        ],
+        "title": "generateImages(for:)"
+      },
+      "pathComponents": [
+        "AFMImageGenerating",
+        "generateImages(for:)"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
           "spelling": "struct"
         },
         {
@@ -18304,6 +19473,819 @@
       "pathComponents": [
         "AFMProviderFactory",
         "makeModel(id:configuration:)"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "struct"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "AFMImageEditRequest"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:10AFMKitCore19AFMImageEditRequestV"
+      },
+      "kind": {
+        "displayName": "Structure",
+        "identifier": "swift.struct"
+      },
+      "names": {
+        "navigator": [
+          {
+            "kind": "identifier",
+            "spelling": "AFMImageEditRequest"
+          }
+        ],
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "struct"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "AFMImageEditRequest"
+          }
+        ],
+        "title": "AFMImageEditRequest"
+      },
+      "pathComponents": [
+        "AFMImageEditRequest"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "var"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "seed"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:s6UInt64V",
+          "spelling": "UInt64"
+        },
+        {
+          "kind": "text",
+          "spelling": "?"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:10AFMKitCore19AFMImageEditRequestV4seeds6UInt64VSgvp"
+      },
+      "kind": {
+        "displayName": "Instance Property",
+        "identifier": "swift.property"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "var"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "seed"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:s6UInt64V",
+            "spelling": "UInt64"
+          },
+          {
+            "kind": "text",
+            "spelling": "?"
+          }
+        ],
+        "title": "seed"
+      },
+      "pathComponents": [
+        "AFMImageEditRequest",
+        "seed"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "var"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "count"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Si",
+          "spelling": "Int"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:10AFMKitCore19AFMImageEditRequestV5countSivp"
+      },
+      "kind": {
+        "displayName": "Instance Property",
+        "identifier": "swift.property"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "var"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "count"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Si",
+            "spelling": "Int"
+          }
+        ],
+        "title": "count"
+      },
+      "pathComponents": [
+        "AFMImageEditRequest",
+        "count"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "var"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "width"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Si",
+          "spelling": "Int"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:10AFMKitCore19AFMImageEditRequestV5widthSivp"
+      },
+      "kind": {
+        "displayName": "Instance Property",
+        "identifier": "swift.property"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "var"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "width"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Si",
+            "spelling": "Int"
+          }
+        ],
+        "title": "width"
+      },
+      "pathComponents": [
+        "AFMImageEditRequest",
+        "width"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "var"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "height"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Si",
+          "spelling": "Int"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:10AFMKitCore19AFMImageEditRequestV6heightSivp"
+      },
+      "kind": {
+        "displayName": "Instance Property",
+        "identifier": "swift.property"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "var"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "height"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Si",
+            "spelling": "Int"
+          }
+        ],
+        "title": "height"
+      },
+      "pathComponents": [
+        "AFMImageEditRequest",
+        "height"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "var"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "images"
+        },
+        {
+          "kind": "text",
+          "spelling": ": ["
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:10Foundation4DataV",
+          "spelling": "Data"
+        },
+        {
+          "kind": "text",
+          "spelling": "]"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:10AFMKitCore19AFMImageEditRequestV6imagesSay10Foundation4DataVGvp"
+      },
+      "kind": {
+        "displayName": "Instance Property",
+        "identifier": "swift.property"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "var"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "images"
+          },
+          {
+            "kind": "text",
+            "spelling": ": ["
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:10Foundation4DataV",
+            "spelling": "Data"
+          },
+          {
+            "kind": "text",
+            "spelling": "]"
+          }
+        ],
+        "title": "images"
+      },
+      "pathComponents": [
+        "AFMImageEditRequest",
+        "images"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "init"
+        },
+        {
+          "kind": "text",
+          "spelling": "("
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "prompt"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:SS",
+          "spelling": "String"
+        },
+        {
+          "kind": "text",
+          "spelling": ", "
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "images"
+        },
+        {
+          "kind": "text",
+          "spelling": ": ["
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:10Foundation4DataV",
+          "spelling": "Data"
+        },
+        {
+          "kind": "text",
+          "spelling": "], "
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "width"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Si",
+          "spelling": "Int"
+        },
+        {
+          "kind": "text",
+          "spelling": ", "
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "height"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Si",
+          "spelling": "Int"
+        },
+        {
+          "kind": "text",
+          "spelling": ", "
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "count"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Si",
+          "spelling": "Int"
+        },
+        {
+          "kind": "text",
+          "spelling": " = 1, "
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "seed"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:s6UInt64V",
+          "spelling": "UInt64"
+        },
+        {
+          "kind": "text",
+          "spelling": "? = nil)"
+        }
+      ],
+      "functionSignature": {
+        "parameters": [
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "prompt"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:SS",
+                "spelling": "String"
+              }
+            ],
+            "name": "prompt"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "images"
+              },
+              {
+                "kind": "text",
+                "spelling": ": ["
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:10Foundation4DataV",
+                "spelling": "Data"
+              },
+              {
+                "kind": "text",
+                "spelling": "]"
+              }
+            ],
+            "name": "images"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "width"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:Si",
+                "spelling": "Int"
+              }
+            ],
+            "name": "width"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "height"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:Si",
+                "spelling": "Int"
+              }
+            ],
+            "name": "height"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "count"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:Si",
+                "spelling": "Int"
+              }
+            ],
+            "name": "count"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "seed"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:s6UInt64V",
+                "spelling": "UInt64"
+              },
+              {
+                "kind": "text",
+                "spelling": "?"
+              }
+            ],
+            "name": "seed"
+          }
+        ]
+      },
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:10AFMKitCore19AFMImageEditRequestV6prompt6images5width6height5count4seedACSS_Say10Foundation4DataVGS3is6UInt64VSgtcfc"
+      },
+      "kind": {
+        "displayName": "Initializer",
+        "identifier": "swift.init"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "init"
+          },
+          {
+            "kind": "text",
+            "spelling": "("
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "prompt"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:SS",
+            "spelling": "String"
+          },
+          {
+            "kind": "text",
+            "spelling": ", "
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "images"
+          },
+          {
+            "kind": "text",
+            "spelling": ": ["
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:10Foundation4DataV",
+            "spelling": "Data"
+          },
+          {
+            "kind": "text",
+            "spelling": "], "
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "width"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Si",
+            "spelling": "Int"
+          },
+          {
+            "kind": "text",
+            "spelling": ", "
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "height"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Si",
+            "spelling": "Int"
+          },
+          {
+            "kind": "text",
+            "spelling": ", "
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "count"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Si",
+            "spelling": "Int"
+          },
+          {
+            "kind": "text",
+            "spelling": ", "
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "seed"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:s6UInt64V",
+            "spelling": "UInt64"
+          },
+          {
+            "kind": "text",
+            "spelling": "?)"
+          }
+        ],
+        "title": "init(prompt:images:width:height:count:seed:)"
+      },
+      "pathComponents": [
+        "AFMImageEditRequest",
+        "init(prompt:images:width:height:count:seed:)"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "var"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "prompt"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:SS",
+          "spelling": "String"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:10AFMKitCore19AFMImageEditRequestV6promptSSvp"
+      },
+      "kind": {
+        "displayName": "Instance Property",
+        "identifier": "swift.property"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "var"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "prompt"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:SS",
+            "spelling": "String"
+          }
+        ],
+        "title": "prompt"
+      },
+      "pathComponents": [
+        "AFMImageEditRequest",
+        "prompt"
       ]
     },
     {
@@ -37897,6 +39879,691 @@
           }
         ]
       }
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "struct"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "AFMImageGenerationRequest"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:10AFMKitCore25AFMImageGenerationRequestV"
+      },
+      "kind": {
+        "displayName": "Structure",
+        "identifier": "swift.struct"
+      },
+      "names": {
+        "navigator": [
+          {
+            "kind": "identifier",
+            "spelling": "AFMImageGenerationRequest"
+          }
+        ],
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "struct"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "AFMImageGenerationRequest"
+          }
+        ],
+        "title": "AFMImageGenerationRequest"
+      },
+      "pathComponents": [
+        "AFMImageGenerationRequest"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "var"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "seed"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:s6UInt64V",
+          "spelling": "UInt64"
+        },
+        {
+          "kind": "text",
+          "spelling": "?"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:10AFMKitCore25AFMImageGenerationRequestV4seeds6UInt64VSgvp"
+      },
+      "kind": {
+        "displayName": "Instance Property",
+        "identifier": "swift.property"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "var"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "seed"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:s6UInt64V",
+            "spelling": "UInt64"
+          },
+          {
+            "kind": "text",
+            "spelling": "?"
+          }
+        ],
+        "title": "seed"
+      },
+      "pathComponents": [
+        "AFMImageGenerationRequest",
+        "seed"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "var"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "count"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Si",
+          "spelling": "Int"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:10AFMKitCore25AFMImageGenerationRequestV5countSivp"
+      },
+      "kind": {
+        "displayName": "Instance Property",
+        "identifier": "swift.property"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "var"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "count"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Si",
+            "spelling": "Int"
+          }
+        ],
+        "title": "count"
+      },
+      "pathComponents": [
+        "AFMImageGenerationRequest",
+        "count"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "var"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "width"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Si",
+          "spelling": "Int"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:10AFMKitCore25AFMImageGenerationRequestV5widthSivp"
+      },
+      "kind": {
+        "displayName": "Instance Property",
+        "identifier": "swift.property"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "var"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "width"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Si",
+            "spelling": "Int"
+          }
+        ],
+        "title": "width"
+      },
+      "pathComponents": [
+        "AFMImageGenerationRequest",
+        "width"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "var"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "height"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Si",
+          "spelling": "Int"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:10AFMKitCore25AFMImageGenerationRequestV6heightSivp"
+      },
+      "kind": {
+        "displayName": "Instance Property",
+        "identifier": "swift.property"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "var"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "height"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Si",
+            "spelling": "Int"
+          }
+        ],
+        "title": "height"
+      },
+      "pathComponents": [
+        "AFMImageGenerationRequest",
+        "height"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "init"
+        },
+        {
+          "kind": "text",
+          "spelling": "("
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "prompt"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:SS",
+          "spelling": "String"
+        },
+        {
+          "kind": "text",
+          "spelling": ", "
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "width"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Si",
+          "spelling": "Int"
+        },
+        {
+          "kind": "text",
+          "spelling": ", "
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "height"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Si",
+          "spelling": "Int"
+        },
+        {
+          "kind": "text",
+          "spelling": ", "
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "count"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Si",
+          "spelling": "Int"
+        },
+        {
+          "kind": "text",
+          "spelling": " = 1, "
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "seed"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:s6UInt64V",
+          "spelling": "UInt64"
+        },
+        {
+          "kind": "text",
+          "spelling": "? = nil)"
+        }
+      ],
+      "functionSignature": {
+        "parameters": [
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "prompt"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:SS",
+                "spelling": "String"
+              }
+            ],
+            "name": "prompt"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "width"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:Si",
+                "spelling": "Int"
+              }
+            ],
+            "name": "width"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "height"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:Si",
+                "spelling": "Int"
+              }
+            ],
+            "name": "height"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "count"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:Si",
+                "spelling": "Int"
+              }
+            ],
+            "name": "count"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "seed"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:s6UInt64V",
+                "spelling": "UInt64"
+              },
+              {
+                "kind": "text",
+                "spelling": "?"
+              }
+            ],
+            "name": "seed"
+          }
+        ]
+      },
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:10AFMKitCore25AFMImageGenerationRequestV6prompt5width6height5count4seedACSS_S3is6UInt64VSgtcfc"
+      },
+      "kind": {
+        "displayName": "Initializer",
+        "identifier": "swift.init"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "init"
+          },
+          {
+            "kind": "text",
+            "spelling": "("
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "prompt"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:SS",
+            "spelling": "String"
+          },
+          {
+            "kind": "text",
+            "spelling": ", "
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "width"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Si",
+            "spelling": "Int"
+          },
+          {
+            "kind": "text",
+            "spelling": ", "
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "height"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Si",
+            "spelling": "Int"
+          },
+          {
+            "kind": "text",
+            "spelling": ", "
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "count"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Si",
+            "spelling": "Int"
+          },
+          {
+            "kind": "text",
+            "spelling": ", "
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "seed"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:s6UInt64V",
+            "spelling": "UInt64"
+          },
+          {
+            "kind": "text",
+            "spelling": "?)"
+          }
+        ],
+        "title": "init(prompt:width:height:count:seed:)"
+      },
+      "pathComponents": [
+        "AFMImageGenerationRequest",
+        "init(prompt:width:height:count:seed:)"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "var"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "prompt"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:SS",
+          "spelling": "String"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:10AFMKitCore25AFMImageGenerationRequestV6promptSSvp"
+      },
+      "kind": {
+        "displayName": "Instance Property",
+        "identifier": "swift.property"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "var"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "prompt"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:SS",
+            "spelling": "String"
+          }
+        ],
+        "title": "prompt"
+      },
+      "pathComponents": [
+        "AFMImageGenerationRequest",
+        "prompt"
+      ]
     },
     {
       "accessLevel": "public",
