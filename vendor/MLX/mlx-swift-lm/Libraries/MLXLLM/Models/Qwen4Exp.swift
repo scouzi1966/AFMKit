@@ -877,7 +877,7 @@ func qwen4ExpTargetVerifyAttention(
     return concatenated(outputs, axis: 2)
 }
 
-private enum Qwen4ExpQSASelection {
+enum Qwen4ExpQSASelection {
     case mask(MLXArray)
     case blocks(MLXArray)
     case decodeScores(MLXArray)
@@ -1304,7 +1304,7 @@ enum Qwen4ExpQSADecodeBlocks {
     }
 }
 
-private final class Qwen4ExpQSAIndexer: Module {
+final class Qwen4ExpQSAIndexer: Module {
     private static let compileDecode =
         ProcessInfo.processInfo.environment[
             "AFM_QWEN_COMPILE_QSA_INDEXER"
@@ -1531,7 +1531,12 @@ private final class Qwen4ExpQSAIndexer: Module {
         // the original single-row graph for decode and reserve vectorization
         // for multi-token prefill.
         if length == 1 {
-            if Qwen4ExpQSAFusedDecodeAttention.shouldSelectScores(
+            let needsBlockSelection = Self.needsDecodeBlockSelection(
+                previousOffset: previousOffset,
+                compressionRatio: compressRatio,
+                blockTopK: blockTopK)
+            if needsBlockSelection,
+               Qwen4ExpQSAFusedDecodeAttention.shouldSelectScores(
                 batch: batch,
                 keyLength: totalLength,
                 compressionRatio: compressRatio,
@@ -1542,7 +1547,8 @@ private final class Qwen4ExpQSAIndexer: Module {
                     blockKeys: blockKeys,
                     previousOffset: previousOffset))
             }
-            if Qwen4ExpQSADecodeAttention.shouldSelectBlocks(
+            if needsBlockSelection,
+               Qwen4ExpQSADecodeAttention.shouldSelectBlocks(
                 batch: batch,
                 keyLength: totalLength,
                 dtype: hidden.dtype)
@@ -1586,6 +1592,18 @@ private final class Qwen4ExpQSAIndexer: Module {
             selectedBlocks,
             keyLength: totalLength,
             compressionRatio: compressRatio))
+    }
+
+    /// Kernel key-length eligibility alone does not imply there are excess
+    /// complete blocks. At a 2,048-token budget and ratio four, 2,049–2,051
+    /// visible tokens still have only 512 blocks plus an incomplete tail.
+    /// Use the query's visibility, not a potentially wider key buffer.
+    static func needsDecodeBlockSelection(
+        previousOffset: Int,
+        compressionRatio: Int,
+        blockTopK: Int
+    ) -> Bool {
+        (previousOffset + 1) / compressionRatio > blockTopK
     }
 
     private func selectDecodeMask(
