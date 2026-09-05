@@ -1057,6 +1057,11 @@
     },
     {
       "kind": "memberOf",
+      "source": "s:9AFMKitMLX15MLXModelServiceC18qwenNGramResidencyAA010AFMMLXQwenfG0Ovp",
+      "target": "s:9AFMKitMLX15MLXModelServiceC"
+    },
+    {
+      "kind": "memberOf",
       "source": "s:9AFMKitMLX15MLXModelServiceC18revalidateRegistrySaySSGyKF",
       "target": "s:9AFMKitMLX15MLXModelServiceC"
     },
@@ -1078,6 +1083,11 @@
     {
       "kind": "memberOf",
       "source": "s:9AFMKitMLX15MLXModelServiceC20forceDisableThinkingSbvp",
+      "target": "s:9AFMKitMLX15MLXModelServiceC"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX15MLXModelServiceC20qwenNGramMmapEnabledSbvp",
       "target": "s:9AFMKitMLX15MLXModelServiceC"
     },
     {
@@ -2493,6 +2503,21 @@
       "target": "s:9AFMKitMLX19AFMMLXNamedLoadPlanO"
     },
     {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX19AFMMLXPrefillPolicyO15defaultStepSizeSivpZ",
+      "target": "s:9AFMKitMLX19AFMMLXPrefillPolicyO"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX19AFMMLXPrefillPolicyO27throughputOptimizedStepSizeSivpZ",
+      "target": "s:9AFMKitMLX19AFMMLXPrefillPolicyO"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX19AFMMLXPrefillPolicyO7resolve18configuredStepSize10isExplicit18canonicalModelTypeS2i_SbSSSgtFZ",
+      "target": "s:9AFMKitMLX19AFMMLXPrefillPolicyO"
+    },
+    {
       "kind": "conformsTo",
       "source": "s:9AFMKitMLX19AFMMLXQuickLoadPlanO",
       "target": "s:SQ",
@@ -2772,7 +2797,7 @@
     },
     {
       "kind": "memberOf",
-      "source": "s:9AFMKitMLX20AFMMLXRuntimeAdapterV14makeMTPRuntime9container11sidecarPathAA24AFMMLXSpeculativeRuntimeOSg11MLXLMCommon14ModelContainerC_SStYaKF",
+      "source": "s:9AFMKitMLX20AFMMLXRuntimeAdapterV14makeMTPRuntime9container11sidecarPath5depthAA24AFMMLXSpeculativeRuntimeOSg11MLXLMCommon14ModelContainerC_SSSitYaKF",
       "target": "s:9AFMKitMLX20AFMMLXRuntimeAdapterV"
     },
     {
@@ -4706,6 +4731,66 @@
       "target": "s:9AFMKitMLX24AFMMLXQuickPickerSectionO"
     },
     {
+      "kind": "conformsTo",
+      "source": "s:9AFMKitMLX24AFMMLXQwenNGramResidencyO",
+      "target": "s:SH",
+      "targetFallback": "Swift.Hashable"
+    },
+    {
+      "kind": "conformsTo",
+      "source": "s:9AFMKitMLX24AFMMLXQwenNGramResidencyO",
+      "target": "s:SQ",
+      "targetFallback": "Swift.Equatable"
+    },
+    {
+      "kind": "conformsTo",
+      "source": "s:9AFMKitMLX24AFMMLXQwenNGramResidencyO",
+      "target": "s:SY",
+      "targetFallback": "Swift.RawRepresentable"
+    },
+    {
+      "kind": "conformsTo",
+      "source": "s:9AFMKitMLX24AFMMLXQwenNGramResidencyO",
+      "target": "s:s12CaseIterableP",
+      "targetFallback": "Swift.CaseIterable"
+    },
+    {
+      "kind": "conformsTo",
+      "source": "s:9AFMKitMLX24AFMMLXQwenNGramResidencyO",
+      "target": "s:s16SendableMetatypeP",
+      "targetFallback": "Swift.SendableMetatype"
+    },
+    {
+      "kind": "conformsTo",
+      "source": "s:9AFMKitMLX24AFMMLXQwenNGramResidencyO",
+      "target": "s:s8SendableP",
+      "targetFallback": "Swift.Sendable"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX24AFMMLXQwenNGramResidencyO15configuredValueACSSSg_tcfc",
+      "target": "s:9AFMKitMLX24AFMMLXQwenNGramResidencyO"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX24AFMMLXQwenNGramResidencyO6mappedyA2CmF",
+      "target": "s:9AFMKitMLX24AFMMLXQwenNGramResidencyO"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX24AFMMLXQwenNGramResidencyO7prewarmyA2CmF",
+      "target": "s:9AFMKitMLX24AFMMLXQwenNGramResidencyO"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX24AFMMLXQwenNGramResidencyO8rawValueACSgSS_tcfc",
+      "sourceOrigin": {
+        "displayName": "RawRepresentable.init(rawValue:)",
+        "identifier": "s:SY8rawValuexSg03RawB0Qz_tcfc"
+      },
+      "target": "s:9AFMKitMLX24AFMMLXQwenNGramResidencyO"
+    },
+    {
       "kind": "memberOf",
       "source": "s:9AFMKitMLX24AFMMLXRequestMediaPolicyO4kind15contentPartType8mediaURLAA0cD4KindOSgSS_SSSgtFZ",
       "target": "s:9AFMKitMLX24AFMMLXRequestMediaPolicyO"
@@ -4910,6 +4995,11 @@
       "source": "s:9AFMKitMLX24AFMMLXSpeculativeRuntimeO",
       "target": "s:s8SendableP",
       "targetFallback": "Swift.Sendable"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX24AFMMLXSpeculativeRuntimeO11qwenNextMTPyAC6MLXLLM20Qwen4ExpMTPGeneratorCcACmF",
+      "target": "s:9AFMKitMLX24AFMMLXSpeculativeRuntimeO"
     },
     {
       "kind": "memberOf",
@@ -5272,6 +5362,11 @@
     {
       "kind": "memberOf",
       "source": "s:9AFMKitMLX25AFMMLXCheckpointConverterV9ModelKindO8glm5NextyA2EmF",
+      "target": "s:9AFMKitMLX25AFMMLXCheckpointConverterV9ModelKindO"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX25AFMMLXCheckpointConverterV9ModelKindO8qwen4ExpyA2EmF",
       "target": "s:9AFMKitMLX25AFMMLXCheckpointConverterV9ModelKindO"
     },
     {
@@ -6136,6 +6231,11 @@
     },
     {
       "kind": "memberOf",
+      "source": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV18qwenNGramResidencyAA010AFMMLXQwenfG0Ovp",
+      "target": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV"
+    },
+    {
+      "kind": "memberOf",
       "source": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV19enablePrefixCachingSbvp",
       "target": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV"
     },
@@ -6147,6 +6247,11 @@
     {
       "kind": "memberOf",
       "source": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV20forceDisableThinkingSbvp",
+      "target": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV20qwenNGramMmapEnabledSbvp",
       "target": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV"
     },
     {
@@ -6176,7 +6281,7 @@
     },
     {
       "kind": "memberOf",
-      "source": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV6kvBits19enablePrefixCaching12kernelEngine10mtpEnabled0L5Depth0L7ModelID17eagle3DrafterPath13maxConcurrent14toolCallParser0G18GrammarConstraints15prefillStepSize0E14EvictionPolicy16fixToolArguments8forceVLM012cacheProfileS05trace010gpuCaptureS016gpuTraceDuration10gpuProfile19gpuProfileBandwidth25defaultChatTemplateKwargs20forceDisableThinkingACSiSg_SbAA012AFMMLXKernelK0OSbSiSSSgA1_SiA1_SbAZSSS2bA1_SbA1_AZS2bSDySS0A4Core12AFMJSONValueOGSgSbtcfc",
+      "source": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV6kvBits19enablePrefixCaching12kernelEngine18qwenNGramResidency0lM11MmapEnabled03mtpP00Q5Depth0Q7ModelID17eagle3DrafterPath13maxConcurrent14toolCallParser0G18GrammarConstraints15prefillStepSize0E14EvictionPolicy16fixToolArguments8forceVLM012cacheProfileW05trace010gpuCaptureW016gpuTraceDuration10gpuProfile19gpuProfileBandwidth25defaultChatTemplateKwargs20forceDisableThinkingACSiSg_SbAA012AFMMLXKernelK0OAA010AFMMLXQwenmN0OS2bSiSSSgA5_SiA5_SbA0_SSS2bA5_SbA5_A0_S2bSDySS0A4Core12AFMJSONValueOGSgSbtcfc",
       "target": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV"
     },
     {
@@ -6910,6 +7015,263 @@
       "kind": "memberOf",
       "source": "s:9AFMKitMLX27GLM5NextCheckpointConverterV7inspect6source0H8RevisionAC10InspectionV10Foundation3URLV_SSSgtKFZ",
       "target": "s:9AFMKitMLX27GLM5NextCheckpointConverterV"
+    },
+    {
+      "kind": "conformsTo",
+      "source": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV10InspectionV",
+      "target": "s:SQ",
+      "targetFallback": "Swift.Equatable"
+    },
+    {
+      "kind": "conformsTo",
+      "source": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV10InspectionV",
+      "target": "s:s16SendableMetatypeP",
+      "targetFallback": "Swift.SendableMetatype"
+    },
+    {
+      "kind": "conformsTo",
+      "source": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV10InspectionV",
+      "target": "s:s8SendableP",
+      "targetFallback": "Swift.Sendable"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV10InspectionV",
+      "target": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV10InspectionV10shardCountSivp",
+      "target": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV10InspectionV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV10InspectionV11sourceBytess5Int64Vvp",
+      "target": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV10InspectionV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV10InspectionV11tensorCountSivp",
+      "target": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV10InspectionV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV10InspectionV14sourceRevisionSSvp",
+      "target": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV10InspectionV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV10InspectionV15ngramShardCountSivp",
+      "target": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV10InspectionV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV10InspectionV20estimatedOutputBytess5Int64Vvp",
+      "target": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV10InspectionV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV10InspectionV28requiredDestinationFreeBytess5Int64Vvp",
+      "target": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV10InspectionV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV13inspectResume6source6output7profile0I8RevisionAC0H10InspectionV10Foundation3URLV_AmC7ProfileOSSSgtKFZ",
+      "target": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV"
+    },
+    {
+      "kind": "conformsTo",
+      "source": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV15ConversionErrorO",
+      "target": "s:10Foundation14LocalizedErrorP",
+      "targetFallback": "Foundation.LocalizedError"
+    },
+    {
+      "kind": "conformsTo",
+      "source": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV15ConversionErrorO",
+      "target": "s:SQ",
+      "targetFallback": "Swift.Equatable"
+    },
+    {
+      "kind": "conformsTo",
+      "source": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV15ConversionErrorO",
+      "target": "s:s16SendableMetatypeP",
+      "targetFallback": "Swift.SendableMetatype"
+    },
+    {
+      "kind": "conformsTo",
+      "source": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV15ConversionErrorO",
+      "target": "s:s5ErrorP",
+      "targetFallback": "Swift.Error"
+    },
+    {
+      "kind": "conformsTo",
+      "source": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV15ConversionErrorO",
+      "target": "s:s8SendableP",
+      "targetFallback": "Swift.Sendable"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV15ConversionErrorO",
+      "target": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV15ConversionErrorO12outputExistsyAESScAEmF",
+      "target": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV15ConversionErrorO"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV15ConversionErrorO12unsafeOutputyAESScAEmF",
+      "target": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV15ConversionErrorO"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV15ConversionErrorO13invalidSourceyAESScAEmF",
+      "target": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV15ConversionErrorO"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV15ConversionErrorO14sourceMismatchyAESScAEmF",
+      "target": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV15ConversionErrorO"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV15ConversionErrorO16errorDescriptionSSSgvp",
+      "sourceOrigin": {
+        "displayName": "LocalizedError.errorDescription",
+        "identifier": "s:10Foundation14LocalizedErrorP16errorDescriptionSSSgvp"
+      },
+      "target": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV15ConversionErrorO"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV15ConversionErrorO17unsupportedTensoryAESScAEmF",
+      "target": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV15ConversionErrorO"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV15ProgressHandlera",
+      "target": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV15officialModelIDSSvpZ",
+      "target": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV"
+    },
+    {
+      "kind": "conformsTo",
+      "source": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV16ResumeInspectionV",
+      "target": "s:SQ",
+      "targetFallback": "Swift.Equatable"
+    },
+    {
+      "kind": "conformsTo",
+      "source": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV16ResumeInspectionV",
+      "target": "s:s16SendableMetatypeP",
+      "targetFallback": "Swift.SendableMetatype"
+    },
+    {
+      "kind": "conformsTo",
+      "source": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV16ResumeInspectionV",
+      "target": "s:s8SendableP",
+      "targetFallback": "Swift.Sendable"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV16ResumeInspectionV",
+      "target": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV16ResumeInspectionV14sourceRevisionSSvp",
+      "target": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV16ResumeInspectionV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV16ResumeInspectionV28verifiedCompletedOutputBytess5Int64Vvp",
+      "target": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV16ResumeInspectionV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV3runyyKF",
+      "target": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV6source6output9overwrite7profile0G8Revision8progressAC10Foundation3URLV_ALSbAC7ProfileOSSSgySScSgtcfc",
+      "target": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV"
+    },
+    {
+      "kind": "conformsTo",
+      "source": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV7ProfileO",
+      "target": "s:SE",
+      "targetFallback": "Swift.Encodable"
+    },
+    {
+      "kind": "conformsTo",
+      "source": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV7ProfileO",
+      "target": "s:SH",
+      "targetFallback": "Swift.Hashable"
+    },
+    {
+      "kind": "conformsTo",
+      "source": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV7ProfileO",
+      "target": "s:SQ",
+      "targetFallback": "Swift.Equatable"
+    },
+    {
+      "kind": "conformsTo",
+      "source": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV7ProfileO",
+      "target": "s:SY",
+      "targetFallback": "Swift.RawRepresentable"
+    },
+    {
+      "kind": "conformsTo",
+      "source": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV7ProfileO",
+      "target": "s:Se",
+      "targetFallback": "Swift.Decodable"
+    },
+    {
+      "kind": "conformsTo",
+      "source": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV7ProfileO",
+      "target": "s:s12CaseIterableP",
+      "targetFallback": "Swift.CaseIterable"
+    },
+    {
+      "kind": "conformsTo",
+      "source": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV7ProfileO",
+      "target": "s:s16SendableMetatypeP",
+      "targetFallback": "Swift.SendableMetatype"
+    },
+    {
+      "kind": "conformsTo",
+      "source": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV7ProfileO",
+      "target": "s:s8SendableP",
+      "targetFallback": "Swift.Sendable"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV7ProfileO",
+      "target": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV7ProfileO10afmMapped4yA2EmF",
+      "target": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV7ProfileO"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV7ProfileO8rawValueAESgSS_tcfc",
+      "sourceOrigin": {
+        "displayName": "RawRepresentable.init(rawValue:)",
+        "identifier": "s:SY8rawValuexSg03RawB0Qz_tcfc"
+      },
+      "target": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV7ProfileO"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV7inspect6source0H8RevisionAC10InspectionV10Foundation3URLV_SSSgtKFZ",
+      "target": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV"
     },
     {
       "kind": "memberOf",
@@ -25486,6 +25848,26 @@
           "kind": "typeIdentifier",
           "preciseIdentifier": "s:Si",
           "spelling": "Int"
+        },
+        {
+          "kind": "text",
+          "spelling": " { "
+        },
+        {
+          "kind": "keyword",
+          "spelling": "get"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "keyword",
+          "spelling": "set"
+        },
+        {
+          "kind": "text",
+          "spelling": " }"
         }
       ],
       "identifier": {
@@ -28502,6 +28884,70 @@
       "declarationFragments": [
         {
           "kind": "keyword",
+          "spelling": "var"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "qwenNGramResidency"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:9AFMKitMLX24AFMMLXQwenNGramResidencyO",
+          "spelling": "AFMMLXQwenNGramResidency"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX15MLXModelServiceC18qwenNGramResidencyAA010AFMMLXQwenfG0Ovp"
+      },
+      "kind": {
+        "displayName": "Instance Property",
+        "identifier": "swift.property"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "var"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "qwenNGramResidency"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:9AFMKitMLX24AFMMLXQwenNGramResidencyO",
+            "spelling": "AFMMLXQwenNGramResidency"
+          }
+        ],
+        "title": "qwenNGramResidency"
+      },
+      "pathComponents": [
+        "MLXModelService",
+        "qwenNGramResidency"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
           "spelling": "func"
         },
         {
@@ -29013,6 +29459,108 @@
       "pathComponents": [
         "MLXModelService",
         "forceDisableThinking"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "availability": [
+        {
+          "domain": "*",
+          "isUnconditionallyDeprecated": true,
+          "message": "Qwen Next n-gram sidecars are loaded automatically"
+        }
+      ],
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "var"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "qwenNGramMmapEnabled"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Sb",
+          "spelling": "Bool"
+        },
+        {
+          "kind": "text",
+          "spelling": " { "
+        },
+        {
+          "kind": "keyword",
+          "spelling": "get"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "keyword",
+          "spelling": "set"
+        },
+        {
+          "kind": "text",
+          "spelling": " }"
+        }
+      ],
+      "docComment": {
+        "lines": [
+          {
+            "text": "Retained for source compatibility. Qwen Next checkpoints now load their"
+          },
+          {
+            "text": "declared n-gram sidecar automatically, so this value has no runtime effect."
+          }
+        ],
+        "module": "AFMKitMLX"
+      },
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX15MLXModelServiceC20qwenNGramMmapEnabledSbvp"
+      },
+      "kind": {
+        "displayName": "Instance Property",
+        "identifier": "swift.property"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "var"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "qwenNGramMmapEnabled"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Sb",
+            "spelling": "Bool"
+          }
+        ],
+        "title": "qwenNGramMmapEnabled"
+      },
+      "pathComponents": [
+        "MLXModelService",
+        "qwenNGramMmapEnabled"
       ]
     },
     {
@@ -54810,6 +55358,496 @@
         },
         {
           "kind": "identifier",
+          "spelling": "AFMMLXPrefillPolicy"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX19AFMMLXPrefillPolicyO"
+      },
+      "kind": {
+        "displayName": "Enumeration",
+        "identifier": "swift.enum"
+      },
+      "names": {
+        "navigator": [
+          {
+            "kind": "identifier",
+            "spelling": "AFMMLXPrefillPolicy"
+          }
+        ],
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "enum"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "AFMMLXPrefillPolicy"
+          }
+        ],
+        "title": "AFMMLXPrefillPolicy"
+      },
+      "pathComponents": [
+        "AFMMLXPrefillPolicy"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "static"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "keyword",
+          "spelling": "let"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "defaultStepSize"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Si",
+          "spelling": "Int"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX19AFMMLXPrefillPolicyO15defaultStepSizeSivpZ"
+      },
+      "kind": {
+        "displayName": "Type Property",
+        "identifier": "swift.type.property"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "static"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "keyword",
+            "spelling": "let"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "defaultStepSize"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Si",
+            "spelling": "Int"
+          }
+        ],
+        "title": "defaultStepSize"
+      },
+      "pathComponents": [
+        "AFMMLXPrefillPolicy",
+        "defaultStepSize"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "static"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "keyword",
+          "spelling": "let"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "throughputOptimizedStepSize"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Si",
+          "spelling": "Int"
+        }
+      ],
+      "docComment": {
+        "lines": [
+          {
+            "text": "Qwen Next's measured prompt split on M3 Ultra. Keeping the large"
+          },
+          {
+            "text": "cache-only pass at 4K prevents a 4K-class prompt from evaluating an"
+          },
+          {
+            "text": "unnecessary full-sequence vocabulary projection; the remaining tail"
+          },
+          {
+            "text": "alone produces logits for sampling."
+          }
+        ],
+        "module": "AFMKitMLX"
+      },
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX19AFMMLXPrefillPolicyO27throughputOptimizedStepSizeSivpZ"
+      },
+      "kind": {
+        "displayName": "Type Property",
+        "identifier": "swift.type.property"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "static"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "keyword",
+            "spelling": "let"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "throughputOptimizedStepSize"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Si",
+            "spelling": "Int"
+          }
+        ],
+        "title": "throughputOptimizedStepSize"
+      },
+      "pathComponents": [
+        "AFMMLXPrefillPolicy",
+        "throughputOptimizedStepSize"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "static"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "keyword",
+          "spelling": "func"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "resolve"
+        },
+        {
+          "kind": "text",
+          "spelling": "("
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "configuredStepSize"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Si",
+          "spelling": "Int"
+        },
+        {
+          "kind": "text",
+          "spelling": ", "
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "isExplicit"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Sb",
+          "spelling": "Bool"
+        },
+        {
+          "kind": "text",
+          "spelling": ", "
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "canonicalModelType"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:SS",
+          "spelling": "String"
+        },
+        {
+          "kind": "text",
+          "spelling": "?) -> "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Si",
+          "spelling": "Int"
+        }
+      ],
+      "docComment": {
+        "lines": [
+          {
+            "text": "Use a benchmarked architecture recommendation when the caller did not"
+          },
+          {
+            "text": "supply an override. Explicit caller choices always win."
+          }
+        ],
+        "module": "AFMKitMLX"
+      },
+      "functionSignature": {
+        "parameters": [
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "configuredStepSize"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:Si",
+                "spelling": "Int"
+              }
+            ],
+            "name": "configuredStepSize"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "isExplicit"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:Sb",
+                "spelling": "Bool"
+              }
+            ],
+            "name": "isExplicit"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "canonicalModelType"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:SS",
+                "spelling": "String"
+              },
+              {
+                "kind": "text",
+                "spelling": "?"
+              }
+            ],
+            "name": "canonicalModelType"
+          }
+        ],
+        "returns": [
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Si",
+            "spelling": "Int"
+          }
+        ]
+      },
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX19AFMMLXPrefillPolicyO7resolve18configuredStepSize10isExplicit18canonicalModelTypeS2i_SbSSSgtFZ"
+      },
+      "kind": {
+        "displayName": "Type Method",
+        "identifier": "swift.type.method"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "static"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "keyword",
+            "spelling": "func"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "resolve"
+          },
+          {
+            "kind": "text",
+            "spelling": "("
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "configuredStepSize"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Si",
+            "spelling": "Int"
+          },
+          {
+            "kind": "text",
+            "spelling": ", "
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "isExplicit"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Sb",
+            "spelling": "Bool"
+          },
+          {
+            "kind": "text",
+            "spelling": ", "
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "canonicalModelType"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:SS",
+            "spelling": "String"
+          },
+          {
+            "kind": "text",
+            "spelling": "?) -> "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Si",
+            "spelling": "Int"
+          }
+        ],
+        "title": "resolve(configuredStepSize:isExplicit:canonicalModelType:)"
+      },
+      "pathComponents": [
+        "AFMMLXPrefillPolicy",
+        "resolve(configuredStepSize:isExplicit:canonicalModelType:)"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "enum"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
           "spelling": "AFMMLXQuickLoadPlan"
         }
       ],
@@ -59246,7 +60284,24 @@
         },
         {
           "kind": "text",
-          "spelling": ") "
+          "spelling": ", "
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "depth"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Si",
+          "spelling": "Int"
+        },
+        {
+          "kind": "text",
+          "spelling": " = 3) "
         },
         {
           "kind": "keyword",
@@ -59274,6 +60329,20 @@
           "spelling": "?"
         }
       ],
+      "docComment": {
+        "lines": [
+          {
+            "text": "Creates a sidecar-backed speculative runtime. `depth` configures the"
+          },
+          {
+            "text": "Qwen Next verifier; legacy Qwen text and vision runtimes retain their"
+          },
+          {
+            "text": "independently qualified depths."
+          }
+        ],
+        "module": "AFMKitMLX"
+      },
       "functionSignature": {
         "parameters": [
           {
@@ -59311,6 +60380,24 @@
               }
             ],
             "name": "sidecarPath"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "depth"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:Si",
+                "spelling": "Int"
+              }
+            ],
+            "name": "depth"
           }
         ],
         "returns": [
@@ -59327,7 +60414,7 @@
       },
       "identifier": {
         "interfaceLanguage": "swift",
-        "precise": "s:9AFMKitMLX20AFMMLXRuntimeAdapterV14makeMTPRuntime9container11sidecarPathAA24AFMMLXSpeculativeRuntimeOSg11MLXLMCommon14ModelContainerC_SStYaKF"
+        "precise": "s:9AFMKitMLX20AFMMLXRuntimeAdapterV14makeMTPRuntime9container11sidecarPath5depthAA24AFMMLXSpeculativeRuntimeOSg11MLXLMCommon14ModelContainerC_SSSitYaKF"
       },
       "kind": {
         "displayName": "Instance Method",
@@ -59383,6 +60470,23 @@
           },
           {
             "kind": "text",
+            "spelling": ", "
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "depth"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Si",
+            "spelling": "Int"
+          },
+          {
+            "kind": "text",
             "spelling": ") "
           },
           {
@@ -59411,11 +60515,11 @@
             "spelling": "?"
           }
         ],
-        "title": "makeMTPRuntime(container:sidecarPath:)"
+        "title": "makeMTPRuntime(container:sidecarPath:depth:)"
       },
       "pathComponents": [
         "AFMMLXRuntimeAdapter",
-        "makeMTPRuntime(container:sidecarPath:)"
+        "makeMTPRuntime(container:sidecarPath:depth:)"
       ]
     },
     {
@@ -94129,6 +95233,341 @@
         },
         {
           "kind": "identifier",
+          "spelling": "AFMMLXQwenNGramResidency"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX24AFMMLXQwenNGramResidencyO"
+      },
+      "kind": {
+        "displayName": "Enumeration",
+        "identifier": "swift.enum"
+      },
+      "names": {
+        "navigator": [
+          {
+            "kind": "identifier",
+            "spelling": "AFMMLXQwenNGramResidency"
+          }
+        ],
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "enum"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "AFMMLXQwenNGramResidency"
+          }
+        ],
+        "title": "AFMMLXQwenNGramResidency"
+      },
+      "pathComponents": [
+        "AFMMLXQwenNGramResidency"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "init"
+        },
+        {
+          "kind": "text",
+          "spelling": "("
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "configuredValue"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:SS",
+          "spelling": "String"
+        },
+        {
+          "kind": "text",
+          "spelling": "?)"
+        }
+      ],
+      "functionSignature": {
+        "parameters": [
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "configuredValue"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:SS",
+                "spelling": "String"
+              },
+              {
+                "kind": "text",
+                "spelling": "?"
+              }
+            ],
+            "name": "configuredValue"
+          }
+        ]
+      },
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX24AFMMLXQwenNGramResidencyO15configuredValueACSSSg_tcfc"
+      },
+      "kind": {
+        "displayName": "Initializer",
+        "identifier": "swift.init"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "init"
+          },
+          {
+            "kind": "text",
+            "spelling": "("
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "configuredValue"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:SS",
+            "spelling": "String"
+          },
+          {
+            "kind": "text",
+            "spelling": "?)"
+          }
+        ],
+        "title": "init(configuredValue:)"
+      },
+      "pathComponents": [
+        "AFMMLXQwenNGramResidency",
+        "init(configuredValue:)"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "case"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "mapped"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX24AFMMLXQwenNGramResidencyO6mappedyA2CmF"
+      },
+      "kind": {
+        "displayName": "Case",
+        "identifier": "swift.enum.case"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "case"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "mapped"
+          }
+        ],
+        "title": "AFMMLXQwenNGramResidency.mapped"
+      },
+      "pathComponents": [
+        "AFMMLXQwenNGramResidency",
+        "mapped"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "case"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "prewarm"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX24AFMMLXQwenNGramResidencyO7prewarmyA2CmF"
+      },
+      "kind": {
+        "displayName": "Case",
+        "identifier": "swift.enum.case"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "case"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "prewarm"
+          }
+        ],
+        "title": "AFMMLXQwenNGramResidency.prewarm"
+      },
+      "pathComponents": [
+        "AFMMLXQwenNGramResidency",
+        "prewarm"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "init"
+        },
+        {
+          "kind": "text",
+          "spelling": "?("
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "rawValue"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:SS",
+          "spelling": "String"
+        },
+        {
+          "kind": "text",
+          "spelling": ")"
+        }
+      ],
+      "functionSignature": {
+        "parameters": [
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "rawValue"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:SS",
+                "spelling": "String"
+              }
+            ],
+            "name": "rawValue"
+          }
+        ]
+      },
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX24AFMMLXQwenNGramResidencyO8rawValueACSgSS_tcfc"
+      },
+      "kind": {
+        "displayName": "Initializer",
+        "identifier": "swift.init"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "init"
+          },
+          {
+            "kind": "text",
+            "spelling": "?("
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "rawValue"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:SS",
+            "spelling": "String"
+          },
+          {
+            "kind": "text",
+            "spelling": ")"
+          }
+        ],
+        "title": "init(rawValue:)"
+      },
+      "pathComponents": [
+        "AFMMLXQwenNGramResidency",
+        "init(rawValue:)"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "enum"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
           "spelling": "AFMMLXRequestMediaPolicy"
         }
       ],
@@ -97662,6 +99101,78 @@
       },
       "pathComponents": [
         "AFMMLXSpeculativeRuntime"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "case"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "qwenNextMTP"
+        },
+        {
+          "kind": "text",
+          "spelling": "("
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:6MLXLLM20Qwen4ExpMTPGeneratorC",
+          "spelling": "Qwen4ExpMTPGenerator"
+        },
+        {
+          "kind": "text",
+          "spelling": ")"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX24AFMMLXSpeculativeRuntimeO11qwenNextMTPyAC6MLXLLM20Qwen4ExpMTPGeneratorCcACmF"
+      },
+      "kind": {
+        "displayName": "Case",
+        "identifier": "swift.enum.case"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "case"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "qwenNextMTP"
+          },
+          {
+            "kind": "text",
+            "spelling": "("
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:6MLXLLM20Qwen4ExpMTPGeneratorC",
+            "spelling": "Qwen4ExpMTPGenerator"
+          },
+          {
+            "kind": "text",
+            "spelling": ")"
+          }
+        ],
+        "title": "AFMMLXSpeculativeRuntime.qwenNextMTP(_:)"
+      },
+      "pathComponents": [
+        "AFMMLXSpeculativeRuntime",
+        "qwenNextMTP(_:)"
       ]
     },
     {
@@ -103947,6 +105458,53 @@
         "AFMMLXCheckpointConverter",
         "ModelKind",
         "glm5Next"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "case"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "qwen4Exp"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX25AFMMLXCheckpointConverterV9ModelKindO8qwen4ExpyA2EmF"
+      },
+      "kind": {
+        "displayName": "Case",
+        "identifier": "swift.enum.case"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "case"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "qwen4Exp"
+          }
+        ],
+        "title": "AFMMLXCheckpointConverter.ModelKind.qwen4Exp"
+      },
+      "pathComponents": [
+        "AFMMLXCheckpointConverter",
+        "ModelKind",
+        "qwen4Exp"
       ]
     },
     {
@@ -128196,6 +129754,70 @@
         },
         {
           "kind": "identifier",
+          "spelling": "qwenNGramResidency"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:9AFMKitMLX24AFMMLXQwenNGramResidencyO",
+          "spelling": "AFMMLXQwenNGramResidency"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV18qwenNGramResidencyAA010AFMMLXQwenfG0Ovp"
+      },
+      "kind": {
+        "displayName": "Instance Property",
+        "identifier": "swift.property"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "var"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "qwenNGramResidency"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:9AFMKitMLX24AFMMLXQwenNGramResidencyO",
+            "spelling": "AFMMLXQwenNGramResidency"
+          }
+        ],
+        "title": "qwenNGramResidency"
+      },
+      "pathComponents": [
+        "AFMMLXRuntimeConfiguration",
+        "qwenNGramResidency"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "var"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
           "spelling": "enablePrefixCaching"
         },
         {
@@ -128373,6 +129995,108 @@
       "pathComponents": [
         "AFMMLXRuntimeConfiguration",
         "forceDisableThinking"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "availability": [
+        {
+          "domain": "*",
+          "isUnconditionallyDeprecated": true,
+          "message": "Qwen Next n-gram sidecars are loaded automatically"
+        }
+      ],
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "var"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "qwenNGramMmapEnabled"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Sb",
+          "spelling": "Bool"
+        },
+        {
+          "kind": "text",
+          "spelling": " { "
+        },
+        {
+          "kind": "keyword",
+          "spelling": "get"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "keyword",
+          "spelling": "set"
+        },
+        {
+          "kind": "text",
+          "spelling": " }"
+        }
+      ],
+      "docComment": {
+        "lines": [
+          {
+            "text": "Retained for source compatibility. Qwen Next checkpoints now load their"
+          },
+          {
+            "text": "declared n-gram sidecar automatically, so this value has no runtime effect."
+          }
+        ],
+        "module": "AFMKitMLX"
+      },
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV20qwenNGramMmapEnabledSbvp"
+      },
+      "kind": {
+        "displayName": "Instance Property",
+        "identifier": "swift.property"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "var"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "qwenNGramMmapEnabled"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Sb",
+            "spelling": "Bool"
+          }
+        ],
+        "title": "qwenNGramMmapEnabled"
+      },
+      "pathComponents": [
+        "AFMMLXRuntimeConfiguration",
+        "qwenNGramMmapEnabled"
       ]
     },
     {
@@ -128906,6 +130630,40 @@
         },
         {
           "kind": "externalParam",
+          "spelling": "qwenNGramResidency"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:9AFMKitMLX24AFMMLXQwenNGramResidencyO",
+          "spelling": "AFMMLXQwenNGramResidency"
+        },
+        {
+          "kind": "text",
+          "spelling": " = .mapped, "
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "qwenNGramMmapEnabled"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Sb",
+          "spelling": "Bool"
+        },
+        {
+          "kind": "text",
+          "spelling": " = false, "
+        },
+        {
+          "kind": "externalParam",
           "spelling": "mtpEnabled"
         },
         {
@@ -129301,6 +131059,42 @@
             "declarationFragments": [
               {
                 "kind": "identifier",
+                "spelling": "qwenNGramResidency"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:9AFMKitMLX24AFMMLXQwenNGramResidencyO",
+                "spelling": "AFMMLXQwenNGramResidency"
+              }
+            ],
+            "name": "qwenNGramResidency"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "qwenNGramMmapEnabled"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:Sb",
+                "spelling": "Bool"
+              }
+            ],
+            "name": "qwenNGramMmapEnabled"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
                 "spelling": "mtpEnabled"
               },
               {
@@ -129684,7 +131478,7 @@
       },
       "identifier": {
         "interfaceLanguage": "swift",
-        "precise": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV6kvBits19enablePrefixCaching12kernelEngine10mtpEnabled0L5Depth0L7ModelID17eagle3DrafterPath13maxConcurrent14toolCallParser0G18GrammarConstraints15prefillStepSize0E14EvictionPolicy16fixToolArguments8forceVLM012cacheProfileS05trace010gpuCaptureS016gpuTraceDuration10gpuProfile19gpuProfileBandwidth25defaultChatTemplateKwargs20forceDisableThinkingACSiSg_SbAA012AFMMLXKernelK0OSbSiSSSgA1_SiA1_SbAZSSS2bA1_SbA1_AZS2bSDySS0A4Core12AFMJSONValueOGSgSbtcfc"
+        "precise": "s:9AFMKitMLX26AFMMLXRuntimeConfigurationV6kvBits19enablePrefixCaching12kernelEngine18qwenNGramResidency0lM11MmapEnabled03mtpP00Q5Depth0Q7ModelID17eagle3DrafterPath13maxConcurrent14toolCallParser0G18GrammarConstraints15prefillStepSize0E14EvictionPolicy16fixToolArguments8forceVLM012cacheProfileW05trace010gpuCaptureW016gpuTraceDuration10gpuProfile19gpuProfileBandwidth25defaultChatTemplateKwargs20forceDisableThinkingACSiSg_SbAA012AFMMLXKernelK0OAA010AFMMLXQwenmN0OS2bSiSSSgA5_SiA5_SbA0_SSS2bA5_SbA5_A0_S2bSDySS0A4Core12AFMJSONValueOGSgSbtcfc"
       },
       "kind": {
         "displayName": "Initializer",
@@ -129746,6 +131540,40 @@
             "kind": "typeIdentifier",
             "preciseIdentifier": "s:9AFMKitMLX18AFMMLXKernelEngineO",
             "spelling": "AFMMLXKernelEngine"
+          },
+          {
+            "kind": "text",
+            "spelling": ", "
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "qwenNGramResidency"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:9AFMKitMLX24AFMMLXQwenNGramResidencyO",
+            "spelling": "AFMMLXQwenNGramResidency"
+          },
+          {
+            "kind": "text",
+            "spelling": ", "
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "qwenNGramMmapEnabled"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Sb",
+            "spelling": "Bool"
           },
           {
             "kind": "text",
@@ -130084,11 +131912,11 @@
             "spelling": ")"
           }
         ],
-        "title": "init(kvBits:enablePrefixCaching:kernelEngine:mtpEnabled:mtpDepth:mtpModelID:eagle3DrafterPath:maxConcurrent:toolCallParser:enableGrammarConstraints:prefillStepSize:kvEvictionPolicy:fixToolArguments:forceVLM:cacheProfilePath:trace:gpuCapturePath:gpuTraceDuration:gpuProfile:gpuProfileBandwidth:defaultChatTemplateKwargs:forceDisableThinking:)"
+        "title": "init(kvBits:enablePrefixCaching:kernelEngine:qwenNGramResidency:qwenNGramMmapEnabled:mtpEnabled:mtpDepth:mtpModelID:eagle3DrafterPath:maxConcurrent:toolCallParser:enableGrammarConstraints:prefillStepSize:kvEvictionPolicy:fixToolArguments:forceVLM:cacheProfilePath:trace:gpuCapturePath:gpuTraceDuration:gpuProfile:gpuProfileBandwidth:defaultChatTemplateKwargs:forceDisableThinking:)"
       },
       "pathComponents": [
         "AFMMLXRuntimeConfiguration",
-        "init(kvBits:enablePrefixCaching:kernelEngine:mtpEnabled:mtpDepth:mtpModelID:eagle3DrafterPath:maxConcurrent:toolCallParser:enableGrammarConstraints:prefillStepSize:kvEvictionPolicy:fixToolArguments:forceVLM:cacheProfilePath:trace:gpuCapturePath:gpuTraceDuration:gpuProfile:gpuProfileBandwidth:defaultChatTemplateKwargs:forceDisableThinking:)"
+        "init(kvBits:enablePrefixCaching:kernelEngine:qwenNGramResidency:qwenNGramMmapEnabled:mtpEnabled:mtpDepth:mtpModelID:eagle3DrafterPath:maxConcurrent:toolCallParser:enableGrammarConstraints:prefillStepSize:kvEvictionPolicy:fixToolArguments:forceVLM:cacheProfilePath:trace:gpuCapturePath:gpuTraceDuration:gpuProfile:gpuProfileBandwidth:defaultChatTemplateKwargs:forceDisableThinking:)"
       ]
     },
     {
@@ -139830,6 +141658,2718 @@
       },
       "pathComponents": [
         "GLM5NextCheckpointConverter",
+        "inspect(source:sourceRevision:)"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "struct"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "Qwen4ExpCheckpointConverter"
+        }
+      ],
+      "docComment": {
+        "lines": [
+          {
+            "text": "Converts the official Qwen3.8 Flash Next BF16 checkpoint into AFMKit's"
+          },
+          {
+            "text": "affine-quantized runtime layout with a host-mapped n-gram table."
+          },
+          {
+            "text": ""
+          },
+          {
+            "text": "The mapped-sidecar layout is based on the MIT-licensed reference converter"
+          },
+          {
+            "text": "in ddalcu/mlx-serve at commit"
+          },
+          {
+            "text": "805807669565d359188b329c659f9f45d6358cd7. This is a native Swift"
+          },
+          {
+            "text": "implementation using AFMKit and MLX primitives; it does not invoke Python"
+          },
+          {
+            "text": "or depend on the reference project at runtime."
+          }
+        ],
+        "module": "AFMKitMLX"
+      },
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV"
+      },
+      "kind": {
+        "displayName": "Structure",
+        "identifier": "swift.struct"
+      },
+      "names": {
+        "navigator": [
+          {
+            "kind": "identifier",
+            "spelling": "Qwen4ExpCheckpointConverter"
+          }
+        ],
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "struct"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "Qwen4ExpCheckpointConverter"
+          }
+        ],
+        "title": "Qwen4ExpCheckpointConverter"
+      },
+      "pathComponents": [
+        "Qwen4ExpCheckpointConverter"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "struct"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "Inspection"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV10InspectionV"
+      },
+      "kind": {
+        "displayName": "Structure",
+        "identifier": "swift.struct"
+      },
+      "names": {
+        "navigator": [
+          {
+            "kind": "identifier",
+            "spelling": "Inspection"
+          }
+        ],
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "struct"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "Inspection"
+          }
+        ],
+        "title": "Qwen4ExpCheckpointConverter.Inspection"
+      },
+      "pathComponents": [
+        "Qwen4ExpCheckpointConverter",
+        "Inspection"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "let"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "shardCount"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Si",
+          "spelling": "Int"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV10InspectionV10shardCountSivp"
+      },
+      "kind": {
+        "displayName": "Instance Property",
+        "identifier": "swift.property"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "let"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "shardCount"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Si",
+            "spelling": "Int"
+          }
+        ],
+        "title": "shardCount"
+      },
+      "pathComponents": [
+        "Qwen4ExpCheckpointConverter",
+        "Inspection",
+        "shardCount"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "let"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "sourceBytes"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:s5Int64V",
+          "spelling": "Int64"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV10InspectionV11sourceBytess5Int64Vvp"
+      },
+      "kind": {
+        "displayName": "Instance Property",
+        "identifier": "swift.property"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "let"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "sourceBytes"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:s5Int64V",
+            "spelling": "Int64"
+          }
+        ],
+        "title": "sourceBytes"
+      },
+      "pathComponents": [
+        "Qwen4ExpCheckpointConverter",
+        "Inspection",
+        "sourceBytes"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "let"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "tensorCount"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Si",
+          "spelling": "Int"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV10InspectionV11tensorCountSivp"
+      },
+      "kind": {
+        "displayName": "Instance Property",
+        "identifier": "swift.property"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "let"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "tensorCount"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Si",
+            "spelling": "Int"
+          }
+        ],
+        "title": "tensorCount"
+      },
+      "pathComponents": [
+        "Qwen4ExpCheckpointConverter",
+        "Inspection",
+        "tensorCount"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "let"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "sourceRevision"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:SS",
+          "spelling": "String"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV10InspectionV14sourceRevisionSSvp"
+      },
+      "kind": {
+        "displayName": "Instance Property",
+        "identifier": "swift.property"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "let"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "sourceRevision"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:SS",
+            "spelling": "String"
+          }
+        ],
+        "title": "sourceRevision"
+      },
+      "pathComponents": [
+        "Qwen4ExpCheckpointConverter",
+        "Inspection",
+        "sourceRevision"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "let"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "ngramShardCount"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Si",
+          "spelling": "Int"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV10InspectionV15ngramShardCountSivp"
+      },
+      "kind": {
+        "displayName": "Instance Property",
+        "identifier": "swift.property"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "let"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "ngramShardCount"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Si",
+            "spelling": "Int"
+          }
+        ],
+        "title": "ngramShardCount"
+      },
+      "pathComponents": [
+        "Qwen4ExpCheckpointConverter",
+        "Inspection",
+        "ngramShardCount"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "let"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "estimatedOutputBytes"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:s5Int64V",
+          "spelling": "Int64"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV10InspectionV20estimatedOutputBytess5Int64Vvp"
+      },
+      "kind": {
+        "displayName": "Instance Property",
+        "identifier": "swift.property"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "let"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "estimatedOutputBytes"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:s5Int64V",
+            "spelling": "Int64"
+          }
+        ],
+        "title": "estimatedOutputBytes"
+      },
+      "pathComponents": [
+        "Qwen4ExpCheckpointConverter",
+        "Inspection",
+        "estimatedOutputBytes"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "let"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "requiredDestinationFreeBytes"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:s5Int64V",
+          "spelling": "Int64"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV10InspectionV28requiredDestinationFreeBytess5Int64Vvp"
+      },
+      "kind": {
+        "displayName": "Instance Property",
+        "identifier": "swift.property"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "let"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "requiredDestinationFreeBytes"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:s5Int64V",
+            "spelling": "Int64"
+          }
+        ],
+        "title": "requiredDestinationFreeBytes"
+      },
+      "pathComponents": [
+        "Qwen4ExpCheckpointConverter",
+        "Inspection",
+        "requiredDestinationFreeBytes"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "static"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "keyword",
+          "spelling": "func"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "inspectResume"
+        },
+        {
+          "kind": "text",
+          "spelling": "("
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "source"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:10Foundation3URLV",
+          "spelling": "URL"
+        },
+        {
+          "kind": "text",
+          "spelling": ", "
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "output"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:10Foundation3URLV",
+          "spelling": "URL"
+        },
+        {
+          "kind": "text",
+          "spelling": ", "
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "profile"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV",
+          "spelling": "Qwen4ExpCheckpointConverter"
+        },
+        {
+          "kind": "text",
+          "spelling": "."
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV7ProfileO",
+          "spelling": "Profile"
+        },
+        {
+          "kind": "text",
+          "spelling": " = .afmMapped4, "
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "sourceRevision"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:SS",
+          "spelling": "String"
+        },
+        {
+          "kind": "text",
+          "spelling": "? = nil) "
+        },
+        {
+          "kind": "keyword",
+          "spelling": "throws"
+        },
+        {
+          "kind": "text",
+          "spelling": " -> "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV",
+          "spelling": "Qwen4ExpCheckpointConverter"
+        },
+        {
+          "kind": "text",
+          "spelling": "."
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV16ResumeInspectionV",
+          "spelling": "ResumeInspection"
+        }
+      ],
+      "functionSignature": {
+        "parameters": [
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "source"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:10Foundation3URLV",
+                "spelling": "URL"
+              }
+            ],
+            "name": "source"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "output"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:10Foundation3URLV",
+                "spelling": "URL"
+              }
+            ],
+            "name": "output"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "profile"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV",
+                "spelling": "Qwen4ExpCheckpointConverter"
+              },
+              {
+                "kind": "text",
+                "spelling": "."
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV7ProfileO",
+                "spelling": "Profile"
+              }
+            ],
+            "name": "profile"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "sourceRevision"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:SS",
+                "spelling": "String"
+              },
+              {
+                "kind": "text",
+                "spelling": "?"
+              }
+            ],
+            "name": "sourceRevision"
+          }
+        ],
+        "returns": [
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV",
+            "spelling": "Qwen4ExpCheckpointConverter"
+          },
+          {
+            "kind": "text",
+            "spelling": "."
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV16ResumeInspectionV",
+            "spelling": "ResumeInspection"
+          }
+        ]
+      },
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV13inspectResume6source6output7profile0I8RevisionAC0H10InspectionV10Foundation3URLV_AmC7ProfileOSSSgtKFZ"
+      },
+      "kind": {
+        "displayName": "Type Method",
+        "identifier": "swift.type.method"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "static"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "keyword",
+            "spelling": "func"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "inspectResume"
+          },
+          {
+            "kind": "text",
+            "spelling": "("
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "source"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:10Foundation3URLV",
+            "spelling": "URL"
+          },
+          {
+            "kind": "text",
+            "spelling": ", "
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "output"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:10Foundation3URLV",
+            "spelling": "URL"
+          },
+          {
+            "kind": "text",
+            "spelling": ", "
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "profile"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV",
+            "spelling": "Qwen4ExpCheckpointConverter"
+          },
+          {
+            "kind": "text",
+            "spelling": "."
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV7ProfileO",
+            "spelling": "Profile"
+          },
+          {
+            "kind": "text",
+            "spelling": ", "
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "sourceRevision"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:SS",
+            "spelling": "String"
+          },
+          {
+            "kind": "text",
+            "spelling": "?) "
+          },
+          {
+            "kind": "keyword",
+            "spelling": "throws"
+          },
+          {
+            "kind": "text",
+            "spelling": " -> "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV",
+            "spelling": "Qwen4ExpCheckpointConverter"
+          },
+          {
+            "kind": "text",
+            "spelling": "."
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV16ResumeInspectionV",
+            "spelling": "ResumeInspection"
+          }
+        ],
+        "title": "inspectResume(source:output:profile:sourceRevision:)"
+      },
+      "pathComponents": [
+        "Qwen4ExpCheckpointConverter",
+        "inspectResume(source:output:profile:sourceRevision:)"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "enum"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "ConversionError"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV15ConversionErrorO"
+      },
+      "kind": {
+        "displayName": "Enumeration",
+        "identifier": "swift.enum"
+      },
+      "names": {
+        "navigator": [
+          {
+            "kind": "identifier",
+            "spelling": "ConversionError"
+          }
+        ],
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "enum"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "ConversionError"
+          }
+        ],
+        "title": "Qwen4ExpCheckpointConverter.ConversionError"
+      },
+      "pathComponents": [
+        "Qwen4ExpCheckpointConverter",
+        "ConversionError"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "case"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "outputExists"
+        },
+        {
+          "kind": "text",
+          "spelling": "("
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:SS",
+          "spelling": "String"
+        },
+        {
+          "kind": "text",
+          "spelling": ")"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV15ConversionErrorO12outputExistsyAESScAEmF"
+      },
+      "kind": {
+        "displayName": "Case",
+        "identifier": "swift.enum.case"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "case"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "outputExists"
+          },
+          {
+            "kind": "text",
+            "spelling": "("
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:SS",
+            "spelling": "String"
+          },
+          {
+            "kind": "text",
+            "spelling": ")"
+          }
+        ],
+        "title": "Qwen4ExpCheckpointConverter.ConversionError.outputExists(_:)"
+      },
+      "pathComponents": [
+        "Qwen4ExpCheckpointConverter",
+        "ConversionError",
+        "outputExists(_:)"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "case"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "unsafeOutput"
+        },
+        {
+          "kind": "text",
+          "spelling": "("
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:SS",
+          "spelling": "String"
+        },
+        {
+          "kind": "text",
+          "spelling": ")"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV15ConversionErrorO12unsafeOutputyAESScAEmF"
+      },
+      "kind": {
+        "displayName": "Case",
+        "identifier": "swift.enum.case"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "case"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "unsafeOutput"
+          },
+          {
+            "kind": "text",
+            "spelling": "("
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:SS",
+            "spelling": "String"
+          },
+          {
+            "kind": "text",
+            "spelling": ")"
+          }
+        ],
+        "title": "Qwen4ExpCheckpointConverter.ConversionError.unsafeOutput(_:)"
+      },
+      "pathComponents": [
+        "Qwen4ExpCheckpointConverter",
+        "ConversionError",
+        "unsafeOutput(_:)"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "case"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "invalidSource"
+        },
+        {
+          "kind": "text",
+          "spelling": "("
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:SS",
+          "spelling": "String"
+        },
+        {
+          "kind": "text",
+          "spelling": ")"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV15ConversionErrorO13invalidSourceyAESScAEmF"
+      },
+      "kind": {
+        "displayName": "Case",
+        "identifier": "swift.enum.case"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "case"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "invalidSource"
+          },
+          {
+            "kind": "text",
+            "spelling": "("
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:SS",
+            "spelling": "String"
+          },
+          {
+            "kind": "text",
+            "spelling": ")"
+          }
+        ],
+        "title": "Qwen4ExpCheckpointConverter.ConversionError.invalidSource(_:)"
+      },
+      "pathComponents": [
+        "Qwen4ExpCheckpointConverter",
+        "ConversionError",
+        "invalidSource(_:)"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "case"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "sourceMismatch"
+        },
+        {
+          "kind": "text",
+          "spelling": "("
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:SS",
+          "spelling": "String"
+        },
+        {
+          "kind": "text",
+          "spelling": ")"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV15ConversionErrorO14sourceMismatchyAESScAEmF"
+      },
+      "kind": {
+        "displayName": "Case",
+        "identifier": "swift.enum.case"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "case"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "sourceMismatch"
+          },
+          {
+            "kind": "text",
+            "spelling": "("
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:SS",
+            "spelling": "String"
+          },
+          {
+            "kind": "text",
+            "spelling": ")"
+          }
+        ],
+        "title": "Qwen4ExpCheckpointConverter.ConversionError.sourceMismatch(_:)"
+      },
+      "pathComponents": [
+        "Qwen4ExpCheckpointConverter",
+        "ConversionError",
+        "sourceMismatch(_:)"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "var"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "errorDescription"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:SS",
+          "spelling": "String"
+        },
+        {
+          "kind": "text",
+          "spelling": "? { "
+        },
+        {
+          "kind": "keyword",
+          "spelling": "get"
+        },
+        {
+          "kind": "text",
+          "spelling": " }"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV15ConversionErrorO16errorDescriptionSSSgvp"
+      },
+      "kind": {
+        "displayName": "Instance Property",
+        "identifier": "swift.property"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "var"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "errorDescription"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:SS",
+            "spelling": "String"
+          },
+          {
+            "kind": "text",
+            "spelling": "?"
+          }
+        ],
+        "title": "errorDescription"
+      },
+      "pathComponents": [
+        "Qwen4ExpCheckpointConverter",
+        "ConversionError",
+        "errorDescription"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "case"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "unsupportedTensor"
+        },
+        {
+          "kind": "text",
+          "spelling": "("
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:SS",
+          "spelling": "String"
+        },
+        {
+          "kind": "text",
+          "spelling": ")"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV15ConversionErrorO17unsupportedTensoryAESScAEmF"
+      },
+      "kind": {
+        "displayName": "Case",
+        "identifier": "swift.enum.case"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "case"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "unsupportedTensor"
+          },
+          {
+            "kind": "text",
+            "spelling": "("
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:SS",
+            "spelling": "String"
+          },
+          {
+            "kind": "text",
+            "spelling": ")"
+          }
+        ],
+        "title": "Qwen4ExpCheckpointConverter.ConversionError.unsupportedTensor(_:)"
+      },
+      "pathComponents": [
+        "Qwen4ExpCheckpointConverter",
+        "ConversionError",
+        "unsupportedTensor(_:)"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "typealias"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "ProgressHandler"
+        },
+        {
+          "kind": "text",
+          "spelling": " = ("
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:SS",
+          "spelling": "String"
+        },
+        {
+          "kind": "text",
+          "spelling": ") -> "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:s4Voida",
+          "spelling": "Void"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV15ProgressHandlera"
+      },
+      "kind": {
+        "displayName": "Type Alias",
+        "identifier": "swift.typealias"
+      },
+      "names": {
+        "navigator": [
+          {
+            "kind": "identifier",
+            "spelling": "ProgressHandler"
+          }
+        ],
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "typealias"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "ProgressHandler"
+          }
+        ],
+        "title": "Qwen4ExpCheckpointConverter.ProgressHandler"
+      },
+      "pathComponents": [
+        "Qwen4ExpCheckpointConverter",
+        "ProgressHandler"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "static"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "keyword",
+          "spelling": "let"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "officialModelID"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:SS",
+          "spelling": "String"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV15officialModelIDSSvpZ"
+      },
+      "kind": {
+        "displayName": "Type Property",
+        "identifier": "swift.type.property"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "static"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "keyword",
+            "spelling": "let"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "officialModelID"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:SS",
+            "spelling": "String"
+          }
+        ],
+        "title": "officialModelID"
+      },
+      "pathComponents": [
+        "Qwen4ExpCheckpointConverter",
+        "officialModelID"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "struct"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "ResumeInspection"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV16ResumeInspectionV"
+      },
+      "kind": {
+        "displayName": "Structure",
+        "identifier": "swift.struct"
+      },
+      "names": {
+        "navigator": [
+          {
+            "kind": "identifier",
+            "spelling": "ResumeInspection"
+          }
+        ],
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "struct"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "ResumeInspection"
+          }
+        ],
+        "title": "Qwen4ExpCheckpointConverter.ResumeInspection"
+      },
+      "pathComponents": [
+        "Qwen4ExpCheckpointConverter",
+        "ResumeInspection"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "let"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "sourceRevision"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:SS",
+          "spelling": "String"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV16ResumeInspectionV14sourceRevisionSSvp"
+      },
+      "kind": {
+        "displayName": "Instance Property",
+        "identifier": "swift.property"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "let"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "sourceRevision"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:SS",
+            "spelling": "String"
+          }
+        ],
+        "title": "sourceRevision"
+      },
+      "pathComponents": [
+        "Qwen4ExpCheckpointConverter",
+        "ResumeInspection",
+        "sourceRevision"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "let"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "verifiedCompletedOutputBytes"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:s5Int64V",
+          "spelling": "Int64"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV16ResumeInspectionV28verifiedCompletedOutputBytess5Int64Vvp"
+      },
+      "kind": {
+        "displayName": "Instance Property",
+        "identifier": "swift.property"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "let"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "verifiedCompletedOutputBytes"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:s5Int64V",
+            "spelling": "Int64"
+          }
+        ],
+        "title": "verifiedCompletedOutputBytes"
+      },
+      "pathComponents": [
+        "Qwen4ExpCheckpointConverter",
+        "ResumeInspection",
+        "verifiedCompletedOutputBytes"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "func"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "run"
+        },
+        {
+          "kind": "text",
+          "spelling": "() "
+        },
+        {
+          "kind": "keyword",
+          "spelling": "throws"
+        }
+      ],
+      "functionSignature": {
+        "returns": [
+          {
+            "kind": "text",
+            "spelling": "()"
+          }
+        ]
+      },
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV3runyyKF"
+      },
+      "kind": {
+        "displayName": "Instance Method",
+        "identifier": "swift.method"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "func"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "run"
+          },
+          {
+            "kind": "text",
+            "spelling": "() "
+          },
+          {
+            "kind": "keyword",
+            "spelling": "throws"
+          }
+        ],
+        "title": "run()"
+      },
+      "pathComponents": [
+        "Qwen4ExpCheckpointConverter",
+        "run()"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "init"
+        },
+        {
+          "kind": "text",
+          "spelling": "("
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "source"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:10Foundation3URLV",
+          "spelling": "URL"
+        },
+        {
+          "kind": "text",
+          "spelling": ", "
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "output"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:10Foundation3URLV",
+          "spelling": "URL"
+        },
+        {
+          "kind": "text",
+          "spelling": ", "
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "overwrite"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Sb",
+          "spelling": "Bool"
+        },
+        {
+          "kind": "text",
+          "spelling": " = false, "
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "profile"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV",
+          "spelling": "Qwen4ExpCheckpointConverter"
+        },
+        {
+          "kind": "text",
+          "spelling": "."
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV7ProfileO",
+          "spelling": "Profile"
+        },
+        {
+          "kind": "text",
+          "spelling": " = .afmMapped4, "
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "sourceRevision"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:SS",
+          "spelling": "String"
+        },
+        {
+          "kind": "text",
+          "spelling": "? = nil, "
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "progress"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV",
+          "spelling": "Qwen4ExpCheckpointConverter"
+        },
+        {
+          "kind": "text",
+          "spelling": "."
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV15ProgressHandlera",
+          "spelling": "ProgressHandler"
+        },
+        {
+          "kind": "text",
+          "spelling": "? = nil)"
+        }
+      ],
+      "functionSignature": {
+        "parameters": [
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "source"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:10Foundation3URLV",
+                "spelling": "URL"
+              }
+            ],
+            "name": "source"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "output"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:10Foundation3URLV",
+                "spelling": "URL"
+              }
+            ],
+            "name": "output"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "overwrite"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:Sb",
+                "spelling": "Bool"
+              }
+            ],
+            "name": "overwrite"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "profile"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV",
+                "spelling": "Qwen4ExpCheckpointConverter"
+              },
+              {
+                "kind": "text",
+                "spelling": "."
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV7ProfileO",
+                "spelling": "Profile"
+              }
+            ],
+            "name": "profile"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "sourceRevision"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:SS",
+                "spelling": "String"
+              },
+              {
+                "kind": "text",
+                "spelling": "?"
+              }
+            ],
+            "name": "sourceRevision"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "progress"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV",
+                "spelling": "Qwen4ExpCheckpointConverter"
+              },
+              {
+                "kind": "text",
+                "spelling": "."
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV15ProgressHandlera",
+                "spelling": "ProgressHandler"
+              },
+              {
+                "kind": "text",
+                "spelling": "?"
+              }
+            ],
+            "name": "progress"
+          }
+        ]
+      },
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV6source6output9overwrite7profile0G8Revision8progressAC10Foundation3URLV_ALSbAC7ProfileOSSSgySScSgtcfc"
+      },
+      "kind": {
+        "displayName": "Initializer",
+        "identifier": "swift.init"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "init"
+          },
+          {
+            "kind": "text",
+            "spelling": "("
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "source"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:10Foundation3URLV",
+            "spelling": "URL"
+          },
+          {
+            "kind": "text",
+            "spelling": ", "
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "output"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:10Foundation3URLV",
+            "spelling": "URL"
+          },
+          {
+            "kind": "text",
+            "spelling": ", "
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "overwrite"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Sb",
+            "spelling": "Bool"
+          },
+          {
+            "kind": "text",
+            "spelling": ", "
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "profile"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV",
+            "spelling": "Qwen4ExpCheckpointConverter"
+          },
+          {
+            "kind": "text",
+            "spelling": "."
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV7ProfileO",
+            "spelling": "Profile"
+          },
+          {
+            "kind": "text",
+            "spelling": ", "
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "sourceRevision"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:SS",
+            "spelling": "String"
+          },
+          {
+            "kind": "text",
+            "spelling": "?, "
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "progress"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV",
+            "spelling": "Qwen4ExpCheckpointConverter"
+          },
+          {
+            "kind": "text",
+            "spelling": "."
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV15ProgressHandlera",
+            "spelling": "ProgressHandler"
+          },
+          {
+            "kind": "text",
+            "spelling": "?)"
+          }
+        ],
+        "title": "init(source:output:overwrite:profile:sourceRevision:progress:)"
+      },
+      "pathComponents": [
+        "Qwen4ExpCheckpointConverter",
+        "init(source:output:overwrite:profile:sourceRevision:progress:)"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "enum"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "Profile"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV7ProfileO"
+      },
+      "kind": {
+        "displayName": "Enumeration",
+        "identifier": "swift.enum"
+      },
+      "names": {
+        "navigator": [
+          {
+            "kind": "identifier",
+            "spelling": "Profile"
+          }
+        ],
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "enum"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "Profile"
+          }
+        ],
+        "title": "Qwen4ExpCheckpointConverter.Profile"
+      },
+      "pathComponents": [
+        "Qwen4ExpCheckpointConverter",
+        "Profile"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "case"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "afmMapped4"
+        }
+      ],
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV7ProfileO10afmMapped4yA2EmF"
+      },
+      "kind": {
+        "displayName": "Case",
+        "identifier": "swift.enum.case"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "case"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "afmMapped4"
+          }
+        ],
+        "title": "Qwen4ExpCheckpointConverter.Profile.afmMapped4"
+      },
+      "pathComponents": [
+        "Qwen4ExpCheckpointConverter",
+        "Profile",
+        "afmMapped4"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "init"
+        },
+        {
+          "kind": "text",
+          "spelling": "?("
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "rawValue"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:SS",
+          "spelling": "String"
+        },
+        {
+          "kind": "text",
+          "spelling": ")"
+        }
+      ],
+      "functionSignature": {
+        "parameters": [
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "rawValue"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:SS",
+                "spelling": "String"
+              }
+            ],
+            "name": "rawValue"
+          }
+        ]
+      },
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV7ProfileO8rawValueAESgSS_tcfc"
+      },
+      "kind": {
+        "displayName": "Initializer",
+        "identifier": "swift.init"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "init"
+          },
+          {
+            "kind": "text",
+            "spelling": "?("
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "rawValue"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:SS",
+            "spelling": "String"
+          },
+          {
+            "kind": "text",
+            "spelling": ")"
+          }
+        ],
+        "title": "init(rawValue:)"
+      },
+      "pathComponents": [
+        "Qwen4ExpCheckpointConverter",
+        "Profile",
+        "init(rawValue:)"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "static"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "keyword",
+          "spelling": "func"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "inspect"
+        },
+        {
+          "kind": "text",
+          "spelling": "("
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "source"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:10Foundation3URLV",
+          "spelling": "URL"
+        },
+        {
+          "kind": "text",
+          "spelling": ", "
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "sourceRevision"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:SS",
+          "spelling": "String"
+        },
+        {
+          "kind": "text",
+          "spelling": "? = nil) "
+        },
+        {
+          "kind": "keyword",
+          "spelling": "throws"
+        },
+        {
+          "kind": "text",
+          "spelling": " -> "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV",
+          "spelling": "Qwen4ExpCheckpointConverter"
+        },
+        {
+          "kind": "text",
+          "spelling": "."
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV10InspectionV",
+          "spelling": "Inspection"
+        }
+      ],
+      "functionSignature": {
+        "parameters": [
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "source"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:10Foundation3URLV",
+                "spelling": "URL"
+              }
+            ],
+            "name": "source"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "sourceRevision"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:SS",
+                "spelling": "String"
+              },
+              {
+                "kind": "text",
+                "spelling": "?"
+              }
+            ],
+            "name": "sourceRevision"
+          }
+        ],
+        "returns": [
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV",
+            "spelling": "Qwen4ExpCheckpointConverter"
+          },
+          {
+            "kind": "text",
+            "spelling": "."
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV10InspectionV",
+            "spelling": "Inspection"
+          }
+        ]
+      },
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV7inspect6source0H8RevisionAC10InspectionV10Foundation3URLV_SSSgtKFZ"
+      },
+      "kind": {
+        "displayName": "Type Method",
+        "identifier": "swift.type.method"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "static"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "keyword",
+            "spelling": "func"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "inspect"
+          },
+          {
+            "kind": "text",
+            "spelling": "("
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "source"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:10Foundation3URLV",
+            "spelling": "URL"
+          },
+          {
+            "kind": "text",
+            "spelling": ", "
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "sourceRevision"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:SS",
+            "spelling": "String"
+          },
+          {
+            "kind": "text",
+            "spelling": "?) "
+          },
+          {
+            "kind": "keyword",
+            "spelling": "throws"
+          },
+          {
+            "kind": "text",
+            "spelling": " -> "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV",
+            "spelling": "Qwen4ExpCheckpointConverter"
+          },
+          {
+            "kind": "text",
+            "spelling": "."
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:9AFMKitMLX27Qwen4ExpCheckpointConverterV10InspectionV",
+            "spelling": "Inspection"
+          }
+        ],
+        "title": "inspect(source:sourceRevision:)"
+      },
+      "pathComponents": [
+        "Qwen4ExpCheckpointConverter",
         "inspect(source:sourceRevision:)"
       ]
     },
