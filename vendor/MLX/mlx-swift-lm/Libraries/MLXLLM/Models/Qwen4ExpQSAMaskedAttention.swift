@@ -4,7 +4,8 @@ import Foundation
 import MLX
 import MLXFast
 
-/// Fused masked prefill attention for Qwen Next's head-dimension-256 QSA arm.
+/// Fused causal and masked prefill attention for Qwen Next's
+/// head-dimension-256 attention layers.
 ///
 /// Ported from ddalcu/mlx-serve commit 8058076 (MIT). The kernel keeps the
 /// score sheet tile-local, skips key tiles invisible to every query in a
@@ -18,8 +19,46 @@ enum Qwen4ExpQSAMaskedAttention {
     private static let minimumQueryLength = 16
     private static let dispatchWorkBudget = 250_000_000
 
-    static let enabled =
+    static let maskedFusionEnabled =
         ProcessInfo.processInfo.environment["AFM_QWEN_QSA_MASKED_FUSION"] != "0"
+
+    static let causalFusionEnabled =
+        ProcessInfo.processInfo.environment["AFM_QWEN_CAUSAL_PREFILL_FUSION"] != "0"
+
+    private static let stockNAXAvailable = GPU.isNAXAvailable
+
+    static func shouldForceStockNAXAttention(
+        queryLength: Int,
+        keyLength: Int,
+        headDimension: Int,
+        naxAvailable: Bool,
+        isGPU: Bool
+    ) -> Bool {
+        isGPU
+            && naxAvailable
+            && headDimension == 256
+            && queryLength > 8
+            && queryLength <= keyLength
+    }
+
+    static func shouldForceStockNAXAttention(
+        queries: MLXArray, keys: MLXArray
+    ) -> Bool {
+        guard queries.ndim == 4, keys.ndim == 4 else { return false }
+        let queryLength = queries.dim(2)
+        let keyLength = keys.dim(2)
+        let headDimension = queries.dim(3)
+        guard headDimension == 256,
+              queryLength > 8,
+              queryLength <= keyLength
+        else { return false }
+        return shouldForceStockNAXAttention(
+            queryLength: queryLength,
+            keyLength: keyLength,
+            headDimension: headDimension,
+            naxAvailable: stockNAXAvailable,
+            isGPU: Device.defaultDevice().deviceType == .gpu)
+    }
 
     private static let kernel = MLXFast.metalKernel(
         name: "qwen4_exp_qsa_masked_attention_256",
@@ -134,7 +173,7 @@ enum Qwen4ExpQSAMaskedAttention {
             const bool mask_row_ok = (tqx * BQ + tm + sm) < qL;
 
             for (; kb < kb_lim; ++kb) {
-                if (!skip[skip_base + kb]) continue;
+                if (QSA && !skip[skip_base + kb]) continue;
                 const int c0 = kb * BK;
                 const int rows_k = metal::min(BK, kL - c0);
 
@@ -192,19 +231,21 @@ enum Qwen4ExpQSAMaskedAttention {
                 const bool tail_k = rows_k < BK;
                 const bool need_causal = kb >= kb_min_causal;
                 const bool need_band = (SW > 0) && (c0 <= q_hi - SW);
-                for (int tile = 0; tile < BK / 8; ++tile) {
-                    for (int element = 0; element < 2; ++element) {
-                        const int column = c0 + tile * 8 + sn + element;
-                        bool masked = false;
-                        if (tail_k && column >= kL) masked = true;
-                        if (need_causal && row_pos < column) masked = true;
-                        if (need_band && (row_pos - column) >= SW) masked = true;
-                        if (!masked && (!mask_row_ok
-                            || !mask[mask_row0
-                                + (long)column * mask_strides[3]])) {
-                            masked = true;
+                if (QSA || tail_k || need_causal || need_band) {
+                    for (int tile = 0; tile < BK / 8; ++tile) {
+                        for (int element = 0; element < 2; ++element) {
+                            const int column = c0 + tile * 8 + sn + element;
+                            bool masked = false;
+                            if (tail_k && column >= kL) masked = true;
+                            if (need_causal && row_pos < column) masked = true;
+                            if (need_band && (row_pos - column) >= SW) masked = true;
+                            if (QSA && !masked && (!mask_row_ok
+                                || !mask[mask_row0
+                                    + (long)column * mask_strides[3]])) {
+                                masked = true;
+                            }
+                            if (masked) scores[tile][element] = -INFINITY;
                         }
-                        if (masked) scores[tile][element] = -INFINITY;
                     }
                 }
 
@@ -354,23 +395,66 @@ enum Qwen4ExpQSAMaskedAttention {
             .any(axes: [2, 4])
     }
 
+    static func callCausal(
+        queries: MLXArray,
+        keys: MLXArray,
+        values: MLXArray,
+        scale: Float,
+        forceStockNAXAttention: Bool? = nil,
+        keyChunkLengthForTesting: Int? = nil
+    ) -> MLXArray? {
+        guard queries.ndim == 4,
+              keys.ndim == 4,
+              causalFusionEnabled,
+              !(forceStockNAXAttention
+                  ?? shouldForceStockNAXAttention(queries: queries, keys: keys))
+        else { return nil }
+        let dummyMask = MLXArray([false]).reshaped(1, 1, 1, 1)
+        return call(
+            queries: queries,
+            keys: keys,
+            values: values,
+            scale: scale,
+            mask: dummyMask,
+            usesMask: false,
+            keyChunkLengthForTesting: keyChunkLengthForTesting)
+    }
+
     static func call(
         queries: MLXArray,
         keys: MLXArray,
         values: MLXArray,
         scale: Float,
-        mask: MLXArray
+        mask: MLXArray,
+        keyChunkLengthForTesting: Int? = nil
     ) -> MLXArray? {
-        guard enabled,
+        call(
+            queries: queries,
+            keys: keys,
+            values: values,
+            scale: scale,
+            mask: mask,
+            usesMask: true,
+            keyChunkLengthForTesting: keyChunkLengthForTesting)
+    }
+
+    private static func call(
+        queries: MLXArray,
+        keys: MLXArray,
+        values: MLXArray,
+        scale: Float,
+        mask: MLXArray,
+        usesMask: Bool,
+        keyChunkLengthForTesting: Int?
+    ) -> MLXArray? {
+        guard (!usesMask || maskedFusionEnabled),
               Device.defaultDevice().deviceType == .gpu,
               queries.ndim == 4,
               keys.ndim == 4,
               values.ndim == 4,
-              mask.ndim == 4,
               queries.dtype == .bfloat16,
               keys.dtype == .bfloat16,
               values.dtype == .bfloat16,
-              mask.dtype == .bool,
               queries.dim(2) >= minimumQueryLength,
               queries.dim(3) == headDimension,
               keys.dim(3) == headDimension,
@@ -379,24 +463,32 @@ enum Qwen4ExpQSAMaskedAttention {
               keys.shape == values.shape,
               keys.dim(2) >= queries.dim(2),
               keys.dim(1) > 0,
-              queries.dim(1).isMultiple(of: keys.dim(1)),
-              mask.dim(0) == queries.dim(0),
-              mask.dim(1) == 1,
-              mask.dim(2) == queries.dim(2),
-              mask.dim(3) == keys.dim(2)
+              queries.dim(1).isMultiple(of: keys.dim(1))
         else { return nil }
+
+        if usesMask {
+            guard mask.ndim == 4,
+                  mask.dtype == .bool,
+                  mask.dim(0) == queries.dim(0),
+                  mask.dim(1) == 1,
+                  mask.dim(2) == queries.dim(2),
+                  mask.dim(3) == keys.dim(2)
+            else { return nil }
+        }
 
         let batch = queries.dim(0)
         let queryHeads = queries.dim(1)
         let queryLength = queries.dim(2)
         let keyLength = keys.dim(2)
         let queryTiles = (queryLength + queryTile - 1) / queryTile
-        let chunkLength = keyChunkLength(
+        let chunkLength = keyChunkLengthForTesting.map {
+            max(($0 / keyTile) * keyTile, keyTile)
+        } ?? keyChunkLength(
             batch: batch,
             queryHeads: queryHeads,
             queryLength: queryLength,
             keyLength: keyLength)
-        let skip = skipTable(mask: mask)
+        let skip = usesMask ? skipTable(mask: mask) : mask
         // Keep these as rank-1 arrays, matching the C API reference.  A
         // rank-0 MLXArray is lowered by the custom-kernel wrapper as a Metal
         // scalar, while the kernel deliberately consumes these values through
@@ -439,7 +531,10 @@ enum Qwen4ExpQSAMaskedAttention {
                     hasCarry ? outputCarry : floatDummy,
                     mask, skip,
                 ],
-                template: [("T", DType.bfloat16)],
+                template: [
+                    ("T", DType.bfloat16),
+                    ("QSA", usesMask),
+                ],
                 grid: (queryTiles * 32, queryHeads * 8, batch),
                 threadGroup: (32, 8, 1),
                 outputShapes: outputShapes,

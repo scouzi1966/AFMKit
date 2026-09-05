@@ -1068,7 +1068,7 @@ enum GLM5NextVision {
 // MARK: - Multimodal wrapper
 
 public final class GLM5NextVLModel: Module, VLMModel, KVCacheDimensionProvider,
-    LanguageModelWeightFilter
+    LanguageModelWeightFilter, LanguageModelPerformanceCachePreparable
 {
     struct ModalityTokenPositions: Equatable {
         let images: [Int]
@@ -1222,6 +1222,49 @@ public final class GLM5NextVLModel: Module, VLMModel, KVCacheDimensionProvider,
 
     public func callAsFunction(_ inputs: MLXArray, cache: [KVCache]?) -> MLXArray {
         languageModel(inputs, cache: cache)
+    }
+
+    /// `Module.update` recursively installs the wrapper's checkpoint without
+    /// dispatching to nested module overrides. Invalidate derived text caches
+    /// here; `loadWeights` prepares them after its temporary arrays are gone.
+    /// Direct parameter mutation requires exclusive model access and an
+    /// explicit `preparePerformanceCaches()` call before publication.
+    @discardableResult
+    public override func update(
+        parameters: ModuleParameters,
+        verify: VerifyUpdate,
+        path: [String] = [],
+        modulePath: [String] = []
+    ) throws -> Self {
+        languageModel.invalidatePerformanceCaches()
+        return try super.update(
+            parameters: parameters,
+            verify: verify,
+            path: path,
+            modulePath: modulePath)
+    }
+
+    @discardableResult
+    public override func update(
+        modules: ModuleChildren,
+        verify: VerifyUpdate,
+        path: [String] = [],
+        modulePath: [String] = []
+    ) throws -> Self {
+        invalidatePerformanceCaches()
+        return try super.update(
+            modules: modules,
+            verify: verify,
+            path: path,
+            modulePath: modulePath)
+    }
+
+    public func preparePerformanceCaches() {
+        languageModel.preparePerformanceCaches()
+    }
+
+    public func invalidatePerformanceCaches() {
+        languageModel.invalidatePerformanceCaches()
     }
 
     public func shouldLoad(weightKey key: String) -> Bool {

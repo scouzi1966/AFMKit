@@ -62,6 +62,26 @@ final class CheckpointConversionPathSafetyTests: XCTestCase {
             mountedVolumes: [hiddenMount]))
     }
 
+    func testQwenRejectsSymlinkedOutputAncestorBeforeOverwrite() throws {
+        let root = try makeRoot()
+        let real = root.appendingPathComponent("real", isDirectory: true)
+        let source = real.appendingPathComponent("source", isDirectory: true)
+        let alias = root.appendingPathComponent("alias", isDirectory: true)
+        let sentinel = source.appendingPathComponent("sentinel")
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+        try Data("keep".utf8).write(to: sentinel)
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: real)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        XCTAssertThrowsError(try Qwen4ExpCheckpointConverter(
+            source: source,
+            output: alias,
+            overwrite: true).run()) { error in
+            XCTAssertTrue(error.localizedDescription.contains("source/output must be separate"))
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: sentinel.path))
+    }
+
     private func makeRoot() throws -> URL {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)

@@ -16,7 +16,7 @@ enum AFMMLXQwenNGramSidecarResolverError: Error, LocalizedError, Equatable {
         case .missingDescriptor:
             return "config.json does not declare an ngram_table sidecar"
         case .unsafePath(let path):
-            return "ngram_table file must be a relative path inside the model directory: \(path)"
+            return "ngram_table file must be a .ngram or legacy .bin file inside the model directory: \(path)"
         case .missingFile(let path):
             return "Mapped Qwen n-gram sidecar does not exist: \(path)"
         }
@@ -74,11 +74,15 @@ enum AFMMLXQwenNGramSidecarResolver {
             throw AFMMLXQwenNGramSidecarResolverError.unsafePath(rawPath)
         }
 
-        let root = modelDirectory.standardizedFileURL
-        let candidate = root.appendingPathComponent(rawPath).standardizedFileURL
-        let rootPrefix = root.path.hasSuffix("/") ? root.path : root.path + "/"
-        guard candidate.path.hasPrefix(rootPrefix),
-              candidate.pathExtension.lowercased() != "safetensors"
+        let root = modelDirectory.standardizedFileURL.resolvingSymlinksInPath()
+        let candidate = root.appendingPathComponent(rawPath)
+            .standardizedFileURL
+            .resolvingSymlinksInPath()
+        // Validate the checkpoint-declared name. A Hugging Face snapshot
+        // symlink resolves to a content-addressed blob with no extension.
+        let extensionName = path.pathExtension.lowercased()
+        guard isInsideCheckpointBoundary(candidate, modelRoot: root),
+              extensionName == "ngram" || extensionName == "bin"
         else {
             throw AFMMLXQwenNGramSidecarResolverError.unsafePath(rawPath)
         }
@@ -90,6 +94,36 @@ enum AFMMLXQwenNGramSidecarResolver {
             throw AFMMLXQwenNGramSidecarResolverError.missingFile(candidate.path)
         }
         return candidate
+    }
+
+    private static func isInsideCheckpointBoundary(
+        _ candidate: URL,
+        modelRoot: URL
+    ) -> Bool {
+        if contains(candidate, under: modelRoot) {
+            return true
+        }
+
+        // Hugging Face materializes snapshots as symlinks into the owning
+        // repository package's blobs directory:
+        // snapshots/<revision>/<file> -> ../../blobs/<content-hash>.
+        let snapshotsRoot = modelRoot.deletingLastPathComponent()
+        guard snapshotsRoot.lastPathComponent == "snapshots" else {
+            return false
+        }
+        let repositoryRoot = snapshotsRoot.deletingLastPathComponent()
+        guard repositoryRoot.lastPathComponent.hasPrefix("models--") else {
+            return false
+        }
+        let blobsRoot = repositoryRoot.appendingPathComponent("blobs")
+            .standardizedFileURL
+            .resolvingSymlinksInPath()
+        return contains(candidate, under: blobsRoot)
+    }
+
+    private static func contains(_ candidate: URL, under root: URL) -> Bool {
+        let prefix = root.path.hasSuffix("/") ? root.path : root.path + "/"
+        return candidate.path.hasPrefix(prefix)
     }
 
     /// A checkpoint-declared n-gram table is part of the checkpoint, not an

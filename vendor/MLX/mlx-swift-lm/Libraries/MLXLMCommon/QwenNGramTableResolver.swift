@@ -7,7 +7,7 @@ public enum QwenNGramTableResolutionError: Error, LocalizedError, Equatable {
     public var errorDescription: String? {
         switch self {
         case .unsafePath(let path):
-            "Qwen n-gram table must be a relative file inside the model directory: \(path)"
+            "Qwen n-gram table must be a .ngram or legacy .bin file inside the model directory: \(path)"
         case .missingFile(let path):
             "Qwen n-gram table does not exist: \(path)"
         }
@@ -17,6 +17,8 @@ public enum QwenNGramTableResolutionError: Error, LocalizedError, Equatable {
 /// Resolves a Qwen Next checkpoint-owned n-gram sidecar. An explicit caller
 /// override remains authoritative; otherwise a `qwen4_exp` checkpoint that
 /// declares `ngram_table.file` is self-contained and loads that local file.
+/// New checkpoints should use `.ngram`; `.bin` remains supported for existing
+/// published checkpoints.
 public func resolveQwenNGramTableURL(
     configurationData: Data,
     modelDirectory: URL,
@@ -55,16 +57,54 @@ public func resolveQwenNGramTableURL(
         throw QwenNGramTableResolutionError.unsafePath(rawPath)
     }
 
-    let root = modelDirectory.standardizedFileURL
-    let candidate = root.appendingPathComponent(rawPath).standardizedFileURL
-    let rootPrefix = root.path.hasSuffix("/") ? root.path : root.path + "/"
-    guard candidate.path.hasPrefix(rootPrefix),
-          candidate.pathExtension.lowercased() != "safetensors"
+    let root = modelDirectory.standardizedFileURL.resolvingSymlinksInPath()
+    let candidate = root.appendingPathComponent(rawPath)
+        .standardizedFileURL
+        .resolvingSymlinksInPath()
+    // Validate the checkpoint-declared name. A Hugging Face snapshot symlink
+    // resolves to a content-addressed blob with no extension.
+    let extensionName = path.pathExtension.lowercased()
+    guard qwenNGramPathIsInsideCheckpointBoundary(candidate, modelRoot: root),
+          extensionName == "ngram" || extensionName == "bin"
     else {
         throw QwenNGramTableResolutionError.unsafePath(rawPath)
     }
-    guard FileManager.default.fileExists(atPath: candidate.path) else {
+    guard let values = try? candidate.resourceValues(
+        forKeys: [.isRegularFileKey, .fileSizeKey]),
+        values.isRegularFile == true,
+        (values.fileSize ?? 0) > 0
+    else {
         throw QwenNGramTableResolutionError.missingFile(candidate.path)
     }
     return candidate
+}
+
+private func qwenNGramPathIsInsideCheckpointBoundary(
+    _ candidate: URL,
+    modelRoot: URL
+) -> Bool {
+    if qwenNGramPath(candidate, isUnder: modelRoot) {
+        return true
+    }
+
+    // Hugging Face snapshot entries are symlinks into the same repository
+    // package's blobs directory. Permit that canonical target, but no sibling
+    // cache package or arbitrary path outside the package.
+    let snapshotsRoot = modelRoot.deletingLastPathComponent()
+    guard snapshotsRoot.lastPathComponent == "snapshots" else {
+        return false
+    }
+    let repositoryRoot = snapshotsRoot.deletingLastPathComponent()
+    guard repositoryRoot.lastPathComponent.hasPrefix("models--") else {
+        return false
+    }
+    let blobsRoot = repositoryRoot.appendingPathComponent("blobs")
+        .standardizedFileURL
+        .resolvingSymlinksInPath()
+    return qwenNGramPath(candidate, isUnder: blobsRoot)
+}
+
+private func qwenNGramPath(_ candidate: URL, isUnder root: URL) -> Bool {
+    let prefix = root.path.hasSuffix("/") ? root.path : root.path + "/"
+    return candidate.path.hasPrefix(prefix)
 }

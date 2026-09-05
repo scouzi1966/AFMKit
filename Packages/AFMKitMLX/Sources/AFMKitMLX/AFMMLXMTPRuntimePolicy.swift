@@ -6,6 +6,7 @@ enum AFMMLXMTPRuntimeModelKind: Equatable, Sendable {
     case qwenText
     case qwenVision
     case qwenNextText
+    case qwenNextVision
     case glmEmbedded
 }
 
@@ -61,7 +62,7 @@ enum AFMMLXMTPRuntimePolicy {
             return .glmEmbedded
         }
         if canonicalModelType == "qwen4_exp" {
-            return factory == .llm ? .qwenNextText : nil
+            return factory == .vlm ? .qwenNextVision : .qwenNextText
         }
         guard canonicalModelType == "qwen3_5" || canonicalModelType == "qwen3_5_moe"
         else { return nil }
@@ -72,7 +73,8 @@ enum AFMMLXMTPRuntimePolicy {
         canonicalModelType: String,
         embeddedAssetsPresent: Bool
     ) -> Bool {
-        canonicalModelType == "glm5_next" && embeddedAssetsPresent
+        (canonicalModelType == "glm5_next" || canonicalModelType == "qwen4_exp")
+            && embeddedAssetsPresent
     }
 
     static func canReuseLoadedModel(

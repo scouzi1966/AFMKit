@@ -38,7 +38,7 @@ final class AFMMLXMTPRuntimePolicyTests: XCTestCase {
         XCTAssertEqual(AFMMLXMTPRuntimePolicy.qwenNextMTPHeadBits(configuredBits: 16), 16)
     }
 
-    func testQwenNextMTPSelectsOnlyTheTextRuntime() {
+    func testQwenNextMTPPreservesTheSelectedTextOrVisionRuntime() {
         XCTAssertEqual(
             AFMMLXMTPRuntimePolicy.compatibleModelKind(
                 mtpEnabled: true,
@@ -47,13 +47,25 @@ final class AFMMLXMTPRuntimePolicyTests: XCTestCase {
             ),
             .qwenNextText
         )
-        XCTAssertNil(
+        XCTAssertEqual(
             AFMMLXMTPRuntimePolicy.compatibleModelKind(
                 mtpEnabled: true,
                 factory: .vlm,
                 canonicalModelType: "qwen4_exp"
-            )
+            ),
+            .qwenNextVision
         )
+    }
+
+    func testQwenNextAndGLMRecognizeQualifiedEmbeddedHeads() {
+        XCTAssertTrue(AFMMLXMTPRuntimePolicy.usesEmbeddedHead(
+            canonicalModelType: "qwen4_exp", embeddedAssetsPresent: true))
+        XCTAssertTrue(AFMMLXMTPRuntimePolicy.usesEmbeddedHead(
+            canonicalModelType: "glm5_next", embeddedAssetsPresent: true))
+        XCTAssertFalse(AFMMLXMTPRuntimePolicy.usesEmbeddedHead(
+            canonicalModelType: "qwen4_exp", embeddedAssetsPresent: false))
+        XCTAssertFalse(AFMMLXMTPRuntimePolicy.usesEmbeddedHead(
+            canonicalModelType: "qwen3_5", embeddedAssetsPresent: true))
     }
 
     func testFailedMTPSetupCannotReuseBaseOnlyLoadedStateOnRetry() {

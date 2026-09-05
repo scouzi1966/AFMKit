@@ -2,10 +2,12 @@ import Darwin
 import Foundation
 import MLX
 import MLXFast
+import MLXLMCommon
 
 enum Qwen4ExpMappedNGramTableError: Error, LocalizedError, Equatable {
     case cannotOpen(String)
     case cannotMap(String)
+    case cannotWarm(expectedBytes: Int, actualBytes: Int)
     case notRegularFile(String)
     case truncated
     case invalidHeader(String)
@@ -19,6 +21,8 @@ enum Qwen4ExpMappedNGramTableError: Error, LocalizedError, Equatable {
             return "Cannot open Qwen n-gram table at \(path)"
         case .cannotMap(let path):
             return "Cannot memory-map Qwen n-gram table at \(path)"
+        case .cannotWarm(let expectedBytes, let actualBytes):
+            return "Cannot prewarm complete Qwen n-gram table (expected \(expectedBytes) bytes, read \(actualBytes))"
         case .notRegularFile(let path):
             return "Qwen n-gram table is not a regular file: \(path)"
         case .truncated:
@@ -608,7 +612,23 @@ final class Qwen4ExpMappedNGramTable: @unchecked Sendable {
         pageCacheWarmer?.start()
     }
 
-    func waitForBackgroundPageCacheWarmForTesting() -> Int {
+    func applyResidency(_ policy: QwenNGramResidencyPolicy) throws {
+        switch policy {
+        case .mapped:
+            print("[QwenNGram] residency=mapped (demand-paged)")
+        case .prewarm:
+            print("[QwenNGram] residency=prewarm (warming page cache)")
+            startBackgroundPageCacheWarm()
+            let warmedBytes = waitForBackgroundPageCacheWarm()
+            guard warmedBytes == mappedData.count else {
+                throw Qwen4ExpMappedNGramTableError.cannotWarm(
+                    expectedBytes: mappedData.count,
+                    actualBytes: warmedBytes)
+            }
+        }
+    }
+
+    func waitForBackgroundPageCacheWarm() -> Int {
         pageCacheWarmer?.waitForCompletionForTesting() ?? 0
     }
 

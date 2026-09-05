@@ -242,6 +242,133 @@ final class Qwen4ExpTests: XCTestCase {
             tableURL.standardizedFileURL)
     }
 
+    func testQwenCheckpointResolvesPreferredNGramExtension() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("qwen-ngram-resolver-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(
+            at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let tableURL = directory.appendingPathComponent("ngram_table.ngram")
+        try Data([0]).write(to: tableURL)
+        let configuration = Data(
+            #"{"model_type":"qwen4_exp","ngram_table":{"file":"ngram_table.ngram"}}"#.utf8)
+
+        XCTAssertEqual(
+            try resolveQwenNGramTableURL(
+                configurationData: configuration,
+                modelDirectory: directory,
+                explicitURL: nil),
+            tableURL.standardizedFileURL)
+    }
+
+    func testQwenCheckpointRejectsEscapingNGramSymlink() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("qwen-ngram-resolver-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(
+            at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let outside = FileManager.default.temporaryDirectory
+            .appendingPathComponent("qwen-ngram-outside-\(UUID().uuidString).ngram")
+        defer { try? FileManager.default.removeItem(at: outside) }
+        try Data([0]).write(to: outside)
+        try FileManager.default.createSymbolicLink(
+            at: directory.appendingPathComponent("ngram_table.ngram"),
+            withDestinationURL: outside)
+        let configuration = Data(
+            #"{"model_type":"qwen4_exp","ngram_table":{"file":"ngram_table.ngram"}}"#.utf8)
+
+        XCTAssertThrowsError(try resolveQwenNGramTableURL(
+            configurationData: configuration,
+            modelDirectory: directory,
+            explicitURL: nil)) { error in
+            XCTAssertEqual(
+                error as? QwenNGramTableResolutionError,
+                .unsafePath("ngram_table.ngram"))
+        }
+    }
+
+    func testQwenCheckpointAcceptsHuggingFaceSnapshotNGramSymlink() throws {
+        let repository = FileManager.default.temporaryDirectory
+            .appendingPathComponent("models--example--qwen-\(UUID().uuidString)")
+        let directory = repository
+            .appendingPathComponent("snapshots")
+            .appendingPathComponent("revision")
+        let blobs = repository.appendingPathComponent("blobs")
+        try FileManager.default.createDirectory(
+            at: directory, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(
+            at: blobs, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: repository) }
+
+        let blob = blobs.appendingPathComponent("content-hash")
+        try Data([0]).write(to: blob)
+        try FileManager.default.createSymbolicLink(
+            atPath: directory.appendingPathComponent("ngram_table.ngram").path,
+            withDestinationPath: "../../blobs/content-hash")
+        let configuration = Data(
+            #"{"model_type":"qwen4_exp","ngram_table":{"file":"ngram_table.ngram"}}"#.utf8)
+
+        XCTAssertEqual(
+            try resolveQwenNGramTableURL(
+                configurationData: configuration,
+                modelDirectory: directory,
+                explicitURL: nil),
+            blob.resolvingSymlinksInPath())
+    }
+
+    func testQwenCheckpointRejectsSiblingRepositoryNGramSymlink() throws {
+        let cache = FileManager.default.temporaryDirectory
+            .appendingPathComponent("qwen-ngram-cache-\(UUID().uuidString)")
+        let repository = cache.appendingPathComponent("models--example--qwen")
+        let siblingRepository = cache.appendingPathComponent("models--other--qwen")
+        let directory = repository
+            .appendingPathComponent("snapshots")
+            .appendingPathComponent("revision")
+        let siblingBlobs = siblingRepository.appendingPathComponent("blobs")
+        try FileManager.default.createDirectory(
+            at: directory, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(
+            at: siblingBlobs, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: cache) }
+
+        let siblingBlob = siblingBlobs.appendingPathComponent("content-hash")
+        try Data([0]).write(to: siblingBlob)
+        try FileManager.default.createSymbolicLink(
+            atPath: directory.appendingPathComponent("ngram_table.ngram").path,
+            withDestinationPath: siblingBlob.path)
+        let configuration = Data(
+            #"{"model_type":"qwen4_exp","ngram_table":{"file":"ngram_table.ngram"}}"#.utf8)
+
+        XCTAssertThrowsError(try resolveQwenNGramTableURL(
+            configurationData: configuration,
+            modelDirectory: directory,
+            explicitURL: nil)) { error in
+            guard case QwenNGramTableResolutionError.unsafePath = error else {
+                return XCTFail("unexpected error: \(error)")
+            }
+        }
+    }
+
+    func testQwenCheckpointRejectsEmptyNGramSidecar() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("qwen-ngram-resolver-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(
+            at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try Data().write(to: directory.appendingPathComponent("ngram_table.ngram"))
+        let configuration = Data(
+            #"{"model_type":"qwen4_exp","ngram_table":{"file":"ngram_table.ngram"}}"#.utf8)
+
+        XCTAssertThrowsError(try resolveQwenNGramTableURL(
+            configurationData: configuration,
+            modelDirectory: directory,
+            explicitURL: nil)) { error in
+            guard case QwenNGramTableResolutionError.missingFile = error else {
+                return XCTFail("unexpected error: \(error)")
+            }
+        }
+    }
+
     func testQwenCheckpointRejectsEscapingNGramSidecarPath() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("qwen-ngram-resolver-\(UUID().uuidString)")
@@ -2406,7 +2533,7 @@ final class Qwen4ExpTests: XCTestCase {
         let fileSize = try XCTUnwrap(
             url.resourceValues(forKeys: [.fileSizeKey]).fileSize)
         XCTAssertEqual(
-            table.waitForBackgroundPageCacheWarmForTesting(),
+            table.waitForBackgroundPageCacheWarm(),
             fileSize)
     }
 
@@ -2822,6 +2949,191 @@ final class Qwen4ExpTests: XCTestCase {
 
         XCTAssertEqual(
             actual.asArray(Int32.self), expected.asArray(Int32.self))
+    }
+
+    func testFusedCausalPrefillAttentionMatchesMLXSDPA() throws {
+        let queryHeads = 24
+        let keyHeads = 2
+        let headDimension = 256
+        let scale = pow(Float(headDimension), -0.5)
+        let cases = [
+            (batch: 1, queryLength: 64, keyLength: 64, chunk: nil),
+            (batch: 2, queryLength: 65, keyLength: 97, chunk: nil),
+            (batch: 1, queryLength: 17, keyLength: 81, chunk: 32),
+        ]
+
+        for (index, testCase) in cases.enumerated() {
+            let randomState = MLXRandom.RandomState(seed: UInt64(3141 + index))
+            let queries = withRandomState(randomState) {
+                MLXRandom.uniform(low: -0.5, high: 0.5, [
+                    testCase.batch, queryHeads, testCase.queryLength, headDimension,
+                ]).asType(.bfloat16)
+            }
+            let keys = withRandomState(randomState) {
+                MLXRandom.uniform(low: -0.5, high: 0.5, [
+                    testCase.batch, keyHeads, testCase.keyLength, headDimension,
+                ]).asType(.bfloat16)
+            }
+            let values = withRandomState(randomState) {
+                MLXRandom.uniform(low: -0.5, high: 0.5, [
+                    testCase.batch, keyHeads, testCase.keyLength, headDimension,
+                ]).asType(.bfloat16)
+            }
+            let expected = MLXFast.scaledDotProductAttention(
+                queries: queries,
+                keys: keys,
+                values: values,
+                scale: scale,
+                mask: .causal)
+            let actual = try XCTUnwrap(Qwen4ExpQSAMaskedAttention.callCausal(
+                queries: queries,
+                keys: keys,
+                values: values,
+                scale: scale,
+                forceStockNAXAttention: false,
+                keyChunkLengthForTesting: testCase.chunk))
+            XCTAssertNil(Qwen4ExpQSAMaskedAttention.callCausal(
+                queries: queries,
+                keys: keys,
+                values: values,
+                scale: scale,
+                forceStockNAXAttention: true,
+                keyChunkLengthForTesting: testCase.chunk))
+            eval(actual, expected)
+
+            XCTAssertLessThanOrEqual(
+                maximumAbsoluteDifference(actual, expected), 0.005,
+                "causal case \(index) diverged")
+        }
+    }
+
+    func testFusedMaskedQSAAttentionMatchesDenseMask() throws {
+        let batch = 2
+        let queryHeads = 24
+        let keyHeads = 2
+        let queryLength = 70
+        let keyLength = 193
+        let headDimension = 256
+        let scale = pow(Float(headDimension), -0.5)
+        let randomState = MLXRandom.RandomState(seed: 5772)
+        let queries = withRandomState(randomState) {
+            MLXRandom.uniform(
+                low: -0.5, high: 0.5,
+                [batch, queryHeads, queryLength, headDimension])
+                .asType(.bfloat16)
+        }
+        let keys = withRandomState(randomState) {
+            MLXRandom.uniform(
+                low: -0.5, high: 0.5,
+                [batch, keyHeads, keyLength, headDimension])
+                .asType(.bfloat16)
+        }
+        let values = withRandomState(randomState) {
+            MLXRandom.uniform(
+                low: -0.5, high: 0.5,
+                [batch, keyHeads, keyLength, headDimension])
+                .asType(.bfloat16)
+        }
+        let queryOffset = keyLength - queryLength
+        let maskValues = (0 ..< batch).flatMap { batchIndex in
+            (0 ..< queryLength).flatMap { row in
+                (0 ..< keyLength).map { column in
+                    column <= queryOffset + row
+                        && (column + row + batchIndex).isMultiple(of: 5) == false
+                }
+            }
+        }
+        let mask = MLXArray(maskValues).reshaped(batch, 1, queryLength, keyLength)
+        let expected = MLXFast.scaledDotProductAttention(
+            queries: queries,
+            keys: keys,
+            values: values,
+            scale: scale,
+            mask: .array(mask))
+        let actual = try XCTUnwrap(Qwen4ExpQSAMaskedAttention.call(
+            queries: queries,
+            keys: keys,
+            values: values,
+            scale: scale,
+            mask: mask,
+            keyChunkLengthForTesting: 64))
+        eval(actual, expected)
+
+        XCTAssertLessThanOrEqual(
+            maximumAbsoluteDifference(actual, expected), 0.005)
+    }
+
+    func testStockNAXAttentionRouting() {
+        XCTAssertTrue(Qwen4ExpQSAMaskedAttention.shouldForceStockNAXAttention(
+            queryLength: 16,
+            keyLength: 64,
+            headDimension: 256,
+            naxAvailable: true,
+            isGPU: true))
+        XCTAssertFalse(Qwen4ExpQSAMaskedAttention.shouldForceStockNAXAttention(
+            queryLength: 8,
+            keyLength: 64,
+            headDimension: 256,
+            naxAvailable: true,
+            isGPU: true))
+        XCTAssertFalse(Qwen4ExpQSAMaskedAttention.shouldForceStockNAXAttention(
+            queryLength: 16,
+            keyLength: 64,
+            headDimension: 256,
+            naxAvailable: false,
+            isGPU: true))
+        XCTAssertFalse(Qwen4ExpQSAMaskedAttention.shouldForceStockNAXAttention(
+            queryLength: 16,
+            keyLength: 64,
+            headDimension: 256,
+            naxAvailable: true,
+            isGPU: false))
+        XCTAssertFalse(Qwen4ExpQSAMaskedAttention.shouldForceStockNAXAttention(
+            queryLength: 16,
+            keyLength: 64,
+            headDimension: 128,
+            naxAvailable: true,
+            isGPU: true))
+        XCTAssertFalse(Qwen4ExpQSAMaskedAttention.shouldForceStockNAXAttention(
+            queryLength: 65,
+            keyLength: 64,
+            headDimension: 256,
+            naxAvailable: true,
+            isGPU: true))
+    }
+
+    func testForcedFusedAttentionMatchesAutomaticRouting() {
+        let randomState = MLXRandom.RandomState(seed: 9_191)
+        let queries = withRandomState(randomState) {
+            MLXRandom.uniform(low: -0.5, high: 0.5, [1, 4, 64, 256])
+                .asType(.bfloat16)
+        }
+        let keys = withRandomState(randomState) {
+            MLXRandom.uniform(low: -0.5, high: 0.5, [1, 4, 64, 256])
+                .asType(.bfloat16)
+        }
+        let values = withRandomState(randomState) {
+            MLXRandom.uniform(low: -0.5, high: 0.5, [1, 4, 64, 256])
+                .asType(.bfloat16)
+        }
+        let scale = pow(Float(256), -0.5)
+        let automatic = MLXFast.scaledDotProductAttention(
+            queries: queries,
+            keys: keys,
+            values: values,
+            scale: scale,
+            mask: .causal)
+        let forced = MLXFast.scaledDotProductAttention(
+            queries: queries,
+            keys: keys,
+            values: values,
+            scale: scale,
+            mask: .causal,
+            forceFused: true)
+        eval(automatic, forced)
+
+        XCTAssertLessThanOrEqual(
+            maximumAbsoluteDifference(automatic, forced), 0.005)
     }
 
     func testQSADecodeAttentionMatchesDenseMask() throws {

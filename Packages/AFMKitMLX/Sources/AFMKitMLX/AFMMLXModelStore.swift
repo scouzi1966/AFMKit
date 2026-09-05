@@ -270,6 +270,7 @@ public struct AFMMLXModelStore: Sendable {
         "*.tiktoken",
         "tokenizer*",
         "*.bpe",
+        "*.ngram",
         "*.bin"
     ]
 

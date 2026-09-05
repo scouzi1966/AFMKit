@@ -145,7 +145,7 @@ public struct AFMMLXSpeculativeModelCompatibility: Equatable, Sendable {
     ) -> AFMMLXSpeculativeModelCompatibility {
         AFMMLXSpeculativeModelCompatibility(
             mtpCompatible: (hasMTPSidecar && isMTPCompatibleConfiguration(config))
-                || (embeddedAssetsPresent && hasEmbeddedGLMMTPConfiguration(config)),
+                || (embeddedAssetsPresent && hasEmbeddedMTPConfiguration(config)),
             denseGemma4Verifier: isDenseGemma4VerifierConfiguration(config)
         )
     }
@@ -162,6 +162,8 @@ public struct AFMMLXSpeculativeModelCompatibility: Equatable, Sendable {
         )
         let hasEmbeddedAssets = hasCompleteEmbeddedGLMMTP(
             modelDirectory: modelDirectory, config: config)
+            || hasCompleteEmbeddedQwenNextMTP(
+                modelDirectory: modelDirectory, config: config)
         return evaluate(
             config: config,
             hasMTPSidecar: hasMTPSidecar,
@@ -193,6 +195,196 @@ public struct AFMMLXSpeculativeModelCompatibility: Equatable, Sendable {
         let text = config["text_config"] as? [String: Any] ?? config
         let count = (text["num_nextn_predict_layers"] as? NSNumber)?.intValue ?? 0
         return topLevelType == "glm5_next" && count == 1
+    }
+
+    private static func hasEmbeddedMTPConfiguration(_ config: [String: Any]) -> Bool {
+        if hasEmbeddedGLMMTPConfiguration(config) { return true }
+        let topLevelType = AFMMLXModelArchitecture.canonicalModelType(
+            config["model_type"] as? String ?? "")
+        let text = config["text_config"] as? [String: Any] ?? config
+        let textType = AFMMLXModelArchitecture.canonicalModelType(
+            text["model_type"] as? String ?? "")
+        let mtp = text["mtp"] as? [String: Any]
+        let layers = (mtp?["num_hidden_layers"] as? NSNumber)?.intValue ?? 0
+        return (topLevelType == "qwen4_exp" || textType == "qwen4_exp_text")
+            && layers == 1
+    }
+
+    private static func hasCompleteEmbeddedQwenNextMTP(
+        modelDirectory: URL,
+        config: [String: Any]
+    ) -> Bool {
+        guard hasEmbeddedMTPConfiguration(config) else { return false }
+        let prefixes = ["language_model.mtp.", "mtp."]
+        guard let expected = embeddedQwenNextMTPExpectedTensors(config: config) else {
+            return false
+        }
+        let requiredSuffixes = expected.keys
+
+        let indexURL = modelDirectory.appendingPathComponent(
+            "model.safetensors.index.json")
+        if FileManager.default.fileExists(atPath: indexURL.path) {
+            guard let data = boundedData(
+                at: indexURL, maximumBytes: 128 * 1_024 * 1_024),
+                let object = try? JSONSerialization.jsonObject(with: data)
+                    as? [String: Any],
+                let map = object["weight_map"] as? [String: String],
+                let prefix = prefixes.first(where: { candidate in
+                    requiredSuffixes.allSatisfy { map[candidate + $0] != nil }
+                })
+            else { return false }
+
+            for suffix in requiredSuffixes {
+                let key = prefix + suffix
+                guard let shard = map[key],
+                      let shardURL = containedShardURL(
+                        named: shard, modelDirectory: modelDirectory),
+                      let header = safeTensorHeader(at: shardURL),
+                      hasSaneOffsets(header),
+                      header.tensors.contains(where: {
+                          $0.name == key && $0.dtype == expected[suffix]?.0
+                              && $0.shape == expected[suffix]?.1
+                      })
+                else { return false }
+            }
+            return true
+        }
+
+        guard let tensorURL = containedShardURL(
+            named: "model.safetensors", modelDirectory: modelDirectory),
+            let header = safeTensorHeader(at: tensorURL),
+            hasSaneOffsets(header)
+        else { return false }
+        let tensors = Dictionary(uniqueKeysWithValues: header.tensors.map { ($0.name, $0) })
+        return prefixes.contains { prefix in
+            requiredSuffixes.allSatisfy { suffix in
+                guard let tensor = tensors[prefix + suffix], let requirement = expected[suffix]
+                else { return false }
+                return tensor.dtype == requirement.0 && tensor.shape == requirement.1
+            }
+        }
+    }
+
+    static let embeddedQwenNextMTPRequiredSuffixes: [String] = {
+        let quantizedBases = [
+            "fc_embedding", "fc_hidden",
+            "hyper_connection_mixer.input_mix_weight_down",
+            "hyper_connection_mixer.input_mix_weight_up",
+            "layers.0.attn_hyper_connection.input_mix_weight_down",
+            "layers.0.attn_hyper_connection.input_mix_weight_up",
+            "layers.0.mlp.gate", "layers.0.mlp.shared_expert.down_proj",
+            "layers.0.mlp.shared_expert.gate_proj",
+            "layers.0.mlp.shared_expert.up_proj",
+            "layers.0.mlp.switch_mlp.down_proj",
+            "layers.0.mlp.switch_mlp.gate_proj",
+            "layers.0.mlp.switch_mlp.up_proj",
+            "layers.0.mlp_hyper_connection.input_mix_weight_down",
+            "layers.0.mlp_hyper_connection.input_mix_weight_up",
+            "layers.0.self_attn.indexer.index_qk_proj",
+            "layers.0.self_attn.k_proj", "layers.0.self_attn.o_proj",
+            "layers.0.self_attn.q_proj", "layers.0.self_attn.v_proj",
+        ]
+        let unquantized = [
+            "hyper_connection_mixer.hc_norm.weight",
+            "layers.0.attn_hyper_connection.block_inject_weight.weight",
+            "layers.0.attn_hyper_connection.hc_norm.weight",
+            "layers.0.mlp.shared_expert_gate.weight",
+            "layers.0.mlp_hyper_connection.block_inject_weight.weight",
+            "layers.0.mlp_hyper_connection.hc_norm.weight",
+            "layers.0.self_attn.indexer.k_layernorm.weight",
+            "layers.0.self_attn.indexer.q_layernorm.weight",
+            "layers.0.self_attn.k_norm.weight",
+            "layers.0.self_attn.q_norm.weight",
+            "pre_fc_norm_embedding.weight", "pre_fc_norm_hidden.weight",
+        ]
+        return quantizedBases.flatMap { base in
+            ["\(base).weight", "\(base).scales", "\(base).biases"]
+        } + unquantized
+    }()
+
+    static func embeddedQwenNextMTPExpectedTensors(
+        config: [String: Any]
+    ) -> [String: (AFMSafetensorHeader.DType, [Int])]? {
+        let text = config["text_config"] as? [String: Any] ?? config
+        let quantization = config["quantization"] as? [String: Any]
+            ?? config["quantization_config"] as? [String: Any]
+        func positive(_ key: String, default fallback: Int? = nil) -> Int? {
+            let value = (text[key] as? NSNumber)?.intValue ?? fallback
+            guard let value, value > 0, value <= 1_000_000 else { return nil }
+            return value
+        }
+        guard let hidden = positive("hidden_size"),
+              let heads = positive("num_attention_heads"),
+              let kvHeads = positive("num_key_value_heads"),
+              let headDim = positive("head_dim", default: hidden / heads),
+              let experts = positive("num_experts"),
+              let moe = positive("moe_intermediate_size"),
+              let shared = positive("shared_expert_intermediate_size"),
+              let hcCount = positive("hc_count", default: 4),
+              let hcLowRank = positive("hc_lowrank", default: 320),
+              let indexHeads = positive("indexer_n_heads", default: 4),
+              let indexKVHeads = positive("indexer_kv_heads", default: 1),
+              let indexHeadDim = positive("indexer_head_dim", default: 128),
+              let groupSize = (quantization?["group_size"] as? NSNumber)?.intValue,
+              let bits = (quantization?["bits"] as? NSNumber)?.intValue,
+              groupSize > 0, bits > 0, bits <= 8
+        else { return nil }
+
+        let hcWidth = hidden * hcCount
+        var expected = [String: (AFMSafetensorHeader.DType, [Int])]()
+        func affine(_ base: String, output: Int, input: Int, leading: [Int] = []) {
+            guard input.isMultiple(of: groupSize), (input * bits).isMultiple(of: 32) else {
+                return
+            }
+            expected[base + ".weight"] = (.uint32, leading + [output, input * bits / 32])
+            expected[base + ".scales"] = (.bfloat16, leading + [output, input / groupSize])
+            expected[base + ".biases"] = (.bfloat16, leading + [output, input / groupSize])
+        }
+        affine("fc_embedding", output: hidden, input: hidden)
+        affine("fc_hidden", output: hidden, input: hidden)
+        for base in [
+            "hyper_connection_mixer", "layers.0.attn_hyper_connection",
+            "layers.0.mlp_hyper_connection",
+        ] {
+            affine(base + ".input_mix_weight_down", output: hcLowRank, input: hcWidth)
+            affine(base + ".input_mix_weight_up", output: hcWidth, input: hcLowRank)
+        }
+        affine("layers.0.mlp.gate", output: experts, input: hidden)
+        affine("layers.0.mlp.shared_expert.down_proj", output: hidden, input: shared)
+        affine("layers.0.mlp.shared_expert.gate_proj", output: shared, input: hidden)
+        affine("layers.0.mlp.shared_expert.up_proj", output: shared, input: hidden)
+        affine("layers.0.mlp.switch_mlp.down_proj", output: hidden, input: moe,
+               leading: [experts])
+        affine("layers.0.mlp.switch_mlp.gate_proj", output: moe, input: hidden,
+               leading: [experts])
+        affine("layers.0.mlp.switch_mlp.up_proj", output: moe, input: hidden,
+               leading: [experts])
+        affine("layers.0.self_attn.indexer.index_qk_proj",
+               output: (indexHeads + indexKVHeads) * indexHeadDim, input: hidden)
+        affine("layers.0.self_attn.k_proj", output: kvHeads * headDim, input: hidden)
+        affine("layers.0.self_attn.o_proj", output: hidden, input: heads * headDim)
+        affine("layers.0.self_attn.q_proj", output: heads * headDim * 2, input: hidden)
+        affine("layers.0.self_attn.v_proj", output: kvHeads * headDim, input: hidden)
+
+        let bf16: [String: [Int]] = [
+            "hyper_connection_mixer.hc_norm.weight": [hcWidth],
+            "layers.0.attn_hyper_connection.block_inject_weight.weight": [hcCount, hcWidth],
+            "layers.0.attn_hyper_connection.hc_norm.weight": [hcWidth],
+            "layers.0.mlp.shared_expert_gate.weight": [1, hidden],
+            "layers.0.mlp_hyper_connection.block_inject_weight.weight": [hcCount, hcWidth],
+            "layers.0.mlp_hyper_connection.hc_norm.weight": [hcWidth],
+            "layers.0.self_attn.indexer.k_layernorm.weight": [indexHeadDim],
+            "layers.0.self_attn.indexer.q_layernorm.weight": [indexHeadDim],
+            "layers.0.self_attn.k_norm.weight": [headDim],
+            "layers.0.self_attn.q_norm.weight": [headDim],
+            "pre_fc_norm_embedding.weight": [hidden],
+            "pre_fc_norm_hidden.weight": [hcWidth],
+        ]
+        for (name, shape) in bf16 { expected[name] = (.bfloat16, shape) }
+        guard Set(expected.keys) == Set(embeddedQwenNextMTPRequiredSuffixes) else {
+            return nil
+        }
+        return expected
     }
 
     private static func hasCompleteEmbeddedGLMMTP(

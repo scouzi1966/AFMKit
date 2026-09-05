@@ -292,6 +292,57 @@ final class AFMMLXSpeculativeDecodingTests: XCTestCase {
         XCTAssertTrue(compatibility.mtpCompatible)
     }
 
+    func testQwenNextEmbeddedMTPRequiresQualifiedAssets() {
+        let config: [String: Any] = [
+            "model_type": "qwen4_exp",
+            "quantization": ["group_size": 64, "bits": 4, "mode": "affine"],
+            "text_config": [
+                "model_type": "qwen4_exp_text",
+                "mtp": ["num_hidden_layers": 1],
+                "hidden_size": 64,
+                "num_attention_heads": 2,
+                "num_key_value_heads": 1,
+                "head_dim": 64,
+                "num_experts": 2,
+                "moe_intermediate_size": 64,
+                "shared_expert_intermediate_size": 64,
+                "hc_count": 2,
+                "hc_lowrank": 64,
+                "indexer_n_heads": 2,
+                "indexer_kv_heads": 1,
+                "indexer_head_dim": 64,
+            ],
+        ]
+        XCTAssertFalse(AFMMLXSpeculativeModelCompatibility.evaluate(
+            config: config, hasMTPSidecar: false).mtpCompatible)
+        XCTAssertTrue(AFMMLXSpeculativeModelCompatibility.evaluate(
+            config: config,
+            hasMTPSidecar: false,
+            embeddedAssetsPresent: true).mtpCompatible)
+    }
+
+    func testQwenNextEmbeddedMTPRequiresEveryRuntimeTensor() throws {
+        let complete = try Self.makeEmbeddedQwenNextMTPDirectory()
+        defer { try? FileManager.default.removeItem(at: complete) }
+        XCTAssertTrue(
+            AFMMLXSpeculativeModelCompatibility.evaluate(modelDirectory: complete)
+                .mtpCompatible)
+
+        let missing = try Self.makeEmbeddedQwenNextMTPDirectory(
+            omitting: "layers.0.mlp_hyper_connection.block_inject_weight.weight")
+        defer { try? FileManager.default.removeItem(at: missing) }
+        XCTAssertFalse(
+            AFMMLXSpeculativeModelCompatibility.evaluate(modelDirectory: missing)
+                .mtpCompatible)
+
+        let malformed = try Self.makeEmbeddedQwenNextMTPDirectory(
+            malformed: "layers.0.self_attn.indexer.k_layernorm.weight")
+        defer { try? FileManager.default.removeItem(at: malformed) }
+        XCTAssertFalse(
+            AFMMLXSpeculativeModelCompatibility.evaluate(modelDirectory: malformed)
+                .mtpCompatible)
+    }
+
     func testGLMEmbeddedMTPIsNotAdvertisedFromConfigAlone() {
         let config: [String: Any] = [
             "model_type": "glm5_next",
@@ -573,6 +624,56 @@ final class AFMMLXSpeculativeDecodingTests: XCTestCase {
         ]
         try JSONSerialization.data(withJSONObject: config).write(
             to: directory.appendingPathComponent("config.json"))
+    }
+
+    private static func makeEmbeddedQwenNextMTPDirectory(
+        omitting omitted: String? = nil,
+        malformed: String? = nil
+    ) throws -> URL {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let config: [String: Any] = [
+            "model_type": "qwen4_exp",
+            "quantization": ["group_size": 64, "bits": 4, "mode": "affine"],
+            "text_config": [
+                "model_type": "qwen4_exp_text",
+                "mtp": ["num_hidden_layers": 1],
+                "hidden_size": 64,
+                "num_attention_heads": 2,
+                "num_key_value_heads": 1,
+                "head_dim": 64,
+                "num_experts": 2,
+                "moe_intermediate_size": 64,
+                "shared_expert_intermediate_size": 64,
+                "hc_count": 2,
+                "hc_lowrank": 64,
+                "indexer_n_heads": 2,
+                "indexer_kv_heads": 1,
+                "indexer_head_dim": 64,
+            ],
+        ]
+        try JSONSerialization.data(withJSONObject: config).write(
+            to: directory.appendingPathComponent("config.json"))
+        let prefix = "language_model.mtp."
+        let expected = try XCTUnwrap(
+            AFMMLXSpeculativeModelCompatibility.embeddedQwenNextMTPExpectedTensors(
+                config: config))
+        let tensors = Dictionary(uniqueKeysWithValues: expected
+            .filter { $0.key != omitted }
+            .map { suffix, requirement in
+                let dtype: String
+                switch requirement.0 {
+                case .uint32: dtype = "U32"
+                case .bfloat16: dtype = "BF16"
+                default: dtype = "F32"
+                }
+                let shape = suffix == malformed ? requirement.1 + [2] : requirement.1
+                return (prefix + suffix, (dtype, shape))
+            })
+        try writeSafetensorMetadata(
+            tensors, to: directory.appendingPathComponent("model.safetensors"))
+        return directory
     }
 
     private enum ShardedManifestMutation {

@@ -235,27 +235,66 @@ public struct GLM5NextTextConfiguration: Decodable, Sendable {
 
 // MARK: - mHC hyper-connections
 
-private final class GLM5NextHyperConnection: Module {
+final class GLM5NextHyperConnection: Module {
     let multiplier: Int
     let hiddenSize: Int
     let sinkhornIterations: Int
     let hcEps: Float
     let normEps: Float
+    private let fusedHC4Override: String?
 
     @ParameterInfo(key: "fn") var fn: MLXArray
     @ParameterInfo(key: "base") var base: MLXArray
     @ParameterInfo(key: "scale") var scale: MLXArray
 
-    init(_ config: GLM5NextTextConfiguration) {
+    init(
+        _ config: GLM5NextTextConfiguration,
+        fusedHC4Override: String? = nil
+    ) {
         multiplier = config.hcMultiplier
         hiddenSize = config.hiddenSize
         sinkhornIterations = config.hcSinkhornIterations
         hcEps = config.hcEps
         normEps = config.rmsNormEps
+        self.fusedHC4Override = fusedHC4Override
         let mix = (2 + multiplier) * multiplier
         _fn.wrappedValue = MLXArray.zeros([mix, multiplier * hiddenSize])
         _base.wrappedValue = MLXArray.zeros([mix])
         _scale.wrappedValue = MLXArray.ones([3])
+    }
+
+    static func fusedHC4Enabled(override raw: String?) -> Bool {
+        guard let raw else { return false }
+        return raw == "1" || raw.lowercased() == "true"
+    }
+
+    static func canUseFusedHC4(
+        enabled: Bool,
+        multiplier: Int,
+        batch: Int,
+        length: Int,
+        dtype: DType,
+        deviceType: DeviceType?
+    ) -> Bool {
+        enabled && multiplier == 4 && batch == 1 && length == 1
+            && (dtype == .float16 || dtype == .bfloat16)
+            && deviceType == .gpu
+    }
+
+    private func usesFusedHC4(
+        batch: Int,
+        length: Int,
+        dtype: DType
+    ) -> Bool {
+        let raw = fusedHC4Override
+            ?? ProcessInfo.processInfo.environment["VMLX_GLM53_FUSED_HC4"]
+        return Self.canUseFusedHC4(
+            enabled: Self.fusedHC4Enabled(override: raw),
+            multiplier: multiplier,
+            batch: batch,
+            length: length,
+            dtype: dtype,
+            deviceType: Device.defaultDevice().deviceType)
     }
 
     func collapse(_ streams: MLXArray) -> (MLXArray, MLXArray, MLXArray) {
@@ -266,6 +305,17 @@ private final class GLM5NextHyperConnection: Module {
         let normalized = flat * rsqrt(
             (flat * flat).mean(axis: -1, keepDims: true) + normEps)
         let mixes = normalized.matmul(fn.asType(.float32).transposed())
+        if usesFusedHC4(batch: batch, length: length, dtype: dtype) {
+            let fused = DeepseekV4Math.hcSplitSinkhornCollapse4(
+                mixes: mixes,
+                scale: scale,
+                base: base,
+                residual: streams.asType(.float32),
+                hiddenSize: hiddenSize,
+                iters: sinkhornIterations,
+                eps: hcEps)
+            return (fused.collapsed.asType(dtype), fused.post, fused.comb)
+        }
         let (pre, post, combination) = DeepseekV4Math.hcSplitSinkhorn(
             mixes: mixes,
             scale: scale,
@@ -286,6 +336,18 @@ private final class GLM5NextHyperConnection: Module {
         post: MLXArray,
         combination: MLXArray
     ) -> MLXArray {
+        if usesFusedHC4(
+            batch: residual.dim(0),
+            length: residual.dim(1),
+            dtype: output.dtype)
+        {
+            return DeepseekV4Math.hcExpand4(
+                blockOut: output,
+                residual: residual,
+                post: post,
+                comb: combination,
+                hiddenSize: hiddenSize).asType(output.dtype)
+        }
         let mixedResidual = DeepseekV4Math.hcExpandResidual(
             comb: combination, residual: residual)
         return (
@@ -338,28 +400,44 @@ private final class GLM5NextForgetGate: Module {
     }
 }
 
-private final class GLM5NextLinearAttention: Module {
+final class GLM5NextLinearAttention: Module {
     let heads: Int
     let headDim: Int
     let projectedSize: Int
     let convolutionKernel: Int
+    let inputSize: Int
 
     @ModuleInfo(key: "q_proj") var qProj: Linear
     @ModuleInfo(key: "k_proj") var kProj: Linear
     @ModuleInfo(key: "v_proj") var vProj: Linear
     @ModuleInfo var conv1d: Conv1d
-    @ModuleInfo(key: "forget_gate") var forgetGate: GLM5NextForgetGate
+    @ModuleInfo(key: "forget_gate") private var forgetGate: GLM5NextForgetGate
     @ModuleInfo(key: "b_proj") var bProj: Linear
     @ModuleInfo(key: "g_a_proj") var gAProj: Linear
     @ModuleInfo(key: "g_b_proj") var gBProj: Linear
-    @ModuleInfo(key: "o_norm") var outputNorm: GLM5NextGatedRMSNorm
+    @ModuleInfo(key: "o_norm") private var outputNorm: GLM5NextGatedRMSNorm
     @ModuleInfo(key: "o_proj") var outputProj: Linear
+
+    // GLM-5.3 applies these six projections to the same hidden state. During
+    // single-token decode, issuing one affine quantized matmul is substantially
+    // cheaper than issuing six small matmuls. The cache is populated during
+    // the explicit post-load preparation stage, after checkpoint loading has
+    // replaced the placeholder Linear modules.
+    private let fusedInputProjections = AffineQuantizedProjectionFusionCache()
+
+    var usesFusedInputProjections: Bool { fusedInputProjections.isPrepared }
+
+    static func inputProjectionFusionEnabled(override raw: String?) -> Bool {
+        guard let raw else { return true }
+        return raw != "0" && raw.lowercased() != "false"
+    }
 
     init(_ config: GLM5NextTextConfiguration) {
         heads = config.linearHeads
         headDim = config.linearHeadDim
         projectedSize = heads * headDim
         convolutionKernel = config.linearConvKernel
+        inputSize = config.hiddenSize
         _qProj.wrappedValue = Linear(config.hiddenSize, projectedSize, bias: false)
         _kProj.wrappedValue = Linear(config.hiddenSize, projectedSize, bias: false)
         _vProj.wrappedValue = Linear(config.hiddenSize, projectedSize, bias: false)
@@ -378,6 +456,84 @@ private final class GLM5NextLinearAttention: Module {
         _outputProj.wrappedValue = Linear(projectedSize, config.hiddenSize, bias: false)
     }
 
+    /// Build the decode-only projection cache when every source projection has
+    /// exactly the same affine quantization contract and packed layout.
+    ///
+    /// This deliberately fails closed. Dense, MXFP, mixed-bit, mixed-group,
+    /// biased, or unexpectedly laid-out projections continue through the
+    /// original module calls without modifying their parameters.
+    @discardableResult
+    func prepareFusedInputProjections() -> Bool {
+        let profile = ProcessInfo.processInfo.environment[
+            "VMLX_GLM53_PROJECTION_PROFILE"] == "1"
+        defer {
+            if profile {
+                let message = "[GLM5NextProjectionFusion] ready=\(fusedInputProjections.isPrepared)\n"
+                FileHandle.standardError.write(Data(message.utf8))
+            }
+        }
+        let descriptors = [
+            AffineQuantizedProjectionDescriptor(
+                parameterPath: "q_proj", projection: qProj,
+                outputDimensions: projectedSize),
+            AffineQuantizedProjectionDescriptor(
+                parameterPath: "k_proj", projection: kProj,
+                outputDimensions: projectedSize),
+            AffineQuantizedProjectionDescriptor(
+                parameterPath: "v_proj", projection: vProj,
+                outputDimensions: projectedSize),
+            AffineQuantizedProjectionDescriptor(
+                parameterPath: "forget_gate.f_a_proj", projection: forgetGate.fAProj,
+                outputDimensions: headDim),
+            AffineQuantizedProjectionDescriptor(
+                parameterPath: "g_a_proj", projection: gAProj,
+                outputDimensions: headDim),
+            AffineQuantizedProjectionDescriptor(
+                parameterPath: "b_proj", projection: bProj,
+                outputDimensions: heads),
+        ]
+        return fusedInputProjections.prepare(
+            enabled: Self.inputProjectionFusionEnabled(
+                override: ProcessInfo.processInfo.environment[
+                    "VMLX_GLM53_FUSE_INPUT_PROJECTIONS"]),
+            inputDimensions: inputSize,
+            descriptors: descriptors
+        ) { replacements in
+            // Keep the source modules as exact row-sliced views so parameter
+            // enumeration, serialization, and fallback remain valid.
+            update(parameters: ModuleParameters.unflattened(replacements))
+        }
+    }
+
+    func invalidateFusedInputProjections() {
+        fusedInputProjections.invalidate()
+    }
+
+    func sourceInputProjections(
+        _ input: MLXArray
+    ) -> (q: MLXArray, k: MLXArray, v: MLXArray, fA: MLXArray, gA: MLXArray, b: MLXArray) {
+        (
+            qProj(input), kProj(input), vProj(input),
+            forgetGate.fAProj(input), gAProj(input), bProj(input))
+    }
+
+    func inputProjections(
+        _ input: MLXArray,
+        useFusion: Bool = true
+    ) -> (q: MLXArray, k: MLXArray, v: MLXArray, fA: MLXArray, gA: MLXArray, b: MLXArray) {
+        // Preparation is an explicit post-load step. Forward never mutates
+        // registered parameters or derived caches, so concurrent callers only
+        // observe an immutable published state.
+        if useFusion,
+           input.dim(1) == 1,
+           let parts = fusedInputProjections.project(input),
+           parts.count == 6
+        {
+            return (parts[0], parts[1], parts[2], parts[3], parts[4], parts[5])
+        }
+        return sourceInputProjections(input)
+    }
+
     func callAsFunction(
         _ input: MLXArray,
         mask: MLXArray?,
@@ -385,7 +541,8 @@ private final class GLM5NextLinearAttention: Module {
     ) -> MLXArray {
         let batch = input.dim(0)
         let length = input.dim(1)
-        var projected = concatenated([qProj(input), kProj(input), vProj(input)], axis: -1)
+        let inputs = inputProjections(input)
+        var projected = concatenated([inputs.q, inputs.k, inputs.v], axis: -1)
         if let mask, mask.ndim == 2 {
             projected = MLX.where(mask[.ellipsis, .newAxis], projected, MLXArray(0))
         }
@@ -407,14 +564,14 @@ private final class GLM5NextLinearAttention: Module {
             * pow(Float(headDim), -0.5)
         k = k * rsqrt((k * k).sum(axis: -1, keepDims: true) + 1e-6)
 
-        let a = forgetGate.fBProj(forgetGate.fAProj(input))
+        let a = forgetGate.fBProj(inputs.fA)
             .reshaped(batch, length, heads, headDim).asType(.float32)
         let (recurrentOutput, state) = gatedDeltaUpdate(
             q: q,
             k: k,
             v: v,
             a: a,
-            b: bProj(input).asType(.float32),
+            b: inputs.b.asType(.float32),
             ALog: forgetGate.aLog.reshaped(heads, 1).asType(.float32),
             dtBias: forgetGate.dtBias.reshaped(heads, headDim).asType(.float32),
             state: cache?[1]?.asType(.float32),
@@ -426,7 +583,7 @@ private final class GLM5NextLinearAttention: Module {
             cache.offset += length
         }
 
-        let gate = gBProj(gAProj(input)).reshaped(batch, length, heads, headDim)
+        let gate = gBProj(inputs.gA).reshaped(batch, length, heads, headDim)
         let output = recurrentOutput.asType(input.dtype)
         return outputProj(outputNorm(output, gate: gate).reshaped(batch, length, projectedSize))
     }
@@ -675,6 +832,7 @@ final class GLM5NextSparseAttention: Module {
     let kvLoraRank: Int
     let valueHeadDim: Int
     let scale: Float
+    private let fastSDPAOverride: Bool?
 
     @ModuleInfo(key: "q_a_proj") var qAProjection: Linear
     @ModuleInfo(key: "q_a_layernorm") var qANorm: RMSNorm
@@ -686,13 +844,14 @@ final class GLM5NextSparseAttention: Module {
     @ModuleInfo(key: "o_proj") var outputProjection: Linear
     @ModuleInfo var indexer: GLM5NextIndexer
 
-    init(_ config: GLM5NextTextConfiguration) {
+    init(_ config: GLM5NextTextConfiguration, fastSDPAOverride: Bool? = nil) {
         heads = config.attentionHeads
         qLoraRank = config.qLoraRank
         qHeadDim = config.qkNopeHeadDim
         kvLoraRank = config.kvLoraRank
         valueHeadDim = config.vHeadDim
         scale = pow(Float(qHeadDim), -0.5)
+        self.fastSDPAOverride = fastSDPAOverride
         _qAProjection.wrappedValue = Linear(
             config.hiddenSize, qLoraRank, bias: config.attentionBias)
         _qANorm.wrappedValue = RMSNorm(
@@ -784,13 +943,35 @@ final class GLM5NextSparseAttention: Module {
         }
 
         let output: MLXArray
+        let canUseDecodeSDPA = Self.canUseFastSDPA(
+            enabled: fastSDPAOverride ?? Self.fastSDPAEnabled(
+                override: ProcessInfo.processInfo.environment["VMLX_GLM53_FAST_SDPA"]),
+            batch: batch,
+            length: length,
+            hasSelection: selected != nil,
+            hasCacheMask: cacheMask != nil)
         if length == 1 {
             query = embedQuery(query)
-            output = unembedOutput(attend(
-                query: query,
-                key: latent,
-                value: latent,
-                mask: attentionMask))
+            let attended: MLXArray
+            if canUseDecodeSDPA {
+                // At B=1/S=1 with no padding or sparse selection the newly
+                // appended query is causally allowed to see every cached key.
+                // The explicit all-true mask built above is therefore
+                // equivalent to no mask, which admits MLX's fused decode SDPA.
+                attended = MLXFast.scaledDotProductAttention(
+                    queries: query,
+                    keys: latent,
+                    values: latent,
+                    scale: scale,
+                    mask: .none)
+            } else {
+                attended = attend(
+                    query: query,
+                    key: latent,
+                    value: latent,
+                    mask: attentionMask)
+            }
+            output = unembedOutput(attended)
         } else {
             output = attend(
                 query: query,
@@ -800,6 +981,47 @@ final class GLM5NextSparseAttention: Module {
         }
         return outputProjection(
             output.transposed(0, 2, 1, 3).reshaped(batch, length, -1))
+    }
+
+    static func fastSDPAEnabled(override raw: String?) -> Bool {
+        guard let raw else { return true }
+        return raw != "0" && raw.lowercased() != "false"
+    }
+
+    static func canUseFastSDPA(
+        enabled: Bool,
+        batch: Int,
+        length: Int,
+        hasSelection: Bool,
+        hasCacheMask: Bool
+    ) -> Bool {
+        enabled && batch == 1 && length == 1 && !hasSelection && !hasCacheMask
+    }
+
+    /// Test hook for the exact manual attention fallback. Production calls
+    /// select the fused kernel only through the guarded decode path above.
+    func manualAttentionForTesting(
+        query: MLXArray,
+        key: MLXArray,
+        value: MLXArray,
+        mask: MLXArray?
+    ) -> MLXArray {
+        attend(query: query, key: key, value: value, mask: mask)
+    }
+
+    /// Test hook for the fused primitive used by the guarded decode path.
+    func fastAttentionForTesting(
+        query: MLXArray,
+        key: MLXArray,
+        value: MLXArray,
+        mask: MLXArray? = nil
+    ) -> MLXArray {
+        let maskMode: MLXFast.ScaledDotProductAttentionMaskMode = mask.map {
+            .array($0)
+        } ?? .none
+        return MLXFast.scaledDotProductAttention(
+            queries: query, keys: key, values: value,
+            scale: scale, mask: maskMode)
     }
 
     private func attend(
@@ -824,6 +1046,22 @@ final class GLM5NextSparseAttention: Module {
 
 // MARK: - Dense and sparse feed-forward blocks
 
+/// GLM-5.3's clamped SwiGLU, preserving the projection activation dtype.
+///
+/// Keep the limits as weak Swift scalars. Wrapping them in `MLXArray` creates
+/// strong Float32 operands, which promotes BF16 expert activations before the
+/// quantized down projection and forces MLX to convert the complete affine
+/// scale/bias bank on every forward pass.
+func glm5NextClampedSwiGLU(
+    gate: MLXArray,
+    up: MLXArray,
+    limit: Float
+) -> MLXArray {
+    let limitedGate = minimum(gate, limit)
+    let limitedUp = maximum(minimum(up, limit), -limit)
+    return silu(limitedGate) * limitedUp
+}
+
 private final class GLM5NextMLP: Module, UnaryLayer {
     let limit: Float
     @ModuleInfo(key: "gate_proj") var gateProjection: Linear
@@ -838,10 +1076,10 @@ private final class GLM5NextMLP: Module, UnaryLayer {
     }
 
     func callAsFunction(_ input: MLXArray) -> MLXArray {
-        let gate = minimum(gateProjection(input), MLXArray(limit))
-        let up = maximum(
-            minimum(upProjection(input), MLXArray(limit)), MLXArray(-limit))
-        return downProjection(silu(gate) * up)
+        downProjection(glm5NextClampedSwiGLU(
+            gate: gateProjection(input),
+            up: upProjection(input),
+            limit: limit))
     }
 }
 
@@ -904,9 +1142,7 @@ private final class GLM5NextMoE: Module, UnaryLayer {
             hiddenDims: config.moeIntermediateSize,
             numExperts: config.routedExperts,
             glue: { gate, up in
-                let limitedGate = minimum(gate, MLXArray(limit))
-                let limitedUp = maximum(minimum(up, MLXArray(limit)), MLXArray(-limit))
-                return silu(limitedGate) * limitedUp
+                glm5NextClampedSwiGLU(gate: gate, up: up, limit: limit)
             })
         if config.sharedExperts > 0 {
             _sharedExperts.wrappedValue = GLM5NextMLP(
@@ -925,21 +1161,32 @@ private final class GLM5NextMoE: Module, UnaryLayer {
         }
         return output
     }
+
+    func preparePerformanceCaches() {
+        experts.prepareFusedGateUpCache()
+    }
+
+    func invalidatePerformanceCaches() {
+        experts.invalidateFusedGateUpCache()
+    }
 }
 
 // MARK: - Decoder and model
 
-private final class GLM5NextDecoderLayer: Module {
+final class GLM5NextDecoderLayer: Module {
     let isLinear: Bool
     let mlp: UnaryLayer
+    private let compiledFFN = FixedShapeCompiledUnaryCache()
+    private let compiledFFNShape: [Int]
     @ModuleInfo(key: "self_attn") var attention: Module
     @ModuleInfo(key: "input_layernorm") var inputNorm: RMSNorm
     @ModuleInfo(key: "post_attention_layernorm") var postAttentionNorm: RMSNorm
-    @ModuleInfo(key: "attn_hc") var attentionHyperConnection: GLM5NextHyperConnection
-    @ModuleInfo(key: "ffn_hc") var ffnHyperConnection: GLM5NextHyperConnection
+    @ModuleInfo(key: "attn_hc") private var attentionHyperConnection: GLM5NextHyperConnection
+    @ModuleInfo(key: "ffn_hc") private var ffnHyperConnection: GLM5NextHyperConnection
 
     init(_ config: GLM5NextTextConfiguration, layerIndex: Int) {
         isLinear = config.layerTypes[layerIndex] == "linear_attention"
+        compiledFFNShape = [1, 1, config.hcMultiplier, config.hiddenSize]
         if isLinear {
             _attention.wrappedValue = GLM5NextLinearAttention(config)
         } else {
@@ -962,13 +1209,65 @@ private final class GLM5NextDecoderLayer: Module {
         _ffnHyperConnection.wrappedValue = GLM5NextHyperConnection(config)
     }
 
+    func preparePerformanceCaches() {
+        (mlp as? GLM5NextMoE)?.preparePerformanceCaches()
+        prepareCompiledFFN(enabled: Self.compiledFFNEnabled(
+            override: ProcessInfo.processInfo.environment["VMLX_GLM53_COMPILE_FFN"]))
+    }
+
+    func invalidatePerformanceCaches() {
+        compiledFFN.invalidate()
+        (mlp as? GLM5NextMoE)?.invalidatePerformanceCaches()
+        (attention as? GLM5NextLinearAttention)?.invalidateFusedInputProjections()
+    }
+
+    static func compiledFFNEnabled(override raw: String?) -> Bool {
+        guard let raw else { return true }
+        return raw != "0" && raw.lowercased() != "false"
+    }
+
+    /// Publish the exact stateless FFN half used by the reference decode path.
+    /// This is intentionally GLM-local and fixed-shape: it does not enable the
+    /// process-wide unsafe-compile policy or compile cache-bearing attention.
+    func prepareCompiledFFN(enabled: Bool) {
+        compiledFFN.prepare(
+            enabled: enabled,
+            expectedShape: compiledFFNShape
+        ) { [unowned self] input in
+            self.ffnBlock(input)
+        }
+    }
+
+    var usesCompiledFFN: Bool { compiledFFN.isPrepared }
+    var compiledFFNDType: DType? { compiledFFN.inputDType }
+
+    func compiledFFNBlock(_ input: MLXArray) -> MLXArray? {
+        compiledFFN(input)
+    }
+
+    func ffnBlock(_ input: MLXArray) -> MLXArray {
+        let residual = input
+        let (collapsed, post, combination) = ffnHyperConnection.collapse(input)
+        return ffnHyperConnection.expand(
+            mlp(postAttentionNorm(collapsed)),
+            residual: residual,
+            post: post,
+            combination: combination)
+    }
+
+    @discardableResult
+    func prepareInputProjectionFusion() -> Bool {
+        guard let attention = attention as? GLM5NextLinearAttention else { return false }
+        return attention.prepareFusedInputProjections()
+    }
+
     func callAsFunction(
         _ input: MLXArray,
         validMask: MLXArray?,
         cache: KVCache?
     ) -> MLXArray {
-        var residual = input
-        var (collapsed, post, combination) = attentionHyperConnection.collapse(input)
+        let residual = input
+        let (collapsed, post, combination) = attentionHyperConnection.collapse(input)
         let attended: MLXArray
         if isLinear {
             guard let attention = attention as? GLM5NextLinearAttention else {
@@ -982,17 +1281,13 @@ private final class GLM5NextDecoderLayer: Module {
             }
             attended = attention(inputNorm(collapsed), validMask: validMask, cache: cache)
         }
-        var hidden = attentionHyperConnection.expand(
+        let hidden = attentionHyperConnection.expand(
             attended, residual: residual, post: post, combination: combination)
 
-        residual = hidden
-        (collapsed, post, combination) = ffnHyperConnection.collapse(hidden)
-        hidden = ffnHyperConnection.expand(
-            mlp(postAttentionNorm(collapsed)),
-            residual: residual,
-            post: post,
-            combination: combination)
-        return hidden
+        if let compiled = compiledFFNBlock(hidden) {
+            return compiled
+        }
+        return ffnBlock(hidden)
     }
 }
 
@@ -1021,6 +1316,15 @@ final class GLM5NextMTPDecoderLayer: Module {
         let hidden = input + attended
         return hidden + mlp(postAttentionNorm(hidden))
     }
+
+    func preparePerformanceCaches() {
+        mlp.preparePerformanceCaches()
+    }
+
+    func invalidatePerformanceCaches() {
+        mlp.invalidatePerformanceCaches()
+    }
+
 }
 
 final class GLM5NextMTPSharedHead: Module {
@@ -1039,6 +1343,7 @@ final class GLM5NextMTPHead: Module {
     @ModuleInfo(key: "eh_proj") var projection: Linear
     @ModuleInfo var decoder: GLM5NextMTPDecoderLayer
     @ModuleInfo(key: "shared_head") var sharedHead: GLM5NextMTPSharedHead
+    private(set) var hasPreparedPerformanceCaches = false
 
     init(_ config: GLM5NextTextConfiguration) {
         _enorm.wrappedValue = RMSNorm(dimensions: config.hiddenSize, eps: config.rmsNormEps)
@@ -1083,9 +1388,31 @@ final class GLM5NextMTPHead: Module {
         ], axis: -1))
         return sharedHead.norm(decoder(fused, cache: cache))
     }
+
+    func preparePerformanceCaches() {
+        decoder.preparePerformanceCaches()
+        hasPreparedPerformanceCaches = true
+    }
+
+    func invalidatePerformanceCaches() {
+        decoder.invalidatePerformanceCaches()
+        hasPreparedPerformanceCaches = false
+    }
+
 }
 
 private final class GLM5NextModelInner: Module {
+    /// Submit the lazy decode graph in bounded layer groups so CPU graph
+    /// construction overlaps GPU execution. Exact-checkpoint A/Bs selected a
+    /// GLM-specific stride of four; set the environment value to zero to
+    /// recover the unsplit diagnostic path.
+    private static let decodeAsyncLadderStride: Int = {
+        guard let raw = ProcessInfo.processInfo.environment[
+            "VMLX_GLM53_DECODE_ASYNC_LADDER"
+        ] else { return 4 }
+        return max(Int(raw) ?? 0, 0)
+    }()
+
     let hcMultiplier: Int
     @ModuleInfo(key: "embed_tokens") var embedTokens: Embedding
     @ModuleInfo var layers: [GLM5NextDecoderLayer]
@@ -1101,6 +1428,19 @@ private final class GLM5NextModelInner: Module {
         _norm.wrappedValue = RMSNorm(dimensions: config.hiddenSize, eps: config.rmsNormEps)
     }
 
+    func invalidatePerformanceCaches() {
+        for layer in layers {
+            layer.invalidatePerformanceCaches()
+        }
+    }
+
+    func preparePerformanceCaches() {
+        for layer in layers {
+            _ = layer.prepareInputProjectionFusion()
+            layer.preparePerformanceCaches()
+        }
+    }
+
     func callAsFunction(
         _ inputIDs: MLXArray,
         inputEmbeddings: MLXArray? = nil,
@@ -1114,8 +1454,16 @@ private final class GLM5NextModelInner: Module {
         let validMask = firstLinear.flatMap {
             (layerCaches[$0] as? ArraysCache)?.makeMask(N: inputIDs.dim(1))
         }
+        let decodeAsyncLadderStride = Self.decodeAsyncLadderStride
+        let useDecodeAsyncLadder = decodeAsyncLadderStride > 0 && inputIDs.dim(1) == 1
         for (index, layer) in layers.enumerated() {
             hidden = layer(hidden, validMask: validMask, cache: layerCaches[index])
+            if useDecodeAsyncLadder,
+               index + 1 < layers.count,
+               (index + 1).isMultiple(of: decodeAsyncLadderStride)
+            {
+                asyncEval(hidden)
+            }
         }
         return norm(hidden.mean(axis: -2))
     }
@@ -1343,7 +1691,7 @@ private struct GLM5NextEmbeddedMTPManifest {
 }
 
 public final class GLM5NextModel: Module, LLMModel, KVCacheDimensionProvider, LoRAModel,
-    LanguageModelWeightFilter
+    LanguageModelWeightFilter, LanguageModelPerformanceCachePreparable
 {
     public let vocabularySize: Int
     public let kvHeads: [Int]
@@ -1353,6 +1701,8 @@ public final class GLM5NextModel: Module, LLMModel, KVCacheDimensionProvider, Lo
     @ModuleInfo(key: "mtp") private var embeddedMTP: GLM5NextMTPHead?
     private var embeddedMTPWeightsLoaded = false
     private let checkpointQuantization: BaseConfiguration.Quantization?
+    private let performancePreparationLock = NSLock()
+    private(set) var hasPreparedPerformanceCaches = false
 
     public var loraLayers: [Module] { model.layers }
 
@@ -1366,6 +1716,84 @@ public final class GLM5NextModel: Module, LLMModel, KVCacheDimensionProvider, Lo
         if !config.tieWordEmbeddings {
             _lmHead.wrappedValue = Linear(config.hiddenSize, config.vocabularySize, bias: false)
         }
+    }
+
+    /// GLM decode caches are derived from registered parameters. Parameter
+    /// updates invalidate them; `loadWeights` republishes them only after its
+    /// temporary checkpoint arrays have been released. Direct callers that
+    /// mutate parameters must call `preparePerformanceCaches()` before
+    /// publishing the model again. Parameter mutation requires exclusive model
+    /// access and must never overlap an in-flight forward pass.
+    @discardableResult
+    public override func update(
+        parameters: ModuleParameters,
+        verify: VerifyUpdate,
+        path: [String] = [],
+        modulePath: [String] = []
+    ) throws -> Self {
+        performancePreparationLock.lock()
+        defer { performancePreparationLock.unlock() }
+
+        model.invalidatePerformanceCaches()
+        embeddedMTP?.invalidatePerformanceCaches()
+        hasPreparedPerformanceCaches = false
+        return try super.update(
+            parameters: parameters,
+            verify: verify,
+            path: path,
+            modulePath: modulePath)
+    }
+
+    @discardableResult
+    public override func update(
+        modules: ModuleChildren,
+        verify: VerifyUpdate,
+        path: [String] = [],
+        modulePath: [String] = []
+    ) throws -> Self {
+        invalidatePerformanceCaches()
+        return try super.update(
+            modules: modules,
+            verify: verify,
+            path: path,
+            modulePath: modulePath)
+    }
+
+    /// Invalidates derived decode caches when this text model is owned by a
+    /// parent module whose recursive parameter update bypasses nested
+    /// `Module.update` overrides (for example the multimodal wrapper).
+    public func invalidatePerformanceCaches() {
+        performancePreparationLock.lock()
+        defer { performancePreparationLock.unlock() }
+        model.invalidatePerformanceCaches()
+        embeddedMTP?.invalidatePerformanceCaches()
+        hasPreparedPerformanceCaches = false
+    }
+
+    /// Publishes immutable derived decode caches after a parent module has
+    /// completed its recursive checkpoint update.
+    public func preparePerformanceCaches() {
+        performancePreparationLock.lock()
+        defer { performancePreparationLock.unlock() }
+        model.preparePerformanceCaches()
+        embeddedMTP?.preparePerformanceCaches()
+        hasPreparedPerformanceCaches = true
+    }
+
+    func prepareCompiledFFNForTesting(enabled: Bool) {
+        performancePreparationLock.lock()
+        defer { performancePreparationLock.unlock() }
+        for layer in model.layers {
+            layer.prepareCompiledFFN(enabled: enabled)
+        }
+    }
+
+    var preparedCompiledFFNLayerCount: Int {
+        model.layers.count(where: \.usesCompiledFFN)
+    }
+
+    var embeddedMTPHasPreparedPerformanceCaches: Bool {
+        embeddedMTP?.hasPreparedPerformanceCaches ?? false
     }
 
     public func callAsFunction(_ inputs: MLXArray, cache: [KVCache]?) -> MLXArray {
@@ -1506,6 +1934,7 @@ public final class GLM5NextModel: Module, LLMModel, KVCacheDimensionProvider, Lo
         try head.prepareMultiLinearParametersForVerifiedUpdate(local)
         try head.update(parameters: ModuleParameters.unflattened(local), verify: [.all])
         eval(head)
+        head.preparePerformanceCaches()
         _embeddedMTP.wrappedValue = head
         embeddedMTPWeightsLoaded = true
     }
@@ -1832,16 +2261,52 @@ enum GLM5NextCacheSnapshot {
 /// Exact greedy self-speculation using GLM-5.3's embedded NextN layer. The
 /// target remains authoritative; a rejected draft restores every target cache
 /// and replays only the already-committed primary token.
+struct GLM5NextMTPTelemetrySnapshot: Codable, Equatable {
+    var emittedTokens = 0
+    var draftedTokens = 0
+    var acceptedTokens = 0
+    var targetForwards = 0
+    var targetForwardTokens = 0
+    var headForwards = 0
+    var hostSynchronizations = 0
+    var rejectionReplays = 0
+    var decisionTrace: [String] = []
+    var prefillSeconds = 0.0
+    var draftSeconds = 0.0
+    var verificationSeconds = 0.0
+    var acceptedAdvanceEnqueueSeconds = 0.0
+    var rejectionReplayEnqueueSeconds = 0.0
+    var totalSeconds = 0.0
+}
+
 public final class GLM5NextMTPGenerator {
     private let model: GLM5NextModel
     public let depth: Int
+    private let telemetryEnabled: Bool
+    private let telemetrySink: ((GLM5NextMTPTelemetrySnapshot) -> Void)?
 
     public init?(model: GLM5NextModel, depth: Int = 1) {
         guard model.supportsEmbeddedMTP, depth == 1 else { return nil }
         self.model = model
+        self.depth = depth
+        telemetryEnabled = ProcessInfo.processInfo.environment[
+            "VMLX_GLM53_MTP_PROFILE"] == "1"
+        telemetrySink = nil
         // The published checkpoint contains exactly one NextN layer. Chaining
         // it would not be equivalent to multiple trained predictor layers.
-        self.depth = 1
+    }
+
+    init?(
+        model: GLM5NextModel,
+        depth: Int = 1,
+        telemetryEnabled: Bool = false,
+        telemetrySink: ((GLM5NextMTPTelemetrySnapshot) -> Void)? = nil
+    ) {
+        self.model = model
+        self.depth = depth
+        self.telemetryEnabled = telemetryEnabled || telemetrySink != nil
+        self.telemetrySink = telemetrySink
+        guard model.supportsEmbeddedMTP, depth == 1 else { return nil }
     }
 
     private static func argmax(_ logits: MLXArray) -> Int {
@@ -1891,9 +2356,31 @@ public final class GLM5NextMTPGenerator {
         onRejection: (([KVCache]) -> Void)?
     ) -> [Int] {
         guard !promptIds.isEmpty, maxTokens > 0 else { return [] }
+        let telemetryStart = telemetryEnabled ? Date.timeIntervalSinceReferenceDate : 0
+        var telemetry = GLM5NextMTPTelemetrySnapshot()
+        defer {
+            if telemetryEnabled {
+                telemetry.totalSeconds = Date.timeIntervalSinceReferenceDate - telemetryStart
+                if let telemetrySink {
+                    telemetrySink(telemetry)
+                } else if let payload = try? JSONEncoder().encode(telemetry),
+                          let json = String(data: payload, encoding: .utf8)
+                {
+                    FileHandle.standardError.write(Data("[GLM5NextMTPProfile] \(json)\n".utf8))
+                }
+            }
+        }
+
+        let prefillStart = telemetryEnabled ? Date.timeIntervalSinceReferenceDate : 0
         let cache = model.newCache(parameters: nil)
         let initial = model.forwardHidden(Self.tokens(promptIds), cache: cache)
         var primary = Self.argmax(initial.logits[0, -1, 0...])
+        if telemetryEnabled {
+            telemetry.targetForwards += 1
+            telemetry.targetForwardTokens += promptIds.count
+            telemetry.hostSynchronizations += 1
+            telemetry.prefillSeconds += Date.timeIntervalSinceReferenceDate - prefillStart
+        }
         var primaryHidden = initial.hidden[0..., (initial.hidden.dim(1) - 1)..., 0...]
         let mtpCache = model.makeEmbeddedMTPCache()
         // NextN position i consumes target hidden i-1 and token embedding i.
@@ -1904,11 +2391,13 @@ public final class GLM5NextMTPGenerator {
                 hiddenStates: initial.hidden[0..., 0 ..< (promptIds.count - 1), 0...],
                 tokenEmbeddings: model.embedTokens(Self.tokens(Array(promptIds.dropFirst()))),
                 cache: mtpCache)
+            if telemetryEnabled { telemetry.headForwards += 1 }
         }
         var output: [Int] = []
 
         func emit(_ token: Int) -> Bool {
             output.append(token)
+            if telemetryEnabled { telemetry.emittedTokens += 1 }
             if let onToken, !onToken(token) { return false }
             return output.count < maxTokens && !eosIds.contains(token)
         }
@@ -1916,34 +2405,68 @@ public final class GLM5NextMTPGenerator {
         while true {
             if !emit(primary) { break }
 
+            let draftStart = telemetryEnabled ? Date.timeIntervalSinceReferenceDate : 0
             guard let draftHidden = model.embeddedMTPForward(
                 hiddenStates: primaryHidden,
                 tokenEmbeddings: model.embedTokens(Self.tokens([primary])),
                 cache: mtpCache)
             else { break }
             let draft = Self.argmax(model.projectLMHead(draftHidden)[0, -1, 0...])
+            if telemetryEnabled {
+                telemetry.headForwards += 1
+                telemetry.draftedTokens += 1
+                telemetry.hostSynchronizations += 1
+                telemetry.draftSeconds += Date.timeIntervalSinceReferenceDate - draftStart
+            }
 
             let snapshot = GLM5NextCacheSnapshot.capture(cache)
-            let verified = model.forwardHidden(
-                Self.tokens([primary, draft]), cache: cache)
+            let verifyStart = telemetryEnabled ? Date.timeIntervalSinceReferenceDate : 0
+            let verified = model.forwardHidden(Self.tokens([primary, draft]), cache: cache)
             let verdict = MLX.argMax(
                 verified.logits[0, 0 ..< 2, 0...], axis: -1).asArray(Int32.self)
+            let accepted = Int(verdict[0]) == draft && !forceRejectEveryDraft
+            if telemetryEnabled {
+                telemetry.targetForwards += 1
+                telemetry.targetForwardTokens += 2
+                telemetry.hostSynchronizations += 1
+                telemetry.verificationSeconds +=
+                    Date.timeIntervalSinceReferenceDate - verifyStart
+            }
             let correct = Int(verdict[0])
+            if telemetryEnabled {
+                telemetry.decisionTrace.append(
+                    "\(accepted ? "accept" : "reject"):draft=\(draft):target=\(correct)")
+            }
 
-            if correct == draft && !forceRejectEveryDraft {
-                if !emit(draft) { break }
+            if accepted {
+                if telemetryEnabled { telemetry.acceptedTokens += 1 }
+                if !emit(correct) { break }
                 // The accepted draft is now committed. Advance the persistent
                 // MTP KV state for it before the target's free bonus becomes
                 // the next primary; the output is intentionally ignored.
+                let advanceStart = telemetryEnabled ? Date.timeIntervalSinceReferenceDate : 0
                 _ = model.embeddedMTPForward(
                     hiddenStates: verified.hidden[0..., 0 ..< 1, 0...],
-                    tokenEmbeddings: model.embedTokens(Self.tokens([draft])),
+                    tokenEmbeddings: model.embedTokens(Self.tokens([correct])),
                     cache: mtpCache)
+                if telemetryEnabled {
+                    telemetry.headForwards += 1
+                    telemetry.acceptedAdvanceEnqueueSeconds +=
+                        Date.timeIntervalSinceReferenceDate - advanceStart
+                }
                 primary = Int(verdict[1])
                 primaryHidden = verified.hidden[0..., 1 ..< 2, 0...]
             } else {
                 GLM5NextCacheSnapshot.restore(snapshot, into: cache)
+                let replayStart = telemetryEnabled ? Date.timeIntervalSinceReferenceDate : 0
                 _ = model.forwardHidden(Self.tokens([primary]), cache: cache)
+                if telemetryEnabled {
+                    telemetry.targetForwards += 1
+                    telemetry.targetForwardTokens += 1
+                    telemetry.rejectionReplays += 1
+                    telemetry.rejectionReplayEnqueueSeconds +=
+                        Date.timeIntervalSinceReferenceDate - replayStart
+                }
                 onRejection?(cache)
                 primary = correct
                 primaryHidden = verified.hidden[0..., 0 ..< 1, 0...]

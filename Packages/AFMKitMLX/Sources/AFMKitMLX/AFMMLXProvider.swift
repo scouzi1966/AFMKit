@@ -123,6 +123,7 @@ public struct AFMMLXProviderFactory: AFMProviderFactory {
             configurationKeys: [
                 "kvBits",
                 "enablePrefixCaching",
+                "qwenNGramResidency",
                 "mtpEnabled",
                 "mtpDepth",
                 "mtpModelID",
