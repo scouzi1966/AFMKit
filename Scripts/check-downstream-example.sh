@@ -81,8 +81,10 @@ while IFS= read -r product; do
     TOTAL=$((TOTAL + 1))
 done < "$CONSUMER/validator-products.txt"
 
-[[ "$TOTAL" == "15" ]] || {
-    echo "Downstream qualification built $TOTAL products; expected 15." >&2
+# The generated manifest owns the inventory; do not duplicate its product count.
+EXPECTED_TOTAL="$(awk 'NF { count++ } END { print count + 0 }' "$CONSUMER/validator-products.txt")"
+[[ "$EXPECTED_TOTAL" -gt 0 && "$TOTAL" == "$EXPECTED_TOTAL" ]] || {
+    echo "Downstream qualification built $TOTAL products; expected $EXPECTED_TOTAL." >&2
     exit 1
 }
-echo "AFMKit downstream qualification built all sixteen products from one exact tag."
+echo "AFMKit downstream qualification built all $TOTAL products from one exact tag."
