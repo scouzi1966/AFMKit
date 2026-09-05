@@ -191,6 +191,21 @@ final class GLM5NextCheckpointConverterTests: XCTestCase {
             }
     }
 
+    func testSafetensorHeaderReadsHubStyleSymlink() throws {
+        let root = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let original = root.appendingPathComponent("model-00001-of-00002.safetensors")
+        let expected = try AFMSafetensorHeader(url: original)
+        let inspection = try GLM5NextCheckpointConverter.inspect(
+            source: root, sourceRevision: String(repeating: "a", count: 40))
+        let blob = root.appendingPathComponent("blob")
+        try FileManager.default.moveItem(at: original, to: blob)
+        try FileManager.default.createSymbolicLink(atPath: original.path, withDestinationPath: "blob")
+        XCTAssertEqual(try AFMSafetensorHeader(url: original).tensors, expected.tensors)
+        XCTAssertEqual(try GLM5NextCheckpointConverter.inspect(
+            source: root, sourceRevision: String(repeating: "a", count: 40)), inspection)
+    }
+
     func testSafetensorHeaderLengthCannotExceedFile() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
