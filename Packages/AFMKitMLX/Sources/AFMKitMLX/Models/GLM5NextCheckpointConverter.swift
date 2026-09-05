@@ -333,6 +333,19 @@ public struct GLM5NextCheckpointConverter {
         }
 
         let loader = TensorLoader(root: checkpoint.root)
+        // Repair earlier conversions that treated the raw FP32 router parameter
+        // as a QuantizedLinear. Rebuild only the affected ordinary-layer units;
+        // the verified, expensive expert projections remain resumable.
+        let routerUnits = state.completed.filter { _, unit in
+            unit.outputKeys.contains { $0.hasSuffix(".mlp.gate.scales") }
+        }
+        for (id, unit) in routerUnits {
+            state.completed.removeValue(forKey: id)
+            for key in unit.outputKeys { state.weightMap.removeValue(forKey: key) }
+            for key in unit.outputKeys where key.hasSuffix(".mlp.gate.scales") {
+                state.quantization.removeValue(forKey: String(key.dropLast(".scales".count)))
+            }
+        }
         for (position, unit) in plan.enumerated() {
             let destination = outputURL.appendingPathComponent(unit.outputFile)
             if let completed = state.completed[unit.id],
@@ -986,6 +999,7 @@ public struct GLM5NextCheckpointConverter {
 
     private static func shouldQuantize(_ reference: TensorReference) -> Bool {
         guard reference.name.hasSuffix(".weight"),
+              !reference.name.hasSuffix(".mlp.gate.weight"),
               !reference.name.hasPrefix("model.visual."),
               reference.dtype != .float8E4M3,
               reference.dtype.isFloatingPoint,
@@ -1071,6 +1085,12 @@ public struct GLM5NextCheckpointConverter {
                 "The conversion resume manifest contains units outside the current conversion plan.")
         }
         for (id, completed) in state.completed {
+            let expected = planned[id].map { expectedOutputKeys(for: $0, checkpoint: checkpoint) } ?? []
+            var legacyRouterKeys = expected
+            for key in expected where key.hasSuffix(".mlp.gate.weight") {
+                let base = String(key.dropLast(".weight".count))
+                legacyRouterKeys.formUnion([base + ".scales", base + ".biases"])
+            }
             guard let unit = planned[id], completed.outputFile == unit.outputFile,
                   URL(fileURLWithPath: completed.outputFile).lastPathComponent
                     == completed.outputFile,
@@ -1078,8 +1098,7 @@ public struct GLM5NextCheckpointConverter {
                   isSHA256(completed.outputSHA256),
                   !completed.outputKeys.isEmpty,
                   Set(completed.outputKeys).count == completed.outputKeys.count,
-                  Set(completed.outputKeys) == expectedOutputKeys(
-                    for: unit, checkpoint: checkpoint),
+                  (Set(completed.outputKeys) == expected || Set(completed.outputKeys) == legacyRouterKeys),
                   completed.outputSize <= maximumOutputBytes(
                     for: unit, checkpoint: checkpoint),
                   completed.outputKeys.allSatisfy({ key in
