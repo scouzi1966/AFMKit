@@ -558,6 +558,29 @@ final class AFMMLXSpeculativeDecodingTests: XCTestCase {
                 .mtpCompatible)
     }
 
+    func testEmbeddedGLMMTPDirectoryAcceptsConvertedKVLayout() throws {
+        let directory = try Self.makeShardedQuantizedGLMDirectory(
+            mutation: .none,
+            convertedKVLayout: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        XCTAssertTrue(
+            AFMMLXSpeculativeModelCompatibility.evaluate(modelDirectory: directory)
+                .mtpCompatible)
+    }
+
+    func testEmbeddedGLMMTPDirectoryRejectsConvertedQueryUsingQLoraRank() throws {
+        let directory = try Self.makeShardedQuantizedGLMDirectory(
+            mutation: .none,
+            convertedKVLayout: true,
+            embedQueryUsesQLoraRank: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        XCTAssertFalse(
+            AFMMLXSpeculativeModelCompatibility.evaluate(modelDirectory: directory)
+                .mtpCompatible)
+    }
+
     func testEmbeddedGLMMTPDirectoryRejectsUnindexedTensor() throws {
         let directory = try Self.makeShardedQuantizedGLMDirectory(mutation: .unindexed)
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -579,6 +602,21 @@ final class AFMMLXSpeculativeDecodingTests: XCTestCase {
     func testEmbeddedGLMMTPLoaderConsumesQualifiedShardedU32Manifest() throws {
         try MLXMetalLibrary.ensureAvailable(verbose: false)
         let directory = try Self.makeShardedQuantizedGLMDirectory(mutation: .none)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let data = try Data(contentsOf: directory.appendingPathComponent("config.json"))
+        let config = try JSONDecoder().decode(GLM5NextConfiguration.self, from: data)
+        let model = GLM5NextModel(config)
+
+        try model.loadEmbeddedMTP(modelDirectory: directory)
+
+        XCTAssertTrue(model.supportsEmbeddedMTP)
+    }
+
+    func testEmbeddedGLMMTPLoaderConsumesConvertedKVLayout() throws {
+        try MLXMetalLibrary.ensureAvailable(verbose: false)
+        let directory = try Self.makeShardedQuantizedGLMDirectory(
+            mutation: .none,
+            convertedKVLayout: true)
         defer { try? FileManager.default.removeItem(at: directory) }
         let data = try Data(contentsOf: directory.appendingPathComponent("config.json"))
         let config = try JSONDecoder().decode(GLM5NextConfiguration.self, from: data)
@@ -803,7 +841,9 @@ final class AFMMLXSpeculativeDecodingTests: XCTestCase {
 
     private static func makeShardedQuantizedGLMDirectory(
         mutation: ShardedManifestMutation,
-        quantizationInTextConfig: Bool = false
+        quantizationInTextConfig: Bool = false,
+        convertedKVLayout: Bool = false,
+        embedQueryUsesQLoraRank: Bool = false
     ) throws -> URL {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -817,7 +857,7 @@ final class AFMMLXSpeculativeDecodingTests: XCTestCase {
                 "num_nextn_predict_layers": 1,
                 "hidden_size": 64,
                 "intermediate_size": 128,
-                "q_lora_rank": 64,
+                "q_lora_rank": 128,
                 "kv_lora_rank": 64,
                 "num_attention_heads": 2,
                 "num_key_value_heads": 2,
@@ -856,7 +896,25 @@ final class AFMMLXSpeculativeDecodingTests: XCTestCase {
         try JSONSerialization.data(withJSONObject: config).write(
             to: directory.appendingPathComponent("config.json"))
 
-        let tensors = quantizedEmbeddedGLMTensors()
+        var tensors = quantizedEmbeddedGLMTensors()
+        let prefix = "model.language_model.layers.2."
+        if convertedKVLayout {
+            for suffix in ["weight", "scales", "biases"] {
+                tensors.removeValue(
+                    forKey: prefix + "self_attn.kv_b_proj." + suffix)
+            }
+            let convertedKVLinears: [String: ([Int], Int)] = [
+                "self_attn.embed_q": ([2, embedQueryUsesQLoraRank ? 128 : 64], 64),
+                "self_attn.unembed_out": ([2, 64], 64),
+            ]
+            for (name, dimensions) in convertedKVLinears {
+                let (leading, input) = dimensions
+                tensors[prefix + name + ".weight"] = (
+                    "U32", leading + [input * 4 / 32])
+                tensors[prefix + name + ".scales"] = ("BF16", leading + [input / 64])
+                tensors[prefix + name + ".biases"] = ("BF16", leading + [input / 64])
+            }
+        }
         let names = tensors.keys.sorted()
         let midpoint = names.count / 2
         let firstNames = Set(names[..<midpoint])
@@ -893,7 +951,7 @@ final class AFMMLXSpeculativeDecodingTests: XCTestCase {
             prefix + "hnorm.weight": ("BF16", [64]),
             prefix + "input_layernorm.weight": ("BF16", [64]),
             prefix + "post_attention_layernorm.weight": ("BF16", [64]),
-            prefix + "self_attn.q_a_layernorm.weight": ("BF16", [64]),
+            prefix + "self_attn.q_a_layernorm.weight": ("BF16", [128]),
             prefix + "self_attn.kv_a_layernorm.weight": ("BF16", [64]),
             prefix + "self_attn.indexer.k_norm.weight": ("BF16", [32]),
             prefix + "self_attn.indexer.k_norm.bias": ("BF16", [32]),
@@ -905,12 +963,12 @@ final class AFMMLXSpeculativeDecodingTests: XCTestCase {
         ]
         let linears: [String: (Int, Int)] = [
             "eh_proj": (64, 128),
-            "self_attn.q_a_proj": (64, 64),
-            "self_attn.q_b_proj": (128, 64),
+            "self_attn.q_a_proj": (128, 64),
+            "self_attn.q_b_proj": (128, 128),
             "self_attn.kv_a_proj_with_mqa": (64, 64),
             "self_attn.kv_b_proj": (256, 64),
             "self_attn.o_proj": (64, 128),
-            "self_attn.indexer.wq_b": (64, 64),
+            "self_attn.indexer.wq_b": (64, 128),
             "self_attn.indexer.wk": (32, 64),
             "self_attn.indexer.weights_proj": (2, 64),
             "mlp.shared_experts.gate_proj": (64, 64),
