@@ -1,11 +1,14 @@
 # Qwen3.8 Flash Next performance investigation
 
-Status: performance gate passed, compatibility qualification in progress,
-updated 2026-09-03. The implementation on `perf/qwen-gdn-blocked-prefill` now meets
-the four-context, no-MTP throughput target without feature environment variables.
-Native concurrency and radix-prefix-cache qualification now pass through eight
-simultaneous requests. Model-lifecycle, full API, and MTP qualification remain
-before release; further prefill optimization is deliberately deferred.
+Status: merged performance gate passed, compatibility qualification in progress,
+updated 2026-09-04. The implementation merged by AFMKit PR #75 met the
+four-context, no-speculation throughput target within 2% of mlx-serve wherever
+AFM is slower, without feature environment variables. Native concurrency and
+radix-prefix-cache qualification pass through eight simultaneous requests.
+Model-lifecycle, full API, and MTP qualification remain before release; further
+prefill optimization is deliberately deferred. Later causal-prefill work from
+`perf/qwen-gdn-blocked-prefill` is also merged; its six-trial median measurements
+below are distinct from the earlier peak-of-three parity run.
 
 This document records why Qwen3.8 Flash Next initially decoded much more slowly
 through AFMKit than through the reproduced reference engine, what has been
@@ -15,19 +18,25 @@ optimizations without measurement.
 
 ## Executive summary
 
-The original performance gap was real and reproducible. The default AFMKit path
-now meets the agreed requirement of staying within 10% of the reproduced
-reference at every measured prefill and decode point.
+The original performance gap was real and reproducible. The merged default
+AFMKit path now meets the tightened requirement of staying within 2% whenever
+it is slower than the reproduced reference at every measured prefill and decode
+point. Several AFM decode results are faster than the reference.
 
 - The same checkpoint on the same M3 Ultra produced the reference curve shown
   below: **898-1246 prefill tok/s** and **63.8-54.1 decode tok/s** from 0.5K to
   4K context.
 - AFMKit's initial comparable no-MTP run reached approximately **39.5 decode
   tok/s** and **850 prefill tok/s**.
-- The current default path reaches median client-observed throughput of
+- The PR #75 merged path reached **905.9/68.50 tok/s** at 0.5K and
+  **1285.1/59.98 tok/s** at 4K in its peak-of-three comparison. AFM was
+  no more than 1.88% slower at any measured point, exceeds the reference decode
+  rate at every context size, and its saved responses were coherent.
+- The later causal-prefill path reached median client-observed throughput of
   **883.2/68.22 tok/s** at 0.5K and **1284.2/59.88 tok/s** at 4K across six
   same-checkpoint trials. It passes all eight prefill/decode floors and its
-  saved responses are coherent.
+  saved responses were coherent. Do not compare these medians directly to
+  peak-of-three values as if they used the same aggregation method.
 - The decisive fix gives every Swift `CompiledFunction` an explicitly owned MLX
   compile cache. This makes compiled Qwen GDN, attention, and layer-tail regions
   safe across Swift executor threads and across model destruction/reload.
@@ -51,8 +60,10 @@ All figures in this document use:
   `/Volumes/edata2/models/ddalcu/Qwen3.8-Flash-Next-MLX-Serve-4bit`.
 - Greedy decoding with temperature 0.
 - Prefix caching disabled, so the prompt is evaluated cold on every run.
-- MTP disabled. MTP is a separate optimization and must not conceal a slow
-  single-token decoder.
+- MTP and Prompt Lookup Decoding disabled. Speculation is a separate
+  optimization and must not conceal a slow single-token decoder. In particular,
+  mlx-serve enables PLD by default, so a valid autoregressive comparison must
+  pass both `--no-mtp` and `--no-pld` to the reference server.
 - The upstream `llm_context_benchmarks` OpenAI-compatible context benchmark.
 - A 0.5K context and 128 generated tokens for the fast iteration loop.
 - One GPU workload at a time.
@@ -79,6 +90,58 @@ four context sizes have now been rerun and pass these 10% floors:
 | 1K | 1045.0 | 940.5 | 63.4 | 57.06 |
 | 2K | 1185.0 | 1066.5 | 56.9 | 51.21 |
 | 4K | 1246.0 | 1121.4 | 54.1 | 48.69 |
+
+## Merged 2% parity qualification
+
+The final same-machine comparison was repeated on 2026-09-03 after PR #75 was
+merged. This is not a feature-branch result:
+
+- AFMKit merge commit: `faaffb9dce0b990c234629ebc7506572950dbe72`.
+- maclocal-api consumer commit: `627d927b934c15e800aadff42b8ecc957bb83a07`.
+- mlx-serve reference commit: `805807669565d359188b329c659f9f45d6358cd7`.
+- Each figure is the peak of three runs, matching the benchmark harness's
+  documented method. The first cold-file-cache result is not selected when a
+  later run is faster.
+
+The reference server command was:
+
+```bash
+./zig-out/bin/mlx-serve \
+  --model /Volumes/edata2/models/ddalcu/Qwen3.8-Flash-Next-MLX-Serve-4bit \
+  --serve --host 127.0.0.1 --port 9997 \
+  --no-mtp --no-pld \
+  --prefix-cache-entries 0 --tokenize-cache-entries 0 \
+  --log-file off
+```
+
+The AFM server command was:
+
+```bash
+./.build/release/afm mlx \
+  -m /Volumes/edata2/models/ddalcu/Qwen3.8-Flash-Next-MLX-Serve-4bit \
+  --port 9998 --no-think
+```
+
+AFM logged `Prefix caching disabled`; MTP is opt-in and was not requested. Both
+servers were run sequentially so they could not compete for GPU or memory
+bandwidth. The shared client command used contexts `0.5,1,2,4`, 128 output
+tokens, three runs, temperature zero, and `--no-batch`.
+
+| Context | Reference prefill | AFM prefill | Difference | Reference decode | AFM decode | Difference |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 0.5K | 919.64 | 905.86 | -1.50% | 67.25 | 68.50 | +1.86% |
+| 1K | 1057.75 | 1047.63 | -0.96% | 66.75 | 67.92 | +1.75% |
+| 2K | 1203.94 | 1181.29 | -1.88% | 60.02 | 61.62 | +2.67% |
+| 4K | 1268.39 | 1285.10 | +1.32% | 59.66 | 59.98 | +0.54% |
+
+Every AFM prefill result is within 2% of the reference. Decode is faster at all
+four points; a result that exceeds the reference by more than 2% is a pass, not
+a parity failure. A separate response-capture pass saved all four AFM outputs.
+Each was a coherent summary of its supplied *Pride and Prejudice* excerpt, with
+no repetition loop, corruption, NaN, or empty response.
+
+The raw CSVs, charts, hardware records, and captured responses are retained at
+`/Volumes/edata/afm-release-artifacts/qwen-next-afm-current/merged-2pct-parity-20260903/`.
 
 Correctness, radix/prefix-cache behavior, and fixed admission-cohort concurrency
 now pass through eight simultaneous requests. Per-slot continuous admission and
@@ -405,8 +468,9 @@ feature environment variables, the exact checkpoint reached 909.8 prefill and
 
 ## Reference implementation mapping
 
-The reference is `ddalcu/mlx-serve` at commit
-`7d0120363c98e7daa9b9894b6fb71cc8d7e84c5e`. Its own code is MIT licensed. The
+The original kernel mapping used `ddalcu/mlx-serve` at commit
+`7d0120363c98e7daa9b9894b6fb71cc8d7e84c5e`; the merged parity rerun uses
+`805807669565d359188b329c659f9f45d6358cd7`. Its own code is MIT licensed. The
 license notice is retained at `vendor/MLX/mlx-swift-lm/LICENSE-mlx-serve` for
 adapted code.
 

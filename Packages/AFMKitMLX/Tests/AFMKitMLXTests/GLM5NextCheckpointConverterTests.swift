@@ -191,6 +191,21 @@ final class GLM5NextCheckpointConverterTests: XCTestCase {
             }
     }
 
+    func testSafetensorHeaderReadsHubStyleSymlink() throws {
+        let root = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let original = root.appendingPathComponent("model-00001-of-00002.safetensors")
+        let expected = try AFMSafetensorHeader(url: original)
+        let inspection = try GLM5NextCheckpointConverter.inspect(
+            source: root, sourceRevision: String(repeating: "a", count: 40))
+        let blob = root.appendingPathComponent("blob")
+        try FileManager.default.moveItem(at: original, to: blob)
+        try FileManager.default.createSymbolicLink(atPath: original.path, withDestinationPath: "blob")
+        XCTAssertEqual(try AFMSafetensorHeader(url: original).tensors, expected.tensors)
+        XCTAssertEqual(try GLM5NextCheckpointConverter.inspect(
+            source: root, sourceRevision: String(repeating: "a", count: 40)), inspection)
+    }
+
     func testSafetensorHeaderLengthCannotExceedFile() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -203,6 +218,40 @@ final class GLM5NextCheckpointConverterTests: XCTestCase {
         XCTAssertThrowsError(try AFMSafetensorHeader(url: url)) { error in
             XCTAssertTrue(error.localizedDescription.contains("Invalid SafeTensor header"))
         }
+    }
+
+    func testResumeRegeneratesLegacyQuantizedRouterUnit() throws {
+        let source = try makeFixture()
+        let output = source.deletingLastPathComponent().appendingPathComponent(UUID().uuidString)
+        defer {
+            try? FileManager.default.removeItem(at: source)
+            try? FileManager.default.removeItem(at: output)
+        }
+        let converter = GLM5NextCheckpointConverter(
+            source: source, output: output, sourceRevision: String(repeating: "a", count: 40))
+        try converter.run()
+        let manifest = output.appendingPathComponent(".afm-mlx-conversion.json")
+        var state = try json(at: manifest)
+        var completed = try XCTUnwrap(state["completed"] as? [String: [String: Any]])
+        let id = "language-layer-001"
+        var unit = try XCTUnwrap(completed[id])
+        var keys = try XCTUnwrap(unit["outputKeys"] as? [String])
+        var map = try XCTUnwrap(state["weightMap"] as? [String: String])
+        for suffix in ["scales", "biases"] {
+            let key = "language_model.model.layers.1.mlp.gate." + suffix
+            keys.append(key)
+            map[key] = try XCTUnwrap(unit["outputFile"] as? String)
+        }
+        unit["outputKeys"] = keys
+        completed[id] = unit
+        state["completed"] = completed
+        state["weightMap"] = map
+        try JSONSerialization.data(withJSONObject: state).write(to: manifest)
+        try converter.run()
+        let repaired = try json(at: manifest)
+        let repairedMap = try XCTUnwrap(repaired["weightMap"] as? [String: String])
+        XCTAssertNil(repairedMap["language_model.model.layers.1.mlp.gate.scales"])
+        XCTAssertNotNil(repairedMap["language_model.model.layers.1.mlp.gate.weight"])
     }
 
     func testTinyMultimodalConversionReconstructsCrossShardExpertsAndOmitsMTP() throws {
@@ -234,6 +283,12 @@ final class GLM5NextCheckpointConverterTests: XCTestCase {
         let index = try json(at: output.appendingPathComponent(
             "model.safetensors.index.json"))
         let weightMap = try XCTUnwrap(index["weight_map"] as? [String: String])
+        let routerKey = "language_model.model.layers.1.mlp.gate.weight"
+        let routerFile = try XCTUnwrap(weightMap[routerKey])
+        let routerArrays = try loadArrays(url: output.appendingPathComponent(routerFile))
+        XCTAssertEqual(routerArrays[routerKey]?.dtype, .float32)
+        XCTAssertNil(weightMap["language_model.model.layers.1.mlp.gate.scales"])
+        XCTAssertNil(weightMap["language_model.model.layers.1.mlp.gate.biases"])
         for projection in ["gate_proj", "up_proj", "down_proj"] {
             XCTAssertNotNil(weightMap[
                 "language_model.model.layers.1.mlp.switch_mlp.\(projection).weight"])
@@ -640,6 +695,8 @@ final class GLM5NextCheckpointConverterTests: XCTestCase {
         let scale = floatData([1])
         var shardOne = [String: FixtureTensor]()
         var shardTwo = [String: FixtureTensor]()
+        shardOne["model.language_model.layers.1.mlp.gate.weight"] = FixtureTensor(
+            dtype: "F32", shape: [12, 128], data: floatData([Float](repeating: 0.25, count: 12 * 128)))
         for projection in ["gate_proj", "up_proj", "down_proj"] {
             for expert in 0..<12 {
                 let base = "model.language_model.layers.1.mlp.experts.\(expert).\(projection)"
