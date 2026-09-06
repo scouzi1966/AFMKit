@@ -2341,11 +2341,94 @@ public final class GLM5NextMTPGenerator {
         MLXArray(ids.map(Int32.init)).reshaped([1, ids.count])
     }
 
+    private static func independentCopy(_ array: MLXArray) -> MLXArray {
+        let copy = array * 1
+        MLX.eval(copy)
+        return copy
+    }
+
+    private static func independentCopies(_ states: [[MLXArray]]) -> [[MLXArray]] {
+        states.map { $0.map(independentCopy) }
+    }
+
+    /// Complete state required to resume speculative generation after an exact
+    /// prompt replay. Target KV alone is insufficient: GLM NextN also needs the
+    /// target hidden state and its seeded head cache.
+    public struct PromptState: @unchecked Sendable {
+        public let promptIds: [Int]
+        let targetCacheStates: [[MLXArray]]
+        public let targetCacheOffsets: [Int]
+        let promptHiddenStates: MLXArray
+        public let primaryToken: Int
+        let primaryHidden: MLXArray
+
+        public var estimatedRetainedBytes: Int {
+            let targetBytes = targetCacheStates
+                .reduce(0) { $0 + $1.reduce(0) { $0 + $1.nbytes } }
+            let hiddenBytes = promptHiddenStates.nbytes + primaryHidden.nbytes
+            return targetBytes + hiddenBytes
+        }
+    }
+
+    public func makePromptState(promptIds: [Int]) -> PromptState? {
+        guard !promptIds.isEmpty else { return nil }
+        let cache = model.newCache(parameters: nil)
+        let initial = model.forwardHidden(Self.tokens(promptIds), cache: cache)
+        let primary = Self.argmax(initial.logits[0, -1, 0...])
+        let primaryHidden = initial.hidden[0..., (initial.hidden.dim(1) - 1)..., 0...]
+        let mtpCache = model.makeEmbeddedMTPCache()
+
+        if promptIds.count > 1 {
+            _ = model.embeddedMTPForward(
+                hiddenStates: initial.hidden[0..., 0 ..< (promptIds.count - 1), 0...],
+                tokenEmbeddings: model.embedTokens(Self.tokens(Array(promptIds.dropFirst()))),
+                cache: mtpCache)
+        }
+
+        return PromptState(
+            promptIds: promptIds,
+            targetCacheStates: Self.independentCopies(cache.map(\.state)),
+            targetCacheOffsets: cache.map(\.offset),
+            promptHiddenStates: Self.independentCopy(initial.hidden),
+            primaryToken: primary,
+            primaryHidden: Self.independentCopy(primaryHidden))
+    }
+
+    func restoreTargetCache(for initialState: PromptState) -> [KVCache] {
+        var cache = model.newCache(parameters: nil)
+        for index in cache.indices {
+            let restoredState = initialState.targetCacheStates[index]
+                .map(Self.independentCopy)
+            if let arraysCache = cache[index] as? ArraysCache {
+                arraysCache.state = restoredState
+                arraysCache.offset = initialState.targetCacheOffsets[index]
+            } else if let cacheList = cache[index] as? CacheList {
+                let childrenAreEmptySimpleCaches = cacheList.caches
+                    .allSatisfy { $0 is KVCacheSimple && $0.state.isEmpty }
+                if childrenAreEmptySimpleCaches,
+                   restoredState.count == cacheList.caches.count * 2
+                {
+                    for childIndex in cacheList.caches.indices {
+                        let start = childIndex * 2
+                        (cacheList.caches[childIndex] as? KVCacheSimple)?.state =
+                            Array(restoredState[start ..< start + 2])
+                    }
+                } else {
+                    cacheList.state = restoredState
+                }
+            } else {
+                cache[index].state = restoredState
+            }
+        }
+        return cache
+    }
+
     public func generate(
         promptIds: [Int],
         maxTokens: Int,
         eosIds: Set<Int> = [],
-        onToken: ((Int) -> Bool)? = nil
+        onToken: ((Int) -> Bool)? = nil,
+        onPromptState: ((PromptState) -> Void)? = nil
     ) -> [Int] {
         generateImpl(
             promptIds: promptIds,
@@ -2353,7 +2436,26 @@ public final class GLM5NextMTPGenerator {
             eosIds: eosIds,
             onToken: onToken,
             forceRejectEveryDraft: false,
-            onRejection: nil)
+            onRejection: nil,
+            initialState: nil,
+            onPromptState: onPromptState)
+    }
+
+    public func generate(
+        promptState: PromptState,
+        maxTokens: Int,
+        eosIds: Set<Int> = [],
+        onToken: ((Int) -> Bool)? = nil
+    ) -> [Int] {
+        generateImpl(
+            promptIds: promptState.promptIds,
+            maxTokens: maxTokens,
+            eosIds: eosIds,
+            onToken: onToken,
+            forceRejectEveryDraft: false,
+            onRejection: nil,
+            initialState: promptState,
+            onPromptState: nil)
     }
 
     func generateForTesting(
@@ -2368,7 +2470,9 @@ public final class GLM5NextMTPGenerator {
             eosIds: [],
             onToken: nil,
             forceRejectEveryDraft: forceRejectEveryDraft,
-            onRejection: onRejection)
+            onRejection: onRejection,
+            initialState: nil,
+            onPromptState: nil)
     }
 
     private func generateImpl(
@@ -2377,7 +2481,9 @@ public final class GLM5NextMTPGenerator {
         eosIds: Set<Int>,
         onToken: ((Int) -> Bool)?,
         forceRejectEveryDraft: Bool,
-        onRejection: (([KVCache]) -> Void)?
+        onRejection: (([KVCache]) -> Void)?,
+        initialState: PromptState?,
+        onPromptState: ((PromptState) -> Void)?
     ) -> [Int] {
         guard !promptIds.isEmpty, maxTokens > 0 else { return [] }
         let telemetryStart = telemetryEnabled ? Date.timeIntervalSinceReferenceDate : 0
@@ -2396,26 +2502,55 @@ public final class GLM5NextMTPGenerator {
         }
 
         let prefillStart = telemetryEnabled ? Date.timeIntervalSinceReferenceDate : 0
-        let cache = model.newCache(parameters: nil)
-        let initial = model.forwardHidden(Self.tokens(promptIds), cache: cache)
-        var primary = Self.argmax(initial.logits[0, -1, 0...])
-        if telemetryEnabled {
-            telemetry.targetForwards += 1
-            telemetry.targetForwardTokens += promptIds.count
-            telemetry.hostSynchronizations += 1
-            telemetry.prefillSeconds += Date.timeIntervalSinceReferenceDate - prefillStart
-        }
-        var primaryHidden = initial.hidden[0..., (initial.hidden.dim(1) - 1)..., 0...]
+        var cache = model.newCache(parameters: nil)
         let mtpCache = model.makeEmbeddedMTPCache()
-        // NextN position i consumes target hidden i-1 and token embedding i.
-        // Seed every committed prompt transition so DSA attention has the same
-        // prefix it sees in the reference full-sequence computation.
-        if promptIds.count > 1 {
-            _ = model.embeddedMTPForward(
-                hiddenStates: initial.hidden[0..., 0 ..< (promptIds.count - 1), 0...],
-                tokenEmbeddings: model.embedTokens(Self.tokens(Array(promptIds.dropFirst()))),
-                cache: mtpCache)
-            if telemetryEnabled { telemetry.headForwards += 1 }
+        var primary: Int
+        var primaryHidden: MLXArray
+
+        if let initialState {
+            guard initialState.promptIds == promptIds else { return [] }
+            cache = restoreTargetCache(for: initialState)
+            if promptIds.count > 1 {
+                _ = model.embeddedMTPForward(
+                    hiddenStates: initialState.promptHiddenStates[
+                        0..., 0 ..< (promptIds.count - 1), 0...],
+                    tokenEmbeddings: model.embedTokens(Self.tokens(Array(promptIds.dropFirst()))),
+                    cache: mtpCache)
+                if telemetryEnabled { telemetry.headForwards += 1 }
+            }
+            primary = initialState.primaryToken
+            primaryHidden = Self.independentCopy(initialState.primaryHidden)
+            if telemetryEnabled {
+                telemetry.prefillSeconds += Date.timeIntervalSinceReferenceDate - prefillStart
+            }
+        } else {
+            let initial = model.forwardHidden(Self.tokens(promptIds), cache: cache)
+            primary = Self.argmax(initial.logits[0, -1, 0...])
+            if telemetryEnabled {
+                telemetry.targetForwards += 1
+                telemetry.targetForwardTokens += promptIds.count
+                telemetry.hostSynchronizations += 1
+                telemetry.prefillSeconds += Date.timeIntervalSinceReferenceDate - prefillStart
+            }
+            primaryHidden = initial.hidden[0..., (initial.hidden.dim(1) - 1)..., 0...]
+            // NextN position i consumes target hidden i-1 and token embedding i.
+            // Seed every committed prompt transition so DSA attention has the same
+            // prefix it sees in the reference full-sequence computation.
+            if promptIds.count > 1 {
+                _ = model.embeddedMTPForward(
+                    hiddenStates: initial.hidden[0..., 0 ..< (promptIds.count - 1), 0...],
+                    tokenEmbeddings: model.embedTokens(Self.tokens(Array(promptIds.dropFirst()))),
+                    cache: mtpCache)
+                if telemetryEnabled { telemetry.headForwards += 1 }
+            }
+            onPromptState?(
+                PromptState(
+                    promptIds: promptIds,
+                    targetCacheStates: cache.map { $0.state.map(Self.independentCopy) },
+                    targetCacheOffsets: cache.map(\.offset),
+                    promptHiddenStates: Self.independentCopy(initial.hidden),
+                    primaryToken: primary,
+                    primaryHidden: Self.independentCopy(primaryHidden)))
         }
         var output: [Int] = []
 

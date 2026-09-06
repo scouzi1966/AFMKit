@@ -1055,6 +1055,49 @@ final class GLM5NextArchitectureTests: XCTestCase {
         XCTAssertEqual(generated, expected)
     }
 
+    func testEmbeddedMTPExactPromptStateReplayMatchesFullPrefill() throws {
+        MLXRandom.seed(7)
+        let data = try XCTUnwrap(tinyConfigurationData(indexTopK: 8))
+        let config = try JSONDecoder().decode(GLM5NextConfiguration.self, from: data)
+        let model = GLM5NextModel(config)
+        initializeTinyTarget(model, config: config.textConfig)
+        model.installEmbeddedMTPForTesting(initializedMTPHead(config: config.textConfig))
+        let prompt = [1, 2, 3]
+        let expected = ordinaryGreedy(model: model, prompt: prompt, count: 8)
+        let generator = try XCTUnwrap(GLM5NextMTPGenerator(model: model))
+        let state = try XCTUnwrap(generator.makePromptState(promptIds: prompt))
+        let savedTargetStates = state.targetCacheStates.map { $0.map { $0 * 1 } }
+        let savedPrimaryHidden = state.primaryHidden * 1
+        let restoredTargetCache = generator.restoreTargetCache(for: state)
+        let fullPrefill = generator.generate(
+            promptIds: prompt, maxTokens: expected.count)
+
+        XCTAssertEqual(state.promptIds, prompt)
+        XCTAssertEqual(restoredTargetCache.map(\.offset), state.targetCacheOffsets)
+        for (restoredLayer, savedLayer) in zip(restoredTargetCache, state.targetCacheStates) {
+            let restoredState = restoredLayer.state
+            XCTAssertEqual(restoredState.count, savedLayer.count)
+            for (lhs, rhs) in zip(restoredState, savedLayer) {
+                XCTAssertTrue(allClose(lhs, rhs, rtol: 1e-5, atol: 1e-5).item(Bool.self))
+            }
+        }
+        for (saved, current) in zip(savedTargetStates, state.targetCacheStates) {
+            for (lhs, rhs) in zip(saved, current) {
+                XCTAssertTrue(allClose(lhs, rhs, rtol: 1e-5, atol: 1e-5).item(Bool.self))
+            }
+        }
+        XCTAssertTrue(
+            allClose(
+                savedPrimaryHidden, state.primaryHidden, rtol: 1e-5, atol: 1e-5
+            ).item(Bool.self))
+        XCTAssertEqual(
+            generator.generate(promptState: state, maxTokens: expected.count),
+            fullPrefill)
+        XCTAssertEqual(
+            generator.generate(promptState: state, maxTokens: expected.count),
+            fullPrefill)
+    }
+
     func testTopLevelParameterUpdateInvalidatesEmbeddedMTPPerformanceCaches() throws {
         let data = try XCTUnwrap(tinyConfigurationData(indexTopK: 8))
         let config = try JSONDecoder().decode(GLM5NextConfiguration.self, from: data)
@@ -1157,6 +1200,90 @@ final class GLM5NextArchitectureTests: XCTestCase {
         XCTAssertNotNil(GLM5NextMTPGenerator(model: model, depth: 1))
         XCTAssertNil(GLM5NextMTPGenerator(model: model, depth: 2))
         XCTAssertNil(GLM5NextMTPGenerator(model: model, depth: 3))
+    }
+
+    func testGLMMTPPromptReplayCacheUsesExactEntriesAndEvictsBoundedly() throws {
+        MLXRandom.seed(31)
+        let data = try XCTUnwrap(tinyConfigurationData(indexTopK: 8))
+        let config = try JSONDecoder().decode(GLM5NextConfiguration.self, from: data)
+        let model = GLM5NextModel(config)
+        initializeTinyTarget(model, config: config.textConfig)
+        model.installEmbeddedMTPForTesting(initializedMTPHead(config: config.textConfig))
+        let generator = try XCTUnwrap(GLM5NextMTPGenerator(model: model))
+        let first = try XCTUnwrap(generator.makePromptState(promptIds: [1, 2, 3]))
+        let second = try XCTUnwrap(generator.makePromptState(promptIds: [1, 2, 4]))
+        let cache = GLM5NextMTPPromptReplayCache(
+            modelID: "model",
+            maxEntries: 1,
+            maxPromptTokens: 3,
+            maxRetainedBytes: Int.max)
+
+        XCTAssertNil(cache.findExactMatch(modelID: "model", promptIds: [1, 2, 3]))
+        XCTAssertTrue(cache.insert(first, modelID: "model"))
+        XCTAssertEqual(cache.count, 1)
+        XCTAssertEqual(
+            cache.findExactMatch(modelID: "model", promptIds: [1, 2, 3])?.promptIds,
+            [1, 2, 3])
+        XCTAssertNil(cache.findExactMatch(modelID: "wrong-model", promptIds: [1, 2, 3]))
+        XCTAssertNil(cache.findExactMatch(modelID: "model", promptIds: [1, 2, 4]))
+
+        XCTAssertTrue(cache.insert(second, modelID: "model"))
+        XCTAssertEqual(cache.count, 1)
+        XCTAssertNil(cache.findExactMatch(modelID: "model", promptIds: [1, 2, 3]))
+        XCTAssertEqual(
+            cache.findExactMatch(modelID: "model", promptIds: [1, 2, 4])?.promptIds,
+            [1, 2, 4])
+
+        cache.invalidateAll()
+        XCTAssertEqual(cache.count, 0)
+        XCTAssertNil(cache.findExactMatch(modelID: "model", promptIds: [1, 2, 4]))
+    }
+
+    func testGLMMTPPromptReplayCacheEnforcesPromptAndByteBudgets() throws {
+        MLXRandom.seed(37)
+        let data = try XCTUnwrap(tinyConfigurationData(indexTopK: 8))
+        let config = try JSONDecoder().decode(GLM5NextConfiguration.self, from: data)
+        let model = GLM5NextModel(config)
+        initializeTinyTarget(model, config: config.textConfig)
+        model.installEmbeddedMTPForTesting(initializedMTPHead(config: config.textConfig))
+        let generator = try XCTUnwrap(GLM5NextMTPGenerator(model: model))
+        let first = try XCTUnwrap(generator.makePromptState(promptIds: [1, 2, 3]))
+        let second = try XCTUnwrap(generator.makePromptState(promptIds: [1, 2, 3, 4]))
+        let third = try XCTUnwrap(generator.makePromptState(promptIds: [1, 2, 3, 4, 5]))
+
+        let promptLimited = GLM5NextMTPPromptReplayCache(
+            modelID: "model",
+            maxEntries: 8,
+            maxPromptTokens: 3,
+            maxRetainedBytes: Int.max)
+        XCTAssertFalse(promptLimited.insert(first, modelID: "wrong-model"))
+        XCTAssertTrue(promptLimited.insert(first, modelID: "model"))
+        XCTAssertFalse(promptLimited.insert(second, modelID: "model"))
+        XCTAssertEqual(promptLimited.count, 1)
+        XCTAssertNil(promptLimited.findExactMatch(modelID: "model", promptIds: [1, 2, 3, 4]))
+
+        let budget = first.estimatedRetainedBytes + second.estimatedRetainedBytes
+        let byteLimited = GLM5NextMTPPromptReplayCache(
+            modelID: "model",
+            maxEntries: 8,
+            maxPromptTokens: 8,
+            maxRetainedBytes: budget)
+        XCTAssertTrue(byteLimited.insert(first, modelID: "model"))
+        XCTAssertTrue(byteLimited.insert(second, modelID: "model"))
+        XCTAssertLessThanOrEqual(byteLimited.currentRetainedBytes, budget)
+
+        XCTAssertTrue(byteLimited.insert(third, modelID: "model"))
+        XCTAssertLessThanOrEqual(byteLimited.currentRetainedBytes, budget)
+        XCTAssertNotNil(byteLimited.findExactMatch(modelID: "model", promptIds: third.promptIds))
+
+        let singleEntryLimit = GLM5NextMTPPromptReplayCache(
+            modelID: "model",
+            maxEntries: 8,
+            maxPromptTokens: 8,
+            maxRetainedBytes: first.estimatedRetainedBytes - 1)
+        XCTAssertFalse(singleEntryLimit.insert(first, modelID: "model"))
+        XCTAssertEqual(singleEntryLimit.count, 0)
+        XCTAssertEqual(singleEntryLimit.currentRetainedBytes, 0)
     }
 
     func testSanitizerSplitsConvertedQuantizedKVProjection() throws {
