@@ -683,6 +683,9 @@ public final class MLXModelService:
     private var xgrammarService: XGrammarService?
     /// Concurrent generation scheduler (nil = serial mode via container.perform).
     private var scheduler: BatchScheduler?
+    /// Exact GLM speculative replay entries; unlike `radixCache`, these include
+    /// prompt hidden states required to reseed the embedded NextN head.
+    private var glmMTPPromptReplayCache: GLM5NextMTPPromptReplayCache?
     /// Model identity captured by `scheduler`. Kept separately from
     /// `currentModelID` so a stale scheduler can never serve a newly published
     /// container after a model switch.
@@ -2094,6 +2097,8 @@ public final class MLXModelService:
                     schedulerModelID = nil
                     cacheToInvalidate = radixCache
                     radixCache = nil
+                    glmMTPPromptReplayCache?.invalidateAll()
+                    glmMTPPromptReplayCache = nil
                 }
                 modelSwitchInProgress = false
             }
@@ -2758,6 +2763,21 @@ public final class MLXModelService:
             } else {
                 self.radixCache = nil
                 print("[\(ts())] [PrefixCache] Prefix caching disabled")
+            }
+            if self.enablePrefixCaching,
+               modelArchitecture.canonicalModelType == "glm5_next",
+               usesEmbeddedMTP
+            {
+                let entryLimit = ProcessInfo.processInfo.environment[
+                    "AFM_GLM_MTP_REPLAY_CACHE_ENTRIES"
+                ].flatMap(Int.init) ?? 1
+                self.glmMTPPromptReplayCache = GLM5NextMTPPromptReplayCache(
+                    modelID: modelID,
+                    maxEntries: min(max(1, entryLimit), 8))
+                print("[\(ts())] [GLM-MTPReplay] Exact prompt cache active (\(min(max(1, entryLimit), 8)) entries max)")
+            } else {
+                self.glmMTPPromptReplayCache?.invalidateAll()
+                self.glmMTPPromptReplayCache = nil
             }
             // /metrics: expose total GPU memory pressure as
             // afm:gpu_cache_usage_perc — fraction of Metal's recommended
@@ -4327,7 +4347,9 @@ public final class MLXModelService:
                         }
                         let t0 = Date.timeIntervalSinceReferenceDate
                         do {
-                            let outCount = try await container.perform { context -> Int in
+                            let generation = try await container.perform { context -> (
+                                outCount: Int, cachedTokens: Int
+                            ) in
                                 let eos = context.resolvedEOSTokenIds
                                 var allTokens: [Int] = []
                                 var prevText = ""
@@ -4358,11 +4380,38 @@ public final class MLXModelService:
                                                               maxTokens: maxTok, eosIds: eos,
                                                               blockSize: block, onToken: emit)
                                 } else if let gen = mtpBinding?.generator {
-                                    _ = gen.generate(promptIds: promptIds, maxTokens: maxTok,
-                                                     eosIds: eos, onToken: emit)
+                                    if case .glm(let generator) = gen,
+                                       let replayState = self.glmMTPPromptReplayCache?
+                                           .findExactMatch(modelID: modelID, promptIds: promptIds)
+                                    {
+                                        _ = generator.generate(
+                                            promptState: replayState,
+                                            maxTokens: maxTok,
+                                            eosIds: eos,
+                                            onToken: emit)
+                                        return (allTokens.count, replayState.promptIds.count)
+                                    }
+
+                                    if case .glm(let generator) = gen,
+                                       let replayCache = self.glmMTPPromptReplayCache
+                                    {
+                                        _ = generator.generate(
+                                            promptIds: promptIds,
+                                            maxTokens: maxTok,
+                                            eosIds: eos,
+                                            onToken: emit,
+                                            onPromptState: { state in
+                                                replayCache.insert(state, modelID: modelID)
+                                            })
+                                    } else {
+                                        _ = gen.generate(promptIds: promptIds, maxTokens: maxTok,
+                                                         eosIds: eos, onToken: emit)
+                                    }
+                                    return (allTokens.count, 0)
                                 }
-                                return allTokens.count
+                                return (allTokens.count, 0)
                             }
+                            let outCount = generation.outCount
                             let gt = Date.timeIntervalSinceReferenceDate - t0
                             if dbg {
                                 let tps = gt > 0 ? Double(outCount) / gt : 0
@@ -4370,7 +4419,9 @@ public final class MLXModelService:
                                 print("[\(ts())] [\(engine)] streamed \(outCount) tok in \(String(format: "%.2f", gt))s (\(String(format: "%.1f", tps)) tok/s)")
                             }
                             continuation.yield(StreamChunk(text: "", promptTokens: promptIds.count,
-                                                           completionTokens: outCount, promptTime: 0, generateTime: gt))
+                                                           completionTokens: outCount,
+                                                           cachedTokens: generation.cachedTokens,
+                                                           promptTime: 0, generateTime: gt))
                             StatsAggregator.shared.requestSucceeded(reason: "stop")
                             StatsAggregator.shared.requestCompleted()
                             continuation.finish()
@@ -4997,6 +5048,8 @@ public final class MLXModelService:
             print("[\(ts())] [PrefixCache] Invalidate: cleanup")
         }
         self.radixCache?.invalidateAll()
+        self.glmMTPPromptReplayCache?.invalidateAll()
+        self.glmMTPPromptReplayCache = nil
         autoreleasepool {
             withStateLock {
                 currentContainer = nil
