@@ -2768,13 +2768,28 @@ public final class MLXModelService:
                modelArchitecture.canonicalModelType == "glm5_next",
                usesEmbeddedMTP
             {
-                let entryLimit = ProcessInfo.processInfo.environment[
+                let environment = ProcessInfo.processInfo.environment
+                let entryLimit = environment[
                     "AFM_GLM_MTP_REPLAY_CACHE_ENTRIES"
                 ].flatMap(Int.init) ?? 1
+                let promptLimit = environment[
+                    "AFM_GLM_MTP_REPLAY_MAX_PROMPT_TOKENS"
+                ].flatMap(Int.init) ?? 8_192
+                let byteLimit = environment[
+                    "AFM_GLM_MTP_REPLAY_CACHE_MAX_BYTES"
+                ].flatMap(Int.init) ?? 4 * 1_024 * 1_024 * 1_024
+                let boundedEntryLimit = min(max(1, entryLimit), 8)
+                let boundedPromptLimit = min(max(1, promptLimit), 131_072)
+                let boundedByteLimit = min(max(1, byteLimit), 32 * 1_024 * 1_024 * 1_024)
                 self.glmMTPPromptReplayCache = GLM5NextMTPPromptReplayCache(
                     modelID: modelID,
-                    maxEntries: min(max(1, entryLimit), 8))
-                print("[\(ts())] [GLM-MTPReplay] Exact prompt cache active (\(min(max(1, entryLimit), 8)) entries max)")
+                    maxEntries: boundedEntryLimit,
+                    maxPromptTokens: boundedPromptLimit,
+                    maxRetainedBytes: boundedByteLimit)
+                print(
+                    "[\(ts())] [GLM-MTPReplay] Exact prompt cache active "
+                        + "(entries=\(boundedEntryLimit), max_prompt_tokens=\(boundedPromptLimit), "
+                        + "max_bytes=\(boundedByteLimit))")
             } else {
                 self.glmMTPPromptReplayCache?.invalidateAll()
                 self.glmMTPPromptReplayCache = nil
@@ -4395,14 +4410,21 @@ public final class MLXModelService:
                                     if case .glm(let generator) = gen,
                                        let replayCache = self.glmMTPPromptReplayCache
                                     {
+                                        let shouldCaptureReplayState =
+                                            replayCache.canStore(
+                                                modelID: modelID,
+                                                promptIds: promptIds)
                                         _ = generator.generate(
                                             promptIds: promptIds,
                                             maxTokens: maxTok,
                                             eosIds: eos,
                                             onToken: emit,
-                                            onPromptState: { state in
-                                                replayCache.insert(state, modelID: modelID)
-                                            })
+                                            onPromptState: shouldCaptureReplayState
+                                                ? { state in
+                                                    _ = replayCache.insert(
+                                                        state, modelID: modelID)
+                                                }
+                                                : nil)
                                     } else {
                                         _ = gen.generate(promptIds: promptIds, maxTokens: maxTok,
                                                          eosIds: eos, onToken: emit)

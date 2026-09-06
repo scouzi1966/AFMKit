@@ -2361,6 +2361,13 @@ public final class GLM5NextMTPGenerator {
         let promptHiddenStates: MLXArray
         public let primaryToken: Int
         let primaryHidden: MLXArray
+
+        public var estimatedRetainedBytes: Int {
+            let targetBytes = targetCacheStates
+                .reduce(0) { $0 + $1.reduce(0) { $0 + $1.nbytes } }
+            let hiddenBytes = promptHiddenStates.nbytes + primaryHidden.nbytes
+            return targetBytes + hiddenBytes
+        }
     }
 
     public func makePromptState(promptIds: [Int]) -> PromptState? {

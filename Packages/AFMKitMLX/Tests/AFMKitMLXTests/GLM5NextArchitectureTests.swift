@@ -1212,10 +1212,14 @@ final class GLM5NextArchitectureTests: XCTestCase {
         let generator = try XCTUnwrap(GLM5NextMTPGenerator(model: model))
         let first = try XCTUnwrap(generator.makePromptState(promptIds: [1, 2, 3]))
         let second = try XCTUnwrap(generator.makePromptState(promptIds: [1, 2, 4]))
-        let cache = GLM5NextMTPPromptReplayCache(modelID: "model", maxEntries: 1)
+        let cache = GLM5NextMTPPromptReplayCache(
+            modelID: "model",
+            maxEntries: 1,
+            maxPromptTokens: 3,
+            maxRetainedBytes: Int.max)
 
         XCTAssertNil(cache.findExactMatch(modelID: "model", promptIds: [1, 2, 3]))
-        cache.insert(first, modelID: "model")
+        XCTAssertTrue(cache.insert(first, modelID: "model"))
         XCTAssertEqual(cache.count, 1)
         XCTAssertEqual(
             cache.findExactMatch(modelID: "model", promptIds: [1, 2, 3])?.promptIds,
@@ -1223,7 +1227,7 @@ final class GLM5NextArchitectureTests: XCTestCase {
         XCTAssertNil(cache.findExactMatch(modelID: "wrong-model", promptIds: [1, 2, 3]))
         XCTAssertNil(cache.findExactMatch(modelID: "model", promptIds: [1, 2, 4]))
 
-        cache.insert(second, modelID: "model")
+        XCTAssertTrue(cache.insert(second, modelID: "model"))
         XCTAssertEqual(cache.count, 1)
         XCTAssertNil(cache.findExactMatch(modelID: "model", promptIds: [1, 2, 3]))
         XCTAssertEqual(
@@ -1233,6 +1237,53 @@ final class GLM5NextArchitectureTests: XCTestCase {
         cache.invalidateAll()
         XCTAssertEqual(cache.count, 0)
         XCTAssertNil(cache.findExactMatch(modelID: "model", promptIds: [1, 2, 4]))
+    }
+
+    func testGLMMTPPromptReplayCacheEnforcesPromptAndByteBudgets() throws {
+        MLXRandom.seed(37)
+        let data = try XCTUnwrap(tinyConfigurationData(indexTopK: 8))
+        let config = try JSONDecoder().decode(GLM5NextConfiguration.self, from: data)
+        let model = GLM5NextModel(config)
+        initializeTinyTarget(model, config: config.textConfig)
+        model.installEmbeddedMTPForTesting(initializedMTPHead(config: config.textConfig))
+        let generator = try XCTUnwrap(GLM5NextMTPGenerator(model: model))
+        let first = try XCTUnwrap(generator.makePromptState(promptIds: [1, 2, 3]))
+        let second = try XCTUnwrap(generator.makePromptState(promptIds: [1, 2, 3, 4]))
+        let third = try XCTUnwrap(generator.makePromptState(promptIds: [1, 2, 3, 4, 5]))
+
+        let promptLimited = GLM5NextMTPPromptReplayCache(
+            modelID: "model",
+            maxEntries: 8,
+            maxPromptTokens: 3,
+            maxRetainedBytes: Int.max)
+        XCTAssertFalse(promptLimited.insert(first, modelID: "wrong-model"))
+        XCTAssertTrue(promptLimited.insert(first, modelID: "model"))
+        XCTAssertFalse(promptLimited.insert(second, modelID: "model"))
+        XCTAssertEqual(promptLimited.count, 1)
+        XCTAssertNil(promptLimited.findExactMatch(modelID: "model", promptIds: [1, 2, 3, 4]))
+
+        let budget = first.estimatedRetainedBytes + second.estimatedRetainedBytes
+        let byteLimited = GLM5NextMTPPromptReplayCache(
+            modelID: "model",
+            maxEntries: 8,
+            maxPromptTokens: 8,
+            maxRetainedBytes: budget)
+        XCTAssertTrue(byteLimited.insert(first, modelID: "model"))
+        XCTAssertTrue(byteLimited.insert(second, modelID: "model"))
+        XCTAssertLessThanOrEqual(byteLimited.currentRetainedBytes, budget)
+
+        XCTAssertTrue(byteLimited.insert(third, modelID: "model"))
+        XCTAssertLessThanOrEqual(byteLimited.currentRetainedBytes, budget)
+        XCTAssertNotNil(byteLimited.findExactMatch(modelID: "model", promptIds: third.promptIds))
+
+        let singleEntryLimit = GLM5NextMTPPromptReplayCache(
+            modelID: "model",
+            maxEntries: 8,
+            maxPromptTokens: 8,
+            maxRetainedBytes: first.estimatedRetainedBytes - 1)
+        XCTAssertFalse(singleEntryLimit.insert(first, modelID: "model"))
+        XCTAssertEqual(singleEntryLimit.count, 0)
+        XCTAssertEqual(singleEntryLimit.currentRetainedBytes, 0)
     }
 
     func testSanitizerSplitsConvertedQuantizedKVProjection() throws {
