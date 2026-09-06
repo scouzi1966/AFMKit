@@ -570,6 +570,13 @@ public struct GLM5NextProcessor: UserInputProcessor {
     }
 
     public func prepare(input: UserInput) async throws -> LMInput {
+        if let prompt = Self.rawTextPrompt(for: input) {
+            let promptTokens = tokenizer.encode(text: prompt)
+            let tokens = MLXArray(promptTokens).expandedDimensions(axis: 0)
+            return LMInput(
+                text: .init(tokens: tokens, mask: ones(like: tokens).asType(.int8)))
+        }
+
         let messages = Qwen3VLMessageGenerator().generate(from: input)
         let template: ChatTemplateArgument?
         if let override = input.additionalContext?["chatTemplateOverride"] as? String {
@@ -666,6 +673,15 @@ public struct GLM5NextProcessor: UserInputProcessor {
             text: .init(tokens: tokens, mask: ones(like: tokens).asType(.int8)),
             image: processedImage,
             video: processedVideo)
+    }
+
+    static func rawTextPrompt(for input: UserInput) -> String? {
+        guard case .text(let prompt) = input.prompt,
+              input.images.isEmpty,
+              input.videos.isEmpty else {
+            return nil
+        }
+        return prompt
     }
 }
 

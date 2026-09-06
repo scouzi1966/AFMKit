@@ -5,12 +5,58 @@ import MLX
 @testable import MLXLMCommon
 @testable import MLXLLM
 @testable import MLXVLM
+import Tokenizers
 import XCTest
 @testable import AFMKitMLX
 
 final class GLM5NextVisionTests: XCTestCase {
     override func setUpWithError() throws {
         try MLXMetalLibrary.ensureAvailable(verbose: false)
+    }
+
+    func testRawTextPromptBypassesChatTemplate() {
+        let prompt = "The capital of France is"
+        let input = UserInput(prompt: .text(prompt))
+
+        XCTAssertEqual(GLM5NextProcessor.rawTextPrompt(for: input), prompt)
+    }
+
+    func testPrepareRawTextEncodesDirectlyWithoutChatTemplate() async throws {
+        let config = try JSONDecoder().decode(
+            GLM5NextProcessorConfiguration.self,
+            from: processorConfigurationData)
+        let tokenizer = RecordingTokenizer()
+        let processor = GLM5NextProcessor(config, tokenizer: tokenizer)
+        let prompt = "The capital of France is"
+
+        let input = try await processor.prepare(input: UserInput(prompt: .text(prompt)))
+
+        XCTAssertEqual(tokenizer.encodedTexts, [prompt])
+        XCTAssertEqual(tokenizer.chatTemplateCallCount, 0)
+        XCTAssertNil(input.image)
+        XCTAssertNil(input.video)
+    }
+
+    func testRawTextPromptRequiresTextWithoutMedia() {
+        let chat = UserInput(prompt: .chat([.user("The capital of France is")]))
+        XCTAssertNil(GLM5NextProcessor.rawTextPrompt(for: chat))
+
+        let image = UserInput(
+            prompt: .text("Describe this image"),
+            images: [.ciImage(CIImage(color: .red))]
+        )
+        XCTAssertNil(GLM5NextProcessor.rawTextPrompt(for: image))
+    }
+
+    func testRawServiceUserInputIsExplicitText() {
+        let prompt = "The capital of France is"
+        let ordinarySingleTurn = UserInput(prompt: prompt)
+        XCTAssertNil(GLM5NextProcessor.rawTextPrompt(for: ordinarySingleTurn))
+
+        let raw = MLXModelService.makeRawUserInput(prompt: prompt)
+        XCTAssertEqual(GLM5NextProcessor.rawTextPrompt(for: raw), prompt)
+        XCTAssertTrue(raw.images.isEmpty)
+        XCTAssertTrue(raw.videos.isEmpty)
     }
 
     func testPublishedVisionAndProcessorConfigurationsDecode() throws {
@@ -559,5 +605,102 @@ final class GLM5NextVisionTests: XCTestCase {
                 "video_processor": video,
             ])
         }
+    }
+}
+
+private final class RecordingTokenizer: Tokenizer, @unchecked Sendable {
+    private let lock = NSLock()
+    private var _encodedTexts: [String] = []
+    private var _chatTemplateCallCount = 0
+
+    var encodedTexts: [String] {
+        lock.withLock { _encodedTexts }
+    }
+
+    var chatTemplateCallCount: Int {
+        lock.withLock { _chatTemplateCallCount }
+    }
+
+    func tokenize(text: String) -> [String] {
+        [text]
+    }
+
+    func encode(text: String) -> [Int] {
+        lock.withLock { _encodedTexts.append(text) }
+        return Array(text.utf8).map(Int.init)
+    }
+
+    func encode(text: String, addSpecialTokens: Bool) -> [Int] {
+        encode(text: text)
+    }
+
+    func decode(tokens: [Int], skipSpecialTokens: Bool) -> String {
+        ""
+    }
+
+    func convertTokenToId(_ token: String) -> Int? { nil }
+    func convertIdToToken(_ id: Int) -> String? { nil }
+
+    var bosToken: String? { nil }
+    var bosTokenId: Int? { nil }
+    var eosToken: String? { nil }
+    var eosTokenId: Int? { nil }
+    var unknownToken: String? { nil }
+    var unknownTokenId: Int? { nil }
+    var hasChatTemplate: Bool { true }
+
+    private func recordChatTemplate() -> [Int] {
+        lock.withLock { _chatTemplateCallCount += 1 }
+        return [-1]
+    }
+
+    func applyChatTemplate(messages: [Message]) throws -> [Int] {
+        recordChatTemplate()
+    }
+
+    func applyChatTemplate(messages: [Message], tools: [ToolSpec]?) throws -> [Int] {
+        recordChatTemplate()
+    }
+
+    func applyChatTemplate(
+        messages: [Message],
+        tools: [ToolSpec]?,
+        additionalContext: [String: any Sendable]?
+    ) throws -> [Int] {
+        recordChatTemplate()
+    }
+
+    func applyChatTemplate(
+        messages: [Message],
+        chatTemplate: ChatTemplateArgument
+    ) throws -> [Int] {
+        recordChatTemplate()
+    }
+
+    func applyChatTemplate(messages: [Message], chatTemplate: String) throws -> [Int] {
+        recordChatTemplate()
+    }
+
+    func applyChatTemplate(
+        messages: [Message],
+        chatTemplate: ChatTemplateArgument?,
+        addGenerationPrompt: Bool,
+        truncation: Bool,
+        maxLength: Int?,
+        tools: [ToolSpec]?
+    ) throws -> [Int] {
+        recordChatTemplate()
+    }
+
+    func applyChatTemplate(
+        messages: [Message],
+        chatTemplate: ChatTemplateArgument?,
+        addGenerationPrompt: Bool,
+        truncation: Bool,
+        maxLength: Int?,
+        tools: [ToolSpec]?,
+        additionalContext: [String: any Sendable]?
+    ) throws -> [Int] {
+        recordChatTemplate()
     }
 }
