@@ -3096,7 +3096,7 @@ public final class MLXModelService:
         let toolSpecs = convertToToolSpecs(tools, includePythonJSON: shouldUseNativePythonToolJSONTemplate(for: tools))
         let (userInput, mediaTempFiles): (UserInput, [URL])
         if let rawPrompt {
-            userInput = UserInput(prompt: rawPrompt)
+            userInput = Self.makeRawUserInput(prompt: rawPrompt)
             mediaTempFiles = []
         } else {
             (userInput, mediaTempFiles) = try buildUserInput(
@@ -4076,7 +4076,7 @@ public final class MLXModelService:
         }
         let (userInput, mediaTempFiles): (UserInput, [URL])
         if let rawPrompt {
-            userInput = UserInput(prompt: rawPrompt)
+            userInput = Self.makeRawUserInput(prompt: rawPrompt)
             mediaTempFiles = []
         } else {
             (userInput, mediaTempFiles) = try buildUserInput(
@@ -7852,6 +7852,12 @@ public final class MLXModelService:
         let charBased = Double(text.count) / 4.0
         let wordBased = Double(words) / 0.75
         return Int(max(charBased, wordBased))
+    }
+
+    static func makeRawUserInput(prompt: String) -> UserInput {
+        var input = UserInput(prompt: prompt)
+        input.prompt = .text(prompt)
+        return input
     }
 
     private func resolveLogprobs(_ data: [TokenLogprobData], tokenizer: any Tokenizer) -> [ResolvedLogprob] {

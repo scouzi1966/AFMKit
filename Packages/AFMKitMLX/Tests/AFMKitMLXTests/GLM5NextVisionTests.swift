@@ -48,6 +48,17 @@ final class GLM5NextVisionTests: XCTestCase {
         XCTAssertNil(GLM5NextProcessor.rawTextPrompt(for: image))
     }
 
+    func testRawServiceUserInputIsExplicitText() {
+        let prompt = "The capital of France is"
+        let ordinarySingleTurn = UserInput(prompt: prompt)
+        XCTAssertNil(GLM5NextProcessor.rawTextPrompt(for: ordinarySingleTurn))
+
+        let raw = MLXModelService.makeRawUserInput(prompt: prompt)
+        XCTAssertEqual(GLM5NextProcessor.rawTextPrompt(for: raw), prompt)
+        XCTAssertTrue(raw.images.isEmpty)
+        XCTAssertTrue(raw.videos.isEmpty)
+    }
+
     func testPublishedVisionAndProcessorConfigurationsDecode() throws {
         let model = try JSONDecoder().decode(
             GLM5NextVLConfiguration.self, from: try modelConfigurationData())
