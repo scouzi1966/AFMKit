@@ -57,6 +57,76 @@ struct OpenAIResponseFormatPolicyTests {
         ) == raw)
     }
 
+    @Test("response_format policy strips reasoning before fenced structured output")
+    func structuredOutputSanitizationStripsLeadingReasoning() {
+        let jsonObject = ResponseFormat(type: "json_object")
+        let raw = #"""
+        <think>Simple JSON.</think>
+
+        ```json
+        {"ok":true}
+        ```
+        """#
+
+        #expect(OpenAIResponseFormatPolicy.sanitizeStructuredOutput(
+            raw,
+            responseFormat: jsonObject
+        ) == #"{"ok":true}"#)
+    }
+
+    @Test(
+        "response_format policy accepts all supported leading reasoning tags",
+        arguments: ["think", "thinking", "reasoning"])
+    func structuredOutputSanitizationAcceptsSupportedReasoningTags(tag: String) {
+        let jsonObject = ResponseFormat(type: "json_object")
+        let raw = #"""
+        <\#(tag)>Consider the requested shape.</\#(tag)>
+
+        ```json
+        {"ok":true}
+        ```
+        """#
+
+        #expect(OpenAIResponseFormatPolicy.sanitizeStructuredOutput(
+            raw,
+            responseFormat: jsonObject
+        ) == #"{"ok":true}"#)
+    }
+
+    @Test("response_format policy does not repair invalid fenced JSON")
+    func structuredOutputSanitizationDoesNotRepairInvalidJSON() {
+        let jsonObject = ResponseFormat(type: "json_object")
+        let raw = #"""
+        <think>Simple JSON.</think>
+
+        ```json
+        not-json
+        ```
+        """#
+
+        #expect(OpenAIResponseFormatPolicy.sanitizeStructuredOutput(
+            raw,
+            responseFormat: jsonObject
+        ) == "not-json")
+    }
+
+    @Test("response_format policy leaves an incomplete reasoning wrapper unchanged")
+    func structuredOutputSanitizationLeavesIncompleteReasoningWrapper() {
+        let jsonObject = ResponseFormat(type: "json_object")
+        let raw = #"""
+        <think>Still reasoning.
+
+        ```json
+        {"ok":true}
+        ```
+        """#
+
+        #expect(OpenAIResponseFormatPolicy.sanitizeStructuredOutput(
+            raw,
+            responseFormat: jsonObject
+        ) == raw.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
     private static func schemaFormat(name: String, strict: Bool = true) -> ResponseFormat {
         ResponseFormat(
             type: "json_schema",

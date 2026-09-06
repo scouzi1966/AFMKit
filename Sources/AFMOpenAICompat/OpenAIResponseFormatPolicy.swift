@@ -6,6 +6,11 @@ import Foundation
 /// them per request. The policy lives with the DTOs so AFMKit providers, CLIs,
 /// and HTTP layers apply the same precedence and structured-output cleanup.
 public enum OpenAIResponseFormatPolicy {
+    private static let leadingReasoningBlockRegex = try! NSRegularExpression(
+        pattern: #"^\s*<(think|thinking|reasoning)>\s*([\s\S]*?)\s*</\1>\s*"#,
+        options: []
+    )
+
     private static let fencedStructuredOutputRegex = try! NSRegularExpression(
         pattern: #"^\s*```(?:[a-zA-Z0-9_-]+)?\s*([\s\S]*?)\s*```\s*$"#,
         options: []
@@ -47,7 +52,15 @@ public enum OpenAIResponseFormatPolicy {
             return text
         }
 
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        var trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let match = leadingReasoningBlockRegex.firstMatch(
+            in: trimmed,
+            range: NSRange(trimmed.startIndex..., in: trimmed)
+        ), let matchRange = Range(match.range, in: trimmed) {
+            trimmed = String(trimmed[matchRange.upperBound...])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
         guard let match = fencedStructuredOutputRegex.firstMatch(
             in: trimmed,
             range: NSRange(trimmed.startIndex..., in: trimmed)
