@@ -2862,6 +2862,113 @@ final class Qwen4ExpTests: XCTestCase {
             "direct QSA gather max abs difference \(maximumDifference)")
     }
 
+    func testQSAGatherQueryEligibilityPreservesPrefillCrossover() {
+        XCTAssertFalse(Qwen4ExpQSAGather.supportedQueryLength(
+            1, allowsShortBatchedVerification: false))
+        XCTAssertFalse(Qwen4ExpQSAGather.supportedQueryLength(
+            15, allowsShortBatchedVerification: false))
+        XCTAssertTrue(Qwen4ExpQSAGather.supportedQueryLength(
+            16, allowsShortBatchedVerification: false))
+
+        XCTAssertFalse(Qwen4ExpQSAGather.supportedQueryLength(
+            1, allowsShortBatchedVerification: true))
+        XCTAssertTrue(Qwen4ExpQSAGather.supportedQueryLength(
+            2, allowsShortBatchedVerification: true))
+        XCTAssertTrue(Qwen4ExpQSAGather.supportedQueryLength(
+            15, allowsShortBatchedVerification: true))
+    }
+
+    func testQSADirectGatherMatchesDenseMaskForMTPVerificationWidths() throws {
+        guard Qwen4ExpQSAGather.shouldSelectBlocks(
+            batch: 1,
+            queryLength: 2,
+            keyLength: 8_198,
+            dtype: .bfloat16,
+            queryHeads: 8,
+            keyHeads: 2,
+            headDimension: 256,
+            allowsShortBatchedVerification: true)
+        else {
+            throw XCTSkip("Requires enabled GPU QSA direct gather")
+        }
+
+        let queryHeads = 8
+        let keyHeads = 2
+        let keyLength = 8_198
+        let headDimension = 256
+        let compressionRatio = 4
+        let scale = pow(Float(headDimension), -0.5)
+        let randomState = MLXRandom.RandomState(seed: 363)
+
+        for queryLength in [2, 3, 5, 6, 15] {
+            let queries = withRandomState(randomState) {
+                MLXRandom.normal(
+                    [1, queryHeads, queryLength, headDimension])
+                    .asType(.bfloat16)
+            }
+            let keys = withRandomState(randomState) {
+                MLXRandom.normal(
+                    [1, keyHeads, keyLength, headDimension])
+                    .asType(.bfloat16)
+            }
+            let values = withRandomState(randomState) {
+                MLXRandom.normal(
+                    [1, keyHeads, keyLength, headDimension])
+                    .asType(.bfloat16)
+            }
+
+            // The sentinel rows cover early causal positions before all block
+            // slots are visible. The non-contiguous IDs cover sparse, missing
+            // blocks; the non-aligned key length covers ragged causal length.
+            let patterns: [[Int32]] = [
+                [0, 17, 127, 511, Int32.max],
+                [3, 19, 127, 511, Int32.max],
+                [7, 31, 255, 511, Int32.max],
+                [11, 43, 255, 511, Int32.max],
+                [13, 59, 255, 511, Int32.max],
+                [17, 71, 255, 511, Int32.max],
+                [19, 83, 255, 511, Int32.max],
+                [23, 97, 255, 511, Int32.max],
+                [29, 101, 255, 511, Int32.max],
+                [31, 103, 255, 511, Int32.max],
+                [37, 107, 255, 511, Int32.max],
+                [41, 109, 255, 511, Int32.max],
+                [43, 113, 255, 511, Int32.max],
+                [47, 127, 255, 511, Int32.max],
+                [53, 131, 255, 511, Int32.max],
+            ]
+            let selected = MLXArray(patterns[..<queryLength].flatMap { $0 })
+                .reshaped(1, queryLength, patterns[0].count)
+            let mask = Qwen4ExpQSAGather.maskFromBlocks(
+                selected,
+                keyLength: keyLength,
+                compressionRatio: compressionRatio)
+            let expected = MLXFast.scaledDotProductAttention(
+                queries: queries,
+                keys: keys,
+                values: values,
+                scale: scale,
+                mask: .array(mask))
+            let actual = try XCTUnwrap(Qwen4ExpQSAGather.call(
+                queries: queries,
+                keys: keys,
+                values: values,
+                scale: scale,
+                selectedBlocks: selected,
+                compressionRatio: compressionRatio))
+            eval(actual, expected)
+
+            let differences = zip(
+                actual.asType(.float32).asArray(Float.self),
+                expected.asType(.float32).asArray(Float.self)
+            ).map { abs($0 - $1) }
+            XCTAssertLessThanOrEqual(
+                differences.max() ?? 0, 0.02,
+                "width \(queryLength) direct QSA gather max abs difference "
+                    + "\(differences.max() ?? 0)")
+        }
+    }
+
     func testQSADecodeScoresMatchComposedFP32Definition() throws {
         let randomState = MLXRandom.RandomState(seed: 314)
         let queries = withRandomState(randomState) {

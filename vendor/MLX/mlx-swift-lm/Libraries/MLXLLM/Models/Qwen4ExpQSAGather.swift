@@ -14,12 +14,29 @@ enum Qwen4ExpQSAGather {
     private static let headDimension = 256
     private static let blockTile = 32
     private static let SIMDWidth = 32
-    private static let minimumQueryLength = 16
+    private static let minimumPrefillQueryLength = 16
+    private static let minimumBatchedVerificationQueryLength = 2
     private static let minimumKeyLength = 8_192
     private static let maximumGQAHeads = 64
 
     static let enabled =
         ProcessInfo.processInfo.environment["AFM_QWEN_QSA_GATHER"] != "0"
+
+    static let batchedVerificationEnabled =
+        ProcessInfo.processInfo.environment[
+            "AFM_QWEN_QSA_MTP_BATCH_GATHER"
+        ] != "0"
+
+    static func supportedQueryLength(
+        _ queryLength: Int,
+        allowsShortBatchedVerification: Bool
+    ) -> Bool {
+        queryLength >= (
+            allowsShortBatchedVerification
+                ? minimumBatchedVerificationQueryLength
+                : minimumPrefillQueryLength
+        )
+    }
 
     static func shouldSelectBlocks(
         batch: Int,
@@ -28,12 +45,16 @@ enum Qwen4ExpQSAGather {
         dtype: DType,
         queryHeads: Int,
         keyHeads: Int,
-        headDimension: Int
+        headDimension: Int,
+        allowsShortBatchedVerification: Bool = false
     ) -> Bool {
         enabled
+            && (!allowsShortBatchedVerification || batchedVerificationEnabled)
             && Device.defaultDevice().deviceType == .gpu
             && batch > 0
-            && queryLength >= minimumQueryLength
+            && supportedQueryLength(
+                queryLength,
+                allowsShortBatchedVerification: allowsShortBatchedVerification)
             && keyLength >= minimumKeyLength
             && dtype == .bfloat16
             && headDimension == Self.headDimension
@@ -185,12 +206,16 @@ enum Qwen4ExpQSAGather {
                     const int packedColumn = index & 31;
                     uint4 packed = uint4(0);
                     if (row < rowsInTile) {
-                        const int position = qsa_cache_position(
+                        int position = 0;
+                        const bool selectedTokenIsValid = qsa_cache_position(
                             selected, tileStart + row, selectedTokenCount,
-                            tailStart, COMPRESSION_RATIO);
-                        packed = *((const device uint4*)
-                            (keyBase + (long)position * keys_strides[2])
-                            + packedColumn);
+                            tailStart, completeBlocks, COMPRESSION_RATIO,
+                            position);
+                        if (selectedTokenIsValid) {
+                            packed = *((const device uint4*)
+                                (keyBase + (long)position * keys_strides[2])
+                                + packedColumn);
+                        }
                     }
                     thread T* unpacked = (thread T*)&packed;
                     const int column = packedColumn * 8;
@@ -221,10 +246,21 @@ enum Qwen4ExpQSAGather {
                 for (int tileFragment = 0;
                      tileFragment < fragmentsPerTile; ++tileFragment) {
                     scores[tileFragment] *= scaledLog2E;
-                    if (tileFragment * 8 + fragmentColumn >= rowsInTile) {
+                    const int scoreRow = tileFragment * 8 + fragmentColumn;
+                    int maskedPosition = 0;
+                    const bool selectedTokenIsValid = scoreRow < rowsInTile
+                        && qsa_cache_position(
+                            selected, tileStart + scoreRow,
+                            selectedTokenCount, tailStart, completeBlocks,
+                            COMPRESSION_RATIO, maskedPosition);
+                    if (scoreRow >= rowsInTile || !selectedTokenIsValid) {
                         scores[tileFragment].x = -INFINITY;
                     }
-                    if (tileFragment * 8 + fragmentColumn + 1 >= rowsInTile) {
+                    if (scoreRow + 1 >= rowsInTile
+                        || !qsa_cache_position(
+                            selected, tileStart + scoreRow + 1,
+                            selectedTokenCount, tailStart, completeBlocks,
+                            COMPRESSION_RATIO, maskedPosition)) {
                         scores[tileFragment].y = -INFINITY;
                     }
                 }
@@ -237,12 +273,16 @@ enum Qwen4ExpQSAGather {
                     const int packedColumn = index & 31;
                     uint4 packed = uint4(0);
                     if (row < rowsInTile) {
-                        const int position = qsa_cache_position(
+                        int position = 0;
+                        const bool selectedTokenIsValid = qsa_cache_position(
                             selected, tileStart + row, selectedTokenCount,
-                            tailStart, COMPRESSION_RATIO);
-                        packed = *((const device uint4*)
-                            (valueBase + (long)position * values_strides[2])
-                            + packedColumn);
+                            tailStart, completeBlocks, COMPRESSION_RATIO,
+                            position);
+                        if (selectedTokenIsValid) {
+                            packed = *((const device uint4*)
+                                (valueBase + (long)position * values_strides[2])
+                                + packedColumn);
+                        }
                     }
                     *((threadgroup uint4*)
                         (sharedValues + row * valueStride) + packedColumn) = packed;
@@ -342,14 +382,22 @@ enum Qwen4ExpQSAGather {
                 return result;
             }
 
-            inline int qsa_cache_position(
+            inline bool qsa_cache_position(
                 const device int* selected, int virtualIndex,
-                int selectedTokenCount, int tailStart, int ratio) {
+                int selectedTokenCount, int tailStart, int completeBlocks,
+                int ratio, thread int& position) {
                 const int block = virtualIndex / ratio;
-                return virtualIndex < selectedTokenCount
-                    ? selected[block] * ratio
-                        + virtualIndex - block * ratio
-                    : tailStart + virtualIndex - selectedTokenCount;
+                if (virtualIndex >= selectedTokenCount) {
+                    position = tailStart + virtualIndex - selectedTokenCount;
+                    return true;
+                }
+                const int selectedBlock = selected[block];
+                if (selectedBlock < 0 || selectedBlock >= completeBlocks) {
+                    position = 0;
+                    return false;
+                }
+                position = selectedBlock * ratio + virtualIndex - block * ratio;
+                return true;
             }
         """,
         ensureRowContiguous: false)
