@@ -1584,7 +1584,8 @@ final class Qwen4ExpQSAIndexer: Module {
             dtype: hidden.dtype,
             queryHeads: heads,
             keyHeads: kvHeads,
-            headDimension: headDim)
+            headDimension: headDim,
+            allowsShortBatchedVerification: verificationPolicy == .batched)
         {
             return .blocks(selectedBlocks)
         }
