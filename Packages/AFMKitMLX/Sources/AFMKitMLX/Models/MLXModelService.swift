@@ -3731,7 +3731,10 @@ public final class MLXModelService:
                     }
                     let tRoundtrip = Date.timeIntervalSinceReferenceDate
                     let suffixTokens = Array(inputTokens[effectivePrefix...])
-                    generateInput = LMInput(text: .init(tokens: MLXArray(suffixTokens)))
+                    generateInput = MLXPrefixReplayPolicy.replayInput(
+                        from: input,
+                        effectivePrefix: effectivePrefix
+                    )
                     cachedTokenCount = effectivePrefix
                     cacheOutcome = "hit"
                     StatsAggregator.shared.cacheHit()  // /metrics: afm:radix_cache_hits_total
@@ -4671,7 +4674,10 @@ public final class MLXModelService:
                                 }
                                 let tRoundtrip = Date.timeIntervalSinceReferenceDate
                                 let suffixTokens = Array(inputTokens[effectivePrefix...])
-                                generateInput = LMInput(text: .init(tokens: MLXArray(suffixTokens)))
+                                generateInput = MLXPrefixReplayPolicy.replayInput(
+                                    from: input,
+                                    effectivePrefix: effectivePrefix
+                                )
                                 streamCachedTokens = effectivePrefix
                                 cacheOutcome = "hit"
                                 StatsAggregator.shared.cacheHit()  // /metrics: afm:radix_cache_hits_total

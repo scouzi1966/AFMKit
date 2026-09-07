@@ -1597,7 +1597,10 @@ actor BatchScheduler {
                 }
                 let tRoundtrip = Date.timeIntervalSinceReferenceDate
                 let suffixTokens = Array(inputTokens[effectivePrefix...])
-                generateInput = LMInput(text: .init(tokens: MLXArray(suffixTokens)))
+                generateInput = MLXPrefixReplayPolicy.replayInput(
+                    from: req.input,
+                    effectivePrefix: effectivePrefix
+                )
                 cachedTokens = effectivePrefix
                 cacheOutcome = "hit"
                 cacheRestoreTime = tRestore1 - tRestore0
