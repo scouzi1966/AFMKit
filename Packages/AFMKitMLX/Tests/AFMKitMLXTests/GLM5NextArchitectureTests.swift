@@ -1098,6 +1098,63 @@ final class GLM5NextArchitectureTests: XCTestCase {
             fullPrefill)
     }
 
+    func testGLMMTPSessionsPreserveSerialOutputWhenInterleaved() throws {
+        MLXRandom.seed(43)
+        let data = try XCTUnwrap(tinyConfigurationData(indexTopK: 8))
+        let config = try JSONDecoder().decode(GLM5NextConfiguration.self, from: data)
+        let model = GLM5NextModel(config)
+        initializeTinyTarget(model, config: config.textConfig)
+        model.installEmbeddedMTPForTesting(initializedMTPHead(config: config.textConfig))
+        let generator = try XCTUnwrap(GLM5NextMTPGenerator(model: model))
+        let firstPrompt = [1, 2, 3]
+        let secondPrompt = [4, 5, 6]
+        let firstExpected = ordinaryGreedy(
+            model: model, prompt: firstPrompt, count: 25)
+        let secondExpected = ordinaryGreedy(
+            model: model, prompt: secondPrompt, count: 25)
+        let first = try XCTUnwrap(generator.makeSession(promptIds: firstPrompt))
+        let second = try XCTUnwrap(generator.makeSession(promptIds: secondPrompt))
+        var firstOutput: [Int] = []
+        var secondOutput: [Int] = []
+
+        while firstOutput.count < firstExpected.count
+            || secondOutput.count < secondExpected.count
+        {
+            if firstOutput.count < firstExpected.count {
+                firstOutput.append(try XCTUnwrap(first.nextToken()))
+            }
+            if secondOutput.count < secondExpected.count {
+                secondOutput.append(try XCTUnwrap(second.nextToken()))
+            }
+        }
+
+        XCTAssertEqual(firstOutput, firstExpected)
+        XCTAssertEqual(secondOutput, secondExpected)
+    }
+
+    func testGLMMTPSessionExactReplayMatchesFullSession() throws {
+        MLXRandom.seed(47)
+        let data = try XCTUnwrap(tinyConfigurationData(indexTopK: 8))
+        let config = try JSONDecoder().decode(GLM5NextConfiguration.self, from: data)
+        let model = GLM5NextModel(config)
+        initializeTinyTarget(model, config: config.textConfig)
+        model.installEmbeddedMTPForTesting(initializedMTPHead(config: config.textConfig))
+        let generator = try XCTUnwrap(GLM5NextMTPGenerator(model: model))
+        let prompt = [1, 2, 3]
+        let cold = try XCTUnwrap(
+            generator.makeSession(
+                promptIds: prompt,
+                retainPromptHiddenStates: true))
+        let state = try XCTUnwrap(cold.capturePromptState())
+        let fullOutput = (0..<25).compactMap { _ in cold.nextToken() }
+        let replay = try XCTUnwrap(generator.makeSession(
+            promptIds: prompt,
+            promptState: state))
+        let replayOutput = (0..<25).compactMap { _ in replay.nextToken() }
+
+        XCTAssertEqual(replayOutput, fullOutput)
+    }
+
     func testTopLevelParameterUpdateInvalidatesEmbeddedMTPPerformanceCaches() throws {
         let data = try XCTUnwrap(tinyConfigurationData(indexTopK: 8))
         let config = try JSONDecoder().decode(GLM5NextConfiguration.self, from: data)
@@ -1419,6 +1476,40 @@ final class GLM5NextArchitectureTests: XCTestCase {
                 tools: nil))
         XCTAssertEqual(oneArgument.function.name, "get_weather")
         XCTAssertEqual(oneArgument.function.arguments["city"], .string("Toronto"))
+    }
+
+    func testSchedulerFallbackParsesCapturedGLMToolCall() {
+        let text =
+            "<tool_call>get_weather<arg_key>city</arg_key>"
+            + "<arg_value>Berlin</arg_value><arg_key>unit</arg_key>"
+            + "<arg_value>celsius</arg_value></tool_call>"
+
+        let (calls, remaining) = ToolCallStreamingRuntime.parseCompletedToolCalls(
+            from: text,
+            toolCallParser: nil,
+            tools: nil)
+        XCTAssertEqual(calls.count, 1)
+        XCTAssertEqual(calls.first?.function.name, "get_weather")
+        XCTAssertEqual(calls.first?.function.arguments["city"], .string("Berlin"))
+        XCTAssertEqual(calls.first?.function.arguments["unit"], .string("celsius"))
+        XCTAssertTrue(remaining.isEmpty)
+
+        let runtime = ToolCallStreamingRuntime(
+            toolCallStartTag: "<tool_call>",
+            toolCallEndTag: "</tool_call>",
+            toolCallParser: nil,
+            tools: nil,
+            repairToolArguments: false,
+            applyFixToolArgs: { $0 },
+            remapSingleKey: { key, _ in key })
+        let output = runtime.process(piece: text)
+        XCTAssertTrue(output.handled)
+        XCTAssertTrue(output.events.contains { event in
+            if case .appendCollected(let call) = event {
+                return call.function.name == "get_weather"
+            }
+            return false
+        })
     }
 
     func testNoThinkMapsToPublishedLowestGLMReasoningEffort() {

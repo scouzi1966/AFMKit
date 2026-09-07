@@ -131,6 +131,9 @@ actor BatchScheduler {
     private let configuration: ModelConfiguration
     private let cacheProfilePath: String?
     private let admissionWindowNanoseconds: UInt64
+    private let glmMTPGenerator: GLM5NextMTPGenerator?
+    private let glmMTPPromptReplayCache: GLM5NextMTPPromptReplayCache?
+    private let glmMTPReplayModelID: String
     /// Some models change attention behavior when a later, shorter sequence is
     /// left-padded into an active batch. Keep their decode cohorts fixed so
     /// staggered arrivals retain the same path as serial generation.
@@ -207,6 +210,7 @@ actor BatchScheduler {
         var stopBuffer = ""
         var insideThink = false
         var stoppedBySequence = false
+        let glmMTPSession: GLM5NextMTPSession?
 
         init(
             id: UUID,
@@ -237,7 +241,8 @@ actor BatchScheduler {
             thinkEndTag: String?,
             computeLogprobs: Bool = false,
             topLogprobsCount: Int = 0,
-            temperatureForLogprobs: Float = 1.0
+            temperatureForLogprobs: Float = 1.0,
+            glmMTPSession: GLM5NextMTPSession? = nil
         ) {
             self.id = id
             self.requestId = requestId
@@ -275,6 +280,7 @@ actor BatchScheduler {
             self.computeLogprobs = computeLogprobs
             self.topLogprobsCount = topLogprobsCount
             self.temperatureForLogprobs = temperatureForLogprobs
+            self.glmMTPSession = glmMTPSession
         }
     }
 
@@ -499,6 +505,7 @@ actor BatchScheduler {
         let thinkStartTag: String?
         let thinkEndTag: String?
         let continuation: AsyncThrowingStream<StreamChunk, Error>.Continuation
+        let usesGLMMTP: Bool
     }
 
     /// Thread-safe request queue — accessed without actor isolation.
@@ -642,7 +649,10 @@ actor BatchScheduler {
         maxConcurrent: Int = BatchScheduler.defaultMaxConcurrent,
         enablePrefixCaching: Bool = false,
         cacheProfilePath: String? = nil,
-        admissionWindowNanoseconds: UInt64 = BatchScheduler.defaultAdmissionWindowNanoseconds
+        admissionWindowNanoseconds: UInt64 = BatchScheduler.defaultAdmissionWindowNanoseconds,
+        glmMTPGenerator: GLM5NextMTPGenerator? = nil,
+        glmMTPPromptReplayCache: GLM5NextMTPPromptReplayCache? = nil,
+        serviceModelID: String? = nil
     ) {
         self.model = model
         self.tokenizer = tokenizer
@@ -651,6 +661,11 @@ actor BatchScheduler {
         self.maxConcurrent = maxConcurrent
         self.cacheProfilePath = cacheProfilePath
         self.admissionWindowNanoseconds = admissionWindowNanoseconds
+        self.glmMTPGenerator = glmMTPGenerator
+        self.glmMTPPromptReplayCache = glmMTPPromptReplayCache
+        self.glmMTPReplayModelID = Self.glmMTPReplayModelID(
+            serviceModelID: serviceModelID,
+            configurationName: configuration.name)
         self.requiresFixedDecodeCohorts = Self.requiresFixedDecodeCohorts(
             for: type(of: model))
 
@@ -717,7 +732,8 @@ actor BatchScheduler {
         stopSequences: [String] = [],
         thinkStartTag: String? = nil,
         thinkEndTag: String? = nil,
-        requestId: String = ""
+        requestId: String = "",
+        usesGLMMTP: Bool = false
     ) -> AsyncThrowingStream<StreamChunk, Error> {
         if _isShutdown.withLock({ $0 }) {
             return AsyncThrowingStream { $0.finish(throwing: MLXServiceError.serviceShuttingDown) }
@@ -746,7 +762,8 @@ actor BatchScheduler {
                 stopSequences: stopSequences,
                 thinkStartTag: thinkStartTag,
                 thinkEndTag: thinkEndTag,
-                continuation: continuation
+                continuation: continuation,
+                usesGLMMTP: usesGLMMTP
             ))
         }
 
@@ -932,6 +949,42 @@ actor BatchScheduler {
                         accepted.append(req)
                     } else {
                         _pendingQueue.withLock { $0.append(req) }
+                    }
+                }
+
+                // An active independent cohort must never merge a later AR
+                // request into `batchCaches`; that transition is unsupported
+                // and traps. Keep every later admission request-owned as well.
+                if Self.shouldUseIndependentPrefill(
+                    cacheModeIsIndependent: cacheMode == .independent,
+                    acceptedContainsGLMMTP: accepted.contains(where: \.usesGLMMTP))
+                {
+                    switch cacheMode {
+                    case .empty, .independent:
+                        for req in accepted {
+                            if req.usesGLMMTP {
+                                prefillGLMMTP(req)
+                            } else {
+                                prefillOne(req, forceIndependentCaches: true)
+                            }
+                        }
+                        continue
+                    case .unbatched, .batched:
+                        // GLM speculative state is request-owned. Do not coerce
+                        // it into an active dense AR cohort. Defer the entire
+                        // admission batch and give GLM head-of-line priority so
+                        // later AR arrivals cannot starve the drain barrier.
+                        let deferredGLM = accepted.filter(\.usesGLMMTP)
+                        let deferredAR = accepted.filter { !$0.usesGLMMTP }
+                        accepted.removeAll()
+                        _pendingQueue.withLock { queue in
+                            queue = Self.prioritizedDeferredGLMMTPQueue(
+                                existing: queue,
+                                deferredGLM: deferredGLM,
+                                deferredAR: deferredAR,
+                                isGLMMTP: \.usesGLMMTP)
+                        }
+                        continue
                     }
                 }
 
@@ -1275,6 +1328,37 @@ actor BatchScheduler {
         requiresFixedDecodeCohorts && activeSlotCount > 0
     }
 
+    /// `ModelConfiguration.name` is a display-oriented relative name for
+    /// directory checkpoints. Replay entries are keyed by the service's
+    /// normalized model ID, which is also the identity used on the serial path.
+    static func glmMTPReplayModelID(
+        serviceModelID: String?,
+        configurationName: String
+    ) -> String {
+        serviceModelID ?? configurationName
+    }
+
+    /// Keep deferred GLM work ahead of AR work while a dense cohort drains.
+    /// Existing GLM requests remain ahead of newly deferred GLM requests.
+    static func prioritizedDeferredGLMMTPQueue<T>(
+        existing: [T],
+        deferredGLM: [T],
+        deferredAR: [T],
+        isGLMMTP: (T) -> Bool
+    ) -> [T] {
+        existing.filter(isGLMMTP)
+            + deferredGLM
+            + existing.filter { !isGLMMTP($0) }
+            + deferredAR
+    }
+
+    static func shouldUseIndependentPrefill(
+        cacheModeIsIndependent: Bool,
+        acceptedContainsGLMMTP: Bool
+    ) -> Bool {
+        cacheModeIsIndependent || acceptedContainsGLMMTP
+    }
+
     /// Probe whether a request must use individual prefill to preserve a reusable
     /// radix entry. This is called only from the actor's serialized generation loop.
     private func hasReusableCachedPrefix(
@@ -1297,6 +1381,142 @@ actor BatchScheduler {
             forcedSuffix: unsafeExactReplaySuffix(),
             sourceTokenCount: match.sourceTokenCount
         ) > 0
+    }
+
+    /// Prefill one request-owned GLM speculative session.
+    ///
+    /// The scheduler intentionally keeps this cohort independent from dense AR
+    /// caches. Each slot owns its target and NextN state, while the normal slot
+    /// dispatcher continues to enforce output caps, EOS, cancellation, streaming,
+    /// and request accounting.
+    private func prefillGLMMTP(_ req: PendingRequest) {
+        guard let generator = glmMTPGenerator else {
+            failPendingRequest(
+                req,
+                error: MLXServiceError.loadFailed("GLM MTP generator is unavailable"))
+            return
+        }
+
+        let prefillStart = Date()
+        let inputTokens = req.input.text.tokens.reshaped(-1).asArray(Int.self)
+        let replayState = glmMTPPromptReplayCache?
+            .findExactMatch(modelID: glmMTPReplayModelID, promptIds: inputTokens)
+        let shouldCapturePromptState = replayState == nil
+            && glmMTPPromptReplayCache?.canStore(
+                modelID: glmMTPReplayModelID,
+                promptIds: inputTokens) == true
+
+        guard let session = generator.makeSession(
+            promptIds: inputTokens,
+            promptState: replayState,
+            retainPromptHiddenStates: shouldCapturePromptState)
+        else {
+            failPendingRequest(
+                req,
+                error: MLXServiceError.loadFailed("Unable to create GLM MTP session"))
+            return
+        }
+
+        if shouldCapturePromptState,
+           let replayCache = glmMTPPromptReplayCache,
+           let capturedState = session.capturePromptState()
+        {
+            _ = replayCache.insert(capturedState, modelID: glmMTPReplayModelID)
+        }
+
+        if case .empty = cacheMode {
+            cacheMode = .independent
+        } else if case .independent = cacheMode {
+            // Additional GLM and native-cache requests share the fair cohort.
+        } else {
+            preconditionFailure("Cannot add GLM MTP state to a dense AR cohort")
+        }
+
+        guard let firstToken = session.nextToken() else {
+            failPendingRequest(
+                req,
+                error: MLXServiceError.loadFailed("GLM MTP session produced no first token"))
+            return
+        }
+        let tokenArray = MLXArray(Int32(firstToken))
+        let cachedTokens = replayState?.promptIds.count ?? 0
+        let prefillTime = Date().timeIntervalSince(prefillStart)
+
+        let slot = SlotState(
+            id: req.id,
+            requestId: req.requestId,
+            continuation: req.continuation,
+            promptTokenCount: inputTokens.count,
+            queuedAt: req.queuedAt,
+            startTime: prefillStart,
+            prefillTime: prefillTime,
+            inputTokens: inputTokens,
+            cachedTokens: cachedTokens,
+            prefillCaches: session.targetCache,
+            prefixCacheTokens: [],
+            prefixCacheStates: [],
+            prefixCacheMetaStates: [],
+            modelState: nil,
+            lastTokenId: firstToken,
+            lastTokenArray: tokenArray,
+            sampler: req.parameters.sampler(),
+            processor: nil,
+            detokenizer: NaiveStreamingDetokenizer(tokenizer: tokenizer),
+            maxTokens: req.parameters.maxTokens,
+            ignoreEndOfSequence: req.ignoreEndOfSequence,
+            toolRuntime: req.toolCallRuntimeConfig.map { config in
+                ToolCallStreamingRuntime(
+                    toolCallStartTag: config.startTag,
+                    toolCallEndTag: config.endTag,
+                    toolCallParser: config.parser,
+                    tools: config.tools,
+                    repairToolArguments: config.repairToolArguments,
+                    applyFixToolArgs: { rtc in
+                        config.repairToolArguments
+                            ? Self.applyFixToolArgs(rtc, tools: config.tools)
+                            : rtc
+                    },
+                    remapSingleKey: { rtc, toolName in
+                        config.repairToolArguments
+                            ? Self.remapSingleKey(rtc, toolName: toolName, tools: config.tools)
+                            : rtc
+                    })
+            },
+            constraintRuntime: req.constraintRuntimeConfig,
+            activeStops: req.stopSequences,
+            thinkStartTag: req.thinkStartTag,
+            thinkEndTag: req.thinkEndTag,
+            computeLogprobs: false,
+            topLogprobsCount: 0,
+            temperatureForLogprobs: req.parameters.temperature,
+            glmMTPSession: session)
+
+        let firstTokenFinished = dispatchSampledToken(
+            tokenArray,
+            processedLogits: nil,
+            to: slot,
+            processorAlreadyAdvanced: true,
+            updateLastTokenArray: true)
+
+        if cachedTokens > 0 {
+            req.continuation.yield(StreamChunk(text: "", cachedTokens: cachedTokens))
+        }
+
+        StatsAggregator.shared.addPromptTokens(max(0, inputTokens.count - cachedTokens))
+        if cachedTokens > 0 {
+            StatsAggregator.shared.cacheHit()
+        } else {
+            StatsAggregator.shared.cacheMiss()
+        }
+
+        print(
+            "[\(batchTs())] [GLM-MTPScheduler] Prefilled speculative slot "
+                + "req=\(slot.requestId) cached=\(cachedTokens) "
+                + "time=\(String(format: "%.3f", prefillTime))s")
+        slots.append(slot)
+        if firstTokenFinished {
+            finishSlot(at: slots.count - 1)
+        }
     }
 
     /// Prefill a single request (B=1), then merge its cache into the batch.
@@ -1662,21 +1882,30 @@ actor BatchScheduler {
         sampledLogits.reserveCapacity(slots.count)
 
         for slot in slots {
-            let input = LMInput.Text(tokens: slot.lastTokenArray.reshaped([1, 1]))
-            let output = model(
-                input,
-                cache: slot.prefillCaches,
-                state: slot.modelState,
-                hostTokenIDs: model.consumesHostTokenIDs
-                    ? [slot.lastTokenId]
-                    : nil)
-            slot.modelState = output.state
+            if let session = slot.glmMTPSession,
+               let token = session.nextToken()
+            {
+                sampledTokens.append(MLXArray(Int32(token)))
+                sampledLogits.append(nil)
+            } else if slot.glmMTPSession == nil {
+                let input = LMInput.Text(tokens: slot.lastTokenArray.reshaped([1, 1]))
+                let output = model(
+                    input,
+                    cache: slot.prefillCaches,
+                    state: slot.modelState,
+                    hostTokenIDs: model.consumesHostTokenIDs
+                        ? [slot.lastTokenId]
+                        : nil)
+                slot.modelState = output.state
 
-            let logits = output.logits[0, -1, 0...]
-            let processed = slot.processor?.process(logits: logits) ?? logits
-            let sampled = slot.sampler.sample(logits: processed)
-            sampledTokens.append(sampled)
-            sampledLogits.append(slot.computeLogprobs ? processed : nil)
+                let logits = output.logits[0, -1, 0...]
+                let processed = slot.processor?.process(logits: logits) ?? logits
+                let sampled = slot.sampler.sample(logits: processed)
+                sampledTokens.append(sampled)
+                sampledLogits.append(slot.computeLogprobs ? processed : nil)
+            } else {
+                preconditionFailure("GLM MTP session ended without a token")
+            }
         }
 
         asyncEval(sampledTokens)
