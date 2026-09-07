@@ -42,9 +42,9 @@ enum MLXPrefixReplayPolicy {
 
         let tokens = input.text.tokens
         guard tokens.ndim == 2 else {
-            let suffix = tokens.reshaped(-1).asArray(Int.self)
-                .dropFirst(effectivePrefix)
-            return LMInput(text: .init(tokens: MLXArray(Array(suffix))[.newAxis]))
+            let suffixTokens = tokens.reshaped(-1)[effectivePrefix...][.newAxis]
+            let suffixMask = input.text.mask?.reshaped(-1)[effectivePrefix...][.newAxis]
+            return LMInput(text: .init(tokens: suffixTokens, mask: suffixMask))
         }
 
         return LMInput(text: .init(
