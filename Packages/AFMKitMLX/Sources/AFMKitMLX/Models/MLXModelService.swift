@@ -726,11 +726,19 @@ public final class MLXModelService:
     static func shouldUseStreamingScheduler(
         schedulerAvailable: Bool,
         mtpStreamEligible: Bool,
-        schedulerCanPreserveLogprobVisibility: Bool
+        schedulerCanPreserveLogprobVisibility: Bool,
+        schedulerOwnsGLMMTP: Bool = false
     ) -> Bool {
         schedulerAvailable
-            && !mtpStreamEligible
+            && (!mtpStreamEligible || schedulerOwnsGLMMTP)
             && schedulerCanPreserveLogprobVisibility
+    }
+
+    static func schedulerPrefixCaching(
+        prefixCaching: Bool,
+        hasGLMMTPReplayCache: Bool
+    ) -> Bool {
+        prefixCaching && !hasGLMMTPReplayCache
     }
 
     static func isGreedySpeculationEligible(
@@ -2879,6 +2887,26 @@ public final class MLXModelService:
         }
         let prefixCaching = self.enablePrefixCaching
         let limit = self.maxConcurrent
+        let glmMTPGenerator: GLM5NextMTPGenerator? = withStateLock {
+            guard case .glm(let generator)? = currentMTPBinding?.generator else {
+                return nil
+            }
+            return generator
+        }
+        let glmMTPPromptReplayCache = withStateLock {
+            self.glmMTPPromptReplayCache
+        }
+        // GLM MTP uses the exact-prompt replay cache above. The generic radix
+        // tree does not retain the hidden-state/MTP boundary needed by this
+        // model family, so avoid restoring partial AR prefixes alongside it.
+        let schedulerPrefixCaching = Self.schedulerPrefixCaching(
+            prefixCaching: prefixCaching,
+            hasGLMMTPReplayCache: glmMTPPromptReplayCache != nil)
+        if prefixCaching, glmMTPPromptReplayCache != nil {
+            print(
+                "[GLM-MTPReplay] Generic scheduler radix disabled; "
+                    + "exact-prompt speculative replay remains active")
+        }
         let sched = await runtime.1.perform { context -> BatchScheduler in
             BatchScheduler(
                 model: context.model,
@@ -2886,8 +2914,11 @@ public final class MLXModelService:
                 processor: context.processor,
                 configuration: context.configuration,
                 maxConcurrent: limit,
-                enablePrefixCaching: prefixCaching,
-                cacheProfilePath: self.cacheProfilePath
+                enablePrefixCaching: schedulerPrefixCaching,
+                cacheProfilePath: self.cacheProfilePath,
+                glmMTPGenerator: glmMTPGenerator,
+                glmMTPPromptReplayCache: glmMTPPromptReplayCache,
+                serviceModelID: runtime.0
             )
         }
         let installed = withStateLock { () -> Bool in
@@ -4179,11 +4210,12 @@ public final class MLXModelService:
             || ((stop?.isEmpty ?? true) && (tools?.isEmpty ?? true))
 
         // --- Concurrent path: bypass container.perform lock, route through BatchScheduler ---
-        // A loaded speculative head is an explicit request to use speculative
-        // decoding. BatchScheduler is autoregressive-only today, so routing an
-        // MTP-backed request through it silently disables the requested engine
-        // while retaining the head's memory cost. Keep those requests on the
-        // serial path until the scheduler supports per-slot rollback.
+        // Generic MTP remains serial because BatchScheduler is autoregressive-only.
+        // GLM is the staged exception: its request-owned session retains target
+        // and NextN rollback state while participating in the independent cohort.
+        let schedulerOwnsGLMMTP = mtpStreamEligible
+            && currentModelArchitecture?.canonicalModelType == "glm5_next"
+            && maxConcurrent > 1
         let requestScheduler = withStateLock {
             schedulerModelID == modelID ? self.scheduler : nil
         }
@@ -4192,7 +4224,8 @@ public final class MLXModelService:
                 schedulerAvailable: true,
                 mtpStreamEligible: mtpStreamEligible,
                 schedulerCanPreserveLogprobVisibility:
-                    schedulerLogprobsAreVisible)
+                    schedulerLogprobsAreVisible,
+                schedulerOwnsGLMMTP: schedulerOwnsGLMMTP)
         {
             let pipelineStart = debugLogging ? Date() : Date.distantPast
 
@@ -4259,7 +4292,8 @@ public final class MLXModelService:
                     stopSequences: (stop ?? []) + self.implicitStopSequences,
                     thinkStartTag: rawPrompt == nil ? self.thinkStartTag : nil,
                     thinkEndTag: rawPrompt == nil ? self.thinkEndTag : nil,
-                    requestId: reqId
+                    requestId: reqId,
+                    usesGLMMTP: schedulerOwnsGLMMTP
                 )
             }
             let effectiveStream: AsyncThrowingStream<StreamChunk, Error>
@@ -5804,6 +5838,23 @@ public final class MLXModelService:
 
             // Try XML function format: <function=name><parameter=key>value</parameter></function>
             if let tc = parseXMLFunction(inner) {
+                toolCalls.insert(tc, at: 0)
+                if let fullRange = Range(match.range, in: remaining) {
+                    remaining.removeSubrange(fullRange)
+                }
+                continue
+            }
+
+            // GLM emits function names and arguments as arg_key/arg_value
+            // elements. The generic XML/JSON fallbacks do not understand that
+            // shape, while BatchScheduler consumes text after bypassing the
+            // vendor tool-call event producer.
+            let trimmedInner = inner.trimmingCharacters(in: .whitespacesAndNewlines)
+            let knownNoArgumentGLMCall = tools?.contains {
+                $0.function.name == trimmedInner
+            } == true
+            if inner.contains("<arg_key>") || knownNoArgumentGLMCall,
+               let tc = GLM4ToolCallParser().parse(content: inner, tools: toolSpecs) {
                 toolCalls.insert(tc, at: 0)
                 if let fullRange = Range(match.range, in: remaining) {
                     remaining.removeSubrange(fullRange)

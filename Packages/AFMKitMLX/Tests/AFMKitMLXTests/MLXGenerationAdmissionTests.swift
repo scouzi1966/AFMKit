@@ -64,12 +64,69 @@ final class MLXGenerationAdmissionTests: XCTestCase {
             schedulerCanPreserveLogprobVisibility: true))
         XCTAssertTrue(MLXModelService.shouldUseStreamingScheduler(
             schedulerAvailable: true,
+            mtpStreamEligible: true,
+            schedulerCanPreserveLogprobVisibility: true,
+            schedulerOwnsGLMMTP: true))
+        XCTAssertTrue(MLXModelService.shouldUseStreamingScheduler(
+            schedulerAvailable: true,
             mtpStreamEligible: false,
             schedulerCanPreserveLogprobVisibility: true))
         XCTAssertFalse(MLXModelService.shouldUseStreamingScheduler(
             schedulerAvailable: true,
             mtpStreamEligible: false,
             schedulerCanPreserveLogprobVisibility: false))
+    }
+
+    func testGLMMTPSchedulerReplayUsesServiceModelIdentity() {
+        let serviceModelID = "/Volumes/edata2/models/afm/GLM-5.3-Flash-AFM-MLX-4bit-MTP"
+        let configurationName = "afm/GLM-5.3-Flash-AFM-MLX-4bit-MTP"
+
+        XCTAssertNotEqual(serviceModelID, configurationName)
+        XCTAssertEqual(
+            BatchScheduler.glmMTPReplayModelID(
+                serviceModelID: serviceModelID,
+                configurationName: configurationName),
+            serviceModelID)
+        XCTAssertEqual(
+            BatchScheduler.glmMTPReplayModelID(
+                serviceModelID: nil,
+                configurationName: configurationName),
+            configurationName)
+    }
+
+    func testDeferredGLMMTPOutranksNewerARRivalsWhenDenseCohortDrains() {
+        struct Item {
+            let id: Int
+            let usesGLMMTP: Bool
+        }
+        let existing = [
+            Item(id: 1, usesGLMMTP: false),
+            Item(id: 2, usesGLMMTP: true),
+            Item(id: 3, usesGLMMTP: true),
+            Item(id: 4, usesGLMMTP: false),
+        ]
+        let deferredGLM = [Item(id: 5, usesGLMMTP: true)]
+        let deferredAR = [Item(id: 6, usesGLMMTP: false)]
+
+        let ordered = BatchScheduler.prioritizedDeferredGLMMTPQueue(
+            existing: existing,
+            deferredGLM: deferredGLM,
+            deferredAR: deferredAR,
+            isGLMMTP: \.usesGLMMTP)
+
+        XCTAssertEqual(ordered.map(\.id), [2, 3, 5, 1, 4, 6])
+    }
+
+    func testGLMMTPReplaySuppressesGenericSchedulerRadix() {
+        XCTAssertTrue(MLXModelService.schedulerPrefixCaching(
+            prefixCaching: true,
+            hasGLMMTPReplayCache: false))
+        XCTAssertFalse(MLXModelService.schedulerPrefixCaching(
+            prefixCaching: true,
+            hasGLMMTPReplayCache: true))
+        XCTAssertFalse(MLXModelService.schedulerPrefixCaching(
+            prefixCaching: false,
+            hasGLMMTPReplayCache: false))
     }
 
     func testGreedySpeculationRequiresUnmodifiedArgmaxSemantics() {

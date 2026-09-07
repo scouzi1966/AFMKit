@@ -2303,7 +2303,7 @@ struct GLM5NextMTPTelemetrySnapshot: Codable, Equatable {
     var totalSeconds = 0.0
 }
 
-public final class GLM5NextMTPGenerator {
+public final class GLM5NextMTPGenerator: @unchecked Sendable {
     private let model: GLM5NextModel
     public let depth: Int
     private let telemetryEnabled: Bool
@@ -2333,21 +2333,21 @@ public final class GLM5NextMTPGenerator {
         guard model.supportsEmbeddedMTP, depth == 1 else { return nil }
     }
 
-    private static func argmax(_ logits: MLXArray) -> Int {
+    static func argmax(_ logits: MLXArray) -> Int {
         MLX.argMax(logits, axis: -1).item(Int.self)
     }
 
-    private static func tokens(_ ids: [Int]) -> MLXArray {
+    static func tokens(_ ids: [Int]) -> MLXArray {
         MLXArray(ids.map(Int32.init)).reshaped([1, ids.count])
     }
 
-    private static func independentCopy(_ array: MLXArray) -> MLXArray {
+    static func independentCopy(_ array: MLXArray) -> MLXArray {
         let copy = array * 1
         MLX.eval(copy)
         return copy
     }
 
-    private static func independentCopies(_ states: [[MLXArray]]) -> [[MLXArray]] {
+    static func independentCopies(_ states: [[MLXArray]]) -> [[MLXArray]] {
         states.map { $0.map(independentCopy) }
     }
 
@@ -2392,6 +2392,18 @@ public final class GLM5NextMTPGenerator {
             promptHiddenStates: Self.independentCopy(initial.hidden),
             primaryToken: primary,
             primaryHidden: Self.independentCopy(primaryHidden))
+    }
+
+    public func makeSession(
+        promptIds: [Int],
+        promptState: PromptState? = nil,
+        retainPromptHiddenStates: Bool = false
+    ) -> GLM5NextMTPSession? {
+        GLM5NextMTPSession(
+            model: model,
+            promptIds: promptIds,
+            promptState: promptState,
+            retainPromptHiddenStates: retainPromptHiddenStates)
     }
 
     func restoreTargetCache(for initialState: PromptState) -> [KVCache] {
@@ -2632,5 +2644,153 @@ public final class GLM5NextMTPGenerator {
             }
         }
         return output
+    }
+}
+
+/// One request-owned GLM speculative session.
+///
+/// A scheduler can interleave sessions fairly while each session retains the
+/// target cache, embedded head cache, primary token, and primary hidden state
+/// required for correct rollback. The target remains authoritative and rejected
+/// drafts restore through the same local snapshot logic as serial generation.
+public final class GLM5NextMTPSession: @unchecked Sendable {
+    private let model: GLM5NextModel
+    private var cache: [KVCache]
+    private let mtpCache: KVCache
+    private var primary: Int
+    private var primaryHidden: MLXArray
+    private var pendingPrimary: Int?
+    private var promptHiddenStates: MLXArray?
+    public let promptIds: [Int]
+
+    init?(
+        model: GLM5NextModel,
+        promptIds: [Int],
+        promptState: GLM5NextMTPGenerator.PromptState?,
+        retainPromptHiddenStates: Bool
+    ) {
+        guard !promptIds.isEmpty else { return nil }
+        self.model = model
+        self.promptIds = promptIds
+        self.cache = model.newCache(parameters: nil)
+        self.mtpCache = model.makeEmbeddedMTPCache()
+
+        if let promptState {
+            guard promptState.promptIds == promptIds else { return nil }
+            for index in cache.indices {
+                let restoredState = promptState.targetCacheStates[index]
+                    .map(GLM5NextMTPGenerator.independentCopy)
+                if let arraysCache = cache[index] as? ArraysCache {
+                    arraysCache.state = restoredState
+                    arraysCache.offset = promptState.targetCacheOffsets[index]
+                } else if let cacheList = cache[index] as? CacheList,
+                          restoredState.count == cacheList.caches.count * 2,
+                          cacheList.caches.allSatisfy({ $0 is KVCacheSimple })
+                {
+                    for childIndex in cacheList.caches.indices {
+                        let start = childIndex * 2
+                        (cacheList.caches[childIndex] as? KVCacheSimple)?.state =
+                            Array(restoredState[start ..< start + 2])
+                    }
+                } else {
+                    cache[index].state = restoredState
+                }
+            }
+
+            if promptIds.count > 1 {
+                _ = model.embeddedMTPForward(
+                    hiddenStates: promptState.promptHiddenStates[
+                        0..., 0 ..< (promptIds.count - 1), 0...],
+                    tokenEmbeddings: model.embedTokens(
+                        GLM5NextMTPGenerator.tokens(Array(promptIds.dropFirst()))),
+                    cache: mtpCache)
+            }
+            primary = promptState.primaryToken
+            primaryHidden = GLM5NextMTPGenerator.independentCopy(
+                promptState.primaryHidden)
+            promptHiddenStates = retainPromptHiddenStates
+                ? GLM5NextMTPGenerator.independentCopy(promptState.promptHiddenStates)
+                : nil
+        } else {
+            let initial = model.forwardHidden(
+                GLM5NextMTPGenerator.tokens(promptIds), cache: cache)
+            primary = GLM5NextMTPGenerator.argmax(
+                initial.logits[0, -1, 0...])
+            primaryHidden = initial.hidden[
+                0..., (initial.hidden.dim(1) - 1)..., 0...]
+            promptHiddenStates = retainPromptHiddenStates
+                ? GLM5NextMTPGenerator.independentCopy(initial.hidden)
+                : nil
+
+            if promptIds.count > 1 {
+                _ = model.embeddedMTPForward(
+                    hiddenStates: initial.hidden[0..., 0 ..< (promptIds.count - 1), 0...],
+                    tokenEmbeddings: model.embedTokens(
+                        GLM5NextMTPGenerator.tokens(Array(promptIds.dropFirst()))),
+                    cache: mtpCache)
+            }
+        }
+
+        pendingPrimary = primary
+    }
+
+    /// Retained for scheduler ownership and cache introspection only.
+    /// Callers outside this session must not mutate the returned cache objects.
+    public var targetCache: [KVCache] { cache }
+
+    public func capturePromptState() -> GLM5NextMTPGenerator.PromptState? {
+        guard let promptHiddenStates else { return nil }
+        return GLM5NextMTPGenerator.PromptState(
+            promptIds: promptIds,
+            targetCacheStates: cache.map {
+                $0.state.map(GLM5NextMTPGenerator.independentCopy)
+            },
+            targetCacheOffsets: cache.map(\.offset),
+            promptHiddenStates: GLM5NextMTPGenerator.independentCopy(
+                promptHiddenStates),
+            primaryToken: primary,
+            primaryHidden: GLM5NextMTPGenerator.independentCopy(primaryHidden))
+    }
+
+    public func nextToken() -> Int? {
+        if let pendingPrimary {
+            self.pendingPrimary = nil
+            return pendingPrimary
+        }
+
+        guard let draftHidden = model.embeddedMTPForward(
+            hiddenStates: primaryHidden,
+            tokenEmbeddings: model.embedTokens(
+                GLM5NextMTPGenerator.tokens([primary])),
+            cache: mtpCache)
+        else { return nil }
+
+        let draft = GLM5NextMTPGenerator.argmax(
+            model.projectLMHead(draftHidden)[0, -1, 0...])
+        let snapshot = GLM5NextCacheSnapshot.capture(cache)
+        let verified = model.forwardHidden(
+            GLM5NextMTPGenerator.tokens([primary, draft]), cache: cache)
+        let verdict = MLX.argMax(
+            verified.logits[0, 0 ..< 2, 0...], axis: -1
+        ).asArray(Int32.self)
+        let correct = Int(verdict[0])
+
+        if Int(verdict[0]) == draft {
+            _ = model.embeddedMTPForward(
+                hiddenStates: verified.hidden[0..., 0 ..< 1, 0...],
+                tokenEmbeddings: model.embedTokens(
+                    GLM5NextMTPGenerator.tokens([correct])),
+                cache: mtpCache)
+            primary = Int(verdict[1])
+            pendingPrimary = primary
+            primaryHidden = verified.hidden[0..., 1 ..< 2, 0...]
+        } else {
+            GLM5NextCacheSnapshot.restore(snapshot, into: cache)
+            _ = model.forwardHidden(
+                GLM5NextMTPGenerator.tokens([primary]), cache: cache)
+            primary = correct
+            primaryHidden = verified.hidden[0..., 0 ..< 1, 0...]
+        }
+        return correct
     }
 }
