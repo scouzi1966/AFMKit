@@ -41,9 +41,15 @@ enum MLXPrefixReplayPolicy {
         precondition(effectivePrefix >= 0, "effectivePrefix must not be negative")
 
         let tokens = input.text.tokens
+        if tokens.ndim == 1 {
+            let suffixTokens = tokens[effectivePrefix...]
+            let suffixMask = input.text.mask?[effectivePrefix...]
+            return LMInput(text: .init(tokens: suffixTokens, mask: suffixMask))
+        }
+
         guard tokens.ndim == 2 else {
-            let suffixTokens = tokens.reshaped(-1)[effectivePrefix...][.newAxis]
-            let suffixMask = input.text.mask?.reshaped(-1)[effectivePrefix...][.newAxis]
+            let suffixTokens = tokens.reshaped(-1)[effectivePrefix...]
+            let suffixMask = input.text.mask?.reshaped(-1)[effectivePrefix...]
             return LMInput(text: .init(tokens: suffixTokens, mask: suffixMask))
         }
 

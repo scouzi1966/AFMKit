@@ -92,7 +92,7 @@ final class MLXPrefixReplayPolicyTests: XCTestCase {
         XCTAssertEqual(replay.text.mask?.asArray(Int.self), [0, 1])
     }
 
-    func testReplayInputNormalizesRankOneTokensWithAlignedMask() {
+    func testReplayInputPreservesRankOneTokensWithAlignedMask() {
         let input = LMInput(
             text: .init(
                 tokens: MLXArray([21, 22, 23, 24]),
@@ -105,9 +105,9 @@ final class MLXPrefixReplayPolicyTests: XCTestCase {
             effectivePrefix: 1
         )
 
-        XCTAssertEqual(replay.text.tokens.shape, [1, 3])
+        XCTAssertEqual(replay.text.tokens.shape, [3])
         XCTAssertEqual(replay.text.tokens.asArray(Int.self), [22, 23, 24])
-        XCTAssertEqual(replay.text.mask?.shape, [1, 3])
+        XCTAssertEqual(replay.text.mask?.shape, [3])
         XCTAssertEqual(replay.text.mask?.asArray(Int.self), [0, 1, 1])
     }
 }
