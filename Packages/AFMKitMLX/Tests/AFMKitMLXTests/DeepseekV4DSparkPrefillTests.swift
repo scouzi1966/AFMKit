@@ -44,15 +44,30 @@ final class DeepseekV4DSparkPrefillTests: XCTestCase {
     private func assertClose(_ actual: MLXArray, _ expected: MLXArray,
                              file: StaticString = #filePath, line: UInt = #line) {
         XCTAssertEqual(actual.shape, expected.shape, file: file, line: line)
+        guard actual.shape == expected.shape else { return }
         XCTAssertTrue(allClose(actual, expected, rtol: 0.005, atol: 0.005)
             .item(Bool.self), file: file, line: line)
+    }
+
+    private func assertCacheStateClose(_ actual: [KVCache], _ expected: [KVCache],
+                                       file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertEqual(actual.count, expected.count, file: file, line: line)
+        for (a, b) in zip(actual, expected) {
+            XCTAssertEqual(a.metaState, b.metaState, file: file, line: line)
+            let actualState = a.state
+            let expectedState = b.state
+            XCTAssertEqual(actualState.count, expectedState.count, file: file, line: line)
+            for (x, y) in zip(actualState, expectedState) {
+                assertClose(x, y, file: file, line: line)
+            }
+        }
     }
 
     func testFullAndChunkedPrefillPreserveLogitsAndNextProposalAcrossBoundaries() throws {
         let model = makeModel()
         // Local-ring, ratio-4 and ratio-128 boundaries, including a one-token
         // final chunk and chunk sizes that do not divide compression groups.
-        for (length, step) in [(1, 1), (7, 3), (8, 4), (9, 4), (17, 5), (129, 17)] {
+        for (length, step) in [(1, 1), (7, 3), (8, 4), (9, 4), (17, 5), (129, 17), (257, 17)] {
             let prompt = ids((0..<length).map { $0 % 31 })
             let fullTarget = model.newCache(parameters: nil)
             let fullDraft = model.newDSparkCache()
@@ -70,22 +85,42 @@ final class DeepseekV4DSparkPrefillTests: XCTestCase {
             assertClose(chunk, full.logits[0..., (-1)..., 0...])
             XCTAssertEqual(chunkTarget.map { $0.offset }, fullTarget.map { $0.offset })
             XCTAssertEqual(chunkDraft.map { $0.offset }, fullDraft.map { $0.offset })
+            // The six documented hybrid state slots are materialized compressor
+            // pool/KV/gate and indexer pool/KV/gate. They are semantic state,
+            // unlike the rotating local cache's prefill-dependent capacity.
+            // Compare them before another token can update partial groups.
+            XCTAssertEqual(chunkTarget.count, fullTarget.count)
+            for (a, b) in zip(chunkTarget, fullTarget) {
+                guard let a = a as? DeepseekV4Cache else { continue }
+                let b = try XCTUnwrap(b as? DeepseekV4Cache)
+                XCTAssertEqual(a.compressRatio, b.compressRatio)
+                let actualState = a.state
+                let expectedState = b.state
+                XCTAssertEqual(actualState.count, expectedState.count)
+                let hybridStateSlotCount = 6
+                XCTAssertGreaterThanOrEqual(actualState.count, hybridStateSlotCount)
+                XCTAssertGreaterThanOrEqual(expectedState.count, hybridStateSlotCount)
+                for (x, y) in zip(actualState.suffix(hybridStateSlotCount),
+                                  expectedState.suffix(hybridStateSlotCount)) {
+                    assertClose(x, y)
+                }
+            }
             // A subsequent append normalizes rotating-cache over-allocation;
             // compare actual consumers, not prefill-dependent buffer capacity.
             let fullWarm = try XCTUnwrap(model.forwardDSparkVerifier(anchor, cache: fullTarget))
             let chunkWarm = try XCTUnwrap(model.forwardDSparkVerifier(anchor, cache: chunkTarget))
             assertClose(chunkWarm.logits, fullWarm.logits)
             assertClose(chunkWarm.captured, fullWarm.captured)
+            // Now compare complete target state, including normalized local
+            // rings and all compressor/indexer partial buffers and pools.
+            assertCacheStateClose(chunkTarget, fullTarget)
             let fullProposal = try XCTUnwrap(model.proposeDSpark(anchorTokenIds: anchor,
                 capturedHidden: fullWarm.captured, cache: fullDraft))
             let chunkProposal = try XCTUnwrap(model.proposeDSpark(anchorTokenIds: anchor,
                 capturedHidden: chunkWarm.captured, cache: chunkDraft))
             assertClose(chunkProposal.logits, fullProposal.logits)
             assertClose(chunkProposal.confidence, fullProposal.confidence)
-            for (a, b) in zip(chunkDraft, fullDraft) {
-                XCTAssertEqual(a.metaState, b.metaState)
-                for (x, y) in zip(a.state, b.state) { assertClose(x, y) }
-            }
+            assertCacheStateClose(chunkDraft, fullDraft)
         }
     }
 
