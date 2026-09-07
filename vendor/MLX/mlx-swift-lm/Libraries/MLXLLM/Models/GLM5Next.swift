@@ -826,6 +826,11 @@ final class GLM5NextIndexer: Module {
 // MARK: - NoPE MLA and sparse attention
 
 final class GLM5NextSparseAttention: Module {
+    // Bound one float32 score tensor, not total working memory. At B=1/H=64
+    // and K=32768 this permits 128 query rows instead of a 256 GiB Q=K tensor.
+    // Keep short attention/decode on the existing unsplit path.
+    static let maximumAttentionScoreBytes = 1_024 * 1_024 * 1_024
+    private static let attentionScoreElementBytes = 4
     let heads: Int
     let qLoraRank: Int
     let qHeadDim: Int
@@ -1006,7 +1011,27 @@ final class GLM5NextSparseAttention: Module {
         value: MLXArray,
         mask: MLXArray?
     ) -> MLXArray {
-        attend(query: query, key: key, value: value, mask: mask)
+        attendUnchunked(query: query, key: key, value: value, mask: mask)
+    }
+
+    func boundedAttentionForTesting(
+        query: MLXArray, key: MLXArray, value: MLXArray, mask: MLXArray?,
+        scoreByteLimit: Int
+    ) -> MLXArray {
+        attend(query: query, key: key, value: value, mask: mask,
+               scoreByteLimit: scoreByteLimit)
+    }
+
+    static func attentionQueryChunkSize(
+        batch: Int, heads: Int, queries: Int, keys: Int,
+        scoreByteLimit: Int = maximumAttentionScoreBytes
+    ) -> Int {
+        precondition(batch > 0 && heads > 0 && queries > 0 && keys > 0)
+        precondition(scoreByteLimit > 0)
+        // Successive divisions avoid overflow from multiplying model dimensions.
+        let rows = scoreByteLimit / attentionScoreElementBytes / batch / heads / keys
+        // A single row is the irreducible allocation if it exceeds the budget.
+        return min(queries, max(1, rows))
     }
 
     /// Test hook for the fused primitive used by the guarded decode path.
@@ -1025,6 +1050,46 @@ final class GLM5NextSparseAttention: Module {
     }
 
     private func attend(
+        query: MLXArray,
+        key: MLXArray,
+        value: MLXArray,
+        mask: MLXArray?,
+        scoreByteLimit: Int = maximumAttentionScoreBytes
+    ) -> MLXArray {
+        let length = query.dim(-2)
+        let chunkSize = Self.attentionQueryChunkSize(
+            batch: query.dim(0), heads: query.dim(1), queries: length,
+            keys: key.dim(-2), scoreByteLimit: scoreByteLimit)
+        guard chunkSize < length else {
+            return attendUnchunked(query: query, key: key, value: value, mask: mask)
+        }
+
+        // Materialize shared inputs once; otherwise a retained lazy key/mask
+        // graph can span every query tile. Cache updates and index selection
+        // have already happened and are never repeated or changed here.
+        let floatQuery = query.asType(.float32)
+        let floatKey = key.asType(.float32)
+        eval(floatQuery, floatKey, value)
+        if let mask { eval(mask) }
+        var outputs = [MLXArray]()
+        for start in stride(from: 0, to: length, by: chunkSize) {
+            let end = min(start + chunkSize, length)
+            let querySlice = floatQuery[.ellipsis, start ..< end, 0...]
+            let maskSlice = mask.map {
+                $0.ndim >= 2 && $0.dim(-2) != 1
+                    ? $0[.ellipsis, start ..< end, 0...] : $0
+            }
+            let output = attendUnchunked(
+                query: querySlice, key: floatKey, value: value, mask: maskSlice)
+            // Appending lazy outputs alone would retain all quadratic score
+            // graphs until concatenation, defeating the memory bound.
+            eval(output)
+            outputs.append(output)
+        }
+        return concatenated(outputs, axis: -2)
+    }
+
+    private func attendUnchunked(
         query: MLXArray,
         key: MLXArray,
         value: MLXArray,

@@ -332,6 +332,75 @@ final class GLM5NextArchitectureTests: XCTestCase {
         }
     }
 
+    func testSparseAttentionQueryBudgetBounds32KWithoutAllocating32KArrays() {
+        XCTAssertEqual(GLM5NextSparseAttention.attentionQueryChunkSize(
+            batch: 1, heads: 64, queries: 32768, keys: 32768), 128)
+        XCTAssertEqual(GLM5NextSparseAttention.attentionQueryChunkSize(
+            batch: 1, heads: 64, queries: 16384, keys: 16384), 256)
+        XCTAssertEqual(GLM5NextSparseAttention.attentionQueryChunkSize(
+            batch: 2, heads: 64, queries: 32768, keys: 32768), 64)
+        XCTAssertEqual(GLM5NextSparseAttention.attentionQueryChunkSize(
+            batch: 1, heads: 64, queries: 1, keys: 32768), 1)
+        XCTAssertEqual(GLM5NextSparseAttention.attentionQueryChunkSize(
+            batch: 1, heads: 64, queries: 512, keys: 512), 512)
+        XCTAssertEqual(GLM5NextSparseAttention.attentionQueryChunkSize(
+            batch: Int.max, heads: Int.max, queries: Int.max, keys: Int.max), 1)
+        let boundedScoreBytes = 1 * 64 * 128 * 32768 * MemoryLayout<Float>.size
+        XCTAssertEqual(boundedScoreBytes, GLM5NextSparseAttention.maximumAttentionScoreBytes)
+    }
+
+    func testSparseAttentionQueryTilesMatchUnsplitCausalSparseAndBroadcastMasks() throws {
+        let config = try JSONDecoder().decode(
+            GLM5NextConfiguration.self, from: XCTUnwrap(tinyConfigurationData()))
+        let attention = GLM5NextSparseAttention(config.textConfig)
+        let batch = 2, heads = 2, queries = 5, keys = 9
+        // Three tiles (2/2/1), including a nonzero causal offset, batch-specific
+        // sparse selections, a fully masked row, and broadcast KV heads.
+        let budget = batch * heads * 2 * keys * MemoryLayout<Float>.size
+        var causalValues = [Bool]()
+        var sparseValues = [Bool]()
+        for b in 0 ..< batch {
+            for q in 0 ..< queries {
+                for k in 0 ..< keys {
+                    causalValues.append(k <= keys - queries + q)
+                    sparseValues.append(q != 1 && k <= keys - queries + q && (k + b) % 3 != 0)
+                }
+            }
+        }
+        let masks: [MLXArray?] = [
+            nil,
+            MLXArray(causalValues).reshaped(batch, 1, queries, keys),
+            MLXArray(sparseValues).reshaped(batch, 1, queries, keys),
+            MLXArray((0 ..< keys).map { $0 % 2 == 0 }).reshaped(1, 1, 1, keys),
+            MLXArray((0 ..< keys).map { $0 % 2 == 0 }),
+        ]
+        for (dtype, kvHeads) in [DType.float32, .float16, .bfloat16].flatMap({ dtype in
+            [1, heads].map { (dtype, $0) }
+        }) {
+            let query = MLXArray((0 ..< batch * heads * queries * 4).map {
+                Float(($0 % 13) - 6) / 17
+            }).reshaped(batch, heads, queries, 4).asType(dtype)
+            let key = MLXArray((0 ..< batch * kvHeads * keys * 4).map {
+                Float(($0 % 11) - 5) / 13
+            }).reshaped(batch, kvHeads, keys, 4).asType(dtype)
+            let value = MLXArray((0 ..< batch * kvHeads * keys * 3).map {
+                Float(($0 % 7) - 3) / 9
+            }).reshaped(batch, kvHeads, keys, 3).asType(dtype)
+            for mask in masks {
+                let oracle = attention.manualAttentionForTesting(
+                    query: query, key: key, value: value, mask: mask)
+                let actual = attention.boundedAttentionForTesting(
+                    query: query, key: key, value: value, mask: mask, scoreByteLimit: budget)
+                MLX.eval(oracle, actual)
+                XCTAssertEqual(actual.shape, [batch, heads, queries, 3])
+                XCTAssertEqual(actual.dtype, dtype)
+                XCTAssertTrue(allClose(actual, oracle, rtol: 2e-3, atol: 2e-3).item())
+                XCTAssertEqual(argMax(actual.flattened()).item(Int.self),
+                               argMax(oracle.flattened()).item(Int.self))
+            }
+        }
+    }
+
     func testHybridModelCreatesArchitectureSpecificCachesAndRunsTinyForward() throws {
         let data = try XCTUnwrap(tinyConfigurationData())
         let config = try JSONDecoder().decode(GLM5NextConfiguration.self, from: data)

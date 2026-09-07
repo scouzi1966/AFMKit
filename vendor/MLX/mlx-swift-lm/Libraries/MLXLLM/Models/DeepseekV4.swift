@@ -2617,6 +2617,42 @@ public class DeepseekV4Model: Module, LLMModel, KVCacheDimensionProvider, LoRAMo
 
     public var supportsEmbeddedDSpark: Bool { !mtp.isEmpty }
 
+    /// Prefill target and drafter together without retaining prompt-wide hidden
+    /// states or projecting vocabulary logits for unused prompt positions.
+    /// Both caches must be fresh. Initial stage.forward only appends target KV
+    /// at offset zero; later chunks must not execute its draft attention/FFN.
+    public func prefillDSparkVerifier(
+        _ inputs: MLXArray,
+        verifierCache: [KVCache],
+        drafterCache: [KVCache],
+        stepSize: Int = 512
+    ) -> MLXArray? {
+        guard !mtp.isEmpty, inputs.dim(1) > 0,
+              verifierCache.count == config.numHiddenLayers,
+              drafterCache.count == mtp.count,
+              verifierCache.allSatisfy({ $0.offset == 0 }),
+              drafterCache.allSatisfy({ $0.offset == 0 }) else { return nil }
+        let length = inputs.dim(1)
+        let step = max(1, stepSize)
+        for start in stride(from: 0, to: length, by: step) {
+            let end = start + min(step, length - start)
+            let result = model.forwardCapturingHiddenStates(
+                inputs[0..., start..<end], cache: verifierCache,
+                layerIds: config.dsparkTargetLayerIds)
+            guard maintainDSparkCache(
+                capturedHidden: result.captured, cache: drafterCache) else { return nil }
+            // Synchronize every chunk: async evaluation alone can queue the
+            // entire prompt graph and defeat the working-memory bound.
+            if end == length {
+                let logits = projectLogits(result.hidden[0..., (-1)..., 0...])
+                MLX.eval([logits] + verifierCache.flatMap { $0.innerState() })
+                return logits
+            }
+            MLX.eval(verifierCache.flatMap { $0.innerState() })
+        }
+        return nil
+    }
+
     @discardableResult
     public func prefillDSpark(
         anchorTokenIds: MLXArray,
@@ -3095,17 +3131,20 @@ public final class DeepseekV4DSparkGenerator {
     private let model: DeepseekV4Model
     public let draftLimit: Int
     public let confidenceThreshold: Float
+    public let prefillStepSize: Int
 
     public init(
         model: DeepseekV4Model,
         draftLimit: Int? = nil,
-        confidenceThreshold: Float = defaultConfidenceThreshold
+        confidenceThreshold: Float = defaultConfidenceThreshold,
+        prefillStepSize: Int = 512
     ) {
         self.model = model
         self.draftLimit = max(
             1, min(draftLimit ?? model.config.dsparkBlockSize,
                    model.config.dsparkBlockSize))
         self.confidenceThreshold = min(max(confidenceThreshold, 0), 1)
+        self.prefillStepSize = max(1, prefillStepSize)
     }
 
     private func tokens(_ ids: [Int]) -> MLXArray {
@@ -3142,18 +3181,11 @@ public final class DeepseekV4DSparkGenerator {
 
         let verifierCache = model.newCache(parameters: nil)
         let drafterCache = model.newDSparkCache()
-        guard let prefill = model.forwardDSparkVerifier(
-            tokens(promptIds), cache: verifierCache)
+        guard let prefill = model.prefillDSparkVerifier(
+            tokens(promptIds), verifierCache: verifierCache,
+            drafterCache: drafterCache, stepSize: prefillStepSize)
         else { return [] }
-
-        var pending = argmaxLast(prefill.logits)
-        materializeVerifierState(
-            captured: prefill.captured, cache: verifierCache)
-        guard model.prefillDSpark(
-            anchorTokenIds: token(pending),
-            capturedHidden: prefill.captured,
-            cache: drafterCache)
-        else { return [] }
+        var pending = argmaxLast(prefill)
 
         var output: [Int] = []
         var rounds = 0
