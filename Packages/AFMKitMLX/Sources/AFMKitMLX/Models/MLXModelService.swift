@@ -741,6 +741,14 @@ public final class MLXModelService:
         prefixCaching && !hasGLMMTPReplayCache
     }
 
+    static func shouldCreateGLMMTPReplayCache(
+        prefixCaching: Bool,
+        mtpEnabled: Bool,
+        usesEmbeddedMTP: Bool
+    ) -> Bool {
+        prefixCaching && mtpEnabled && usesEmbeddedMTP
+    }
+
     static func isGreedySpeculationEligible(
         parameters: GenerateParameters,
         hasTools: Bool,
@@ -2772,9 +2780,11 @@ public final class MLXModelService:
                 self.radixCache = nil
                 print("[\(ts())] [PrefixCache] Prefix caching disabled")
             }
-            if self.enablePrefixCaching,
-               modelArchitecture.canonicalModelType == "glm5_next",
-               usesEmbeddedMTP
+            if Self.shouldCreateGLMMTPReplayCache(
+                prefixCaching: self.enablePrefixCaching,
+                mtpEnabled: mtpEnabled,
+                usesEmbeddedMTP: usesEmbeddedMTP),
+               modelArchitecture.canonicalModelType == "glm5_next"
             {
                 let environment = ProcessInfo.processInfo.environment
                 let entryLimit = environment[
@@ -3013,6 +3023,19 @@ public final class MLXModelService:
             throw MLXServiceError.noModelLoaded
         }
 
+        let prefixCaching = self.enablePrefixCaching
+        let glmMTPGenerator: GLM5NextMTPGenerator? = withStateLock {
+            guard case .glm(let generator)? = currentMTPBinding?.generator else {
+                return nil
+            }
+            return generator
+        }
+        let glmMTPPromptReplayCache = withStateLock {
+            self.glmMTPPromptReplayCache
+        }
+        let schedulerPrefixCaching = Self.schedulerPrefixCaching(
+            prefixCaching: prefixCaching,
+            hasGLMMTPReplayCache: glmMTPPromptReplayCache != nil)
         let sched = await runtime.1.perform { context -> BatchScheduler in
             BatchScheduler(
                 model: context.model,
@@ -3020,8 +3043,11 @@ public final class MLXModelService:
                 processor: context.processor,
                 configuration: context.configuration,
                 maxConcurrent: limit,
-                enablePrefixCaching: true,
-                cacheProfilePath: self.cacheProfilePath
+                enablePrefixCaching: schedulerPrefixCaching,
+                cacheProfilePath: self.cacheProfilePath,
+                glmMTPGenerator: glmMTPGenerator,
+                glmMTPPromptReplayCache: glmMTPPromptReplayCache,
+                serviceModelID: runtime.0
             )
         }
 

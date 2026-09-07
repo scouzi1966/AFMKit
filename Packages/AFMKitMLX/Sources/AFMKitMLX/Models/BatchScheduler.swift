@@ -952,7 +952,13 @@ actor BatchScheduler {
                     }
                 }
 
-                if accepted.contains(where: \.usesGLMMTP) {
+                // An active independent cohort must never merge a later AR
+                // request into `batchCaches`; that transition is unsupported
+                // and traps. Keep every later admission request-owned as well.
+                if Self.shouldUseIndependentPrefill(
+                    cacheModeIsIndependent: cacheMode == .independent,
+                    acceptedContainsGLMMTP: accepted.contains(where: \.usesGLMMTP))
+                {
                     switch cacheMode {
                     case .empty, .independent:
                         for req in accepted {
@@ -1344,6 +1350,13 @@ actor BatchScheduler {
             + deferredGLM
             + existing.filter { !isGLMMTP($0) }
             + deferredAR
+    }
+
+    static func shouldUseIndependentPrefill(
+        cacheModeIsIndependent: Bool,
+        acceptedContainsGLMMTP: Bool
+    ) -> Bool {
+        cacheModeIsIndependent || acceptedContainsGLMMTP
     }
 
     /// Probe whether a request must use individual prefill to preserve a reusable

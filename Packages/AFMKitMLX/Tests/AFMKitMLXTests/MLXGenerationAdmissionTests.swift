@@ -117,6 +117,18 @@ final class MLXGenerationAdmissionTests: XCTestCase {
         XCTAssertEqual(ordered.map(\.id), [2, 3, 5, 1, 4, 6])
     }
 
+    func testLaterAROnlyRequestUsesIndependentCohortPrefill() {
+        XCTAssertTrue(BatchScheduler.shouldUseIndependentPrefill(
+            cacheModeIsIndependent: true,
+            acceptedContainsGLMMTP: false))
+        XCTAssertTrue(BatchScheduler.shouldUseIndependentPrefill(
+            cacheModeIsIndependent: false,
+            acceptedContainsGLMMTP: true))
+        XCTAssertFalse(BatchScheduler.shouldUseIndependentPrefill(
+            cacheModeIsIndependent: false,
+            acceptedContainsGLMMTP: false))
+    }
+
     func testGLMMTPReplaySuppressesGenericSchedulerRadix() {
         XCTAssertTrue(MLXModelService.schedulerPrefixCaching(
             prefixCaching: true,
@@ -127,6 +139,21 @@ final class MLXGenerationAdmissionTests: XCTestCase {
         XCTAssertFalse(MLXModelService.schedulerPrefixCaching(
             prefixCaching: false,
             hasGLMMTPReplayCache: false))
+    }
+
+    func testPrefixOnlyGLMDoesNotCreateMTPReplayCache() {
+        XCTAssertTrue(MLXModelService.shouldCreateGLMMTPReplayCache(
+            prefixCaching: true,
+            mtpEnabled: true,
+            usesEmbeddedMTP: true))
+        XCTAssertFalse(MLXModelService.shouldCreateGLMMTPReplayCache(
+            prefixCaching: true,
+            mtpEnabled: false,
+            usesEmbeddedMTP: true))
+        XCTAssertFalse(MLXModelService.shouldCreateGLMMTPReplayCache(
+            prefixCaching: true,
+            mtpEnabled: true,
+            usesEmbeddedMTP: false))
     }
 
     func testGreedySpeculationRequiresUnmodifiedArgmaxSemantics() {

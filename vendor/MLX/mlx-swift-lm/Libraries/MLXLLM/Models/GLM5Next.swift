@@ -2653,7 +2653,7 @@ public final class GLM5NextMTPGenerator: @unchecked Sendable {
 /// target cache, embedded head cache, primary token, and primary hidden state
 /// required for correct rollback. The target remains authoritative and rejected
 /// drafts restore through the same local snapshot logic as serial generation.
-public final class GLM5NextMTPSession: @unchecked Sendable {
+public final class GLM5NextMTPSession {
     private let model: GLM5NextModel
     private var cache: [KVCache]
     private let mtpCache: KVCache
