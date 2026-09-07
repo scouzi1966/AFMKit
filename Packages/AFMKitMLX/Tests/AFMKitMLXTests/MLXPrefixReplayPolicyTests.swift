@@ -1,5 +1,6 @@
 import MLXLLM
 import MLXLMCommon
+import MLX
 @testable import AFMKitMLX
 import XCTest
 
@@ -70,5 +71,43 @@ final class MLXPrefixReplayPolicyTests: XCTestCase {
             ),
             217
         )
+    }
+
+    func testReplayInputPreservesBatchRankAndMask() {
+        let input = LMInput(
+            text: .init(
+                tokens: MLXArray([11, 12, 13, 14]).reshaped(1, 4),
+                mask: MLXArray([1, 1, 0, 1]).reshaped(1, 4)
+            )
+        )
+
+        let replay = MLXPrefixReplayPolicy.replayInput(
+            from: input,
+            effectivePrefix: 2
+        )
+
+        XCTAssertEqual(replay.text.tokens.shape, [1, 2])
+        XCTAssertEqual(replay.text.tokens.asArray(Int.self), [13, 14])
+        XCTAssertEqual(replay.text.mask?.shape, [1, 2])
+        XCTAssertEqual(replay.text.mask?.asArray(Int.self), [0, 1])
+    }
+
+    func testReplayInputPreservesRankOneTokensWithAlignedMask() {
+        let input = LMInput(
+            text: .init(
+                tokens: MLXArray([21, 22, 23, 24]),
+                mask: MLXArray([1, 0, 1, 1])
+            )
+        )
+
+        let replay = MLXPrefixReplayPolicy.replayInput(
+            from: input,
+            effectivePrefix: 1
+        )
+
+        XCTAssertEqual(replay.text.tokens.shape, [3])
+        XCTAssertEqual(replay.text.tokens.asArray(Int.self), [22, 23, 24])
+        XCTAssertEqual(replay.text.mask?.shape, [3])
+        XCTAssertEqual(replay.text.mask?.asArray(Int.self), [0, 1, 1])
     }
 }

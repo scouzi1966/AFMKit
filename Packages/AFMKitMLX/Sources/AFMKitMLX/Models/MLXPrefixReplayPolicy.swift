@@ -1,5 +1,6 @@
 import MLXLLM
 import MLXLMCommon
+import MLX
 
 /// Shared replay-safety rules for serial and batched MLX prefix caching.
 ///
@@ -34,5 +35,27 @@ enum MLXPrefixReplayPolicy {
 
         let minimumSuffix = 16
         return min(matchedPrefix, max(0, inputTokenCount - minimumSuffix))
+    }
+
+    static func replayInput(from input: LMInput, effectivePrefix: Int) -> LMInput {
+        precondition(effectivePrefix >= 0, "effectivePrefix must not be negative")
+
+        let tokens = input.text.tokens
+        if tokens.ndim == 1 {
+            let suffixTokens = tokens[effectivePrefix...]
+            let suffixMask = input.text.mask?[effectivePrefix...]
+            return LMInput(text: .init(tokens: suffixTokens, mask: suffixMask))
+        }
+
+        guard tokens.ndim == 2 else {
+            let suffixTokens = tokens.reshaped(-1)[effectivePrefix...]
+            let suffixMask = input.text.mask?.reshaped(-1)[effectivePrefix...]
+            return LMInput(text: .init(tokens: suffixTokens, mask: suffixMask))
+        }
+
+        return LMInput(text: .init(
+            tokens: tokens[0..., effectivePrefix...],
+            mask: input.text.mask?[0..., effectivePrefix...]
+        ))
     }
 }
