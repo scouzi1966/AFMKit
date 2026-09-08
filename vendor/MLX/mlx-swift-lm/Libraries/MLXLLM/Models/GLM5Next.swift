@@ -911,6 +911,14 @@ final class GLM5NextSparseAttention: Module {
         var attentionMask: MLXArray? = cacheMask
             ?? (queryPositions .>= keyPositions)
 
+        if let selected, length > 1 && length <= 8, attentionMask?.dtype == .bool {
+            let output = gatheredVerificationAttention(
+                query: query, latent: latent, selected: selected,
+                mask: attentionMask!)
+            return outputProjection(
+                output.transposed(0, 2, 1, 3).reshaped(batch, length, -1))
+        }
+
         if let selected {
             let validSelection = selected .>= 0
             if length == 1 {
@@ -986,6 +994,49 @@ final class GLM5NextSparseAttention: Module {
         }
         return outputProjection(
             output.transposed(0, 2, 1, 3).reshaped(batch, length, -1))
+    }
+
+    /// Short-block gather strategy follows oMLX's GLM5 Next implementation:
+    /// https://github.com/jundot/omlx/blob/aa8db73496bd8367989e2862f50b315885b9b91a/omlx/patches/mlx_vlm_glm5_next_compat/vendor/mlx_vlm/models/glm5_next/language.py
+    /// Unlike a validity-only gather, retain the caller's causal/padding mask.
+    /// Cache/indexer updates are completed by the caller, exactly once.
+    func gatheredVerificationAttention(
+        query: MLXArray, latent: MLXArray, selected: MLXArray, mask: MLXArray
+    ) -> MLXArray {
+        precondition(mask.dtype == .bool, "Sparse verification requires a boolean mask")
+        let batch = query.dim(0)
+        let length = query.dim(2)
+        let keys = latent.dim(2)
+        let dim = latent.dim(3)
+        let count = selected.dim(-1)
+        let indices = selected.reshaped(batch, length, count)
+        let safe = minimum(maximum(indices, 0), keys - 1)
+        let gathered = takeAlong(
+            broadcast(latent, to: [batch, length, keys, dim]),
+            broadcast(safe.expandedDimensions(axis: -1),
+                      to: [batch, length, count, dim]), axis: 2)
+            .reshaped(batch * length, 1, count, dim)
+        let fullMask = broadcast(mask, to: [batch, 1, length, keys])
+            .reshaped(batch, length, keys)
+        let selectedMask = takeAlong(fullMask, safe, axis: -1)
+        let valid = (indices .>= 0) .&& (indices .< keys)
+        let gatheredMask = valid .&& selectedMask
+        let absorbedQuery = embedQuery(query).transposed(0, 2, 1, 3)
+            .reshaped(batch * length, heads, 1, dim)
+        let attended = attend(
+            query: absorbedQuery, key: gathered, value: gathered,
+            mask: gatheredMask.reshaped(batch * length, 1, 1, count))
+        let latentOutput = attended.reshaped(batch, length, heads, dim)
+            .transposed(0, 2, 1, 3)
+        // The legacy finite-negative mask yields uniform attention over ALL
+        // keys for an empty row. Preserve that result in latent space rather
+        // than averaging clamped gather slots. Linear value projection commutes
+        // with the mean (subject to the same low-precision reassociation as
+        // absorbed attention). Keep selection on-device: no per-layer CPU sync.
+        let hasKeys = MLX.any(gatheredMask, axis: -1)
+            .reshaped(batch, 1, length, 1)
+        let emptyRow = mean(latent, axis: 2, keepDims: true)
+        return unembedOutput(MLX.where(hasKeys, latentOutput, emptyRow))
     }
 
     static func fastSDPAEnabled(override raw: String?) -> Bool {
