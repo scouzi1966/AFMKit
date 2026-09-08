@@ -128,7 +128,7 @@ public struct ApertusConfiguration: Codable, Sendable {
 // MARK: - Layers
 
 // Expanded Integral of the Exponential Linear Unit
-private class XIELU: Module, UnaryLayer {
+class ApertusXIELU: Module, UnaryLayer {
     @ParameterInfo(key: "alpha_p") var alphaPParam: MLXArray
     @ParameterInfo(key: "alpha_n") var alphaNParam: MLXArray
     @ParameterInfo(key: "beta") var betaParam: MLXArray
@@ -351,12 +351,12 @@ private class ApertusAttention: Module {
 private class ApertusMLP: Module {
     @ModuleInfo(key: "up_proj") var upProj: Linear
     @ModuleInfo(key: "down_proj") var downProj: Linear
-    @ModuleInfo(key: "act_fn") var act: XIELU
+    @ModuleInfo(key: "act_fn") var act: ApertusXIELU
 
     public init(dim: Int, hiddenDim: Int) {
         self._upProj.wrappedValue = Linear(dim, hiddenDim, bias: false)
         self._downProj.wrappedValue = Linear(hiddenDim, dim, bias: false)
-        self._act.wrappedValue = XIELU()
+        self._act.wrappedValue = ApertusXIELU()
     }
 
     public func callAsFunction(_ x: MLXArray) -> MLXArray {

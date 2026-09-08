@@ -1,11 +1,34 @@
 import Foundation
 import MLX
-import MLXLLM
+@testable import MLXLLM
 import MLXLMCommon
 import MLXNN
 import XCTest
 
 final class ApertusTests: XCTestCase {
+    func testBFloat16ActivationMatchesReferenceAfterWeightLoading() throws {
+        let activation = ApertusXIELU()
+        let input = MLXArray([Float(-8), -2, -0.2, -0.01, -0.001, 0, 1, 2])
+            .asType(.bfloat16)
+        let original = activation(input)
+        eval(original)
+        let alphaP = MLXArray([Float(-0.75)]).asType(.bfloat16)
+        let alphaN = MLXArray([Float(0.25)]).asType(.bfloat16)
+        let beta = MLXArray(Float(0.5)).asType(.bfloat16)
+        let eps = MLXArray(Float(-1e-6)).asType(.bfloat16)
+        try activation.update(parameters: ModuleParameters.unflattened([
+            "alpha_p": alphaP, "alpha_n": alphaN, "beta": beta, "eps": eps
+        ]), verify: .all)
+        // Reference: ml-explore/mlx-lm, mlx_lm/models/activations.py, xielu.
+        let expected = MLX.where(input .> 0,
+            softplus(alphaP) * square(input) + beta * input,
+            (expm1(minimum(input, eps)) - input) * (beta + softplus(alphaN)) + beta * input)
+        let actual = activation(input)
+        XCTAssertEqual(actual.dtype, .bfloat16)
+        XCTAssertEqual(abs(actual - expected).max().item(Float.self), 0)
+        XCTAssertGreaterThan(abs(actual - original).max().item(Float.self), 0.1)
+    }
+
     func testLocalCheckpointGeneration() async throws {
         guard let path = ProcessInfo.processInfo.environment["APERTUS_TEST_MODEL"] else {
             throw XCTSkip("Set APERTUS_TEST_MODEL to a local Apertus checkpoint; no automatic downloads")
@@ -39,7 +62,10 @@ final class ApertusTests: XCTestCase {
         config.ropeScaling = ["rope_type": .string("llama3"), "factor": .int(8),
             "low_freq_factor": .int(1), "high_freq_factor": .int(4),
             "original_max_position_embeddings": .int(8192)]
-        let integerModel = ApertusModel(config)
+        // Exercise the actual JSON checkpoint decoding path as well as the alias.
+        let decoded = try JSONDecoder().decode(
+            ApertusConfiguration.self, from: JSONEncoder().encode(config))
+        let integerModel = ApertusModel(decoded)
         // Derived RoPE frequencies are configuration state, not checkpoint weights.
         let weights = floatModel.parameters().flattened().filter { !$0.0.contains(".rope.") }
         try integerModel.update(parameters: ModuleParameters.unflattened(weights), verify: .noUnusedKeys)
