@@ -129,10 +129,10 @@ public struct ApertusConfiguration: Codable, Sendable {
 
 // Expanded Integral of the Exponential Linear Unit
 private class XIELU: Module, UnaryLayer {
-    @ModuleInfo(key: "alpha_p") var alphaPParam: MLXArray
-    @ModuleInfo(key: "alpha_n") var alphaNParam: MLXArray
-    @ModuleInfo(key: "beta") var betaParam: MLXArray
-    @ModuleInfo(key: "eps") var epsParam: MLXArray
+    @ParameterInfo(key: "alpha_p") var alphaPParam: MLXArray
+    @ParameterInfo(key: "alpha_n") var alphaNParam: MLXArray
+    @ParameterInfo(key: "beta") var betaParam: MLXArray
+    @ParameterInfo(key: "eps") var epsParam: MLXArray
 
     override public init() {
         self._alphaPParam.wrappedValue = MLXArray(converting: [0.55])
@@ -146,7 +146,9 @@ private class XIELU: Module, UnaryLayer {
         let alphaN = betaParam + softplus(alphaNParam)
 
         let posTerm = alphaP * square(x) + betaParam * x
-        let negTerm = alphaN * (exp(minimum(x, epsParam)) - 1) - alphaN * x + betaParam * x
+        // Match mlx-lm/models/activations.py: expm1 preserves values near zero,
+        // and subtract before multiplying to avoid extra BF16 rounding.
+        let negTerm = (expm1(minimum(x, epsParam)) - x) * alphaN + betaParam * x
 
         return MLX.where(x .> 0, posTerm, negTerm)
     }
@@ -189,17 +191,18 @@ private class DynamicNTKScalingRoPE: Module {
         }
 
         guard let ropeScaling = ropeScaling,
-            case .float(let factor) = ropeScaling["factor"],
-            case .float(let lowFreqFactor) = ropeScaling["low_freq_factor"] ?? .float(1.0),
-            case .float(let highFreqFactor) = ropeScaling["high_freq_factor"] ?? .float(4.0),
-            case .float(let oldContextLen) = ropeScaling["original_max_position_embeddings"]
-                ?? .float(8192),
+            let factor = ropeScaling["factor"]?.asFloat(),
             let base
         else {
             freqs = nil
             return
         }
 
+        // JSON numbers such as 8192 and 8.0 may decode as integers. Match
+        // mlx-lm's numeric handling instead of silently disabling Llama 3 scaling.
+        let lowFreqFactor = ropeScaling["low_freq_factor"]?.asFloat() ?? 1
+        let highFreqFactor = ropeScaling["high_freq_factor"]?.asFloat() ?? 4
+        let oldContextLen = ropeScaling["original_max_position_embeddings"]?.asFloat() ?? 8192
         let lowFreqWavelen = oldContextLen / lowFreqFactor
         let highFreqWavelen = oldContextLen / highFreqFactor
 
@@ -274,7 +277,7 @@ private class ApertusAttention: Module {
             base: args.ropeTheta,
             scale: 1.0,
             ropeType: {
-                if case .string(let value) = args.ropeScaling?["type"] {
+                if case .string(let value) = args.ropeScaling?["type"] ?? args.ropeScaling?["rope_type"] {
                     return value
                 } else {
                     return "default"
