@@ -186,6 +186,72 @@ final class GLM5NextArchitectureTests: XCTestCase {
         XCTAssertTrue(allClose(output, expected, rtol: 0, atol: 0).item())
     }
 
+    func testGatheredVerificationMatchesExpandedAttentionWithCausalPaddingMasks() throws {
+        let config = try JSONDecoder().decode(GLM5NextConfiguration.self,
+            from: XCTUnwrap(tinyConfigurationData(kvLoraRank: 32, qkNopeHeadDim: 32, vHeadDim: 32)))
+        for useQuantization in [false, true] {
+        for dtype in [DType.float32, .float16, .bfloat16] {
+        let attention = GLM5NextSparseAttention(config.textConfig)
+        // MultiLinear starts with scalar checkpoint placeholders, not random
+        // weights. Populate both projections before exercising attention.
+        for projection in [attention.embedQuery, attention.unembedOutput] {
+            let size = projection.numHeads * projection.outputDims * projection.inputDims
+            projection.update(parameters: ModuleParameters.unflattened([
+                "weight": MLXArray((0..<size).map { Float(($0 % 19) - 9) / 30 })
+                    .reshaped(projection.numHeads, projection.outputDims, projection.inputDims).asType(dtype)
+            ]))
+            if useQuantization {
+                let packed = quantized(projection.weight, groupSize: 32, bits: 4)
+                projection.update(parameters: ModuleParameters.unflattened([
+                    "weight": packed.wq,
+                    "scales": packed.scales,
+                    "biases": try XCTUnwrap(packed.biases)
+                ]))
+            }
+        }
+        for batch in [1, 2] {
+            for length in [2, 8] {
+                let heads = config.textConfig.attentionHeads
+                let qdim = config.textConfig.qkNopeHeadDim
+                let dim = config.textConfig.kvLoraRank
+                let keys = 12
+                let query = MLXArray((0..<(batch * heads * length * qdim)).map {
+                    Float(($0 % 13) - 6) / 20
+                }).reshaped(batch, heads, length, qdim).asType(dtype)
+                let latent = MLXArray((0..<(batch * keys * dim)).map {
+                    Float(($0 % 17) - 8) / 20
+                }).reshaped(batch, 1, keys, dim).asType(dtype)
+                let indices = MLXArray((0..<(batch * length)).flatMap { row in
+                    row % length == length - 1
+                        ? [Int32(-1), -1, -1, -1, -1]
+                        : [Int32(0), 2, 7, 11, -1]
+                }).reshaped(batch, 1, length, 5)
+                let mask = MLXArray((0..<(batch * length * keys)).map { index in
+                    let row = (index / keys) % length
+                    let key = index % keys
+                    return row != 0 && key > 0 && key <= keys - length + row
+                }).reshaped(batch, 1, length, keys)
+                let selectionMask = MLXArray((0..<(length * keys)).map {
+                    $0 / keys != length - 1 && [0, 2, 7, 11].contains($0 % keys)
+                }).reshaped(1, 1, length, keys)
+                let expected = attention.manualAttentionForTesting(
+                    query: query,
+                    key: attention.embedQuery(latent, transpose: false),
+                    value: attention.unembedOutput(latent),
+                    mask: mask .&& selectionMask)
+                let actual = attention.gatheredVerificationAttention(
+                    query: query, latent: latent, selected: indices, mask: mask)
+                MLX.eval(actual, expected)
+                XCTAssertEqual(actual.shape, expected.shape)
+                XCTAssertEqual(actual.dtype, expected.dtype)
+                let tolerance: Double = dtype == .float32 ? 1e-5 : 0.005
+                XCTAssertTrue(allClose(actual, expected, rtol: tolerance, atol: tolerance).item())
+            }
+        }
+        }
+        }
+    }
+
     func testSparseAttentionFastSDPAIsExplicitAndFailsClosed() {
         XCTAssertTrue(GLM5NextSparseAttention.fastSDPAEnabled(override: nil))
         XCTAssertFalse(GLM5NextSparseAttention.fastSDPAEnabled(override: "0"))
