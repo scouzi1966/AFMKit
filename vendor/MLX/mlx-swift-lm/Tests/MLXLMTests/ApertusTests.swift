@@ -37,9 +37,13 @@ final class ApertusTests: XCTestCase {
             let expected = try XCTUnwrap(record["output_tokens"] as? [Int])
                 .filter { !context.resolvedEOSTokenIds.contains($0) }
             var actual = [Int]()
+            let started = Date()
             _ = try generate(input: LMInput(tokens: MLXArray(inputTokens)),
-                parameters: GenerateParameters(maxTokens: 256, temperature: 0), context: context
+                parameters: GenerateParameters(maxTokens: 256,
+                    kvBits: record["kv_bits"] as? Int, temperature: 0), context: context
             ) { token in actual.append(token); return .more }
+            let elapsed = Date().timeIntervalSince(started)
+            print("APERTUS REFERENCE TIMING \(name): \(actual.count) tokens in \(elapsed)s (prefill + decode)")
             print("APERTUS REFERENCE \(name): \(context.tokenizer.decode(tokens: actual))")
             XCTAssertEqual(actual, expected, "Same-checkpoint, same-token-input parity: \(name)")
         }
