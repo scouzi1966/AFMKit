@@ -64,3 +64,38 @@ reference parity on a few prompts nor an assertion pass rate proves broad model
 quality. Comprehensive Codex-judged qualification must report engine defects,
 model-behavior failures, and forced-parser experiments separately. Do not relax
 assertions to achieve a target failure count.
+
+### Qualification checkpoint (2026-09-09)
+
+The comprehensive nightly run using provider revision `0d325fa8` completed
+91 records for each quantization, with Codex judging enabled:
+
+| Checkpoint | Passed assertions | Failed assertions | Skipped |
+| --- | ---: | ---: | ---: |
+| `mlx-community/Apertus-8B-Instruct-2509-4bit` (`c5e6ae2e52c4149f36cb8e47b7ab1489ef885fed`) | 82 | 9 | 0 |
+| `mlx-community/Apertus-8B-Instruct-2509-6bit` (`a2bfd2b25c841b6fc6e920e883a88619be3d6012`) | 88 | 3 | 0 |
+
+These are point-in-time results, not final qualification of subsequent changes.
+Codex also identified degeneration and incorrect generated code in some records
+whose mechanical assertions passed. The four-bit result does not satisfy a
+seven-failure allowance. The forced `qwen3_xml` experiment is included in the
+counts and does not establish a failure of the native Apertus parser.
+
+The installed Python reference (`mlx-lm` 0.31.3, MLX 0.32.2), using the exact
+four-bit checkpoint and comprehensive tool schemas/prompts with deliberation
+disabled, also returned prose rather than native calls in all six tool probes.
+This is evidence of cross-runtime behavior, not proof of token-level parity:
+the actual generated prose differs, and the HTTP prompt-rendering path still
+requires separate comparison.
+
+Using those six tool probes on the six-bit checkpoint, Swift matched every
+reference output token after excluding declared EOS tokens. Both emitted the
+same incorrect flattened/string-valued arguments for the nested-object probe.
+This isolates that mistake from output parsing. It does not guarantee that the
+model will call tools reliably with every schema or prompt.
+
+Four-bit **KV-cache** quantization (distinct from weight quantization) produces
+poor output in both the Python reference and Swift on the six-bit checkpoint's
+machine-learning summary probe. Shared attention masking defects were corrected
+and covered by dtype, batched-head, cached-decode, and fully-masked-row tests;
+those unit passes do not establish generation quality or throughput parity.
