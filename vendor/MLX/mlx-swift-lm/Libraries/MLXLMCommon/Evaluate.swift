@@ -1466,14 +1466,20 @@ public func generateTask(
         // On normal EOS or token-limit completion, preserve an unfinished
         // tagged call for AFM's provider-level salvage. Do not emit buffered
         // content after consumer cancellation or an intentional tool stop.
-        if !Task.isCancelled && !stoppedAfterToolCall && !continuationTerminated,
+        if !Task.isCancelled && !stoppedAfterToolCall && !continuationTerminated {
             let pendingToolText = toolCallProcessor.finishPendingText()
-        {
             if !pendingLogprobs.isEmpty {
                 continuation.yield(.tokenLogprobs(pendingLogprobs))
                 pendingLogprobs = []
             }
-            continuation.yield(.chunk(pendingToolText))
+            if let pendingToolText {
+                continuation.yield(.chunk(pendingToolText))
+            }
+            // EOS can itself be a native tool terminator (Apertus). Publish
+            // every call finalized above, including a multi-call array.
+            for call in toolCallProcessor.drainToolCalls() {
+                continuation.yield(.toolCall(call))
+            }
         }
 
         // Print performance breakdown if AFM_PERF=1

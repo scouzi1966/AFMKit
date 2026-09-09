@@ -118,6 +118,13 @@ public class ToolCallProcessor {
         state = .normal
         activeEndTag = nil
         toolCallBuffer = ""
+        if let apertus = parser as? ApertusToolCallParser {
+            let calls = apertus.parseCalls(content: pending)
+            if !calls.isEmpty {
+                toolCalls.append(contentsOf: calls)
+                return nil
+            }
+        }
         return pending.isEmpty ? nil : pending
     }
 
@@ -184,15 +191,20 @@ public class ToolCallProcessor {
 
         let captured = String(toolCallBuffer[..<endRange.upperBound])
         let trailingText = String(toolCallBuffer[endRange.upperBound...])
-        let parsedCall = parser.parse(content: captured, tools: tools)
+        let parsedCalls: [ToolCall]
+        if let apertus = parser as? ApertusToolCallParser {
+            parsedCalls = apertus.parseCalls(content: captured)
+        } else {
+            parsedCalls = parser.parse(content: captured, tools: tools).map { [$0] } ?? []
+        }
 
         state = .normal
         activeEndTag = nil
         toolCallBuffer = ""
 
         var output = ""
-        if let parsedCall {
-            toolCalls.append(parsedCall)
+        if !parsedCalls.isEmpty {
+            toolCalls.append(contentsOf: parsedCalls)
         } else {
             // A strict parse failure must remain visible to AFM's raw fallback,
             // which owns compatibility repair and coercion.

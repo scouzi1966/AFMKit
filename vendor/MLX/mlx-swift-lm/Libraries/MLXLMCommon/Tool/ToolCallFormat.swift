@@ -89,6 +89,9 @@ public enum ToolCallFormat: String, Sendable, Codable, CaseIterable {
     /// Example: `<atem:function_calls><atem:invoke name="f"><atem:parameter name="k">v</atem:parameter></atem:invoke></atem:function_calls>`
     case atem
 
+    /// Apertus arrays of named calls enclosed in its native tool boundary tokens.
+    case apertus
+
     /// Raw mode: tool-call extraction disabled. Generated tool markup passes
     /// through as ordinary text and no `ToolCall` values are ever produced.
     case none
@@ -117,6 +120,8 @@ public enum ToolCallFormat: String, Sendable, Codable, CaseIterable {
             return MiniMaxM2ToolCallParser()
         case .atem:
             return ATEMToolCallParser()
+        case .apertus:
+            return ApertusToolCallParser()
         case .none:
             return NoneToolCallParser()
         }
@@ -131,6 +136,8 @@ public enum ToolCallFormat: String, Sendable, Codable, CaseIterable {
     /// - Returns: The appropriate `ToolCallFormat`, or `nil` to use the default format
     public static func infer(from modelType: String) -> ToolCallFormat? {
         switch modelType.lowercased() {
+        case "apertus":
+            return .apertus
         case "lfm2", "lfm2_moe":
             return .lfm2
         case "glm4", "glm4_moe", "glm4_moe_lite",

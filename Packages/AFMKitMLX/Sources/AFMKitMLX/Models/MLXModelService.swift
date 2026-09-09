@@ -2617,6 +2617,7 @@ public final class MLXModelService:
             // non-Sendable ModelContext never crosses the isolation boundary.
             try await loaded.perform { context in
                 let knownThinkPairs: [(start: String, end: String)] = [
+                    ("<|inner_prefix|>", "<|inner_suffix|>"),  // Apertus deliberation
                     ("<|channel>", "<channel|>"),  // Gemma 4 channel-based thinking
                     ("<think>", "</think>"),
                     ("<|think|>", "<|/think|>"),
@@ -5833,6 +5834,14 @@ public final class MLXModelService:
     /// and <tool_call>{"name":"func","arguments":{...}}</tool_call> patterns.
     /// Returns extracted ToolCalls and remaining non-tool-call content.
     static func extractToolCallsFallback(from text: String, tools: [RequestTool]? = nil, allowMalformedRepair: Bool = false) -> ([ToolCall], String) {
+        if text.contains("<|tools_prefix|>") {
+            // Batch/raw-text generation must recognize the same complete native
+            // envelopes as serial streaming, preserving malformed or partial text.
+            let processor = ToolCallProcessor(format: .apertus)
+            let visible = (processor.processChunk(text) ?? "")
+                + (processor.finishPendingText() ?? "")
+            return (processor.toolCalls, visible)
+        }
         var toolCalls = [ToolCall]()
         var remaining = text
 
@@ -7573,7 +7582,8 @@ public final class MLXModelService:
         canonicalModelType: String?,
         forceDisableThinking: Bool
     ) -> (kwargs: [String: any Sendable], note: String?) {
-        guard canonicalModelType == "muse_glimmer"
+        guard canonicalModelType == "apertus"
+            || canonicalModelType == "muse_glimmer"
             || canonicalModelType == "glm5_next"
             || canonicalModelType == "glm5_next_text"
         else {
@@ -7586,6 +7596,22 @@ public final class MLXModelService:
         let effort = (normalized["reasoning_effort"] as? String)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
+
+        if canonicalModelType == "apertus" {
+            // Apertus has a binary deliberation switch, not graded effort.
+            // Reuse AFM's existing precedence: --no-think / explicit false wins.
+            if explicitNoThinking {
+                normalized["enable_thinking"] = false
+            } else if normalized["enable_thinking"] == nil, let effort {
+                if ["none", "off"].contains(effort) {
+                    normalized["enable_thinking"] = false
+                } else if ["minimal", "low", "medium", "high", "max"].contains(effort) {
+                    normalized["enable_thinking"] = true
+                }
+            }
+            normalized.removeValue(forKey: "reasoning_effort")
+            return (normalized, nil)
+        }
 
         if canonicalModelType == "glm5_next" || canonicalModelType == "glm5_next_text" {
             normalized.removeValue(forKey: "enable_thinking")
@@ -7644,6 +7670,9 @@ public final class MLXModelService:
         // (e.g. Qwen3.5). The OpenAI API allows multiple system messages, so
         // we consolidate them here for broader compatibility.
         var pendingSystemParts: [String] = []
+        let usesApertusTemplate = withStateLock {
+            currentModelArchitecture?.canonicalModelType == "apertus"
+        }
         func flushSystemParts() {
             guard !pendingSystemParts.isEmpty else { return }
             hasSystemMessage = true
@@ -7673,10 +7702,19 @@ public final class MLXModelService:
                            let parsed = try? JSONSerialization.jsonObject(with: data) {
                             argsValue = parsed
                         }
-                        structuredCalls.append([
-                            "function": ["name": tc.function.name, "arguments": argsValue]
-                        ])
-                        textParts.append("<tool_call>\n{\"name\": \"\(tc.function.name)\", \"arguments\": \(tc.function.arguments)}\n</tool_call>")
+                        if usesApertusTemplate {
+                            // Apertus renders OpenAI call history with string arguments
+                            // and an explicit type. Do not duplicate it as generic XML.
+                            structuredCalls.append([
+                                "type": "function",
+                                "function": ["name": tc.function.name, "arguments": tc.function.arguments]
+                            ])
+                        } else {
+                            structuredCalls.append([
+                                "function": ["name": tc.function.name, "arguments": argsValue]
+                            ])
+                            textParts.append("<tool_call>\n{\"name\": \"\(tc.function.name)\", \"arguments\": \(tc.function.arguments)}\n</tool_call>")
+                        }
                     }
                     var msg = Chat.Message(
                         role: .assistant,
@@ -7714,7 +7752,17 @@ public final class MLXModelService:
                 }
                 // Text fallback for templates that only read content
                 let toolContent: String
-                if let name = resolvedName {
+                if usesApertusTemplate {
+                    // Apertus inserts each result directly into its native JSON
+                    // array. Preserve JSON values; quote ordinary text so neither
+                    // XML nor unescaped output can corrupt the next model turn.
+                    if let data = text.data(using: .utf8),
+                       (try? JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed])) != nil {
+                        toolContent = text
+                    } else {
+                        toolContent = String(decoding: try JSONEncoder().encode(text), as: UTF8.self)
+                    }
+                } else if let name = resolvedName {
                     toolContent = "<tool_response>\n{\"name\": \"\(name)\", \"content\": \(text)}\n</tool_response>"
                 } else {
                     toolContent = text
