@@ -11,7 +11,7 @@ There is no model-native MTP head in this checkpoint.
 
 Deliberation uses AFM's existing `enable_thinking` chat-template argument.
 `--no-think` remains the overriding disable control. The native template's
-default is preserved when no setting is supplied. Apertus supports a binary
+default is preserved when no setting is supplied. The template accepts a binary
 switch, not distinct low/high reasoning budgets; supported nonzero effort
 values map to enabled deliberation. Explicit disabling takes precedence.
 
@@ -20,6 +20,19 @@ The existing reasoning extractor consumes `<|inner_prefix|>` and
 than displaying model-specific markers in the ordinary answer. Raw mode retains
 its existing bypass semantics. An enabled model need not emit thoughts on every
 request.
+
+### Released checkpoint limitation
+
+Swiss AI explicitly advises against labeling the 2509 Instruct checkpoints as
+thinking models: their instruction-following support does not reliably emit the
+native thought tokens even with `Deliberation: enabled`.
+Source: https://huggingface.co/swiss-ai/Apertus-70B-Instruct-2509/discussions/18
+
+A same-checkpoint 6-bit reference probe on 2026-09-09 rendered enabled and disabled
+deliberation correctly, but neither output contained thought markers. Both
+answered the bat-and-ball question correctly in ordinary content. Template
+control support and marker parsing therefore do not establish reliable thinking
+generation. Do not manufacture a reasoning channel by relabeling ordinary answers.
 
 ## Native tools
 
