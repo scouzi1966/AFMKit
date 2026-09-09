@@ -4,6 +4,19 @@ import MLXLMCommon
 import Tokenizers
 
 final class ApertusToolTests: XCTestCase {
+    func testRawParserPreservesNativeMarkupAcrossChunkBoundaries() {
+        let raw = "<|inner_prefix|>plan<|inner_suffix|><|tools_prefix|>[{\"clock\":{}}]"
+        for split in 0...raw.count {
+            let processor = ToolCallProcessor(format: .none)
+            let boundary = raw.index(raw.startIndex, offsetBy: split)
+            let visible = (processor.processChunk(String(raw[..<boundary])) ?? "")
+                + (processor.processChunk(String(raw[boundary...])) ?? "")
+                + (processor.finishPendingText() ?? "")
+            XCTAssertEqual(visible, raw)
+            XCTAssertTrue(processor.toolCalls.isEmpty)
+        }
+    }
+
     func testEOSConsumedSuffixFinalizesOnlyCompleteArrays() {
         let valid = "<|tools_prefix|>[{\"weather\":{}},{\"clock\":{}}]"
         let processor = ToolCallProcessor(format: .apertus)
