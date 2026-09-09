@@ -6,6 +6,117 @@ import MLXNN
 import XCTest
 
 final class QwenNextMTPPipelineTests: XCTestCase {
+    func testFusedQSAExpansionAtProductionCapacity() throws {
+        for capacity in [512, 1024] {
+            let width = 8, keyLength = 8199
+            var ids = [Int32]()
+            for row in 0..<width {
+                ids += row == 0
+                    ? Array(repeating: Int32.max, count: capacity)
+                    : (0..<capacity).map { index in
+                        index >= capacity - row ? Int32.max : Int32(index * 2)
+                    }
+            }
+            let blocks = MLXArray(ids).reshaped(1, width, capacity)
+            let expected = Qwen4ExpQSAGather.maskFromBlocks(
+                blocks, keyLength: keyLength, compressionRatio: 4)
+            let actual = try XCTUnwrap(Qwen4ExpQSAVerifyMask.call(
+                sortedBlocks: blocks, keyLength: keyLength, compressionRatio: 4,
+                forceEnabledForTesting: true))
+            eval(actual, expected)
+            XCTAssertEqual(actual.asArray(Bool.self), expected.asArray(Bool.self))
+        }
+        for shape in [[1, 9, 512], [1, 4, 0], [1, 4, 1025]] {
+            XCTAssertNil(Qwen4ExpQSAVerifyMask.call(
+                sortedBlocks: MLXArray.zeros(shape, dtype: .int32),
+                keyLength: 8199, compressionRatio: 4, forceEnabledForTesting: true))
+        }
+    }
+
+    func testLazyQSARangesPreserveCausalBlockMasks() throws {
+        for keyLength in [37, 2049, 4150, 32771] {
+            for width in [1, 4, 7] {
+                let batch = 2, ratio = 4, capacity = 3
+                var selections = [Int32]()
+                var expected = [Bool]()
+                for request in 0..<batch {
+                    for row in 0..<width {
+                        let end = keyLength - width + row + 1
+                        let complete = end / ratio
+                        let first = request == 0 ? 0 : 1
+                        selections += [Int32(first), Int32(complete - 1), Int32.max]
+                        for token in 0..<keyLength {
+                            let block = token / ratio
+                            let selected = block == first || block == complete - 1
+                            expected.append(token < end && (selected || token >= complete * ratio))
+                        }
+                    }
+                }
+                let blocks = MLXArray(selections).reshaped(batch, width, capacity)
+                let mask = Qwen4ExpQSAGather.maskFromBlocks(
+                    blocks, keyLength: keyLength, compressionRatio: ratio)
+                eval(mask)
+                XCTAssertEqual(mask.shape, [batch, 1, width, keyLength])
+                XCTAssertEqual(mask.asArray(Bool.self), expected,
+                               "keyLength=\(keyLength), width=\(width)")
+                if width > 1 {
+                    let fused = try XCTUnwrap(Qwen4ExpQSAVerifyMask.call(
+                        sortedBlocks: blocks, keyLength: keyLength, compressionRatio: ratio,
+                        forceEnabledForTesting: true))
+                    eval(fused)
+                    XCTAssertEqual(fused.shape, mask.shape)
+                    XCTAssertEqual(fused.asArray(Bool.self), expected)
+                } else {
+                    XCTAssertNil(Qwen4ExpQSAVerifyMask.call(
+                        sortedBlocks: blocks, keyLength: keyLength, compressionRatio: ratio,
+                        forceEnabledForTesting: true))
+                }
+            }
+        }
+    }
+
+    func testLazyQSAImplicitPositionsRemainRequestLocalAndExact() {
+        for length in [1, 2048, 4150, 32768] {
+            let cache = Qwen4ExpAttentionCache(indexerCompressRatio: 4)
+            _ = cache.updateIndexKeys(
+                MLXArray.zeros([2, length, 8], dtype: .bfloat16), positionIDs: nil)
+            let first = cache.ensureSequentialIndexPositionIDs(batchSize: 2)
+            let extended = cache.updateIndexKeys(
+                MLXArray.zeros([2, 3, 8], dtype: .bfloat16), positionIDs: nil)
+            let positions = extended.positionIDs!
+            eval(first, positions)
+            XCTAssertEqual(first.asArray(Int32.self),
+                           Array(0..<Int32(length)) + Array(0..<Int32(length)))
+            XCTAssertEqual(positions.asArray(Int32.self),
+                           Array(0..<Int32(length + 3)) + Array(0..<Int32(length + 3)))
+        }
+    }
+
+    func testVerifyRouterMatchesIndependentDecodeRows() throws {
+        for width in [2, 4, 7, 8] {
+            for experts in [512, 2048] {
+                let values = (0..<(width * experts)).map { Float(($0 * 37) % 997 - 498) / 128 }
+                let logits = MLXArray(values).reshaped(1, width, experts).asType(.bfloat16)
+                let actual = try XCTUnwrap(qwenFusedVerifySoftmaxTopK(logits: logits, topK: 10))
+                let expected = try (0..<width).map { row in
+                    try XCTUnwrap(qwenFusedSoftmaxTopK(
+                        logits: logits[0..., row..<(row + 1), 0...], topK: 10))
+                }
+                let indices = concatenated(expected.map(\.indices), axis: 1)
+                let scores = concatenated(expected.map(\.scores), axis: 1)
+                eval(actual.indices, actual.scores, indices, scores)
+                XCTAssertEqual(actual.indices.asArray(UInt32.self), indices.asArray(UInt32.self))
+                XCTAssertEqual(actual.scores.asArray(Float.self), scores.asArray(Float.self))
+                // Do not silently widen the existing public decode entry point.
+                XCTAssertNil(qwenFusedSoftmaxTopK(logits: logits, topK: 10))
+            }
+        }
+        for shape in [[2, 4, 512], [1, 16, 512], [1, 1, 512]] {
+            XCTAssertNil(qwenFusedVerifySoftmaxTopK(
+                logits: MLXArray.zeros(shape, dtype: .bfloat16), topK: 10))
+        }
+    }
+
     func testDeferredVerificationWritesPreservePLEAndRollbackState() async throws {
         for withPLE in [false, true] {
             var configuration = try await makeModel(withPLE: withPLE).configuration
@@ -617,6 +728,33 @@ final class QwenNextMTPPipelineTests: XCTestCase {
         let model = try await makeModel(withPLE: true)
         try model.configureMappedNGramTable(url: url)
         eval(model)
+        // Verify an early dispatch cannot observe an unfilled mapped PLE
+        // leaf, and that every acceptance boundary commits the same state.
+        for stride in [1, 4, 8] {
+            for accepted in 0...3 {
+                let baseline = model.newCache(parameters: nil)
+                let ladder = model.newCache(parameters: nil)
+                let prompt = MLXArray([Int32(1), 2, 3]).reshaped(1, 3)
+                eval(model.forwardStreamHidden(inputIDs: prompt, cache: baseline).logits,
+                     model.forwardStreamHidden(inputIDs: prompt, cache: ladder).logits)
+                let ids = MLXArray([Int32(4), 31, 6, 7]).reshaped(1, 4)
+                let expected = model.verificationStreamForTesting(
+                    inputIDs: ids, cache: baseline, ladderStride: 0)
+                let actual = model.verificationStreamForTesting(
+                    inputIDs: ids, cache: ladder, ladderStride: stride)
+                eval(expected, actual)
+                XCTAssertEqual(actual.asArray(Float.self), expected.asArray(Float.self))
+                for cache in [baseline, ladder] {
+                    XCTAssertTrue(model.finishMTPVerification(
+                        cache: cache, acceptedDrafts: accepted, draftedTokens: 3))
+                }
+                let next = MLXArray([Int32(8)]).reshaped(1, 1)
+                let a = model.forwardStreamHidden(inputIDs: next, cache: baseline).logits
+                let b = model.forwardStreamHidden(inputIDs: next, cache: ladder).logits
+                eval(a, b)
+                XCTAssertEqual(a.asArray(Float.self), b.asArray(Float.self))
+            }
+        }
         for accepted in 0...3 {
             let deferred = model.newCache(parameters: nil)
             let eager = model.newCache(parameters: nil)

@@ -6,6 +6,66 @@ not release qualification, and default MTP is not yet consistently faster than A
 
 ## Measurement contract
 
+### Follow-up: sampled host hotspot and lazy integer ranges
+
+A separate, non-comparable 512-token diagnostic at 4K was sampled with macOS
+`sample`. On the generation thread, the QSA mask path repeatedly entered
+`MLXArray.__allocating_init` → Swift generic `Sequence` enumeration when
+constructing context-sized integer position arrays. This was CPU range
+construction, not Metal compilation or evidence that integer arithmetic was
+slow on the GPU. The reference builds these arrays with `mlx_arange`.
+
+Replace those QSA block/position ranges with lazy, explicitly int32 `MLX.arange`
+operations. No checkpoint, mask value, attention arithmetic, precision, shared
+cache, or growing-context specialization is introduced. Tests compare masks
+against a host oracle through 32K, including incomplete causal tails,
+sentinels, multiple rows/requests, and position-history extension.
+
+| Diagnostic candidate | 0.5K | 1K | 2K | 4K |
+|---|---:|---:|---:|---:|
+| Fused HC + fused router, depth 3 | 86.36 | 82.66 | 72.69 | 62.18 |
+| Same + lazy QSA ranges, depth 3 | 85.21 | 81.94 | 75.83 | 69.76 |
+| Same + lazy QSA ranges, depth 4 | 83.61 | 76.90 | 80.45 | 67.41 |
+| Also native HC chain, depth 4 | 84.50 | 76.17 | 81.19 | 68.02 |
+
+These use the same 128-token measurement contract and explicit batched-policy,
+chunk-2, HC/router and diagnostic flags. They are not default performance.
+The range-only depth-3 comparison preserved **12/12 response texts**; 4K improved
+12.2%, while short-context differences are small. No single measured arm yet
+meets all four reference MTP points. Fixed depth 6 was slower
+(71.14 / 65.91 / 61.89 / 53.99), so blindly increasing depth is not a remedy.
+
+The fused router entry point is bounded to independent verification rows;
+the existing public decode entry point still declines multirow inputs. Its
+outputs match independent decode-router rows exactly in the tested geometry.
+It remains opt-in via `AFM_QWEN_VERIFY_FUSED_ROUTER=1`.
+
+Before the range change, a fresh no-tuning MTP control measured
+70.85 / 67.92 / 52.20 / 50.61. Nine of twelve responses differed from the
+earlier control following the recurrent rollback correction; do not claim
+default-mode non-regression from the experimental improvements. AR measured
+67.09 / 65.64 / 60.17 / 57.61 and preserved all twelve earlier AR responses.
+Fresh default controls remain necessary on the final candidate.
+
+Two further experiments remain disabled by default:
+
+- `AFM_QWEN_VERIFY_FUSED_MASK=1` expands sorted selected blocks with one
+  bounded binary-search mask kernel. Exact masks agree with the composed path
+  through 32K, including production selection capacities. It did not establish
+  an additional throughput win (depth 4: 85.28 / 76.49 / 80.82 / 68.11).
+- `AFM_QWEN_VERIFY_ASYNC_LADDER=<stride>` submits bounded batched-verification
+  prefixes while Swift builds the rest. This is distinct from the AR ladder.
+  Before **every** submission it flushes pending mapped PLE leaves; an unfilled
+  leaf must never reach the GPU. Full-model tests compare dispatch strides
+  1/4/8 with no early dispatch, including EOS n-gram history, separate request
+  caches and every partial-acceptance rollback boundary. Its performance
+  qualification is still in progress.
+
+The current focused suite has 22 passing tests (`test-verify-ladder.log`). The
+first fused-mask attempt failed Metal compilation because its scalar input was
+indexed as a pointer; the corrected one-element-vector input passed the rerun
+before any model benchmark. Failed diagnostic logs are retained, not hidden.
+
 ### Follow-up: exact rollback gates and bounded verifier experiments
 
 An FP32 state-snapshot experiment exposed a real partial-rollback discrepancy.

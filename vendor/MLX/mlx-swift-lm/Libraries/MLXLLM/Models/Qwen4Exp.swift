@@ -590,7 +590,7 @@ final class Qwen4ExpAttentionCache: KVCache, UniformBatchKVCache {
             // threshold no position array is needed for ordinary text.
             let start = existing.dim(existing.ndim - 1)
             let generated = tiled(
-                MLXArray(Int32(start) ..< Int32(start + newKeys.dim(1)))[
+                MLX.arange(start, start + newKeys.dim(1), dtype: .int32)[
                     .newAxis, 0...],
                 repetitions: [newKeys.dim(0), 1])
             indexPositionIDs = concatenated(
@@ -606,7 +606,7 @@ final class Qwen4ExpAttentionCache: KVCache, UniformBatchKVCache {
         if let indexPositionIDs { return indexPositionIDs }
         let length = indexKeys?.dim(1) ?? 0
         let generated = tiled(
-            MLXArray(Int32(0) ..< Int32(length))[.newAxis, 0...],
+            MLX.arange(length, dtype: .int32)[.newAxis, 0...],
             repetitions: [batchSize, 1])
         indexPositionIDs = generated
         return generated
@@ -1533,7 +1533,7 @@ final class Qwen4ExpQSAIndexer: Module {
         let allPositionIDs = updatedIndex?.positionIDs
             ?? cache?.ensureSequentialIndexPositionIDs(batchSize: batch)
             ?? tiled(
-                MLXArray(Int32(0) ..< Int32(totalLength))[.newAxis, 0...],
+                MLX.arange(totalLength, dtype: .int32)[.newAxis, 0...],
                 repetitions: [batch, 1])
 
         let completeBlocks = totalLength / compressRatio
@@ -1629,6 +1629,13 @@ final class Qwen4ExpQSAIndexer: Module {
         {
             return .blocks(selectedBlocks)
         }
+        if verificationPolicy == .batched,
+           let mask = Qwen4ExpQSAVerifyMask.call(
+            sortedBlocks: selectedBlocks, keyLength: totalLength,
+            compressionRatio: compressRatio)
+        {
+            return .mask(mask)
+        }
         return .mask(Qwen4ExpQSAGather.maskFromBlocks(
             selectedBlocks,
             keyLength: totalLength,
@@ -1655,7 +1662,7 @@ final class Qwen4ExpQSAIndexer: Module {
     ) -> MLXArray {
         let visibleCount = previousOffset + 1
         let visibleBlocks = visibleCount / compressRatio
-        let tokenPositions = MLXArray(Int32(0) ..< Int32(totalLength))
+        let tokenPositions = MLX.arange(totalLength, dtype: .int32)
         if visibleBlocks <= blockTopK {
             return expandedDimensions(
                 tokenPositions .< visibleCount, axes: [0, 1, 2])
@@ -1706,7 +1713,7 @@ final class Qwen4ExpQSAIndexer: Module {
             queries: queries,
             blockKeys: blockKeys,
             previousOffset: previousOffset)
-        let blockIDs = MLXArray(Int32(0) ..< Int32(visibleBlocks))
+        let blockIDs = MLX.arange(visibleBlocks, dtype: .int32)
         let biasedScores = scores
             - blockIDs.asType(.float32) * Self.tieBreakScale
         let selected = MLX.argPartition(
@@ -1767,7 +1774,7 @@ final class Qwen4ExpQSAIndexer: Module {
             Self.minimumScoreRows,
             min(length, Self.scoreSheetBudgetBytes / bytesPerRow))
         let keyBank = blockKeys.asType(.float32).swappedAxes(-1, -2)
-        let blockIDs = MLXArray(Int32(0) ..< Int32(completeBlocks))[
+        let blockIDs = MLX.arange(completeBlocks, dtype: .int32)[
             .newAxis, .newAxis, 0...]
         let tieBreak = blockIDs.asType(.float32) * Self.tieBreakScale
         var chunks = [MLXArray]()
@@ -1776,9 +1783,8 @@ final class Qwen4ExpQSAIndexer: Module {
         for start in stride(from: 0, to: length, by: rowsPerChunk) {
             let end = min(length, start + rowsPerChunk)
             let rows = end - start
-            let absolutePositions = MLXArray(
-                Int32(previousOffset + start + 1)
-                    ..< Int32(previousOffset + end + 1))
+            let absolutePositions = MLX.arange(
+                previousOffset + start + 1, previousOffset + end + 1, dtype: .int32)
                 .reshaped(1, rows, 1)
             let visibleBlockCounts = absolutePositions.floorDivide(compressRatio)
             let visible = blockIDs .< visibleBlockCounts
@@ -2120,7 +2126,7 @@ private final class Qwen4ExpAttention: Module {
                 outputHeads = decoded
             } else {
                 let visibleBlocks = scores.dim(1)
-                let blockIDs = MLXArray(Int32(0) ..< Int32(visibleBlocks))
+                let blockIDs = MLX.arange(visibleBlocks, dtype: .int32)
                 let biasedScores = scores
                     - blockIDs.asType(.float32) * 1e-7
                 let selectedBlocks = sorted(
@@ -2828,6 +2834,8 @@ private final class Qwen4ExpMLP: Module, UnaryLayer {
 }
 
 private final class Qwen4ExpSparseMoE: Module, UnaryLayer {
+    private static let fusedVerifyRouter =
+        ProcessInfo.processInfo.environment["AFM_QWEN_VERIFY_FUSED_ROUTER"] == "1"
     let topK: Int
     let normalize: Bool
     @ModuleInfo var gate: Linear
@@ -2859,9 +2867,14 @@ private final class Qwen4ExpSparseMoE: Module, UnaryLayer {
     ) -> MLXArray {
         let logits = VerifyWidthLinear.call(
             gate, x, verificationPolicy: verificationPolicy, role: .expert)
-        let fusedRouting = normalize && verificationPolicy == nil
-            ? qwenFusedSoftmaxTopK(logits: logits, topK: topK)
-            : nil
+        let fusedRouting: (indices: MLXArray, scores: MLXArray)?
+        if normalize && verificationPolicy == nil {
+            fusedRouting = qwenFusedSoftmaxTopK(logits: logits, topK: topK)
+        } else if normalize && verificationPolicy == .batched && Self.fusedVerifyRouter {
+            fusedRouting = qwenFusedVerifySoftmaxTopK(logits: logits, topK: topK)
+        } else {
+            fusedRouting = nil
+        }
         let indices: MLXArray
         let scores: MLXArray
         if let fusedRouting {
@@ -4149,6 +4162,8 @@ final class Qwen4ExpDecoderLayer: Module {
 }
 
 private final class Qwen4ExpModelInner: Module {
+    private static let verificationAsyncLadderStride = max(0, Int(
+        ProcessInfo.processInfo.environment["AFM_QWEN_VERIFY_ASYNC_LADDER"] ?? "0") ?? 0)
     private static let deferVerificationHC =
         ProcessInfo.processInfo.environment["AFM_QWEN_VERIFY_DEFER_HC"] == "1"
     private static let deferInterLayerHyperConnectionWriteDecode =
@@ -4237,7 +4252,8 @@ private final class Qwen4ExpModelInner: Module {
         cache: [KVCache]?,
         hostTokenIDs: [Int]? = nil,
         verificationPolicy: MTPVerificationPolicy? = nil,
-        combineWithFinalMixer: Bool = false
+        combineWithFinalMixer: Bool = false,
+        verificationLadderOverride: Int? = nil
     ) -> MLXArray {
         var hidden = MLX.tiled(
             inputEmbeddings ?? embedTokens(inputIDs),
@@ -4270,10 +4286,15 @@ private final class Qwen4ExpModelInner: Module {
         let useDecodeAsyncLadder = decodeAsyncLadderStride > 0
             && verificationPolicy == nil
             && hidden.dim(1) == 1
+        let verifyStride = verificationLadderOverride ?? Self.verificationAsyncLadderStride
+        let useVerifyAsyncLadder = verifyStride > 0 && verificationPolicy == .batched
+            && hidden.dim(0) == 1 && hidden.dim(1) > 1
+            && hidden.dim(1) <= VerifyWidthLinear.maximumAcceleratedWidth
         let profiler = Qwen4ExpForwardProfiler.make(sequenceLength: hidden.dim(1))
         let hostProfiler = Qwen4ExpHostProfiler.make(sequenceLength: hidden.dim(1))
-        // Verification never uses the AR async ladder. Synchronizing profilers
-        // must retain the eager path so they cannot evaluate an unfilled leaf.
+        // Verification has a separate, off-by-default dispatch experiment.
+        // Every boundary MUST flush private PLE leaves before evaluating any
+        // graph that can read them. Synchronizing profilers retain eager PLE.
         let deferredPLE = verificationPolicy != nil && hidden.dim(1) > 1
             && profiler == nil
             && ProcessInfo.processInfo.environment["VMLX_DSV4_STAGE_PROFILE"] != "1"
@@ -4306,10 +4327,13 @@ private final class Qwen4ExpModelInner: Module {
                     profiler: profiler,
                     deferredPLE: deferredPLE)
             }
-            if useDecodeAsyncLadder,
-               index + 1 < layers.count,
-               (index + 1).isMultiple(of: decodeAsyncLadderStride)
+            let dispatchDecode = useDecodeAsyncLadder
+                && (index + 1).isMultiple(of: decodeAsyncLadderStride)
+            let dispatchVerify = useVerifyAsyncLadder
+                && (index + 1).isMultiple(of: verifyStride)
+            if index + 1 < layers.count, dispatchDecode || dispatchVerify
             {
+                if dispatchVerify { deferredPLE?.flush() }
                 if let pending {
                     asyncEval([
                         pending.output,
@@ -4852,6 +4876,18 @@ public final class Qwen4ExpModel: Module, LLMModel, KVCacheDimensionProvider {
 
     func layerStreamsForTesting(inputIDs: MLXArray) -> [MLXArray] {
         model.layerStreams(inputIDs)
+    }
+
+    func verificationStreamForTesting(
+        inputIDs: MLXArray, cache: [KVCache], ladderStride: Int
+    ) -> MLXArray {
+        for entry in cache {
+            (entry as? Qwen4ExpLayerCache)?.beginMTPVerification(width: inputIDs.dim(1))
+            (entry as? Qwen4ExpAttentionCache)?.beginMTPVerification(width: inputIDs.dim(1))
+        }
+        return model.forwardStream(
+            inputIDs, cache: cache, verificationPolicy: .batched,
+            verificationLadderOverride: ladderStride)
     }
 
     func firstPLETraceForTesting(

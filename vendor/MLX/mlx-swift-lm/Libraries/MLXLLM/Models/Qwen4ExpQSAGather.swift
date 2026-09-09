@@ -240,6 +240,70 @@ enum Qwen4ExpQSAVerifyRadixSelection {
     }
 }
 
+/// Bounded verifier mask expansion. The caller supplies sorted, nonnegative
+/// block IDs, with Int32.max sentinels, as produced by the QSA selectors.
+/// Binary-searching the small index row avoids scatter/repeat/pad/range
+/// intermediates. This changes neither block selection nor attention math.
+enum Qwen4ExpQSAVerifyMask {
+    private static let enabled = ProcessInfo.processInfo.environment[
+        "AFM_QWEN_VERIFY_FUSED_MASK"
+    ] == "1"
+
+    private static let kernel = MLXFast.metalKernel(
+        name: "qwen4_exp_qsa_verify_mask",
+        inputNames: ["blocks", "length"], outputNames: ["mask"],
+        source: """
+            const uint token = thread_position_in_grid.x;
+            const uint row = thread_position_in_grid.y;
+            const uint batch = thread_position_in_grid.z;
+            const uint kv = uint(length[0]);
+            const uint rows = uint(blocks_shape[1]);
+            const uint count = uint(blocks_shape[2]);
+            if (token >= kv) return;
+            const uint end = kv - rows + row + 1;
+            bool visible = false;
+            if (token < end) {
+                const uint tail = (end / uint(RATIO)) * uint(RATIO);
+                if (token >= tail) {
+                    visible = true;
+                } else {
+                    const int wanted = int(token / uint(RATIO));
+                    const device int* ids = blocks + (batch * rows + row) * count;
+                    uint lo = 0, hi = count;
+                    while (lo < hi) {
+                        const uint mid = lo + (hi - lo) / 2;
+                        if (ids[mid] < wanted) lo = mid + 1;
+                        else hi = mid;
+                    }
+                    visible = lo < count && ids[lo] == wanted;
+                }
+            }
+            mask[(batch * rows + row) * kv + token] = visible;
+        """)
+
+    static func call(
+        sortedBlocks: MLXArray, keyLength: Int, compressionRatio: Int,
+        forceEnabledForTesting: Bool = false
+    ) -> MLXArray? {
+        guard enabled || forceEnabledForTesting,
+              Device.defaultDevice().deviceType == .gpu,
+              sortedBlocks.dtype == .int32, sortedBlocks.ndim == 3,
+              sortedBlocks.dim(0) > 0,
+              sortedBlocks.dim(1) > 1, sortedBlocks.dim(1) <= 8,
+              sortedBlocks.dim(2) > 0, sortedBlocks.dim(2) <= 1024,
+              keyLength >= sortedBlocks.dim(1), keyLength < Int(Int32.max),
+              compressionRatio > 0
+        else { return nil }
+        return kernel(
+            [sortedBlocks, MLXArray([Int32(keyLength)])],
+            template: [("RATIO", compressionRatio)],
+            grid: (keyLength, sortedBlocks.dim(1), sortedBlocks.dim(0)),
+            threadGroup: (256, 1, 1),
+            outputShapes: [[sortedBlocks.dim(0), 1, sortedBlocks.dim(1), keyLength]],
+            outputDTypes: [.bool], cacheConfiguration: true)[0]
+    }
+}
+
 /// Direct-index QSA attention for long Qwen Next prefill chunks.
 ///
 /// The ordinary array-mask SDPA path materializes work proportional to the
@@ -312,12 +376,15 @@ enum Qwen4ExpQSAGather {
         }
 
         let firstQueryPosition = keyLength - queryLength
-        let queryEnds = MLXArray(
-            Int32(firstQueryPosition + 1) ..< Int32(keyLength + 1))
+        let queryEnds = MLX.arange(
+            firstQueryPosition + 1, keyLength + 1, dtype: .int32)
             .reshaped(1, queryLength, 1)
         let tailStarts = queryEnds.floorDivide(compressionRatio)
             * compressionRatio
-        let keyPositions = MLXArray(Int32(0) ..< Int32(keyLength))
+        // Build the range as a lazy MLX operation, not an O(context) Swift
+        // Sequence-to-Array conversion on every verification layer/round.
+        // Integer positions and the causal-tail mask remain unchanged.
+        let keyPositions = MLX.arange(keyLength, dtype: .int32)
             .reshaped(1, 1, keyLength)
         let tail = (keyPositions .>= tailStarts) .&& (keyPositions .< queryEnds)
         return (tokenMask .|| tail).expandedDimensions(axis: 1)
