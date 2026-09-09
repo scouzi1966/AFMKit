@@ -3632,11 +3632,39 @@ final class Qwen4ExpDecoderLayer: Module {
         {
             return compiledLayerTailDecode([attended, residual, injection])[0]
         }
+        if Self.compileLayerTailDecode,
+           verificationPolicy == .strictSingletonEquivalent,
+           input.dtype == .bfloat16,
+           input.dim(0) == 1,
+           input.dim(1) > 1,
+           input.dim(1) <= VerifyWidthLinear.maximumAcceleratedWidth
+        {
+            return singletonCompiledVerificationTail(
+                attended: attended, residual: residual, injection: injection)
+        }
         return layerTail(
             attended: attended,
             residual: residual,
             injection: injection,
             verificationPolicy: verificationPolicy)
+    }
+
+    /// Reuse the AR tail's model-owned graph and its exact M=1 kernel choices
+    /// for each speculative row. No request cache is captured here: attention
+    /// and recurrent-state verification/rollback remain outside this closure.
+    /// This avoids both repeated Swift graph construction and the older
+    /// unfused MoE/HC path, without switching to width-dependent batched GEMMs.
+    func singletonCompiledVerificationTail(
+        attended: MLXArray, residual: MLXArray, injection: MLXArray
+    ) -> MLXArray {
+        precondition(attended.dim(0) == 1 && attended.dim(1) > 0)
+        return concatenated((0 ..< attended.dim(1)).map { row in
+            compiledLayerTailDecode([
+                attended[0..., row ..< (row + 1), 0...],
+                residual[0..., row ..< (row + 1), 0...],
+                injection[0..., row ..< (row + 1), 0...],
+            ])[0]
+        }, axis: 1)
     }
 
     private func layerTail(
