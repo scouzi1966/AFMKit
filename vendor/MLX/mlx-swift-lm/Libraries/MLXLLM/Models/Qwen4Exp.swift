@@ -2282,6 +2282,27 @@ private final class Qwen4ExpGatedDeltaNet: Module {
         return compile(shapeless: false, body)
     }()
 
+    /// Functional verifier capture: the temporary cache exists only while
+    /// tracing. Request states and rollback intermediates cross the compiled
+    /// boundary explicitly, so no live request cache is retained by the model.
+    private lazy var compiledVerification: @Sendable ([MLXArray]) -> [MLXArray] = {
+        let body: ([MLXArray]) -> [MLXArray] = { [unowned self] arguments in
+            CompiledDecodeTrace.withActive {
+                let scratch = Qwen4ExpLayerCache()
+                scratch[0] = arguments[1]
+                scratch[1] = arguments[2]
+                let output = self.callSingle(
+                    arguments[0], cache: scratch,
+                    verificationPolicy: .strictSingletonEquivalent)
+                let rollback = scratch.gatedDeltaRollback!
+                return [output, scratch[0]!, scratch[1]!,
+                        rollback.projectedQKV, rollback.queries, rollback.keys,
+                        rollback.values, rollback.projectedA, rollback.projectedB]
+            }
+        }
+        return compile(shapeless: false, body)
+    }()
+
     init(_ config: Qwen4ExpTextConfiguration) {
         keyHeads = config.linearNumKeyHeads
         valueHeads = config.linearNumValueHeads
@@ -2323,8 +2344,37 @@ private final class Qwen4ExpGatedDeltaNet: Module {
                 },
                 axis: 1)
         }
+        if Self.compileDecode,
+           verificationPolicy == .strictSingletonEquivalent,
+           x.dim(0) == 1, x.dim(1) > 1,
+           x.dim(1) <= VerifyWidthLinear.maximumAcceleratedWidth,
+           x.dtype == .bfloat16,
+           let layerCache = cache as? Qwen4ExpLayerCache,
+           supportsCompiledPrework(input: x)
+        {
+            let convolution = cache?[0] ?? MLXArray.zeros(
+                [1, convKernel - 1, keyDim * 2 + valueDim], dtype: x.dtype)
+            let recurrent = cache?[1] ?? MLXArray.zeros(
+                [1, valueHeads, valueHeadDim, keyHeadDim], dtype: .float32)
+            if recurrent.dtype == .float32 {
+                let verified = compiledVerification([x, convolution, recurrent])
+                layerCache[0] = verified[1]
+                layerCache[1] = verified[2]
+                layerCache.gatedDeltaRollback = .init(
+                    convolutionState: convolution, recurrentState: recurrent,
+                    projectedQKV: verified[3], queries: verified[4],
+                    keys: verified[5], values: verified[6],
+                    projectedA: verified[7], projectedB: verified[8],
+                    explicitGating: Self.explicitGating || Self.verifyExplicitGating)
+                return verified[0]
+            }
+        }
         return callSingle(
             x, cache: cache, verificationPolicy: verificationPolicy)
+    }
+
+    func uncompiledVerificationForTesting(_ input: MLXArray, cache: Qwen4ExpLayerCache) -> MLXArray {
+        callSingle(input, cache: cache, verificationPolicy: .strictSingletonEquivalent)
     }
 
     private func callSingle(
@@ -3568,6 +3618,34 @@ final class Qwen4ExpDecoderLayer: Module {
     }
 
     var hostNGramMultipliers: [Int64]? { ple?.hostMultipliers }
+
+    func gatedDeltaCacheForTesting(width: Int) -> ArraysCache {
+        let cache = Qwen4ExpLayerCache()
+        cache.beginMTPVerification(width: width)
+        return cache
+    }
+
+    func gatedDeltaRollbackArraysForTesting(_ cache: ArraysCache) -> [MLXArray]? {
+        guard let rollback = (cache as? Qwen4ExpLayerCache)?.gatedDeltaRollback else {
+            return nil
+        }
+        return [rollback.queries, rollback.keys, rollback.values, rollback.projectedQKV]
+    }
+
+    func gatedDeltaVerificationForTesting(
+        _ input: MLXArray, cache: ArraysCache, compiled: Bool
+    ) -> MLXArray {
+        precondition(isLinear)
+        let cache = cache as! Qwen4ExpLayerCache
+        return compiled
+            ? linearAttention!(input, cache: cache, verificationPolicy: .strictSingletonEquivalent)
+            : linearAttention!.uncompiledVerificationForTesting(input, cache: cache)
+    }
+
+    func rollbackGatedDeltaForTesting(_ cache: ArraysCache, keeping count: Int) {
+        linearAttention!.rollbackTargetVerification(
+            cache: cache as! Qwen4ExpLayerCache, keeping: count)
+    }
 
     func pleTraceForTesting(
         hidden: MLXArray,

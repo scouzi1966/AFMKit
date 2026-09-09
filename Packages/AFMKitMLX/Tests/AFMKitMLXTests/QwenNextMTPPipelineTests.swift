@@ -6,6 +6,60 @@ import MLXNN
 import XCTest
 
 final class QwenNextMTPPipelineTests: XCTestCase {
+    func testCompiledGatedDeltaPreservesRequestStateAndEveryRollbackPrefix() async throws {
+        let model = try await makeModel()
+        let layer = Qwen4ExpDecoderLayer(model.configuration, layerIndex: 0)
+        layer.update(parameters: layer.mapParameters { $0.asType(.bfloat16) })
+        quantize(model: layer, groupSize: 32, bits: 4)
+        // Production checkpoint weights are materialized before compilation;
+        // do not trace random initialization or quantization into this graph.
+        eval(layer)
+        func assertExact(_ actual: MLXArray, _ expected: MLXArray, _ label: String) {
+            eval(actual, expected)
+            XCTAssertEqual(actual.shape, expected.shape, label)
+            XCTAssertTrue(actual.asArray(Float.self) == expected.asArray(Float.self), label)
+        }
+        for request in 0..<2 {
+            for width in [2, 4, 7] {
+                let compiled = layer.gatedDeltaCacheForTesting(width: width)
+                let ordinary = layer.gatedDeltaCacheForTesting(width: width)
+                let convolution = (MLXArray.zeros([1, 3, 512]) + Float(request) / 128).asType(.bfloat16)
+                let recurrent = MLXArray.zeros([1, 2, 128, 128]) + Float(request) / 1024
+                for cache in [compiled, ordinary] {
+                    cache[0] = convolution
+                    cache[1] = recurrent
+                }
+                let input = MLXArray((0..<(128 * width)).map {
+                    Float(($0 % 29) - 14 + request) / 32
+                }).reshaped(1, width, 128).asType(.bfloat16)
+                let actual = layer.gatedDeltaVerificationForTesting(input, cache: compiled, compiled: true)
+                let expected = layer.gatedDeltaVerificationForTesting(input, cache: ordinary, compiled: false)
+                assertExact(actual, expected, "GDN output request=\(request) width=\(width)")
+                assertExact(try XCTUnwrap(compiled[0]), try XCTUnwrap(ordinary[0]), "convolution state")
+                assertExact(try XCTUnwrap(compiled[1]), try XCTUnwrap(ordinary[1]), "recurrent state")
+                XCTAssertEqual(compiled[1]?.dtype, .float32)
+                let captured = try XCTUnwrap(layer.gatedDeltaRollbackArraysForTesting(compiled))
+                let reference = try XCTUnwrap(layer.gatedDeltaRollbackArraysForTesting(ordinary))
+                XCTAssertEqual(captured.count, reference.count)
+                for (index, arrays) in zip(captured, reference).enumerated() {
+                    assertExact(arrays.0, arrays.1, "rollback array \(index)")
+                }
+                for keep in 1...width {
+                    for cache in [compiled, ordinary] {
+                        cache[0] = convolution
+                        cache[1] = recurrent
+                    }
+                    eval(layer.gatedDeltaVerificationForTesting(input, cache: compiled, compiled: true))
+                    eval(layer.gatedDeltaVerificationForTesting(input, cache: ordinary, compiled: false))
+                    layer.rollbackGatedDeltaForTesting(compiled, keeping: keep)
+                    layer.rollbackGatedDeltaForTesting(ordinary, keeping: keep)
+                    assertExact(try XCTUnwrap(compiled[0]), try XCTUnwrap(ordinary[0]), "committed convolution keep=\(keep)")
+                    assertExact(try XCTUnwrap(compiled[1]), try XCTUnwrap(ordinary[1]), "committed recurrence keep=\(keep)")
+                }
+            }
+        }
+    }
+
     func testFusedVerificationHyperConnectionMatchesIndependentARRowsExactly() throws {
         let hidden = 2560
         let streams = 4
