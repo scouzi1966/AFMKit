@@ -4780,7 +4780,29 @@ public final class Qwen4ExpMTPGenerator {
         var totalReplays = 0
         var totalBackboneReplayFallbacks = 0
         var acceptedByDepth = [Int](repeating: 0, count: depth)
+        // Host-side laps do not add eval/synchronize calls. The decision lap
+        // includes outstanding GPU work, not just the tiny acceptance loop.
+        // Keep diagnostic timings separate from uninstrumented benchmarks.
+        let measurePhases = ProcessInfo.processInfo.environment["AFM_PERF"] == "1"
+        var phaseNanoseconds = [UInt64](repeating: 0, count: 5)
+        var phaseStart: UInt64 = 0
+        func startPhase() {
+            if measurePhases { phaseStart = DispatchTime.now().uptimeNanoseconds }
+        }
+        func endPhase(_ index: Int) {
+            if measurePhases {
+                phaseNanoseconds[index] += DispatchTime.now().uptimeNanoseconds - phaseStart
+            }
+        }
         defer {
+            if measurePhases, totalCycles > 0 {
+                let labels = ["draft-build", "verify-build", "decision-wait", "commit-build", "history-build"]
+                let laps = zip(labels, phaseNanoseconds).map { label, nanos in
+                    String(format: "%@=%.3fms/cycle", label,
+                           Double(nanos) / 1_000_000 / Double(totalCycles))
+                }.joined(separator: " ")
+                FileHandle.standardError.write(Data("[MTP][QwenNext][host-phases] \(laps)\n".utf8))
+            }
             if ProcessInfo.processInfo.environment["AFM_DEBUG"] == "1" {
                 let acceptance = totalDrafted > 0
                     ? Double(totalAccepted) / Double(totalDrafted)
@@ -4817,6 +4839,7 @@ public final class Qwen4ExpMTPGenerator {
             if !emit(primary) { break }
             totalCycles += 1
 
+            startPhase()
             let roundHeadOffset = mtpCache[0].offset
             var draftTokens: [MLXArray] = []
             draftTokens.reserveCapacity(depth)
@@ -4845,6 +4868,8 @@ public final class Qwen4ExpMTPGenerator {
             // host boundary. The verifier consumes the same array and the
             // cycle decision performs the only GPU-to-CPU materialization.
             asyncEval(draftTokenIDs)
+            endPhase(0)
+            startPhase()
             let verifyTokenIDs = concatenated(
                 [Self.tokens([primary]), draftTokenIDs], axis: 1)
             let targetSnapshot = Qwen3MTPCacheSnapshot.capture(targetCache)
@@ -4874,9 +4899,13 @@ public final class Qwen4ExpMTPGenerator {
                     verified.hidden,
                     verificationPolicy: verificationPolicy)[0, 0...]
             }
+            endPhase(1)
+            startPhase()
             let decision = Qwen4ExpMTPCycleDecision.resolve(
                 targetTokenIDs: targetTokenIDs,
                 draftTokenIDs: draftTokenIDs)
+            endPhase(2)
+            startPhase()
             for index in 0 ..< decision.acceptedDraftCount {
                 acceptedByDepth[index] += 1
             }
@@ -4886,6 +4915,7 @@ public final class Qwen4ExpMTPGenerator {
                     cache: targetCache,
                     acceptedDrafts: decision.acceptedDraftCount,
                     draftedTokens: decision.draftTokens.count)
+            endPhase(3)
 
             for token in decision.draftTokens.prefix(decision.acceptedDraftCount) {
                 if !emit(token) { return output }
@@ -4893,6 +4923,7 @@ public final class Qwen4ExpMTPGenerator {
 
             // Discard every speculative head row and rebuild only the committed
             // shifted pairs from the target model's true residual streams.
+            startPhase()
             let speculativeRows = mtpCache[0].offset - roundHeadOffset
             if speculativeRows > 0 { _ = mtpCache[0].trim(speculativeRows) }
             let committedTokens = [primary]
@@ -4916,6 +4947,7 @@ public final class Qwen4ExpMTPGenerator {
                     primaryPosition ..< (primaryPosition + committedTokens.count)),
                 cache: mtpCache
             )
+            endPhase(4)
 
             if decision.acceptedDraftCount != decision.draftTokens.count {
                 totalReplays += 1
