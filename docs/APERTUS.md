@@ -99,3 +99,20 @@ poor output in both the Python reference and Swift on the six-bit checkpoint's
 machine-learning summary probe. Shared attention masking defects were corrected
 and covered by dtype, batched-head, cached-decode, and fully-masked-row tests;
 those unit passes do not establish generation quality or throughput parity.
+
+Final-binary reruns with provider code `84942015` retained the same totals:
+four-bit 82/91 and six-bit 88/91, both Codex-judged with zero skips. Nine targeted
+six-bit API cases passed, including cancellation followed by coherent cached
+request recovery and raw tool-parser bypass. A KV8 summary probe was coherent
+in both runtimes but not token-identical; this is not broad KV8 qualification.
+
+The four-bit reference reproduced the fenced-JSON and missing-HTML/newline
+formatting failures when given AFM's default system instruction (`You are a
+helpful assistant`). Disabling reference compilation did not change any of
+the six tool-probe token sequences. The four-bit acceptance shortfall remains;
+it must not be hidden by changing prompts, defaults, or assertion accounting.
+
+The six-bit KV4 run also exposed expensive consumer response-tail sanitization
+after generation. That separate, model-independent latency fix is tracked in
+[maclocal-api PR #300](https://github.com/scouzi1966/maclocal-api/pull/300).
+It does not change model outputs or resolve KV4 degeneration.
