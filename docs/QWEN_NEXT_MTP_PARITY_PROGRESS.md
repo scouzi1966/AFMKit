@@ -78,7 +78,7 @@ The depth-1 live comparison retained all saved token sequences.
 - **Unsorted multirow affine expert kernels:** earlier experiment did not
   materially improve the default path. Its patch remains in local evidence.
 
-The next expert-scheduling experiment follows a concrete source difference:
+The expert-scheduling experiment follows a concrete source difference:
 the reference sorts every multi-token token/expert assignment set; the general
 Swift path previously sorted only at 64 assignments, while strict verification
 processed singleton rows. Sorting must preserve routing, inverse permutation,
@@ -86,9 +86,57 @@ numerical quality and request-state boundaries; its performance is not assumed.
 
 The sorted path is currently wired only to the explicitly selected `.batched`
 verification experiment. It does not alter strict-default MTP or other models'
-sorting thresholds. Twelve focused provider tests and the release consumer build
-pass, including sorted route/inverse-permutation coverage. End-to-end performance
-of that experiment is still being measured; it is not a default recommendation.
+sorting thresholds. Follow-up experiments compile the functional expert tail,
+GDN verifier, attention projection/output, and fixed-width indexer projection.
+Request cache updates and growing QSA selection graphs remain outside those
+closures. GDN convolution/recurrent inputs and rollback intermediates are
+explicit arguments/results; recurrence stays FP32. No checkpoint is rewritten.
+
+### Batched verification experiments
+
+These rows explicitly select `.batched`, depth 3, and phase diagnostics. They
+are **not strict-default results**. Attention grouping is explicitly enabled
+only for the rows marked chunk 2.
+
+| Incremental candidate | 0.5K | 1K | 2K | 4K |
+|---|---:|---:|---:|---:|
+| Sorted experts | 63.22 | 62.37 | 54.12 | 44.89 |
+| Compiled expert tail with row-independent HC | 70.59 | 77.59 | 57.58 | 49.62 |
+| Also compiled GDN | 67.54 | 76.78 | 58.98 | 49.68 |
+| Also attention chunk 2 | 75.64 | 72.54 | 61.13 | 54.64 |
+| Also compiled attention projections | 78.43 | 75.32 | 64.12 | 54.07 |
+| Also compiled indexer projections | 74.85 | 74.63 | 64.98 | 54.38 |
+
+Compiling GDN or indexer projections alone did not establish a speedup. The compiled expert-tail
+candidate also changes HC arithmetic to the existing row-independent kernels;
+its gain cannot be attributed exclusively to compilation. Its saved texts differ
+from the prior sorted-only arm in 12/12 requests. Adding compiled GDN preserved
+12/12 texts; changing attention grouping preserved 6/12. All inspected context
+summaries are coherent, but those observations do **not** establish model-quality
+equivalence or exact AR-token parity. Batched-mode arithmetic remains an
+experiment, not a default recommendation.
+
+Depth 2 with compiled attention projections measured 77.25 / 78.25 / 62.12 /
+53.16 tok/s. No single measured configuration meets the full reference curve.
+Repeated requests are deterministic within each of these candidate arms.
+
+The follow-up default `--mtp` control, with no tuning variables or depth
+override, measured 67.63 / 68.66 / 58.19 / 52.22 tok/s and reproduced 12/12
+saved `80c9fd15`/PLE-only response texts. Do not present the experimental
+74–78 tok/s short-context figures as the default behavior.
+
+The same binary's untuned AR control measured 69.24 / 68.69 / 61.26 / 59.03
+tok/s, versus the earlier 68.81 / 68.22 / 60.18 / 59.88. All 12 AR response
+texts matched the earlier AR control. Neither experimental MTP nor default MTP
+is consistently faster than AR at the longer contexts yet.
+
+Focused tests compare compiled and uncompiled functional bodies across verifier
+widths, positions and model instances, test FP32 recurrent state and every
+rollback prefix, and check production-geometry causal/QSA attention grouping.
+The first projection-test build was invalidated when its fixture was corrected
+during compilation; the clean rerun passed. This is not release qualification:
+live radix-cache reuse, concurrency, cancellation and model-switch qualification
+remain required before promoting an experimental policy.
 
 ## Provenance and evidence
 

@@ -1379,7 +1379,7 @@ final class Qwen4ExpQSAIndexer: Module {
         let body: ([MLXArray]) -> [MLXArray] = { [unowned self] arguments in
             CompiledDecodeTrace.withActive {
                 [self.prepareQueries(
-                    arguments[0], batch: arguments[0].dim(0), length: 1,
+                    arguments[0], batch: arguments[0].dim(0), length: arguments[0].dim(1),
                     positionIDs: arguments[1])]
             }
         }
@@ -1441,7 +1441,16 @@ final class Qwen4ExpQSAIndexer: Module {
         }
         let queryRows: MLXArray
         let currentKeys: MLXArray
-        if Self.compileDecode, verificationPolicy == nil, length == 1 {
+        // Compile only fixed-width stateless work. Do not capture the growing
+        // pooled key bank or selection graph: that would create traces at each
+        // context length and retain request-sized graphs during long decode.
+        let compiledBatchedProjection = verificationPolicy == .batched
+            && batch == 1 && length > 1
+            && length <= VerifyWidthLinear.maximumAcceleratedWidth
+            && hidden.dtype == .bfloat16
+        if Self.compileDecode,
+           (verificationPolicy == nil && length == 1) || compiledBatchedProjection
+        {
             let projected = compiledProjectionDecode([hidden])
             queryRows = projected[0]
             currentKeys = projected[1]
@@ -1488,8 +1497,7 @@ final class Qwen4ExpQSAIndexer: Module {
         if let eagerQueries {
             queries = eagerQueries
         } else if Self.compileDecode,
-                  verificationPolicy == nil,
-                  length == 1
+                  (verificationPolicy == nil && length == 1) || compiledBatchedProjection
         {
             queries = compiledQueryDecode([
                 queryRows, resolvedPositionIDs(),
@@ -1703,6 +1711,20 @@ final class Qwen4ExpQSAIndexer: Module {
         ).sum(axis: 1)
     }
 
+    func projectionForTesting(
+        _ input: MLXArray, positions: MLXArray, compiled: Bool
+    ) -> [MLXArray] {
+        if compiled {
+            let projected = compiledProjectionDecode([input])
+            return [compiledQueryDecode([projected[0], positions])[0], projected[1]]
+        }
+        let parts = MLX.split(indexQKProj(input), indices: [heads * headDim], axis: -1)
+        let keys = parts[1].reshaped(input.dim(0), input.dim(1), kvHeads, headDim)
+            .mean(axis: 2)
+        return [prepareQueries(parts[0], batch: input.dim(0), length: input.dim(1),
+                               positionIDs: positions), keys]
+    }
+
     private func selectBlocks(
         queries: MLXArray,
         blockKeys: MLXArray,
@@ -1799,48 +1821,58 @@ private final class Qwen4ExpAttention: Module {
     {
         let body: ([MLXArray]) -> [MLXArray] = { [unowned self] arguments in
             CompiledDecodeTrace.withActive {
-                let x = arguments[0]
-                let angles = arguments[1]
-                let b = x.dim(0)
-                let l = x.dim(1)
-                let qProjection = VerifyWidthLinear.call(
-                    self.qProj, x, verificationPolicy: nil,
-                    role: .attention)
-                let kProjection = VerifyWidthLinear.call(
-                    self.kProj, x, verificationPolicy: nil,
-                    role: .attention)
-                let vProjection = VerifyWidthLinear.call(
-                    self.vProj, x, verificationPolicy: nil,
-                    role: .attention)
-                let qParts = MLX.split(
-                    qProjection.reshaped(b, l, self.heads, self.headDim * 2),
-                    parts: 2,
-                    axis: -1)
-                let qInput = qParts[0]
-                let gate = qParts[1].reshaped(b, l, -1)
-                let kInput = kProjection.reshaped(
-                    b, l, self.kvHeads, self.headDim)
-                let value = vProjection.reshaped(
-                    b, l, self.kvHeads, self.headDim)
-                    .transposed(0, 2, 1, 3)
-                let fusedQK = Qwen4ExpQKNormRoPEFusion.call(
-                    q: qInput,
-                    k: kInput,
-                    qWeight: self.qNorm.weight,
-                    kWeight: self.kNorm.weight,
-                    angles: angles,
-                    epsilon: self.qNorm.eps,
-                    qHeads: self.heads,
-                    kvHeads: self.kvHeads,
-                    rotaryDimensions: self.rope.dimensions)
-                precondition(
-                    fusedQK != nil,
-                    "compiled Qwen attention decode requires fused QK norm/RoPE")
-                return [fusedQK!.q, fusedQK!.k, value, gate]
+                self.projectionForCompilation(arguments)
             }
         }
         return compile(shapeless: false, body)
     }()
+
+    private func projectionForCompilation(_ arguments: [MLXArray]) -> [MLXArray] {
+        let x = arguments[0]
+        let angles = arguments[1]
+        let b = x.dim(0)
+        let l = x.dim(1)
+        let qProjection = VerifyWidthLinear.call(
+            self.qProj, x, verificationPolicy: nil,
+            role: .attention)
+        let kProjection = VerifyWidthLinear.call(
+            self.kProj, x, verificationPolicy: nil,
+            role: .attention)
+        let vProjection = VerifyWidthLinear.call(
+            self.vProj, x, verificationPolicy: nil,
+            role: .attention)
+        let qParts = MLX.split(
+            qProjection.reshaped(b, l, self.heads, self.headDim * 2),
+            parts: 2,
+            axis: -1)
+        let qInput = qParts[0]
+        let gate = qParts[1].reshaped(b, l, -1)
+        let kInput = kProjection.reshaped(
+            b, l, self.kvHeads, self.headDim)
+        let value = vProjection.reshaped(
+            b, l, self.kvHeads, self.headDim)
+            .transposed(0, 2, 1, 3)
+        let fusedQK = Qwen4ExpQKNormRoPEFusion.call(
+            q: qInput,
+            k: kInput,
+            qWeight: self.qNorm.weight,
+            kWeight: self.kNorm.weight,
+            angles: angles,
+            epsilon: self.qNorm.eps,
+            qHeads: self.heads,
+            kvHeads: self.kvHeads,
+            rotaryDimensions: self.rope.dimensions)
+        precondition(
+            fusedQK != nil,
+            "compiled Qwen attention decode requires fused QK norm/RoPE")
+        return [fusedQK!.q, fusedQK!.k, value, gate]
+    }
+
+    func projectionForTesting(_ input: MLXArray, offset: Int, compiled: Bool) -> [MLXArray] {
+        let angles = rope.fusedAngleRows(offset: offset, sequenceLength: input.dim(1))
+        return compiled ? compiledProjectionDecode([input, angles])
+            : projectionForCompilation([input, angles])
+    }
 
     private lazy var compiledOutputDecode:
         @Sendable ([MLXArray]) -> [MLXArray] =
@@ -1922,9 +1954,12 @@ private final class Qwen4ExpAttention: Module {
         let k: MLXArray
         let v: MLXArray
         let gate: MLXArray
+        let compiledBatchedProjection = verificationPolicy == .batched
+            && b == 1 && l > 1 && l <= VerifyWidthLinear.maximumAcceleratedWidth
+            && x.dtype == .bfloat16
+            && headDim == 256 && [32, 64, 128].contains(rope.dimensions)
         if Self.compileDecode,
-           verificationPolicy == nil,
-           l == 1,
+           (verificationPolicy == nil && l == 1) || compiledBatchedProjection,
            let sharedFusedQKAngles
         {
             let projected = compiledProjectionDecode([x, sharedFusedQKAngles])
@@ -1990,7 +2025,16 @@ private final class Qwen4ExpAttention: Module {
             effectiveMask = mask
         }
         let outputHeads: MLXArray
-        if verificationPolicy == .strictSingletonEquivalent, l > 1 {
+        // The reference groups masked verification by the SDPA vector limit
+        // (query rows * GQA <= 32). Let the existing explicit chunk-2 control
+        // test that scheduling in batched mode too; keep its default intact.
+        // Source: David Dalcu, mlx-serve, MIT, splitMaskedSdpa256.
+        let groupedBatchedVerification = verificationPolicy == .batched
+            && VerifyWidthLinear.exactAttentionEnabled
+            && VerifyWidthLinear.exactAttentionChunkSize == 2
+        if l > 1,
+           verificationPolicy == .strictSingletonEquivalent || groupedBatchedVerification
+        {
             let prefixLength = cache?.offset ?? 0
             let cached: (MLXArray, MLXArray)
             if let cache {
@@ -2127,7 +2171,9 @@ private final class Qwen4ExpAttention: Module {
         attentionHostProfiler?.attention()
         attentionProfiler?.lap([outputHeads], stage: "cache-sdpa")
         let result: MLXArray
-        if Self.compileDecode, verificationPolicy == nil, l == 1 {
+        if Self.compileDecode,
+           (verificationPolicy == nil && l == 1) || compiledBatchedProjection
+        {
             result = compiledOutputDecode([outputHeads, gate])[0]
         } else {
             var output = outputHeads
@@ -2293,7 +2339,12 @@ private final class Qwen4ExpGatedDeltaNet: Module {
     /// Functional verifier capture: the temporary cache exists only while
     /// tracing. Request states and rollback intermediates cross the compiled
     /// boundary explicitly, so no live request cache is retained by the model.
-    private lazy var compiledVerification: @Sendable ([MLXArray]) -> [MLXArray] = {
+    private lazy var compiledVerification = makeCompiledVerification(.strictSingletonEquivalent)
+    private lazy var compiledBatchedVerification = makeCompiledVerification(.batched)
+
+    private func makeCompiledVerification(
+        _ policy: MTPVerificationPolicy
+    ) -> @Sendable ([MLXArray]) -> [MLXArray] {
         let body: ([MLXArray]) -> [MLXArray] = { [unowned self] arguments in
             CompiledDecodeTrace.withActive {
                 let scratch = Qwen4ExpLayerCache()
@@ -2301,7 +2352,7 @@ private final class Qwen4ExpGatedDeltaNet: Module {
                 scratch[1] = arguments[2]
                 let output = self.callSingle(
                     arguments[0], cache: scratch,
-                    verificationPolicy: .strictSingletonEquivalent)
+                    verificationPolicy: policy)
                 let rollback = scratch.gatedDeltaRollback!
                 return [output, scratch[0]!, scratch[1]!,
                         rollback.projectedQKV, rollback.queries, rollback.keys,
@@ -2309,7 +2360,7 @@ private final class Qwen4ExpGatedDeltaNet: Module {
             }
         }
         return compile(shapeless: false, body)
-    }()
+    }
 
     init(_ config: Qwen4ExpTextConfiguration) {
         keyHeads = config.linearNumKeyHeads
@@ -2353,7 +2404,7 @@ private final class Qwen4ExpGatedDeltaNet: Module {
                 axis: 1)
         }
         if Self.compileDecode,
-           verificationPolicy == .strictSingletonEquivalent,
+           let verificationPolicy,
            x.dim(0) == 1, x.dim(1) > 1,
            x.dim(1) <= VerifyWidthLinear.maximumAcceleratedWidth,
            x.dtype == .bfloat16,
@@ -2365,7 +2416,9 @@ private final class Qwen4ExpGatedDeltaNet: Module {
             let recurrent = cache?[1] ?? MLXArray.zeros(
                 [1, valueHeads, valueHeadDim, keyHeadDim], dtype: .float32)
             if recurrent.dtype == .float32 {
-                let verified = compiledVerification([x, convolution, recurrent])
+                let function = verificationPolicy == .strictSingletonEquivalent
+                    ? compiledVerification : compiledBatchedVerification
+                let verified = function([x, convolution, recurrent])
                 layerCache[0] = verified[1]
                 layerCache[1] = verified[2]
                 layerCache.gatedDeltaRollback = .init(
@@ -2381,8 +2434,11 @@ private final class Qwen4ExpGatedDeltaNet: Module {
             x, cache: cache, verificationPolicy: verificationPolicy)
     }
 
-    func uncompiledVerificationForTesting(_ input: MLXArray, cache: Qwen4ExpLayerCache) -> MLXArray {
-        callSingle(input, cache: cache, verificationPolicy: .strictSingletonEquivalent)
+    func uncompiledVerificationForTesting(
+        _ input: MLXArray, cache: Qwen4ExpLayerCache,
+        policy: MTPVerificationPolicy = .strictSingletonEquivalent
+    ) -> MLXArray {
+        callSingle(input, cache: cache, verificationPolicy: policy)
     }
 
     private func callSingle(
@@ -3690,14 +3746,29 @@ final class Qwen4ExpDecoderLayer: Module {
         return [rollback.queries, rollback.keys, rollback.values, rollback.projectedQKV]
     }
 
+    func indexProjectionForTesting(
+        _ input: MLXArray, positions: MLXArray, compiled: Bool
+    ) -> [MLXArray] {
+        precondition(!isLinear)
+        return selfAttention!.indexer.projectionForTesting(input, positions: positions, compiled: compiled)
+    }
+
+    func attentionProjectionForTesting(
+        _ input: MLXArray, offset: Int, compiled: Bool
+    ) -> [MLXArray] {
+        precondition(!isLinear)
+        return selfAttention!.projectionForTesting(input, offset: offset, compiled: compiled)
+    }
+
     func gatedDeltaVerificationForTesting(
-        _ input: MLXArray, cache: ArraysCache, compiled: Bool
+        _ input: MLXArray, cache: ArraysCache, compiled: Bool,
+        policy: MTPVerificationPolicy = .strictSingletonEquivalent
     ) -> MLXArray {
         precondition(isLinear)
         let cache = cache as! Qwen4ExpLayerCache
         return compiled
-            ? linearAttention!(input, cache: cache, verificationPolicy: .strictSingletonEquivalent)
-            : linearAttention!.uncompiledVerificationForTesting(input, cache: cache)
+            ? linearAttention!(input, cache: cache, verificationPolicy: policy)
+            : linearAttention!.uncompiledVerificationForTesting(input, cache: cache, policy: policy)
     }
 
     func rollbackGatedDeltaForTesting(_ cache: ArraysCache, keeping count: Int) {
@@ -3784,6 +3855,16 @@ final class Qwen4ExpDecoderLayer: Module {
             return singletonCompiledVerificationTail(
                 attended: attended, residual: residual, injection: injection)
         }
+        if Self.compileLayerTailDecode,
+           verificationPolicy == .batched,
+           input.dtype == .bfloat16, input.dim(0) == 1,
+           input.dim(1) > 1,
+           input.dim(1) <= VerifyWidthLinear.maximumAcceleratedWidth
+        {
+            return batchedVerificationTail(
+                attended: attended, residual: residual, injection: injection,
+                compiled: true)
+        }
         return layerTail(
             attended: attended,
             residual: residual,
@@ -3807,6 +3888,30 @@ final class Qwen4ExpDecoderLayer: Module {
                 injection[0..., row ..< (row + 1), 0...],
             ])[0]
         }, axis: 1)
+    }
+
+    private lazy var compiledBatchedVerificationTail: @Sendable ([MLXArray]) -> [MLXArray] = {
+        let body: ([MLXArray]) -> [MLXArray] = { [unowned self] arguments in
+            CompiledDecodeTrace.withActive {
+                [self.batchedVerificationTail(
+                    attended: arguments[0], residual: arguments[1], injection: arguments[2],
+                    compiled: false)]
+            }
+        }
+        return compile(shapeless: false, body)
+    }()
+
+    /// Experimental batched verifier: retain row-independent HC kernels but
+    /// schedule the sorted expert rows together. All inputs are functional;
+    /// no KV, recurrent state, or request-owned arrays are captured.
+    func batchedVerificationTail(
+        attended: MLXArray, residual: MLXArray, injection: MLXArray, compiled: Bool
+    ) -> MLXArray {
+        if compiled { return compiledBatchedVerificationTail([attended, residual, injection])[0] }
+        let read = mlpHyperConnection.mixAfterInjection(
+            output: attended, residual: residual, weights: injection)
+        let output = mlp(read.0, verificationPolicy: .batched)
+        return mlpHyperConnection.inject(output, residual: read.1, weights: read.2)
     }
 
     private func layerTail(
@@ -4022,8 +4127,7 @@ private final class Qwen4ExpModelInner: Module {
         let attentionIndex = layers.firstIndex { !$0.isLinear }
         let mask = attentionIndex.map { createAttentionMask(h: hidden, cache: layerCaches[$0]) } ?? .none
         let sharedFusedQKAngles: MLXArray?
-        if verificationPolicy != .batched,
-           Qwen4ExpQKNormRoPEFusion.shouldPrepareSharedAngles(
+        if Qwen4ExpQKNormRoPEFusion.shouldPrepareSharedAngles(
                batchSize: hidden.dim(0),
                sequenceLength: hidden.dim(1),
                dtype: hidden.dtype),

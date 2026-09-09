@@ -6,6 +6,67 @@ import MLXNN
 import XCTest
 
 final class QwenNextMTPPipelineTests: XCTestCase {
+    func testCompiledAttentionProjectionKeepsPositionsAndModelsIndependent() async throws {
+        for _ in 0..<2 {
+            let model = try await makeModel(attentionHeadDimension: 256)
+            let layer = Qwen4ExpDecoderLayer(
+                model.configuration, layerIndex: 1, forceFullAttention: true)
+            layer.update(parameters: layer.mapParameters { $0.asType(.bfloat16) })
+            quantize(model: layer, groupSize: 32, bits: 4)
+            eval(layer)
+            for width in [2, 4, 7, 2] {
+                let input = MLXArray((0..<(width * 128)).map { Float(($0 % 29) - 14) / 32 })
+                    .reshaped(1, width, 128).asType(.bfloat16)
+                for offset in [0, 493, 2112, 0] {
+                    let positions = MLXArray(Int32(offset)..<Int32(offset + width)).reshaped(1, width)
+                    let indexActual = layer.indexProjectionForTesting(
+                        input, positions: positions, compiled: true)
+                    let indexExpected = layer.indexProjectionForTesting(
+                        input, positions: positions, compiled: false)
+                    eval(indexActual + indexExpected)
+                    for (a, b) in zip(indexActual, indexExpected) {
+                        XCTAssertTrue(a.asArray(Float.self) == b.asArray(Float.self),
+                                      "Indexer differs at width \(width), offset \(offset)")
+                    }
+                    let actual = layer.attentionProjectionForTesting(
+                        input, offset: offset, compiled: true)
+                    let expected = layer.attentionProjectionForTesting(
+                        input, offset: offset, compiled: false)
+                    eval(actual + expected)
+                    for (a, b) in zip(actual, expected) {
+                        XCTAssertTrue(a.asArray(Float.self) == b.asArray(Float.self),
+                                      "Projection differs at width \(width), offset \(offset)")
+                    }
+                }
+            }
+        }
+    }
+
+    func testCompiledBatchedTailMatchesItsFunctionalBodyAcrossWidthsAndModels() async throws {
+        for _ in 0..<2 {
+            let model = try await makeModel()
+            let layer = Qwen4ExpDecoderLayer(model.configuration, layerIndex: 1)
+            layer.update(parameters: layer.mapParameters { $0.asType(.bfloat16) })
+            quantize(model: layer, groupSize: 32, bits: 4)
+            eval(layer)
+            for width in [2, 4, 7, 2] {
+                func values(_ columns: Int, _ divisor: Float) -> MLXArray {
+                    MLXArray((0..<(width * columns)).map { Float(($0 % 29) - 14) / divisor })
+                        .reshaped(1, width, columns).asType(.bfloat16)
+                }
+                let attended = values(128, 32), residual = values(512, 64)
+                let injection = values(4, 128)
+                let expected = layer.batchedVerificationTail(
+                    attended: attended, residual: residual, injection: injection, compiled: false)
+                let actual = layer.batchedVerificationTail(
+                    attended: attended, residual: residual, injection: injection, compiled: true)
+                eval(expected, actual)
+                XCTAssertTrue(expected.asArray(Float.self) == actual.asArray(Float.self),
+                              "Compiled batched tail changed values at width \(width)")
+            }
+        }
+    }
+
     func testSortedVerifyExpertsRestoreTokenAndRouteOrder() {
         let layer = SwitchGLU(inputDims: 256, hiddenDims: 256, numExperts: 8)
         layer.update(parameters: layer.mapParameters { $0.asType(.bfloat16) })
@@ -46,15 +107,18 @@ final class QwenNextMTPPipelineTests: XCTestCase {
                 let row = index / length, column = index % length
                 return column <= prefix + row && (column % 7 != 0 || column == prefix + row)
             }).reshaped(1, 1, width, length)
-            let single = qwen4ExpTargetVerifyAttention(
-                queries: q, keys: k, values: v, prefixLength: prefix,
-                scale: 0.0625, mask: .array(mask), chunkSize: 1)
-            let grouped = qwen4ExpTargetVerifyAttention(
-                queries: q, keys: k, values: v, prefixLength: prefix,
-                scale: 0.0625, mask: .array(mask), chunkSize: 2)
-            eval(single, grouped)
-            XCTAssertEqual(single.asArray(Float.self), grouped.asArray(Float.self),
-                           "Grouped QSA changed target attention at width \(width)")
+            let modes: [MLXFast.ScaledDotProductAttentionMaskMode] = [.array(mask), .causal]
+            for (index, mode) in modes.enumerated() {
+                let single = qwen4ExpTargetVerifyAttention(
+                    queries: q, keys: k, values: v, prefixLength: prefix,
+                    scale: 0.0625, mask: mode, chunkSize: 1)
+                let grouped = qwen4ExpTargetVerifyAttention(
+                    queries: q, keys: k, values: v, prefixLength: prefix,
+                    scale: 0.0625, mask: mode, chunkSize: 2)
+                eval(single, grouped)
+                XCTAssertEqual(single.asArray(Float.self), grouped.asArray(Float.self),
+                               "Grouped attention changed values at width \(width), mask \(index)")
+            }
         }
     }
 
@@ -172,7 +236,9 @@ final class QwenNextMTPPipelineTests: XCTestCase {
             XCTAssertEqual(actual.shape, expected.shape, label)
             XCTAssertTrue(actual.asArray(Float.self) == expected.asArray(Float.self), label)
         }
-        for request in 0..<2 {
+        for request in 0..<4 {
+            let policy: MTPVerificationPolicy = request.isMultiple(of: 2)
+                ? .strictSingletonEquivalent : .batched
             for width in [2, 4, 7] {
                 let compiled = layer.gatedDeltaCacheForTesting(width: width)
                 let ordinary = layer.gatedDeltaCacheForTesting(width: width)
@@ -185,8 +251,10 @@ final class QwenNextMTPPipelineTests: XCTestCase {
                 let input = MLXArray((0..<(128 * width)).map {
                     Float(($0 % 29) - 14 + request) / 32
                 }).reshaped(1, width, 128).asType(.bfloat16)
-                let actual = layer.gatedDeltaVerificationForTesting(input, cache: compiled, compiled: true)
-                let expected = layer.gatedDeltaVerificationForTesting(input, cache: ordinary, compiled: false)
+                let actual = layer.gatedDeltaVerificationForTesting(
+                    input, cache: compiled, compiled: true, policy: policy)
+                let expected = layer.gatedDeltaVerificationForTesting(
+                    input, cache: ordinary, compiled: false, policy: policy)
                 assertExact(actual, expected, "GDN output request=\(request) width=\(width)")
                 assertExact(try XCTUnwrap(compiled[0]), try XCTUnwrap(ordinary[0]), "convolution state")
                 assertExact(try XCTUnwrap(compiled[1]), try XCTUnwrap(ordinary[1]), "recurrent state")
@@ -202,8 +270,10 @@ final class QwenNextMTPPipelineTests: XCTestCase {
                         cache[0] = convolution
                         cache[1] = recurrent
                     }
-                    eval(layer.gatedDeltaVerificationForTesting(input, cache: compiled, compiled: true))
-                    eval(layer.gatedDeltaVerificationForTesting(input, cache: ordinary, compiled: false))
+                    eval(layer.gatedDeltaVerificationForTesting(
+                        input, cache: compiled, compiled: true, policy: policy))
+                    eval(layer.gatedDeltaVerificationForTesting(
+                        input, cache: ordinary, compiled: false, policy: policy))
                     layer.rollbackGatedDeltaForTesting(compiled, keeping: keep)
                     layer.rollbackGatedDeltaForTesting(ordinary, keeping: keep)
                     assertExact(try XCTUnwrap(compiled[0]), try XCTUnwrap(ordinary[0]), "committed convolution keep=\(keep)")
@@ -292,11 +362,13 @@ final class QwenNextMTPPipelineTests: XCTestCase {
 
     // Ten layers deliberately cross the default eight-layer dispatch boundary.
     // The usual two-layer architecture fixture cannot exercise that boundary.
-    private func makeModel(withPLE: Bool = false) async throws -> Qwen4ExpModel {
+    private func makeModel(
+        withPLE: Bool = false, attentionHeadDimension: Int = 64
+    ) async throws -> Qwen4ExpModel {
         var text: [String: Any] = [
             "model_type": "qwen4_exp_text", "hidden_size": 128,
             "num_hidden_layers": 10, "num_attention_heads": 2,
-            "num_key_value_heads": 1, "head_dim": 64,
+            "num_key_value_heads": 1, "head_dim": attentionHeadDimension,
             "linear_num_value_heads": 2, "linear_num_key_heads": 1,
             "linear_key_head_dim": 128, "linear_value_head_dim": 128,
             "linear_conv_kernel_dim": 4, "moe_intermediate_size": 32,
