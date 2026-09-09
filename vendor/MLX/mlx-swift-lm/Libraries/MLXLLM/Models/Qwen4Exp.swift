@@ -296,7 +296,11 @@ private final class Qwen4ExpGatedResidual: Module {
         _ input: MLXArray,
         verificationPolicy: MTPVerificationPolicy? = nil
     ) -> (MLXArray, MLXArray, MLXArray) {
-        if verificationPolicy == nil,
+        // The fused kernel treats every token row independently, using the
+        // same reductions as its M=1 AR invocation. Strict verification must
+        // not fall back to an older unfused HC implementation solely because
+        // several independent rows are presented in one window.
+        if verificationPolicy != .batched,
            let blockInjectWeight,
            let fused = Qwen4ExpHyperConnectionFusion.call(
                input: input,

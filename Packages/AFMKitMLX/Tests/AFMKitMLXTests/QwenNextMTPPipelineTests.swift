@@ -6,6 +6,46 @@ import MLXNN
 import XCTest
 
 final class QwenNextMTPPipelineTests: XCTestCase {
+    func testFusedVerificationHyperConnectionMatchesIndependentARRowsExactly() throws {
+        let hidden = 2560
+        let streams = 4
+        let columns = hidden * streams
+        let rank = 64
+        func values(_ count: Int, _ divisor: Float) -> MLXArray {
+            MLXArray((0..<count).map { Float(($0 % 43) - 21) / divisor }).asType(.bfloat16)
+        }
+        let norm = values(columns, 1024)
+        let inject = Linear(weight: values(streams * columns, 1024).reshaped(streams, columns))
+        for bits in [4, 8] {
+            let down = QuantizedLinear(
+                weight: values(rank * columns, 1024).reshaped(rank, columns),
+                bias: nil, groupSize: 64, bits: bits)
+            let up = QuantizedLinear(
+                weight: values(columns * rank, 1024).reshaped(columns, rank),
+                bias: nil, groupSize: 64, bits: bits)
+            for width in [2, 4, 7, 8] {
+                let input = values(width * columns, 64).reshaped(1, width, columns)
+                func fused(_ rows: MLXArray) throws -> Qwen4ExpHyperConnectionFusionOutput {
+                    try XCTUnwrap(Qwen4ExpHyperConnectionFusion.call(
+                        input: rows, normWeight: norm, down: down, up: up,
+                        inject: inject, hcCount: streams, hiddenSize: hidden,
+                        epsilon: 0.000001))
+                }
+                let actual = try fused(input)
+                let singles = try (0..<width).map { row in
+                    try fused(input[0..., row..<(row + 1), 0...])
+                }
+                let expectedMix = concatenated(singles.map(\.mixed), axis: 1)
+                let expectedInjection = concatenated(singles.map(\.injection), axis: 1)
+                eval(actual.mixed, actual.injection, expectedMix, expectedInjection)
+                XCTAssertEqual(actual.mixed.asArray(Float.self), expectedMix.asArray(Float.self),
+                               "HC mix bits=\(bits) width=\(width)")
+                XCTAssertEqual(actual.injection.asArray(Float.self), expectedInjection.asArray(Float.self),
+                               "HC injection bits=\(bits) width=\(width)")
+            }
+        }
+    }
+
     func testCompiledVerificationTailMatchesIndependentRowsAndDifferentModels() async throws {
         let model = try await makeModel()
         var firstModelRows: [Float]?
