@@ -1947,7 +1947,10 @@ private final class Qwen4ExpAttention: Module {
             v = vProjection.reshaped(b, l, kvHeads, headDim)
                 .transposed(0, 2, 1, 3)
             attentionProfiler?.lap([qInput, gate, kInput, v], stage: "projections")
-            let fusedQK = verificationPolicy == nil
+            // This kernel normalizes and rotates each row independently with
+            // the same BF16 rounding as AR. Strict verification can therefore
+            // reuse it without selecting a width-dependent reduction.
+            let fusedQK = verificationPolicy != .batched
                 && Qwen4ExpQKNormRoPEFusion.enabled
                 ? Qwen4ExpQKNormRoPEFusion.call(
                     q: qInput,
@@ -3962,7 +3965,7 @@ private final class Qwen4ExpModelInner: Module {
         let attentionIndex = layers.firstIndex { !$0.isLinear }
         let mask = attentionIndex.map { createAttentionMask(h: hidden, cache: layerCaches[$0]) } ?? .none
         let sharedFusedQKAngles: MLXArray?
-        if verificationPolicy == nil,
+        if verificationPolicy != .batched,
            Qwen4ExpQKNormRoPEFusion.shouldPrepareSharedAngles(
                batchSize: hidden.dim(0),
                sequenceLength: hidden.dim(1),

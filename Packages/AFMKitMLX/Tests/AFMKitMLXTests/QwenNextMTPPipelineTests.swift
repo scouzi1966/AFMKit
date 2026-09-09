@@ -6,6 +6,38 @@ import MLXNN
 import XCTest
 
 final class QwenNextMTPPipelineTests: XCTestCase {
+    func testVerificationQKNormRoPEMatchesIndependentARRowsExactly() throws {
+        func values(_ count: Int) -> MLXArray {
+            MLXArray((0..<count).map { Float(($0 % 71) - 35) / 64 }).asType(.bfloat16)
+        }
+        for width in [2, 4, 7, 8] {
+            for rotary in [32, 64, 128] {
+                let q = values(width * 24 * 256).reshaped(1, width, 24, 256)
+                let k = values(width * 2 * 256).reshaped(1, width, 2, 256)
+                let weights = values(256)
+                let angles = values(width * rotary).reshaped(width, rotary)
+                func fused(_ q: MLXArray, _ k: MLXArray, _ angles: MLXArray)
+                    throws -> (q: MLXArray, k: MLXArray) {
+                    try XCTUnwrap(Qwen4ExpQKNormRoPEFusion.call(
+                        q: q, k: k, qWeight: weights, kWeight: weights,
+                        angles: angles, epsilon: 0.000001, qHeads: 24, kvHeads: 2,
+                        rotaryDimensions: rotary))
+                }
+                let actual = try fused(q, k, angles)
+                let singles = try (0..<width).map { row in
+                    try fused(q[0..., row..<(row + 1), 0..., 0...],
+                              k[0..., row..<(row + 1), 0..., 0...],
+                              angles[row..<(row + 1), 0...])
+                }
+                let expectedQ = concatenated(singles.map(\.q), axis: 2)
+                let expectedK = concatenated(singles.map(\.k), axis: 2)
+                eval(actual.q, actual.k, expectedQ, expectedK)
+                XCTAssertTrue(actual.q.asArray(Float.self) == expectedQ.asArray(Float.self))
+                XCTAssertTrue(actual.k.asArray(Float.self) == expectedK.asArray(Float.self))
+            }
+        }
+    }
+
     func testCompiledGatedDeltaPreservesRequestStateAndEveryRollbackPrefix() async throws {
         let model = try await makeModel()
         let layer = Qwen4ExpDecoderLayer(model.configuration, layerIndex: 0)
