@@ -38,6 +38,32 @@ qualification is separate and must not be confused with continuous MTP
 batching: Qwen MTP currently uses a serial lane with request-owned cold caches;
 ineligible requests can use the ordinary AR scheduler.
 
+Code is checkpointed at `9f3155b2`. The selected existing API contract sections
+6/7/2/3/8/15 also pass with the enabled candidate and
+`--enable-prefix-caching --concurrent 2`: **44 functional assertions and 12
+repeated preflight assertions**, no failures or skips. These cover safe
+shared-prefix fallback, replay consistency, divergent branch isolation,
+concurrent requests, stop handling, logprobs, errors, and batch API dispatch.
+They validate coexistence, not MTP prefix-reuse acceleration or continuous
+speculative batching. No broad quality-equivalence claim follows from them.
+
+### Fresh reference cross-check (frozen baseline retained)
+
+After the AFM runs, the same frozen v26.9.2 reference binary was launched again
+with the same checkpoint, prompts, sampling and cache-disabled arguments.
+Its three-trial medians were **95.34 / 84.36 / 85.25 / 80.87 tok/s**. Results
+are appended under `dispatch-checkpoint-confirmation-reference-mtp-1`; the
+original frozen result files are unchanged. The reference's adaptive state
+and before/after round-cost tables are captured. At 4K, its first trial also
+produced different text from the second and third; this is not an exact-output
+fixed-work comparison across all reference trials.
+
+Compared with this fresh reference repeat, AFM's repeated enabled candidate
+is **-4.9% / -3.9% / +5.2% / -6.6%**. Against the stronger reference median
+at each context from either reference run, it is **-4.9% / -3.9% / -2.5% /
+-6.6%**. Thus the experimental 10% gate is met against both reference curves;
+equality, default parity, and broad quality equivalence are still not claimed.
+
 ### Follow-up: verifier dispatch overlap reaches the experimental 10% gate
 
 Code checkpoint `2bb0c0c6` preserves the lazy-range change and bounded,
