@@ -57,6 +57,7 @@ enum Qwen4ExpHyperConnectionFusion {
         let epsilon: Float
         let hasInject: Bool
         let hasPending: Bool
+        let matchFusedInjection: Bool
     }
 
     private final class ChainPlan: @unchecked Sendable {
@@ -267,9 +268,12 @@ enum Qwen4ExpHyperConnectionFusion {
             float sum = 0.0f;
             for (int element = 0; element < elements_per_thread; ++element) {
                 const int index = stream_base + int(tid) + 256 * element;
-                // Match the stock graph's multiply rounding followed by add rounding.
-                const T value = T(float(input[index])
-                    + float(T(float(pending[index - stream_base]) * gate)));
+                // The ordinary pending path retains stock two-rounding
+                // semantics. A verifier replacing injectKernel must instead
+                // match that kernel's single final rounding exactly.
+                const T value = MATCH_FUSED_INJECTION
+                    ? T(float(input[index]) + float(pending[index - stream_base]) * gate)
+                    : T(float(input[index]) + float(T(float(pending[index - stream_base]) * gate)));
                 written[index] = value;
                 values[element] = float(value);
                 sum += float(value) * float(value);
@@ -457,6 +461,7 @@ enum Qwen4ExpHyperConnectionFusion {
                     ("T", key.dtype), ("HC", key.hcCount),
                     ("HIDDEN", key.hiddenSize),
                     ("HAS_INJECT", key.hasInject),
+                    ("MATCH_FUSED_INJECTION", key.matchFusedInjection),
                 ],
                 grid: (256 * key.hcCount, key.rows, 1),
                 threadGroup: (256, 1, 1),
@@ -563,7 +568,8 @@ enum Qwen4ExpHyperConnectionFusion {
         hiddenSize: Int,
         epsilon: Float,
         pendingOutput: MLXArray? = nil,
-        pendingWeights: MLXArray? = nil
+        pendingWeights: MLXArray? = nil,
+        matchFusedInjection: Bool = false
     ) -> Qwen4ExpHyperConnectionFusionOutput? {
         guard enabled,
               Device.defaultDevice().deviceType == .gpu,
@@ -634,7 +640,8 @@ enum Qwen4ExpHyperConnectionFusion {
                 dtype: input.dtype,
                 epsilon: epsilon,
                 hasInject: inject != nil,
-                hasPending: hasPending)
+                hasPending: hasPending,
+                matchFusedInjection: matchFusedInjection)
             let plan = chainPlan(for: key)
             let chained = plan.chain([
                 input,
@@ -665,6 +672,7 @@ enum Qwen4ExpHyperConnectionFusion {
                 template: [
                     ("T", input.dtype), ("HC", hcCount), ("HIDDEN", hiddenSize),
                     ("HAS_INJECT", inject != nil),
+                    ("MATCH_FUSED_INJECTION", matchFusedInjection),
                 ],
                 grid: (256 * hcCount, rows, 1),
                 threadGroup: (256, 1, 1),

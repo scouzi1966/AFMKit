@@ -6,6 +6,183 @@ import MLXNN
 import XCTest
 
 final class QwenNextMTPPipelineTests: XCTestCase {
+    func testDeferredVerificationWritesPreservePLEAndRollbackState() async throws {
+        for withPLE in [false, true] {
+            var configuration = try await makeModel(withPLE: withPLE).configuration
+            if withPLE { configuration.pleLayerIDs = [3] }
+            let layers = (0..<3).map { Qwen4ExpDecoderLayer(configuration, layerIndex: $0) }
+            layers.forEach { layer in
+                layer.update(parameters: layer.mapParameters {
+                    $0.dtype.isFloatingPoint ? $0.asType(.bfloat16) : $0
+                })
+            }
+            eval(layers)
+            for width in [2, 4, 7] {
+                func caches() -> [KVCache] {
+                    layers.enumerated().map { index, layer in
+                        if index == 1 { return Qwen4ExpAttentionCache(indexerCompressRatio: 4) }
+                        let cache = layer.gatedDeltaCacheForTesting(width: width)
+                        cache[0] = MLXArray.zeros([1, 3, 512], dtype: .bfloat16)
+                        cache[1] = MLXArray.zeros([1, 2, 128, 128], dtype: .float32)
+                        return cache
+                    }
+                }
+                let eagerCache = caches(), deferredCache = caches()
+                let input = MLXArray((0..<(width * 512)).map { Float(($0 % 29) - 14) / 64 })
+                    .reshaped(1, width, 512).asType(.bfloat16)
+                let ids = MLXArray((1...width).map(Int32.init)).reshaped(1, width)
+                var eager = input, deferred = input
+                var pending: Qwen4ExpPendingHyperConnectionWrite?
+                for (index, layer) in layers.enumerated() {
+                    eager = layer(eager, inputIDs: ids, attentionMask: .causal,
+                                  positionIDs: nil, cache: eagerCache[index], verificationPolicy: .batched)
+                    let result = layer.callDeferringFinalInjection(
+                        deferred, precedingPending: pending, inputIDs: ids, hostTokenIDs: nil,
+                        attentionMask: .causal, positionIDs: nil, cache: deferredCache[index],
+                        verificationPolicy: .batched)
+                    deferred = result.stream
+                    pending = result.pending
+                }
+                deferred = layers.last!.materializeFinalInjection(try XCTUnwrap(pending))
+                eval(eager, deferred)
+                XCTAssertEqual(eager.asArray(Float.self), deferred.asArray(Float.self))
+                for index in [0, 2] {
+                    let a = try XCTUnwrap(eagerCache[index] as? ArraysCache)
+                    let b = try XCTUnwrap(deferredCache[index] as? ArraysCache)
+                    layers[index].rollbackGatedDeltaForTesting(a, keeping: width - 1)
+                    layers[index].rollbackGatedDeltaForTesting(b, keeping: width - 1)
+                    for (x, y) in zip(a.state, b.state) {
+                        eval(x, y)
+                        XCTAssertEqual(x.shape, y.shape)
+                        XCTAssertEqual(x.asArray(Float.self), y.asArray(Float.self))
+                    }
+                }
+            }
+        }
+    }
+
+    func testExperimentalHCIsLimitedToBatchedSingleRequestVerification() {
+        let input = MLXArray.zeros([1, 4, 10240], dtype: .bfloat16)
+        XCTAssertTrue(qwen4ExpCanFuseVerificationHC(input, policy: .batched, enabled: true))
+        XCTAssertFalse(qwen4ExpCanFuseVerificationHC(input, policy: .batched, enabled: false))
+        XCTAssertFalse(qwen4ExpCanFuseVerificationHC(input, policy: .strictSingletonEquivalent, enabled: true))
+        XCTAssertFalse(qwen4ExpCanFuseVerificationHC(input, policy: nil, enabled: true))
+        for shape in [[2, 4, 10240], [1, 1, 10240], [1, 16, 10240]] {
+            XCTAssertFalse(qwen4ExpCanFuseVerificationHC(
+                MLXArray.zeros(shape, dtype: .bfloat16), policy: .batched, enabled: true))
+        }
+        XCTAssertFalse(qwen4ExpCanFuseVerificationHC(
+            input.asType(.float32), policy: .batched, enabled: true))
+    }
+
+    func testVerifyRadixSelectionMatchesStableTopKAndCausalTail() throws {
+        // Alternating block lengths reuses one specialization across growing
+        // contexts. Include ties, signed zeros, negative values and NaNs.
+        for blocks in [17, 533, 1061, 533] {
+            for width in [2, 4, 7] {
+                let bounds = (0..<width).map { min(blocks, $0 * blocks / (width - 1)) }
+                let values: [Float] = (0..<(width * blocks)).map { index in
+                    switch index % 19 {
+                    case 0: return .nan
+                    case 1: return -0.0
+                    case 2: return 0.0
+                    default: return Float((index * 37) % 103 - 51) / 8
+                    }
+                }
+                for topK in [1, min(512, blocks)] {
+                    let scores = MLXArray(values).reshaped(1, width, blocks)
+                    let result = try XCTUnwrap(Qwen4ExpQSAVerifyRadixSelection.call(
+                        scores: scores, visibleBlockCounts: bounds, topK: topK,
+                        forceEnabledForTesting: true))
+                    eval(result)
+                    var expected = [Int32]()
+                    for row in 0..<width {
+                        let ranked = (0..<bounds[row]).sorted { a, b in
+                            let x = values[row * blocks + a], y = values[row * blocks + b]
+                            if x.isNaN != y.isNaN { return x.isNaN }
+                            if (x.isNaN && y.isNaN) || x == y { return a < b }
+                            return x > y
+                        }
+                        let selected = ranked.prefix(topK).sorted().map(Int32.init)
+                        expected += selected + Array(repeating: Int32.max, count: topK - selected.count)
+                    }
+                    XCTAssertEqual(result.asArray(Int32.self), expected,
+                                   "blocks=\(blocks), width=\(width), topK=\(topK)")
+                }
+            }
+        }
+        // Real causal geometry: a block completed by a later verify row must
+        // stay invisible to earlier rows, except each row's incomplete tail.
+        let width = 4, keyLength = 37, ratio = 4, topK = 3
+        let bounds = (0..<width).map { (keyLength - width + $0 + 1) / ratio }
+        let scores = MLXArray((0..<(width * 9)).map { Float($0 % 9) }).reshaped(1, width, 9)
+        let blocks = try XCTUnwrap(Qwen4ExpQSAVerifyRadixSelection.call(
+            scores: scores, visibleBlockCounts: bounds, topK: topK,
+            forceEnabledForTesting: true))
+        let mask = Qwen4ExpQSAGather.maskFromBlocks(blocks, keyLength: keyLength, compressionRatio: ratio)
+        eval(mask)
+        let actual = mask.asArray(Bool.self)
+        for row in 0..<width {
+            let end = keyLength - width + row + 1
+            for token in 0..<keyLength {
+                let expected = token < end && token >= (bounds[row] - topK) * ratio
+                XCTAssertEqual(actual[row * keyLength + token], expected)
+            }
+        }
+        XCTAssertNil(Qwen4ExpQSAVerifyRadixSelection.call(
+            scores: scores, visibleBlockCounts: [-1, 8, 9, 9], topK: topK,
+            forceEnabledForTesting: true))
+    }
+
+    func testFP32SnapshotsMatchReplayAtEveryAcceptanceBoundary() async throws {
+        let model = try await makeModel()
+        let replay = Qwen4ExpDecoderLayer(model.configuration, layerIndex: 0,
+                                         captureRecurrentStates: false)
+        let snapshots = Qwen4ExpDecoderLayer(model.configuration, layerIndex: 0,
+                                            captureRecurrentStates: true)
+        for layer in [replay, snapshots] {
+            layer.update(parameters: layer.mapParameters { $0.asType(.bfloat16) })
+            quantize(model: layer, groupSize: 32, bits: 4)
+        }
+        snapshots.update(parameters: replay.parameters())
+        eval(replay, snapshots)
+        func exact(_ a: MLXArray, _ b: MLXArray, _ message: String) {
+            eval(a, b)
+            XCTAssertTrue(a.asArray(Float.self) == b.asArray(Float.self), message)
+        }
+        for policy: MTPVerificationPolicy in [.strictSingletonEquivalent, .batched] {
+            for request in 0..<2 {
+                for width in [2, 4, 7] {
+                    let a = snapshots.gatedDeltaCacheForTesting(width: width)
+                    let b = replay.gatedDeltaCacheForTesting(width: width)
+                    let initialConv = (MLXArray.zeros([1, 3, 512]) + Float(request) / 128)
+                        .asType(.bfloat16)
+                    let initialState = MLXArray.zeros([1, 2, 128, 128]) + Float(request) / 1024
+                    let input = MLXArray((0..<(width * 128)).map {
+                        Float(($0 % 29) - 14 + request) / 32
+                    }).reshaped(1, width, 128).asType(.bfloat16)
+                    for keep in 1...width {
+                        for cache in [a, b] { cache[0] = initialConv; cache[1] = initialState }
+                        let captured = snapshots.gatedDeltaVerificationForTesting(
+                            input, cache: a, compiled: true, policy: policy)
+                        let ordinary = replay.gatedDeltaVerificationForTesting(
+                            input, cache: b, compiled: true, policy: policy)
+                        exact(captured, ordinary, "Snapshot output width=\(width) keep=\(keep)")
+                        exact(try XCTUnwrap(a[1]), try XCTUnwrap(b[1]), "Final state")
+                        let history = try XCTUnwrap(snapshots.gatedDeltaHistoryForTesting(a))
+                        XCTAssertEqual(history.dtype, .float32)
+                        XCTAssertEqual(history.shape, [width - 1] + initialState.shape)
+                        snapshots.rollbackGatedDeltaForTesting(a, keeping: keep)
+                        replay.rollbackGatedDeltaForTesting(b, keeping: keep)
+                        exact(try XCTUnwrap(a[0]), try XCTUnwrap(b[0]), "Committed convolution")
+                        exact(try XCTUnwrap(a[1]), try XCTUnwrap(b[1]), "Committed FP32 state")
+                        XCTAssertNil(snapshots.gatedDeltaHistoryForTesting(a))
+                    }
+                }
+            }
+        }
+    }
+
     func testCompiledAttentionProjectionKeepsPositionsAndModelsIndependent() async throws {
         for _ in 0..<2 {
             let model = try await makeModel(attentionHeadDimension: 256)
@@ -319,6 +496,20 @@ final class QwenNextMTPPipelineTests: XCTestCase {
                                "HC mix bits=\(bits) width=\(width)")
                 XCTAssertEqual(actual.injection.asArray(Float.self), expectedInjection.asArray(Float.self),
                                "HC injection bits=\(bits) width=\(width)")
+                let pendingOutput = values(width * hidden, 128).reshaped(1, width, hidden)
+                let pendingWeights = values(width * streams, 128).reshaped(1, width, streams)
+                let injected = try XCTUnwrap(Qwen4ExpHyperConnectionFusion.inject(
+                    output: pendingOutput, residual: input, weights: pendingWeights,
+                    hcCount: streams, hiddenSize: hidden))
+                let materialized = try fused(injected)
+                let pending = try XCTUnwrap(Qwen4ExpHyperConnectionFusion.call(
+                    input: input, normWeight: norm, down: down, up: up, inject: inject,
+                    hcCount: streams, hiddenSize: hidden, epsilon: 0.000001,
+                    pendingOutput: pendingOutput, pendingWeights: pendingWeights,
+                    matchFusedInjection: true))
+                eval(materialized.mixed, materialized.injection, pending.mixed, pending.injection)
+                XCTAssertEqual(materialized.mixed.asArray(Float.self), pending.mixed.asArray(Float.self))
+                XCTAssertEqual(materialized.injection.asArray(Float.self), pending.injection.asArray(Float.self))
             }
         }
     }

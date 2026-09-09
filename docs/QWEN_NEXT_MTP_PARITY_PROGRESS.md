@@ -6,6 +6,66 @@ not release qualification, and default MTP is not yet consistently faster than A
 
 ## Measurement contract
 
+### Follow-up: exact rollback gates and bounded verifier experiments
+
+An FP32 state-snapshot experiment exposed a real partial-rollback discrepancy.
+The forward verifier consumed gates produced by fused prework, but rollback
+recomputed them through a different fused-gating path with different rounding.
+Full-window state agreed while 29 intermediate-state assertions failed. The
+fix carries the **actual forward gate and beta arrays** through the functional
+compiled boundary and reuses their accepted prefix during replay. No recurrent
+precision was reduced. This corrects replay; old incorrect token trajectories
+are not a correctness oracle.
+
+The snapshot experiment stores the intermediate FP32 states in the recurrent
+kernel, then gathers just the accepted state on rollback. It remains off:
+depth 3 adds about 324 MiB of temporary recurrent history on this checkpoint
+without an observed throughput gain. Snapshot and corrected replay output text
+matched across the sampled contexts, and tests require exact FP32 intermediate
+state equality at every tested acceptance boundary.
+
+| Diagnostic candidate | 0.5K | 1K | 2K | 4K |
+|---|---:|---:|---:|---:|
+| Corrected replay, depth 3 | 80.26 | 78.64 | 66.00 | 57.19 |
+| FP32 snapshots, depth 3 | 79.98 | 76.68 | 64.41 | 55.91 |
+| Corrected replay, depth 4 | 72.44 | 77.16 | 67.72 | 56.90 |
+| Radix QSA selector, depth 3 | 80.95 | 78.58 | 66.34 | 57.21 |
+| Fused verification HC reads, depth 3 | 82.88 | 82.04 | 72.49 | 61.72 |
+
+All rows explicitly select batched verification and attention chunk 2, with
+`AFM_DEBUG=1 AFM_PERF=1`; these are **not default-setting measurements**. Each
+additional experiment is opt-in. All use the same original checkpoint. The
+radix selector did not establish an end-to-end speedup. It retains current
+biased score arithmetic and replaces only selection, using the MIT-licensed
+`QSA_SELECT_KERNEL_SOURCE` from David Dalcu's mlx-serve at
+`1ec580a8b7f5f051daef892310660bb62b2ece6c`; copyright and license are in source.
+Tests cover causal bounds, short rows, deterministic ties, signed zeros, NaNs,
+growing score-bank lengths, and incomplete causal tails.
+
+Fused HC reads changed the shorter-context responses, while the 2K and 4K
+sampled response texts remained unchanged. Those longer-context gains therefore
+are not solely an easier generated text. The summaries inspected were coherent,
+but this is not full quality qualification. Even this candidate remains about
+21% / 19% below the reference at 2K / 4K: parity is still not achieved.
+
+Experimental controls added in this follow-up (unset = off):
+`AFM_QWEN_MTP_STATE_SNAPSHOTS`, `AFM_QWEN_VERIFY_QSA_RADIX`,
+`AFM_QWEN_VERIFY_FUSED_HC`, and `AFM_QWEN_VERIFY_DEFER_HC`.
+They do not change default depth, strict policy, ordinary AR, or other model
+architectures. Cache/concurrency qualification and uninstrumented reruns are
+still required before adopting any experiment as a default.
+
+The deferred-HC follow-up preserves the original single-rounded fused
+injection when a verification layer consumes its predecessor's pending write.
+The old pending path instead rounded the product before addition. An explicit
+kernel specialization selects the matching rounding for this experiment;
+ordinary AR retains its prior behavior. Eighteen targeted tests pass, both with
+the ordinary Metal path and the optional native HC chain. They cover production
+HC geometry (Q4/Q8, widths 2/4/7/8), deferred writes versus materialized writes,
+PLE boundaries, partial recurrent rollback, and separate requests/models.
+
+### Common setup
+
 - M3 Ultra, same `ddalcu/Qwen3.8-Flash-Next-MLX-Serve-4bit` checkpoint and mapped n-gram sidecar.
 - Frozen context prompts: 493, 864, 2,112 and 4,150 input tokens; 128 generated tokens.
 - Temperature zero, thinking off, prefix reuse disabled; one GPU workload at a time.

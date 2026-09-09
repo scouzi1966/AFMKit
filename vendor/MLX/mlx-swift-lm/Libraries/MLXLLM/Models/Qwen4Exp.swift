@@ -268,7 +268,21 @@ private final class Qwen4ExpGatedNorm: Module {
     }
 }
 
+func qwen4ExpCanFuseVerificationHC(
+    _ input: MLXArray, policy: MTPVerificationPolicy?, enabled: Bool
+) -> Bool {
+    enabled && policy == .batched && input.ndim == 3
+        && input.dim(0) == 1 && input.dim(1) > 1
+        && input.dim(1) <= VerifyWidthLinear.maximumAcceleratedWidth
+        && input.dtype == .bfloat16
+}
+
 private final class Qwen4ExpGatedResidual: Module {
+    // The reference uses its row-independent HC read at verify widths too.
+    // Keep this an explicit A/B: fused reductions can change batched token
+    // trajectories even when they match the single-row kernel exactly.
+    private static let fusedVerificationEnabled =
+        ProcessInfo.processInfo.environment["AFM_QWEN_VERIFY_FUSED_HC"] == "1"
     private static let fusedFinalMixerEnabled =
         ProcessInfo.processInfo.environment["AFM_QWEN_FUSED_FINAL_MIXER"] == "1"
 
@@ -300,7 +314,8 @@ private final class Qwen4ExpGatedResidual: Module {
         // same reductions as its M=1 AR invocation. Strict verification must
         // not fall back to an older unfused HC implementation solely because
         // several independent rows are presented in one window.
-        if verificationPolicy != .batched,
+        if verificationPolicy != .batched || qwen4ExpCanFuseVerificationHC(
+            input, policy: verificationPolicy, enabled: Self.fusedVerificationEnabled),
            let blockInjectWeight,
            let fused = Qwen4ExpHyperConnectionFusion.call(
                input: input,
@@ -335,9 +350,11 @@ private final class Qwen4ExpGatedResidual: Module {
         output: MLXArray,
         residual: MLXArray,
         weights: MLXArray,
-        verificationPolicy: MTPVerificationPolicy? = nil
+        verificationPolicy: MTPVerificationPolicy? = nil,
+        matchFusedInjection: Bool = false
     ) -> (MLXArray, MLXArray, MLXArray) {
-        if verificationPolicy == nil,
+        if verificationPolicy == nil || qwen4ExpCanFuseVerificationHC(
+            residual, policy: verificationPolicy, enabled: Self.fusedVerificationEnabled),
            let blockInjectWeight,
            let fused = Qwen4ExpHyperConnectionFusion.call(
                input: residual,
@@ -349,7 +366,8 @@ private final class Qwen4ExpGatedResidual: Module {
                hiddenSize: hiddenSize,
                epsilon: hcNorm.eps,
                pendingOutput: output,
-               pendingWeights: weights)
+               pendingWeights: weights,
+               matchFusedInjection: matchFusedInjection)
         {
             return (fused.mixed, fused.stream, fused.injection)
         }
@@ -362,8 +380,9 @@ private final class Qwen4ExpGatedResidual: Module {
         _ input: MLXArray,
         verificationPolicy: MTPVerificationPolicy? = nil
     ) -> MLXArray {
-        if Self.fusedFinalMixerEnabled,
-           verificationPolicy == nil,
+        if (Self.fusedFinalMixerEnabled && verificationPolicy == nil)
+            || qwen4ExpCanFuseVerificationHC(
+                input, policy: verificationPolicy, enabled: Self.fusedVerificationEnabled),
            blockInjectWeight == nil,
            let fused = Qwen4ExpHyperConnectionFusion.call(
                input: input,
@@ -396,8 +415,9 @@ private final class Qwen4ExpGatedResidual: Module {
         weights: MLXArray,
         verificationPolicy: MTPVerificationPolicy? = nil
     ) -> MLXArray {
-        if Self.fusedFinalMixerEnabled,
-           verificationPolicy == nil,
+        if (Self.fusedFinalMixerEnabled && verificationPolicy == nil)
+            || qwen4ExpCanFuseVerificationHC(
+                residual, policy: verificationPolicy, enabled: Self.fusedVerificationEnabled),
            blockInjectWeight == nil,
            let fused = Qwen4ExpHyperConnectionFusion.call(
                input: residual,
@@ -745,6 +765,9 @@ private final class Qwen4ExpLayerCache: ArraysCache, UniformBatchKVCache {
         let projectedA: MLXArray
         let projectedB: MLXArray
         let explicitGating: Bool
+        var gate: MLXArray? = nil
+        var beta: MLXArray? = nil
+        var recurrentHistory: MLXArray? = nil
     }
 
     struct PLERollback {
@@ -1592,7 +1615,8 @@ final class Qwen4ExpQSAIndexer: Module {
             queries: queries,
             blockKeys: blockKeys,
             previousOffset: previousOffset,
-            totalLength: totalLength)
+            totalLength: totalLength,
+            allowRadixSelection: verificationPolicy == .batched)
 
         if Qwen4ExpQSAGather.shouldSelectBlocks(
             batch: batch,
@@ -1729,7 +1753,8 @@ final class Qwen4ExpQSAIndexer: Module {
         queries: MLXArray,
         blockKeys: MLXArray,
         previousOffset: Int,
-        totalLength: Int
+        totalLength: Int,
+        allowRadixSelection: Bool = false
     ) -> MLXArray {
         let batch = queries.dim(0)
         let length = queries.dim(2)
@@ -1770,6 +1795,17 @@ final class Qwen4ExpQSAIndexer: Module {
                     matmul(queryChunk, keyBank),
                     MLXArray(0)).sum(axis: 1)
                 let biasedScores = rawScores - tieBreak
+                if allowRadixSelection,
+                   let fused = Qwen4ExpQSAVerifyRadixSelection.call(
+                    scores: biasedScores,
+                    visibleBlockCounts: (start..<end).map {
+                        min(completeBlocks, (previousOffset + $0 + 1) / compressRatio)
+                    },
+                    topK: selectedCapacity)
+                {
+                    chunks.append(fused)
+                    continue
+                }
                 let maskedScores = MLX.where(
                     visible,
                     biasedScores,
@@ -2245,6 +2281,7 @@ func qwen4ExpSupportsCompiledGDNPrework(
 }
 
 private final class Qwen4ExpGatedDeltaNet: Module {
+    let captureRecurrentStates: Bool
     private static let compileDecode =
         ProcessInfo.processInfo.environment["AFM_QWEN_COMPILE_GDN_DECODE"] != "0"
             && HardwareInfo.isModelOwnedCompiledDecodeSupported
@@ -2354,15 +2391,23 @@ private final class Qwen4ExpGatedDeltaNet: Module {
                     arguments[0], cache: scratch,
                     verificationPolicy: policy)
                 let rollback = scratch.gatedDeltaRollback!
-                return [output, scratch[0]!, scratch[1]!,
+                var result = [output, scratch[0]!, scratch[1]!,
                         rollback.projectedQKV, rollback.queries, rollback.keys,
                         rollback.values, rollback.projectedA, rollback.projectedB]
+                // Fixed output slots keep the functional boundary independent
+                // of whether an optional snapshot was produced.
+                result.append(rollback.gate ?? MLXArray.zeros([0]))
+                result.append(rollback.beta ?? MLXArray.zeros([0]))
+                result.append(rollback.recurrentHistory ?? MLXArray.zeros([0]))
+                return result
             }
         }
         return compile(shapeless: false, body)
     }
 
-    init(_ config: Qwen4ExpTextConfiguration) {
+    init(_ config: Qwen4ExpTextConfiguration, captureRecurrentStates: Bool? = nil) {
+        self.captureRecurrentStates = captureRecurrentStates
+            ?? (ProcessInfo.processInfo.environment["AFM_QWEN_MTP_STATE_SNAPSHOTS"] == "1")
         keyHeads = config.linearNumKeyHeads
         valueHeads = config.linearNumValueHeads
         keyHeadDim = config.linearKeyHeadDim
@@ -2426,7 +2471,11 @@ private final class Qwen4ExpGatedDeltaNet: Module {
                     projectedQKV: verified[3], queries: verified[4],
                     keys: verified[5], values: verified[6],
                     projectedA: verified[7], projectedB: verified[8],
-                    explicitGating: Self.explicitGating || Self.verifyExplicitGating)
+                    explicitGating: !Self.verifyDeltaSequential
+                        && (Self.explicitGating || Self.verifyExplicitGating))
+                if verified[9].size > 0 { layerCache.gatedDeltaRollback?.gate = verified[9] }
+                if verified[10].size > 0 { layerCache.gatedDeltaRollback?.beta = verified[10] }
+                if verified[11].size > 0 { layerCache.gatedDeltaRollback?.recurrentHistory = verified[11] }
                 return verified[0]
             }
         }
@@ -2558,6 +2607,7 @@ private final class Qwen4ExpGatedDeltaNet: Module {
             verificationPolicy != nil && l > 1
                 && Self.verifyExplicitGating
         )
+        let useSequentialDelta = verificationPolicy != nil && l > 1 && Self.verifyDeltaSequential
         if verificationPolicy != nil,
            l > 1,
            let layerCache = cache as? Qwen4ExpLayerCache
@@ -2571,13 +2621,21 @@ private final class Qwen4ExpGatedDeltaNet: Module {
                 values: v,
                 projectedA: a,
                 projectedB: rawB,
-                explicitGating: useExplicitGating)
+                explicitGating: useExplicitGating && !useSequentialDelta)
+            // Preserve the exact gates consumed by forward verification.
+            // Recomputing through gatedDeltaUpdate's fused-gating kernel does
+            // not preserve the prework kernel's model-dtype rounding points.
+            if let fusedPrework, !useSequentialDelta {
+                layerCache.gatedDeltaRollback?.gate = fusedPrework.gate
+                layerCache.gatedDeltaRollback?.beta = fusedPrework.beta
+            } else if useExplicitGating, !useSequentialDelta {
+                layerCache.gatedDeltaRollback?.gate = computeGFloat32(aLog, a, dtBias)
+                layerCache.gatedDeltaRollback?.beta = sigmoid(rawB)
+            }
         }
         let output: MLXArray
         let state: MLXArray
-        if verificationPolicy != nil,
-           l > 1,
-           Self.verifyDeltaSequential
+        if useSequentialDelta
         {
             var currentState = recurrentState
             var rows = [MLXArray]()
@@ -2596,6 +2654,21 @@ private final class Qwen4ExpGatedDeltaNet: Module {
             }
             output = concatenated(rows, axis: 1)
             state = currentState
+        } else if captureRecurrentStates,
+                  verificationPolicy != nil, b == 1, l > 1,
+                  l <= VerifyWidthLinear.maximumAcceleratedWidth,
+                  recurrentState.dtype == .float32,
+                  keyHeadDim.isMultiple(of: 32),
+                  (fusedPrework != nil || useExplicitGating),
+                  let layerCache = cache as? Qwen4ExpLayerCache
+        {
+            let captured = gatedDeltaKernelWithStateHistory(
+                q: q, k: k, v: v,
+                g: fusedPrework?.gate ?? computeGFloat32(aLog, a, dtBias),
+                beta: fusedPrework?.beta ?? sigmoid(rawB), state: recurrentState)
+            output = captured.output
+            state = captured.state
+            layerCache.gatedDeltaRollback?.recurrentHistory = captured.history
         } else if let fusedPrework {
             (output, state) = gatedDeltaKernel(
                 q: q, k: k, v: v,
@@ -2665,13 +2738,26 @@ private final class Qwen4ExpGatedDeltaNet: Module {
         ], axis: 1)
         let convolutionState = convolutionHistory[
             0..., (convolutionHistory.dim(1) - convKernel + 1)..., 0...]
+        if let history = rollback.recurrentHistory, keep <= history.dim(0) {
+            cache[0] = convolutionState
+            // Array-index take is a Gather, not a slice view: the next cache
+            // owns only one state, not the whole speculative history buffer.
+            cache[1] = take(history, MLXArray(Int32(keep - 1)), axis: 0)
+            cache.gatedDeltaRollback = nil
+            return
+        }
         let projectedA = rollback.projectedA[0..., ..<keep, 0...]
         let projectedB = rollback.projectedB[0..., ..<keep, 0...]
         let queries = rollback.queries[0..., ..<keep, 0..., 0...]
         let keys = rollback.keys[0..., ..<keep, 0..., 0...]
         let values = rollback.values[0..., ..<keep, 0..., 0...]
         let state: MLXArray
-        if rollback.explicitGating {
+        if let gate = rollback.gate, let beta = rollback.beta {
+            state = gatedDeltaKernel(
+                q: queries, k: keys, v: values,
+                g: gate[0..., ..<keep, 0...], beta: beta[0..., ..<keep, 0...],
+                state: rollback.recurrentState).1
+        } else if rollback.explicitGating {
             state = gatedDeltaKernel(
                 q: queries,
                 k: keys,
@@ -3689,14 +3775,31 @@ final class Qwen4ExpDecoderLayer: Module {
         return compile(shapeless: false, body)
     }()
 
+    private lazy var compiledDeferredBatchedVerificationTail:
+        @Sendable ([MLXArray]) -> [MLXArray] =
+    {
+        let body: ([MLXArray]) -> [MLXArray] = { [unowned self] arguments in
+            CompiledDecodeTrace.withActive {
+                let read = self.mlpHyperConnection.mixAfterInjection(
+                    output: arguments[0], residual: arguments[1], weights: arguments[2])
+                return [self.mlp(read.0, verificationPolicy: .batched), read.1, read.2]
+            }
+        }
+        return compile(shapeless: false, body)
+    }()
+
     init(
         _ config: Qwen4ExpTextConfiguration,
         layerIndex: Int,
         forceFullAttention: Bool = false,
-        disablePLE: Bool = false
+        disablePLE: Bool = false,
+        captureRecurrentStates: Bool? = nil
     ) {
         isLinear = !forceFullAttention && config.layerTypes[layerIndex] == "linear_attention"
-        if isLinear { _linearAttention.wrappedValue = Qwen4ExpGatedDeltaNet(config) }
+        if isLinear {
+            _linearAttention.wrappedValue = Qwen4ExpGatedDeltaNet(
+                config, captureRecurrentStates: captureRecurrentStates)
+        }
         else { _selfAttention.wrappedValue = Qwen4ExpAttention(config) }
         _mlp.wrappedValue = Qwen4ExpSparseMoE(config)
         if !disablePLE, let pleIndex = config.pleLayerIDs.firstIndex(of: layerIndex + 1) {
@@ -3737,6 +3840,10 @@ final class Qwen4ExpDecoderLayer: Module {
         let cache = Qwen4ExpLayerCache()
         cache.beginMTPVerification(width: width)
         return cache
+    }
+
+    func gatedDeltaHistoryForTesting(_ cache: ArraysCache) -> MLXArray? {
+        (cache as? Qwen4ExpLayerCache)?.gatedDeltaRollback?.recurrentHistory
     }
 
     func gatedDeltaRollbackArraysForTesting(_ cache: ArraysCache) -> [MLXArray]? {
@@ -3934,7 +4041,7 @@ final class Qwen4ExpDecoderLayer: Module {
             weights: injection)
     }
 
-    /// Decode-only scheduling variant that leaves the final MLP stream write
+    /// Scheduling variant that leaves the final MLP stream write
     /// pending. A following non-PLE layer consumes it in the fused attention
     /// hyper-connection read, removing one Metal dispatch at the layer boundary.
     func callDeferringFinalInjection(
@@ -3946,7 +4053,9 @@ final class Qwen4ExpDecoderLayer: Module {
         positionIDs: MLXArray?,
         cache: KVCache?,
         fusedQKAngles: MLXArray? = nil,
-        hostProfiler: Qwen4ExpHostProfiler? = nil
+        hostProfiler: Qwen4ExpHostProfiler? = nil,
+        verificationPolicy: MTPVerificationPolicy? = nil,
+        deferredPLE: Qwen4ExpDeferredPLE? = nil
     ) -> (stream: MLXArray, pending: Qwen4ExpPendingHyperConnectionWrite) {
         let arrayCache = cache as? ArraysCache
         var hidden = input
@@ -3965,7 +4074,8 @@ final class Qwen4ExpDecoderLayer: Module {
             hidden = hidden + ple(
                 hidden, inputIDs: inputIDs, cache: arrayCache,
                 hostTokenIDs: hostTokenIDs,
-                verificationPolicy: nil)
+                verificationPolicy: verificationPolicy,
+                deferredPLE: deferredPLE)
             hostProfiler?.lap(.ple)
         }
 
@@ -3975,7 +4085,8 @@ final class Qwen4ExpDecoderLayer: Module {
                 output: pending.output,
                 residual: pending.residual,
                 weights: pending.weights,
-                verificationPolicy: nil)
+                verificationPolicy: nil,
+                matchFusedInjection: verificationPolicy == .batched)
         } else {
             attentionRead = attentionHyperConnection.mix(
                 hidden, verificationPolicy: nil)
@@ -3983,15 +4094,21 @@ final class Qwen4ExpDecoderLayer: Module {
         hostProfiler?.lap(.hyperConnectionRead)
 
         let attended = isLinear
-            ? linearAttention!(attentionRead.0, cache: arrayCache, verificationPolicy: nil)
+            ? linearAttention!(attentionRead.0, cache: arrayCache, verificationPolicy: verificationPolicy)
             : selfAttention!(
                 attentionRead.0, mask: attentionMask, positionIDs: positionIDs,
-                cache: cache, verificationPolicy: nil,
+                cache: cache, verificationPolicy: verificationPolicy,
                 fusedQKAngles: fusedQKAngles)
         hostProfiler?.lap(isLinear ? .gatedDelta : .attention)
         let compiledTail: [MLXArray]?
         if Self.compileLayerTailDecode, input.dim(1) == 1 {
             compiledTail = compiledDeferredLayerTailDecode([
+                attended, attentionRead.1, attentionRead.2,
+            ])
+        } else if Self.compileLayerTailDecode,
+                  qwen4ExpCanFuseVerificationHC(input, policy: verificationPolicy, enabled: true)
+        {
+            compiledTail = compiledDeferredBatchedVerificationTail([
                 attended, attentionRead.1, attentionRead.2,
             ])
         } else {
@@ -4008,7 +4125,7 @@ final class Qwen4ExpDecoderLayer: Module {
                 residual: attentionRead.1,
                 weights: attentionRead.2,
                 verificationPolicy: nil)
-            mlpOutput = mlp(mlpRead.0, verificationPolicy: nil)
+            mlpOutput = mlp(mlpRead.0, verificationPolicy: verificationPolicy)
         }
         hostProfiler?.lap(.hyperConnectionRead)
         hostProfiler?.lap(.mlp)
@@ -4032,6 +4149,8 @@ final class Qwen4ExpDecoderLayer: Module {
 }
 
 private final class Qwen4ExpModelInner: Module {
+    private static let deferVerificationHC =
+        ProcessInfo.processInfo.environment["AFM_QWEN_VERIFY_DEFER_HC"] == "1"
     private static let deferInterLayerHyperConnectionWriteDecode =
         ProcessInfo.processInfo.environment["AFM_QWEN_DEFER_HC_WRITE"] != "0"
 
@@ -4143,9 +4262,10 @@ private final class Qwen4ExpModelInner: Module {
         } else {
             sharedFusedQKAngles = nil
         }
-        let deferInterLayerWrite = Self.deferInterLayerHyperConnectionWriteDecode
-            && verificationPolicy == nil
-            && hidden.dim(1) == 1
+        let deferInterLayerWrite = (Self.deferInterLayerHyperConnectionWriteDecode
+            && verificationPolicy == nil && hidden.dim(1) == 1)
+            || qwen4ExpCanFuseVerificationHC(
+                hidden, policy: verificationPolicy, enabled: Self.deferVerificationHC)
         let decodeAsyncLadderStride = Self.decodeAsyncLadderStride
         let useDecodeAsyncLadder = decodeAsyncLadderStride > 0
             && verificationPolicy == nil
@@ -4171,7 +4291,9 @@ private final class Qwen4ExpModelInner: Module {
                     positionIDs: positionIDs,
                     cache: layerCaches[index],
                     fusedQKAngles: sharedFusedQKAngles,
-                    hostProfiler: hostProfiler)
+                    hostProfiler: hostProfiler,
+                    verificationPolicy: verificationPolicy,
+                    deferredPLE: deferredPLE)
                 hidden = result.stream
                 pending = result.pending
             } else {

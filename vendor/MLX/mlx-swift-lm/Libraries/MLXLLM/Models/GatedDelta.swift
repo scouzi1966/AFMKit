@@ -7,6 +7,7 @@
 
 import Foundation
 import MLX
+import MLXLMCommon
 import MLXNN
 
 private let packedGatedDeltaEnabled =
@@ -47,7 +48,10 @@ func computeGSafe(
 
 // MARK: - Metal Kernel
 
-private func makeGatedDeltaKernel(hasMask: Bool, vectorized: Bool, fuseGating: Bool = false) -> MLXFast.MLXFastKernel? {
+private func makeGatedDeltaKernel(
+    hasMask: Bool, vectorized: Bool, fuseGating: Bool = false,
+    captureStates: Bool = false
+) -> MLXFast.MLXFastKernel? {
     let maskSource = hasMask ? "mask[b_idx * T + t]" : "true"
 
     let gComment: String
@@ -106,6 +110,18 @@ private func makeGatedDeltaKernel(hasMask: Bool, vectorized: Bool, fuseGating: B
     let betaAccess = fuseGating ? "beta_val" : "beta_[hv_idx]"
     let betaSetup = fuseGating ? "" : "auto beta_ = beta + b_idx * T * Hv;"
     let betaAdvance = fuseGating ? "" : "beta_ += Hv;"
+    // Snapshot scheduling follows David Dalcu's MIT-licensed mlx-serve
+    // getGdnKernelSeq. Keep AFM's existing FP32 arithmetic/reduction order;
+    // only add stores. The final state already has its own output buffer.
+    let captureSource = captureStates ? """
+          if (t + 1 < T) {
+            auto saved = state_history + ((t * BATCH_SIZE * Hv + n) * Dv + dv_idx) * Dk;
+            for (int i = 0; i < n_per_t; ++i) {
+              auto s_idx = n_per_t * dk_idx + i;
+              saved[s_idx] = state[i];
+            }
+          }
+        """ : ""
 
     let source = """
         auto n = thread_position_in_grid.z;
@@ -163,6 +179,7 @@ private func makeGatedDeltaKernel(hasMask: Bool, vectorized: Bool, fuseGating: B
               y[dv_idx] = static_cast<InT>(out);
             }
           }
+          \(captureSource)
           // Increment data pointers to next time step
           q_ += Hk * Dk;
           k_ += Hk * Dk;
@@ -191,11 +208,12 @@ private func makeGatedDeltaKernel(hasMask: Bool, vectorized: Bool, fuseGating: B
     if fuseGating { suffix += "_fused" }
     if vectorized { suffix += "_vec" }
     if hasMask { suffix += "_mask" }
+    if captureStates { suffix += "_fp32_history" }
 
     return MLXFast.metalKernel(
         name: "gated_delta_step\(suffix)",
         inputNames: inputNames,
-        outputNames: ["y", "state_out"],
+        outputNames: captureStates ? ["y", "state_out", "state_history"] : ["y", "state_out"],
         source: source
     )
 }
@@ -335,6 +353,38 @@ private final class GatedDeltaKernelManager: Sendable {
         kernelFused = makeGatedDeltaKernel(hasMask: false, vectorized: false, fuseGating: true)
         kernelFusedMasked = makeGatedDeltaKernel(hasMask: true, vectorized: false, fuseGating: true)
     }
+}
+
+/// Separate lazy manager: other models and ordinary GDN never create the
+/// snapshot variants. Only short Qwen MTP verification calls this entry point.
+private enum GatedDeltaStateHistoryKernels {
+    static let scalar = makeGatedDeltaKernel(
+        hasMask: false, vectorized: false, captureStates: true)
+    static let vector = makeGatedDeltaKernel(
+        hasMask: false, vectorized: true, captureStates: true)
+}
+
+func gatedDeltaKernelWithStateHistory(
+    q: MLXArray, k: MLXArray, v: MLXArray,
+    g: MLXArray, beta: MLXArray, state: MLXArray
+) -> (output: MLXArray, state: MLXArray, history: MLXArray) {
+    let (batch, width, keyHeads, keyDimension) = k.shape4
+    let valueHeads = v.dim(2), valueDimension = v.dim(3)
+    precondition(width > 1 && width <= VerifyWidthLinear.maximumAcceleratedWidth)
+    precondition(state.dtype == .float32 && keyDimension.isMultiple(of: 32))
+    let kernel = g.ndim == 4
+        ? GatedDeltaStateHistoryKernels.vector : GatedDeltaStateHistoryKernels.scalar
+    let outputs = kernel!(
+        [q, k, v, g, beta, state, MLXArray(width)],
+        template: [("InT", q.dtype), ("StT", state.dtype),
+                   ("Dk", keyDimension), ("Dv", valueDimension),
+                   ("Hk", keyHeads), ("Hv", valueHeads), ("BATCH_SIZE", batch)],
+        grid: (32, valueDimension, batch * valueHeads),
+        threadGroup: (32, 4, 1),
+        outputShapes: [[batch, width, valueHeads, valueDimension], state.shape,
+                       [width - 1, batch, valueHeads, valueDimension, keyDimension]],
+        outputDTypes: [q.dtype, .float32, .float32])
+    return (outputs[0], outputs[1], outputs[2])
 }
 
 // MARK: - Ops-Based Fallback (Single Step)
