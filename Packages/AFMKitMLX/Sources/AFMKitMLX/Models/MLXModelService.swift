@@ -44,10 +44,16 @@ private enum MTPGeneratorRuntime: @unchecked Sendable {
     case glm(GLM5NextMTPGenerator)
     case deepseek(DeepseekV4DSparkGenerator)
 
+    var supportsSampling: Bool {
+        if case .qwenNext = self { return true }
+        return false
+    }
+
     func generate(
         promptIds: [Int],
         maxTokens: Int,
         eosIds: Set<Int>,
+        parameters: GenerateParameters? = nil,
         onToken: ((Int) -> Bool)? = nil
     ) -> [Int] {
         switch self {
@@ -70,6 +76,9 @@ private enum MTPGeneratorRuntime: @unchecked Sendable {
                 promptIds: promptIds,
                 maxTokens: maxTokens,
                 eosIds: eosIds,
+                temperature: parameters?.temperature ?? 0,
+                topP: parameters?.topP ?? 1,
+                seed: parameters?.seed,
                 onToken: onToken
             )
         case .glm(let generator):
@@ -757,7 +766,25 @@ public final class MLXModelService:
         hasStopSequences: Bool,
         hasMedia: Bool
     ) -> Bool {
-        parameters.temperature == 0
+        isSpeculationEligible(
+            parameters: parameters, supportsSampling: false,
+            hasTools: hasTools, hasResponseFormat: hasResponseFormat,
+            wantsLogprobs: wantsLogprobs, hasStopSequences: hasStopSequences,
+            hasMedia: hasMedia)
+    }
+
+    static func isSpeculationEligible(
+        parameters: GenerateParameters,
+        supportsSampling: Bool,
+        hasTools: Bool,
+        hasResponseFormat: Bool,
+        wantsLogprobs: Bool,
+        hasStopSequences: Bool,
+        hasMedia: Bool
+    ) -> Bool {
+        parameters.temperature.isFinite && parameters.temperature >= 0
+            && (parameters.temperature == 0 || supportsSampling)
+            && parameters.topP.isFinite && (0...1).contains(parameters.topP)
             && parameters.repetitionPenalty == nil
             && parameters.presencePenalty == 0
             && parameters.topK == 0
@@ -3281,11 +3308,18 @@ public final class MLXModelService:
             }
         }
 
-        // ---- MTP self-speculative fast path (greedy, text-only, no tools/grammar/logprobs) ----
-        // Eligible when an MTP head is installed and the request is plain greedy generation.
-        // Produces output identical to greedy AR (validated P2) but with fewer trunk forwards.
+        // Qwen Next additionally supports sampled targets; other generators
+        // retain their greedy-only eligibility. Unsupported processors and
+        // response contracts continue through ordinary generation unchanged.
         let mtpEligible = mtpBinding != nil
-            && greedySpeculationEligible
+            && Self.isSpeculationEligible(
+                parameters: baseParameters,
+                supportsSampling: mtpBinding?.generator.supportsSampling == true,
+                hasTools: !(tools?.isEmpty ?? true),
+                hasResponseFormat: responseFormat != nil,
+                wantsLogprobs: wantLogprobs,
+                hasStopSequences: !(stop?.isEmpty ?? true),
+                hasMedia: !resolvedMedia.mediaKinds.isEmpty)
         if mtpEligible {
             if let mtpResult = try await container.perform({ context -> (String, Int, Int)? in
                 guard let gen = mtpBinding?.generator else { return nil }
@@ -3301,7 +3335,9 @@ public final class MLXModelService:
                 guard !promptIds.isEmpty else { return nil }
                 let eos = context.resolvedEOSTokenIds
                 let t0 = Date.timeIntervalSinceReferenceDate
-                let outIds = gen.generate(promptIds: promptIds, maxTokens: effectiveMaxTokens, eosIds: eos)
+                let outIds = gen.generate(
+                    promptIds: promptIds, maxTokens: effectiveMaxTokens,
+                    eosIds: eos, parameters: baseParameters)
                 let gt = Date.timeIntervalSinceReferenceDate - t0
                 // strip a trailing EOS for the returned text
                 let textIds = (outIds.last.map { eos.contains($0) } ?? false) ? Array(outIds.dropLast()) : outIds
@@ -4220,8 +4256,8 @@ public final class MLXModelService:
         var params = baseParameters
 
         // Decide speculative eligibility before selecting the execution lane.
-        // Merely loading an MTP head must not serialize AR-only requests such
-        // as sampling, tools, stops, schemas, logprobs, or media.
+        // Merely loading an MTP head must not serialize unsupported requests
+        // (tools, stops, schemas, logprobs, media, or sampling on greedy-only heads).
         let specGreedyStream = Self.isGreedySpeculationEligible(
             parameters: baseParameters,
             hasTools: !(tools?.isEmpty ?? true),
@@ -4229,7 +4265,14 @@ public final class MLXModelService:
             wantsLogprobs: wantLogprobs,
             hasStopSequences: !(stop?.isEmpty ?? true),
             hasMedia: !resolvedMedia.mediaKinds.isEmpty)
-        let mtpStreamEligible = specGreedyStream && mtpBinding != nil
+        let mtpStreamEligible = mtpBinding != nil && Self.isSpeculationEligible(
+            parameters: baseParameters,
+            supportsSampling: mtpBinding?.generator.supportsSampling == true,
+            hasTools: !(tools?.isEmpty ?? true),
+            hasResponseFormat: responseFormat != nil,
+            wantsLogprobs: wantLogprobs,
+            hasStopSequences: !(stop?.isEmpty ?? true),
+            hasMedia: !resolvedMedia.mediaKinds.isEmpty)
 
         // Stop/tool transformation can suppress text after tokenization. Until
         // the concurrent path owns a joint text/logprob visibility buffer, use
@@ -4366,7 +4409,7 @@ public final class MLXModelService:
             return (modelID, operationOwningStream, preparedPromptTokens, toolTags?.0, toolTags?.1, self.thinkStartTag, self.thinkEndTag)
         }
 
-        // --- MTP / EAGLE3 speculative streaming fast path (serial, greedy, text-only) ---
+        // --- Speculative streaming (serial, text-only; Qwen Next also samples) ---
         // Same eligibility as the non-streaming fast paths, plus: no stop sequences (the
         // speculative generators don't implement stop — fall back to AR when stop is requested).
         // The generator's per-token `onToken` callback drives incremental detokenization, yielding
@@ -4490,7 +4533,8 @@ public final class MLXModelService:
                                                 : nil)
                                     } else {
                                         _ = gen.generate(promptIds: promptIds, maxTokens: maxTok,
-                                                         eosIds: eos, onToken: emit)
+                                                         eosIds: eos, parameters: baseParameters,
+                                                         onToken: emit)
                                     }
                                     return (allTokens.count, 0)
                                 }

@@ -6,6 +6,149 @@ import MLXNN
 import XCTest
 
 final class QwenNextMTPPipelineTests: XCTestCase {
+    func testTopPSamplerKeepsLegacySingletonSeededOutputs() {
+        let values = (0..<128).map { Float(($0 * 17) % 113 - 56) / 32 }
+        for shape in [[128], [1, 128]] {
+            for dtype: DType in [.float32, .bfloat16] {
+                let input = MLXArray(values).reshaped(shape).asType(dtype)
+                for seed: UInt64 in [1, 42, 123] {
+                    for topP: Float in [0.1, 0.8, 0.95] {
+                        // The old valid singleton path, retained here as an
+                        // independent oracle for the multi-row gather change.
+                        let logits = input.asType(.float32)
+                        let probs = softmax(logits / MLXArray(Float(0.6)), axis: -1)
+                        let indices = argSort(probs, axis: -1)
+                        let sorted = logits.ndim == 1
+                            ? takeAlong(probs, indices, axis: -1)
+                            : take(probs, indices, axis: -1).squeezed(axis: 0)
+                        let filtered = MLX.where(cumsum(sorted, axis: -1) .> (1 - topP),
+                                                 sorted, zeros(like: sorted))
+                        let chosen = CategoricalSampler(temperature: 1, seed: seed)
+                            .sample(logits: log(filtered))
+                        let expected = logits.ndim == 1 ? indices[chosen]
+                            : indices.squeezed(axis: 0)[chosen]
+                        let actual = TopPSampler(temperature: 0.6, topP: topP, seed: seed)
+                            .sample(logits: input)
+                        XCTAssertEqual(actual.shape, expected.shape)
+                        XCTAssertEqual(actual.asArray(Int32.self), expected.asArray(Int32.self))
+                    }
+                }
+            }
+        }
+    }
+
+    func testTopPSamplerPreservesIndependentRowsAndTemperature() {
+        // Disjoint row supports catch accidental cross-row gathers. Exercise
+        // scalar, ordinary single-request, and multi-position MTP shapes.
+        for shape in [[4], [1, 4], [2, 4], [1, 2, 4]] {
+            let values: [Float] = shape.reduce(1, *) == 4
+                ? [9, 0, -9, -9] : [9, 0, -9, -9, -9, -9, 0, 9]
+            let logits = MLXArray(values).reshaped(shape).asType(.bfloat16)
+            let sampled = TopPSampler(temperature: 0.6, topP: 0.5, seed: 7)
+                .sample(logits: logits)
+            XCTAssertEqual(sampled.shape, Array(shape.dropLast()))
+            XCTAssertEqual(sampled.asArray(Int32.self), values.count == 4 ? [0] : [0, 3])
+        }
+
+        // The expected law is independently calculated on the CPU; only the
+        // sampled IDs cross the device boundary. No model weights are loaded.
+        let probabilities: [Float] = [0.05, 0.15, 0.30, 0.50]
+        let draws = 16_384
+        for temperature: Float in [0.6, 1.0] {
+            for topP: Float in [0.7, 1.0] {
+                let logits = broadcast(
+                    MLXArray(probabilities.map { log($0) }), to: [draws, 4])
+                let parameters = GenerateParameters(temperature: temperature, topP: topP, seed: 42)
+                let sampled = parameters.sampler().sample(logits: logits).asArray(Int32.self)
+                var expected = probabilities.map { pow(Double($0), 1 / Double(temperature)) }
+                let normalizer = expected.reduce(0, +)
+                expected = expected.map { $0 / normalizer }
+                if topP < 1 {
+                    var cumulative = 0.0
+                    for index in expected.indices {
+                        cumulative += expected[index]
+                        if cumulative <= 1 - Double(topP) { expected[index] = 0 }
+                    }
+                    let retained = expected.reduce(0, +)
+                    expected = expected.map { $0 / retained }
+                }
+                for token in 0..<4 {
+                    let observed = Double(sampled.filter { $0 == Int32(token) }.count) / Double(draws)
+                    XCTAssertEqual(observed, expected[token], accuracy: 0.02,
+                                   "temperature=\(temperature), topP=\(topP), token=\(token)")
+                    if expected[token] == 0 { XCTAssertEqual(observed, 0) }
+                }
+            }
+        }
+    }
+
+    func testOneHotSpeculationPreservesTargetLawIncludingRejectedDrafts() {
+        // Exhaustively enumerate the target's first draw. With proposal d,
+        // accepted mass is p[d]; correction mass for each t != d is p[t].
+        // This checks the actual cycle decision, not a second accept formula.
+        let targetLaw = [0.05, 0.15, 0.30, 0.50]
+        for draft in 0..<4 {
+            var emittedLaw = [Double](repeating: 0, count: 4)
+            var acceptedMass = 0.0
+            for target in 0..<4 {
+                let decision = Qwen4ExpMTPCycleDecision.resolve(
+                    targetTokenIDs: MLXArray([Int32(target), 0]),
+                    draftTokenIDs: MLXArray([Int32(draft)]))
+                let emitted = decision.acceptedDraftCount == 1
+                    ? decision.draftTokens[0] : decision.nextPrimary
+                emittedLaw[emitted] += targetLaw[target]
+                if decision.acceptedDraftCount == 1 { acceptedMass += targetLaw[target] }
+            }
+            XCTAssertEqual(emittedLaw, targetLaw)
+            XCTAssertEqual(acceptedMass, targetLaw[draft])
+        }
+        for accepted in 0...3 {
+            var targets: [Int32] = [1, 2, 3, 4]
+            targets[accepted] = 9
+            let decision = Qwen4ExpMTPCycleDecision.resolve(
+                targetTokenIDs: MLXArray(targets), draftTokenIDs: MLXArray([Int32(1), 2, 3]))
+            XCTAssertEqual(decision.acceptedDraftCount, accepted)
+            XCTAssertEqual(decision.nextPrimary, 9)
+        }
+    }
+
+    func testSampledMTPSeedEOSCancellationAndRequestIsolation() async throws {
+        let model = try await makeModel()
+        let head = Qwen4ExpMTPHead(model.configuration)
+        eval(model, head)
+        for policy: MTPVerificationPolicy in [.strictSingletonEquivalent, .batched] {
+            for depth in [1, 3] {
+                let generator = Qwen4ExpMTPGenerator(
+                    model: model, head: head, depth: depth, verificationPolicy: policy)
+                for topP: Float in [0.8, 1.0] {
+                    func run(_ seed: UInt64 = 42, onToken: ((Int) -> Bool)? = nil) -> [Int] {
+                        generator.generate(promptIds: [1, 2, 3], maxTokens: 12,
+                                           temperature: 0.6, topP: topP, seed: seed, onToken: onToken)
+                    }
+                    let expected = run()
+                    XCTAssertEqual(expected.count, 12)
+                    XCTAssertEqual(run(), expected)
+                    // Interleaving another request must not advance this seed's RNG.
+                    let other = run(43)
+                    XCTAssertNotEqual(other, expected)
+                    XCTAssertEqual(run(), expected)
+                    for count in [1, 4] {
+                        var emitted = 0
+                        let cancelled = run { _ in
+                            emitted += 1
+                            return emitted < count
+                        }
+                        XCTAssertEqual(cancelled, Array(expected.prefix(count)))
+                    }
+                    XCTAssertEqual(generator.generate(
+                        promptIds: [1, 2, 3], maxTokens: 12, eosIds: [expected[0]],
+                        temperature: 0.6, topP: topP, seed: 42), [expected[0]])
+                    XCTAssertEqual(run(), expected)
+                }
+            }
+        }
+    }
+
     func testFusedQSAExpansionAtProductionCapacity() throws {
         for capacity in [512, 1024] {
             let width = 8, keyLength = 8199

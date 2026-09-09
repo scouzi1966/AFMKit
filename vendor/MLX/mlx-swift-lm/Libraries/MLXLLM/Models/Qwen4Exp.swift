@@ -5116,11 +5116,22 @@ public final class Qwen4ExpModel: Module, LLMModel, KVCacheDimensionProvider {
     }
 }
 
-/// Greedy self-speculative decoding for Qwen3.8-Flash-Next's native MTP head.
+/// Self-speculative decoding for Qwen3.8-Flash-Next's native MTP head.
 /// Draft-head history is rebuilt from verifier streams after every round. The
 /// conformant verifier reproduces independent greedy decode. Ordinary batched
 /// target operators remain available as an explicitly approximate throughput
 /// experiment because their reduction schedule can change greedy decisions.
+///
+/// Sampling uses deterministic drafts (one-hot proposal q). Draw y from the
+/// user's filtered target p, accept when y == draft, otherwise emit y and stop
+/// the round. P(accept) = p[draft]; conditional rejection samples p with that
+/// token excluded, exactly the normalized max(p-q, 0) residual. This is the
+/// one-hot specialization of Leviathan et al. (arXiv:2211.17192), also used by
+/// David Dalcu's MIT-licensed mlx-serve (src/generate.zig, nextMtp / greedy
+/// draft proposals). No source is copied. Target rows and RNG stay on device;
+/// only the existing packed token-ID decision crosses the host boundary.
+/// Same-seed repeatability is scoped to a fixed verification width/policy,
+/// not token identity with AR, which consumes a different sequence of draws.
 struct Qwen4ExpMTPCycleDecision: Equatable {
     let targetTokens: [Int]
     let draftTokens: [Int]
@@ -5204,14 +5215,31 @@ public final class Qwen4ExpMTPGenerator {
         promptIds: [Int],
         maxTokens: Int,
         eosIds: Set<Int> = [],
+        temperature: Float = 0,
+        topP: Float = 1,
+        seed: UInt64? = nil,
         onToken: ((Int) -> Bool)? = nil
     ) -> [Int] {
+        precondition(temperature.isFinite && temperature >= 0)
+        precondition(topP.isFinite && (0...1).contains(topP))
         guard !promptIds.isEmpty, maxTokens > 0 else { return [] }
+        // Request-owned RNG: no global seeding or mutable sampler on a shared
+        // generator. Nil preserves the fused greedy readout and its graph.
+        let sampler: LogitSampler? = temperature > 0
+            ? GenerateParameters(temperature: temperature, topP: topP, seed: seed).sampler()
+            : nil
+        func targetTokens(_ hidden: MLXArray, policy: MTPVerificationPolicy? = nil) -> MLXArray {
+            guard let sampler else {
+                return model.projectLMHeadArgmax(hidden, verificationPolicy: policy)
+            }
+            let logits = model.projectLMHead(hidden, verificationPolicy: policy)
+            return sampler.sample(logits: logits)
+        }
         let targetCache = model.newCache(parameters: nil)
         let mtpCache = head.newCache()
         let prompt = Self.tokens(promptIds)
         let initial = model.forwardStreamState(inputIDs: prompt, cache: targetCache)
-        var primary = model.projectLMHeadArgmax(
+        var primary = targetTokens(
             initial.hidden[0..., (initial.hidden.dim(1) - 1)..., 0...]
         ).item(Int.self)
         var primaryStream = initial.stream[0..., (initial.stream.dim(1) - 1)..., 0...]
@@ -5349,24 +5377,24 @@ public final class Qwen4ExpMTPGenerator {
             ] == "1"
             if usedSequentialVerifier {
                 var streams: [MLXArray] = []
-                var targetTokens: [MLXArray] = []
+                var sampledRows: [MLXArray] = []
                 let verifyInputs = [Self.tokens([primary])] + draftTokens
                 for token in verifyInputs {
                     let state = model.forwardStreamState(
                         inputIDs: token, cache: targetCache)
                     streams.append(state.stream)
-                    targetTokens.append(model.projectLMHeadArgmax(state.hidden))
+                    sampledRows.append(targetTokens(state.hidden))
                 }
                 verifiedStream = concatenated(streams, axis: 1)
-                targetTokenIDs = concatenated(targetTokens, axis: 1)
+                targetTokenIDs = concatenated(sampledRows, axis: 1)
             } else {
                 let verified = model.forwardStreamState(
                     inputIDs: verifyTokenIDs, cache: targetCache,
                     verificationPolicy: verificationPolicy)
                 verifiedStream = verified.stream
-                targetTokenIDs = model.projectLMHeadArgmax(
+                targetTokenIDs = targetTokens(
                     verified.hidden,
-                    verificationPolicy: verificationPolicy)[0, 0...]
+                    policy: verificationPolicy)[0, 0...]
             }
             endPhase(1)
             startPhase()

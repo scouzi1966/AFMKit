@@ -6,6 +6,65 @@ not release qualification, and default MTP is not yet consistently faster than A
 
 ## Measurement contract
 
+### Follow-up: non-greedy Qwen Next MTP
+
+Qwen Next's text-generation binding now accepts positive temperature with
+top-p filtering and a request-local seed. This also covers text-only requests
+in a Qwen Next vision-capable container. The ordinary user default remains
+temperature 0.6 / top-p 1.0; `--mtp` no longer forces those eligible requests
+to the AR scheduler merely because their temperature is positive. No tuning
+environment variable is required to enable sampled MTP. The experimental
+batched verifier and dispatch optimizations retain their existing opt-in
+settings; this change does not promote them or change greedy defaults.
+
+Draft tokens remain deterministic. The verifier samples all its positions
+on the GPU with the **user's** target sampler. Accept matching proposals until
+the first mismatch, emit that sampled correction, and discard the remaining
+speculative rows. For a deterministic proposal `d`, the accepted mass is
+`p[d]` and the correction mass for every `t != d` is `p[t]`. This is exact
+one-hot-proposal speculative sampling with respect to the chosen verifier's
+probabilities, not a promise of identical seeded text to AR or equivalence
+between different floating-point verification policies. David Dalcu's
+MIT-licensed mlx-serve implements the same one-hot proposal option; the
+acceptance principle comes from Leviathan et al., arXiv:2211.17192.
+
+Only packed target/draft token IDs cross the host boundary. No vocabulary-size
+probability arrays are copied to the CPU, no draft probability tensors are
+needed for one-hot proposals, and cache commit/rollback still follows the
+accepted prefix. The sampler and RNG are created per request, not stored on
+the shared generator. Greedy requests retain their existing fused argmax.
+
+The common top-p sampler now gathers within each vocabulary row rather than
+cross-producting batch dimensions with `take`. This enables independent
+multi-position target sampling. Tests compare the previously valid 1D and
+singleton-2D paths against a legacy seeded oracle, and check multi-row and
+3D layouts, disjoint row supports, temperature scaling, and observed filtered
+probabilities against an independent CPU calculation.
+
+Validation at this checkpoint:
+
+- Release consumer build: passed, 127.12 s. Inference binary SHA-256:
+  `096f4c036b15782e094f724c79765628416e3679ef38b534b7eebdbab6c32acb`.
+- 46 focused Release tests passed, including existing greedy rollback/dispatch
+  tests, exact one-hot acceptance/correction mass, sampled seed repeatability,
+  cancellation, EOS, separate requests, and unsupported-contract admission.
+- 13 live API requests passed under experimental depth-4 MTP with prefix
+  caching and concurrent admission enabled. Tests covered omitted versus
+  explicit 0.6/1.0 defaults, temperature 0.6/top-p 0.95, temperature 1/top-p 0.8,
+  greedy control, seeded streaming/non-streaming equality, concurrent seed
+  isolation, and ordinary fallback for stops/logprobs. Eleven requested MTP
+  executions plus one startup warmup are present in the debug trace.
+- Uninstrumented sampled context comparisons are recorded separately from the
+  frozen greedy baseline. Greedy parity is **not** sampled-MTP parity.
+
+Scope limits: tools, schemas, logprobs, stops, media inputs, top-k, min-p, and
+repetition/presence penalties retain ordinary generation when not supported
+by this binding. Qwen MTP still owns request-local cold caches in a serial
+execution lane; passing concurrent/prefix-cache coexistence tests does not
+mean speculative continuous batching or prefix-reuse acceleration. Other
+model generators remain greedy-only here. Follow-up issue #124 tracks sampled
+MTP for the other families with separate quality and performance qualification.
+
 ### Follow-up: bounded draft-dispatch overlap
 
 An additional off-by-default scheduling experiment dispatches early draft
