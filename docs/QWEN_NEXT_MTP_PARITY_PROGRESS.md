@@ -65,6 +65,76 @@ mean speculative continuous batching or prefix-reuse acceleration. Other
 model generators remain greedy-only here. Follow-up issue #124 tracks sampled
 MTP for the other families with separate quality and performance qualification.
 
+#### Sampled controls at code checkpoint `aae2c2d4`
+
+All seven uninstrumented arms completed, sequentially on the same M3 Ultra,
+using the exact `/Volumes/edata2/models/ddalcu/Qwen3.8-Flash-Next-MLX-Serve-4bit`
+checkpoint. Temperature is 0.6, seed 42, thinking off and prefix reuse off.
+Each context has one excluded warmup and three measured 128-token responses;
+actual prompt lengths are 493 / 864 / 2,112 / 4,150 tokens. The reference is
+the frozen v26.9.2 binary, not an assertion about subsequent reference releases.
+Sampled outputs can differ between engines and policies, so these are
+same-input workload comparisons, not identical generated-token workloads.
+
+Median client decode throughput, tok/s, with **top-p 1.0**:
+
+| Context | AFM AR | AFM default MTP | AFM experimental MTP | Reference MTP | Experimental vs reference |
+|---|---:|---:|---:|---:|---:|
+| 0.5K | 66.68 | 74.25 | 89.01 | 87.28 | +2.0% |
+| 1K | 67.15 | 72.06 | 85.01 | 88.51 | -4.0% |
+| 2K | 60.56 | 59.50 | 87.54 | 88.83 | -1.5% |
+| 4K | 59.57 | 59.32 | 82.98 | 80.37 | +3.2% |
+
+Median client decode throughput, tok/s, with **top-p 0.95**:
+
+| Context | AFM AR | AFM experimental MTP | Reference MTP | Experimental vs reference |
+|---|---:|---:|---:|---:|
+| 0.5K | 65.37 | 80.60 | 90.08 | -10.5% |
+| 1K | 65.43 | 80.24 | 90.20 | -11.0% |
+| 2K | 59.52 | 77.05 | 87.65 | -12.1% |
+| 4K | 58.14 | 82.83 | 85.33 | -2.9% |
+
+The experimental candidate is 23–45% faster than same-binary AR across these
+sampled cases, but **the top-p 0.95 curve misses the 10% gate at three contexts**.
+Untuned default MTP is still not consistently faster than AR. Do not infer
+overall sampled parity or promote defaults from the top-p 1.0 result alone.
+The top-p change also changes generated text and speculative acceptance;
+the difference between these curves is not a measurement of sorting cost alone.
+
+The candidate explicitly uses depth 4, batched verification, attention chunk 2,
+fused HC/router, native HC chain, verification dispatch stride 8 and draft
+dispatch stride 1. The untuned arm uses ordinary `--mtp`, strict verification
+and depth 1; neither `AFM_DEBUG` nor `AFM_PERF` is set in any timed arm. Launch
+manifests preserve the complete commands and actual inference-binary hashes.
+
+TTFT-derived prompt throughput is retained separately below. It includes
+first-token work and API overhead: **it is not pure device-prefill throughput**.
+
+| Context | AFM candidate, p=1 | Reference, p=1 | AFM candidate, p=0.95 | Reference, p=0.95 |
+|---|---:|---:|---:|---:|
+| 0.5K | 970.90 | 848.55 | 968.60 | 853.08 |
+| 1K | 1128.83 | 1038.63 | 1125.53 | 1019.46 |
+| 2K | 1288.95 | 1182.19 | 1286.91 | 1182.47 |
+| 4K | 1318.56 | 1257.72 | 1311.14 | 1254.56 |
+
+The separate sampled known-answer control passes **24/24 for the candidate
+and 24/24 for AR** at temperature 0.6/top-p 0.95. These are eight established
+arithmetic, extraction, logic, Unicode and lookup cases repeated three times
+with the same seed, not 24 independent prompts or a broad quality benchmark.
+Inspected context responses are coherent, with expected truncation at the
+128-token timing limit. This is not comprehensive AI-judge qualification.
+
+A same-binary greedy regression also preserves **12/12 prior experimental
+candidate responses** from `draft-ladder1-repeat-verify8-depth4-afm-mtp-1`.
+Its medians are 90.87 / 82.17 / 89.56 / 74.72 tok/s, with the same explicit
+candidate settings. This supports absence of a greedy regression in these
+four contexts, not a universal equivalence or performance guarantee.
+
+Evidence is appended under `sampled-t06-*`, `sampled-quality-*`, and
+`sampled-qualification-v1-*`, with the greedy control under
+`sampled-greedy-regression-v1-*`, in the existing external artifact root.
+Original greedy baselines remain unchanged; reports are untracked.
+
 ### Follow-up: bounded draft-dispatch overlap
 
 An additional off-by-default scheduling experiment dispatches early draft
