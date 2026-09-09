@@ -6,6 +6,127 @@ import MLXNN
 import XCTest
 
 final class QwenNextMTPPipelineTests: XCTestCase {
+    func testSortedVerifyExpertsRestoreTokenAndRouteOrder() {
+        let layer = SwitchGLU(inputDims: 256, hiddenDims: 256, numExperts: 8)
+        layer.update(parameters: layer.mapParameters { $0.asType(.bfloat16) })
+        quantize(model: layer, groupSize: 64, bits: 4)
+        eval(layer)
+        let input = MLXArray((0..<1024).map { Float(($0 % 31) - 15) / 32 })
+            .reshaped(1, 4, 256).asType(.bfloat16)
+        let indices = MLXArray([Int32(7), 2, 2, 0, 5, 7, 0, 5]).reshaped(1, 4, 2)
+        let sortedRows = layer.sortedVerificationRows(input, indices)
+        let independent = concatenated((0..<4).map { row in
+            layer(input[0..., row..<(row + 1), 0...],
+                  indices[0..., row..<(row + 1), 0...])
+        }, axis: 1)
+        eval(sortedRows, independent)
+        XCTAssertEqual(sortedRows.shape, [1, 4, 2, 256])
+        let error = abs(sortedRows.asType(.float32) - independent.asType(.float32))
+        XCTAssertLessThanOrEqual(error.max().item(Float.self), 0.002)
+        // Reordering source rows must reorder outputs, not exchange experts.
+        let order = MLXArray([Int32(3), 0, 2, 1])
+        let shuffled = layer.sortedVerificationRows(input[0..., order, 0...],
+                                                     indices[0..., order, 0...])
+        eval(shuffled)
+        XCTAssertEqual(shuffled.asArray(Float.self),
+                       sortedRows[0..., order, 0..., 0...].asArray(Float.self))
+    }
+
+    func testTwoRowMaskedAttentionMatchesSingletonVerificationAtProductionGeometry() {
+        for width in [2, 4, 7] {
+            let prefix = 2112, length = prefix + width
+            func values(_ count: Int, divisor: Float) -> MLXArray {
+                MLXArray((0..<count).map { Float(($0 % 47) - 23) / divisor })
+                    .asType(.bfloat16)
+            }
+            let q = values(24 * width * 256, divisor: 32).reshaped(1, 24, width, 256)
+            let k = values(2 * length * 256, divisor: 64).reshaped(1, 2, length, 256)
+            let v = values(2 * length * 256, divisor: 16).reshaped(1, 2, length, 256)
+            let mask = MLXArray((0..<(width * length)).map { index in
+                let row = index / length, column = index % length
+                return column <= prefix + row && (column % 7 != 0 || column == prefix + row)
+            }).reshaped(1, 1, width, length)
+            let single = qwen4ExpTargetVerifyAttention(
+                queries: q, keys: k, values: v, prefixLength: prefix,
+                scale: 0.0625, mask: .array(mask), chunkSize: 1)
+            let grouped = qwen4ExpTargetVerifyAttention(
+                queries: q, keys: k, values: v, prefixLength: prefix,
+                scale: 0.0625, mask: .array(mask), chunkSize: 2)
+            eval(single, grouped)
+            XCTAssertEqual(single.asArray(Float.self), grouped.asArray(Float.self),
+                           "Grouped QSA changed target attention at width \(width)")
+        }
+    }
+
+    func testDeferredPLEFillsAlreadyBuiltGraphOnceAndKeepsRequestsIndependent() {
+        let first = Qwen4ExpDeferredPLE(), second = Qwen4ExpDeferredPLE()
+        var firstLoads = 0, secondLoads = 0
+        let a = first.embedding(shape: [1, 2, 32]) {
+            firstLoads += 1
+            return MLXArray(Array(repeating: Float(3), count: 64))
+                .reshaped(1, 2, 32).asType(.bfloat16)
+        }
+        let b = second.embedding(shape: [1, 2, 32]) {
+            secondLoads += 1
+            return MLXArray(Array(repeating: Float(7), count: 64))
+                .reshaped(1, 2, 32).asType(.bfloat16)
+        }
+        let projection = compile { (x: MLXArray) in
+            (x.asType(.float32) * 2 + 1).sum(axis: -1)
+        }
+        let aGraph = projection(a), bGraph = projection(b)
+        XCTAssertEqual(firstLoads, 0)
+        XCTAssertEqual(secondLoads, 0)
+        second.flush()
+        XCTAssertEqual(bGraph.asArray(Float.self), [480, 480])
+        XCTAssertEqual(firstLoads, 0)
+        first.flush()
+        XCTAssertEqual(aGraph.asArray(Float.self), [224, 224])
+        first.flush()
+        second.flush()
+        XCTAssertEqual(firstLoads, 1)
+        XCTAssertEqual(secondLoads, 1)
+    }
+
+    func testAbandonedDeferredPLEDoesNotRunLoadOrRetainClosure() {
+        final class Lifetime {}
+        weak var lifetime: Lifetime?
+        var loads = 0
+        autoreleasepool {
+            let scope = Qwen4ExpDeferredPLE()
+            let owner = Lifetime()
+            lifetime = owner
+            _ = scope.embedding(shape: [1, 2, 32]) { [owner] in
+                _ = owner
+                loads += 1
+                return MLXArray.zeros([1, 2, 32], dtype: .bfloat16)
+            }
+        }
+        XCTAssertEqual(loads, 0)
+        XCTAssertNil(lifetime)
+    }
+
+
+    func testMTPHonorsLengthAndCancellationAcrossRequests() async throws {
+        let model = try await makeModel()
+        let head = Qwen4ExpMTPHead(model.configuration)
+        eval(model, head)
+        for depth in [1, 3] {
+            let generator = Qwen4ExpMTPGenerator(model: model, head: head, depth: depth)
+            let first = generator.generate(promptIds: [1, 2, 3], maxTokens: 12)
+            let repeated = generator.generate(promptIds: [1, 2, 3], maxTokens: 12)
+            XCTAssertEqual(first.count, 12)
+            XCTAssertEqual(first, repeated, "Head history leaked across requests")
+            var seen = 0
+            let cancelled = generator.generate(promptIds: [1, 2, 3], maxTokens: 12) { _ in
+                seen += 1
+                return seen < 4
+            }
+            XCTAssertEqual(cancelled, Array(first.prefix(4)))
+            XCTAssertEqual(generator.generate(promptIds: [1], maxTokens: 1).count, 1)
+        }
+    }
+
     func testVerificationQKNormRoPEMatchesIndependentARRowsExactly() throws {
         func values(_ count: Int) -> MLXArray {
             MLXArray((0..<count).map { Float(($0 % 71) - 35) / 64 }).asType(.bfloat16)
@@ -171,8 +292,8 @@ final class QwenNextMTPPipelineTests: XCTestCase {
 
     // Ten layers deliberately cross the default eight-layer dispatch boundary.
     // The usual two-layer architecture fixture cannot exercise that boundary.
-    private func makeModel() async throws -> Qwen4ExpModel {
-        let text: [String: Any] = [
+    private func makeModel(withPLE: Bool = false) async throws -> Qwen4ExpModel {
+        var text: [String: Any] = [
             "model_type": "qwen4_exp_text", "hidden_size": 128,
             "num_hidden_layers": 10, "num_attention_heads": 2,
             "num_key_value_heads": 1, "head_dim": 64,
@@ -190,12 +311,72 @@ final class QwenNextMTPPipelineTests: XCTestCase {
             "eos_token_id": 31,
             "rope_parameters": ["partial_rotary_factor": 0.25, "rope_theta": 10000000],
         ]
-        let data = try JSONSerialization.data(withJSONObject: [
+        if withPLE {
+            text.merge([
+                "ple_layer_ids": [1], "ple_embed_dim": 32,
+                "ple_conv_kernel_size": 2, "ngram_size": 3,
+                "heads_per_ngram": 2, "ngram_vocab_size_base": 5,
+                "make_ngram_vocab_size_divisible_by": 4, "split_ngram_parts": 1,
+            ]) { _, new in new }
+        }
+        var wrapper: [String: Any] = [
             "model_type": "qwen4_exp", "text_config": text,
-        ])
+        ]
+        if withPLE {
+            wrapper["ngram_table"] = ["file": "test.ngram", "bits": 4, "group_size": 4]
+        }
+        let data = try JSONSerialization.data(withJSONObject: wrapper)
         let model = try await LLMTypeRegistry.shared.createModel(
             configuration: data, modelType: "qwen4_exp")
         return try XCTUnwrap(model as? Qwen4ExpModel)
+    }
+
+    func testDeferredMappedPLEPreservesHistoryAndRollbackAgainstEagerRows() async throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("qwen-mtp-ple-\(UUID().uuidString).ngram")
+        defer { try? FileManager.default.removeItem(at: url) }
+        // Four prime-sized hash heads (5 + 7 + 11 + 13), eight channels each.
+        var header = Data(#"{"__metadata__":{"format":"mlx-serve-ngram","bits":"4","group_size":"4"},"weight":{"dtype":"U32","shape":[36,1],"data_offsets":[0,144]},"scales":{"dtype":"BF16","shape":[36,2],"data_offsets":[144,288]},"biases":{"dtype":"BF16","shape":[36,2],"data_offsets":[288,432]}}"#.utf8)
+        while !header.count.isMultiple(of: 8) { header.append(0x20) }
+        var length = UInt64(header.count).littleEndian
+        var file = withUnsafeBytes(of: &length) { Data($0) }
+        file.append(header)
+        for row in 0..<36 {
+            var packed = (UInt32(row % 16) * 0x11111111).littleEndian
+            file.append(withUnsafeBytes(of: &packed) { Data($0) })
+        }
+        for _ in 0..<72 {
+            var scale = UInt16(0x3c80).littleEndian // 1/64 in BF16
+            file.append(withUnsafeBytes(of: &scale) { Data($0) })
+        }
+        file.append(Data(count: 144))
+        try file.write(to: url)
+        let model = try await makeModel(withPLE: true)
+        try model.configureMappedNGramTable(url: url)
+        eval(model)
+        for accepted in 0...3 {
+            let deferred = model.newCache(parameters: nil)
+            let eager = model.newCache(parameters: nil)
+            let prompt = MLXArray([Int32(1), 2, 3]).reshaped(1, 3)
+            eval(model.forwardStreamHidden(inputIDs: prompt, cache: deferred).logits,
+                 model.forwardStreamHidden(inputIDs: prompt, cache: eager).logits)
+            let ids: [Int32] = [4, 31, 6, 7] // includes EOS history reset
+            let block = model.forwardStreamHidden(
+                inputIDs: MLXArray(ids).reshaped(1, 4), cache: deferred,
+                verificationPolicy: .strictSingletonEquivalent)
+            eval(block.logits)
+            XCTAssertTrue(model.finishMTPVerification(
+                cache: deferred, acceptedDrafts: accepted, draftedTokens: 3))
+            for token in ids.prefix(accepted + 1) {
+                eval(model.forwardStreamHidden(
+                    inputIDs: MLXArray([token]).reshaped(1, 1), cache: eager).logits)
+            }
+            let next = MLXArray([Int32(8)]).reshaped(1, 1)
+            let actual = model.forwardStreamHidden(inputIDs: next, cache: deferred).logits
+            let expected = model.forwardStreamHidden(inputIDs: next, cache: eager).logits
+            eval(actual, expected)
+            XCTAssertLessThanOrEqual(abs(actual - expected).max().item(Float.self), 0.00001)
+        }
     }
 
     func testPipelinedStrictVerificationMatchesSequentialTargetRows() async throws {

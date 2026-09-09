@@ -829,7 +829,7 @@ func qwen4ExpTargetVerifyAttention(
     let width = queries.dim(2)
     precondition(width > 1)
 
-    func rowMask(_ row: Int, visibleLength: Int)
+    func rowMask(_ row: Int, end: Int, visibleLength: Int)
         -> MLXFast.ScaledDotProductAttentionMaskMode
     {
         let array: MLXArray?
@@ -844,11 +844,11 @@ func qwen4ExpTargetVerifyAttention(
         guard let array else { return .none }
         switch array.ndim {
         case 4:
-            return .array(array[0..., 0..., row ..< (row + 1), ..<visibleLength])
+            return .array(array[0..., 0..., row ..< end, ..<visibleLength])
         case 3:
-            return .array(array[0..., row ..< (row + 1), ..<visibleLength])
+            return .array(array[0..., row ..< end, ..<visibleLength])
         case 2:
-            return .array(array[row ..< (row + 1), ..<visibleLength])
+            return .array(array[row ..< end, ..<visibleLength])
         default:
             return .array(array)
         }
@@ -861,15 +861,20 @@ func qwen4ExpTargetVerifyAttention(
     case .none, .causal:
         hasExplicitMask = false
     }
-    let chunkSize = hasExplicitMask ? 1 : max(1, min(2, requestedChunkSize))
+    // mlx-serve's MIT-licensed splitMaskedSdpa256 keeps qL * GQA <= 32
+    // to stay on MLX's vector kernel. Preserve each row's explicit mask;
+    // replacing it with a causal mask would silently discard QSA selection.
+    let gqa = max(1, queries.dim(1) / keys.dim(1))
+    let maskedLimit = max(1, 32 / gqa)
+    let chunkSize = max(1, min(2, requestedChunkSize, hasExplicitMask ? maskedLimit : 2))
     var outputs = [MLXArray]()
     var row = 0
     while row < width {
         let end = min(width, row + chunkSize)
         let visibleLength = prefixLength + end
-        let chunkMask: MLXFast.ScaledDotProductAttentionMaskMode = end - row > 1
-            ? .causal
-            : rowMask(row, visibleLength: visibleLength)
+        let chunkMask: MLXFast.ScaledDotProductAttentionMaskMode = hasExplicitMask
+            ? rowMask(row, end: end, visibleLength: visibleLength)
+            : (end - row > 1 ? .causal : .none)
         outputs.append(MLXFast.scaledDotProductAttention(
             queries: queries[0..., 0..., row ..< end, 0...],
             keys: keys[0..., 0..., ..<visibleLength, 0...],
@@ -2740,7 +2745,9 @@ private final class Qwen4ExpSparseMoE: Module, UnaryLayer {
         } else {
             let routedExperts = verificationPolicy == .strictSingletonEquivalent
                 ? switchMLP.targetVerifyPreservingSingletonRows(x, indices)
-                : switchMLP(x, indices)
+                : (verificationPolicy == .batched
+                    ? switchMLP.sortedVerificationRows(x, indices)
+                    : switchMLP(x, indices))
             routed = (routedExperts * scores[.ellipsis, .newAxis]).sum(axis: -2)
         }
         let sharedGate = VerifyWidthLinear.call(
@@ -2752,6 +2759,43 @@ private final class Qwen4ExpSparseMoE: Module, UnaryLayer {
 }
 
 // MARK: - PLE n-gram embedding
+
+/// Request-local graph-construction barrier. Adapted from David Dalcu's
+/// MIT-licensed mlx-serve `flushDeferredPle` (1ec580a8, transformer.zig).
+/// A leaf is privately allocated, then filled exactly once BEFORE any graph
+/// consuming it is dispatched. It is never shared across forwards or requests.
+/// This lets CPU graph construction overlap the already-dispatched MTP drafts.
+final class Qwen4ExpDeferredPLE {
+    private var fills: [() -> Void] = []
+
+    func embedding(shape: [Int], load: @escaping () -> MLXArray) -> MLXArray {
+        // Construct a realized leaf, not lazy zeros that an evaluator could
+        // overwrite. Keep it alive in both the downstream graph and the fill.
+        let count = shape.reduce(1, *)
+        let leaf = MLXArray(Data(count: count * 2), shape, dtype: .bfloat16)
+        fills.append {
+            let gathered = load()
+            precondition(gathered.shape == shape && gathered.dtype == .bfloat16)
+            let source = gathered.asData(access: .noCopy)
+            let destination = leaf.asData(access: .noCopy)
+            source.data.withUnsafeBytes { src in
+                destination.data.withUnsafeBytes { dst in
+                    // MLX owns this private mutable storage. No consumer has
+                    // been evaluated yet; do not use Data's copy-on-write API.
+                    UnsafeMutableRawPointer(mutating: dst.baseAddress!).copyMemory(
+                        from: src.baseAddress!, byteCount: count * 2)
+                }
+            }
+        }
+        return leaf
+    }
+
+    func flush() {
+        let pending = fills
+        fills.removeAll(keepingCapacity: true)
+        for fill in pending { fill() }
+    }
+}
 
 private let qwen4SplitMixGamma: UInt64 = 0x9E3779B97F4A7C15
 private let qwen4SplitMixM1: UInt64 = 0xBF58476D1CE4E5B9
@@ -2960,8 +3004,17 @@ private final class Qwen4ExpNGramEmbedding: Module {
     func callAsFunction(
         _ inputIDs: MLXArray,
         cache: ArraysCache?,
-        hostTokenIDs: [Int]? = nil
+        hostTokenIDs: [Int]? = nil,
+        deferredPLE: Qwen4ExpDeferredPLE? = nil
     ) -> MLXArray {
+        if mappedNGramTable != nil, let deferredPLE {
+            return deferredPLE.embedding(shape: [
+                inputIDs.dim(0), inputIDs.dim(1),
+                contextLength * headsPerNgram * mappedNGramTable!.dimensions,
+            ]) { [self] in
+                callAsFunction(inputIDs, cache: cache, hostTokenIDs: hostTokenIDs)
+            }
+        }
         let ids = inputIDs.asType(.int64)
         let previous = cache?[3] ?? MLXArray.full(
             [ids.dim(0), contextLength], values: MLXArray(eosTokenID), dtype: .int64)
@@ -3225,7 +3278,8 @@ private final class Qwen4ExpPLE: Module {
         inputIDs: MLXArray,
         cache: ArraysCache?,
         hostTokenIDs: [Int]? = nil,
-        verificationPolicy: MTPVerificationPolicy? = nil
+        verificationPolicy: MTPVerificationPolicy? = nil,
+        deferredPLE: Qwen4ExpDeferredPLE? = nil
     ) -> MLXArray {
         let profiler = Qwen4ExpPLEProfiler.make(sequenceLength: hidden.dim(1))
         let initialTokenHistory = cache?[3] ?? MLXArray.full(
@@ -3233,7 +3287,8 @@ private final class Qwen4ExpPLE: Module {
             values: MLXArray(pleEmbedding.eosTokenID),
             dtype: .int64)
         let embedding = pleEmbedding(
-            inputIDs, cache: cache, hostTokenIDs: hostTokenIDs)
+            inputIDs, cache: cache, hostTokenIDs: hostTokenIDs,
+            deferredPLE: deferredPLE)
         profiler?.lap(embedding, stage: .embedding)
         let shape = Array(hidden.shape.dropLast())
         let keyProjection = VerifyWidthLinear.call(
@@ -3670,7 +3725,8 @@ final class Qwen4ExpDecoderLayer: Module {
         cache: KVCache?,
         fusedQKAngles: MLXArray? = nil,
         verificationPolicy: MTPVerificationPolicy? = nil,
-        profiler: Qwen4ExpForwardProfiler? = nil
+        profiler: Qwen4ExpForwardProfiler? = nil,
+        deferredPLE: Qwen4ExpDeferredPLE? = nil
     ) -> MLXArray {
         let arrayCache = cache as? ArraysCache
         var hidden = input
@@ -3678,7 +3734,8 @@ final class Qwen4ExpDecoderLayer: Module {
             hidden = hidden + ple(
                 hidden, inputIDs: inputIDs, cache: arrayCache,
                 hostTokenIDs: hostTokenIDs,
-                verificationPolicy: verificationPolicy)
+                verificationPolicy: verificationPolicy,
+                deferredPLE: deferredPLE)
             profiler?.lap(hidden, block: .ple)
         }
         var mixed: MLXArray
@@ -3991,6 +4048,12 @@ private final class Qwen4ExpModelInner: Module {
             && hidden.dim(1) == 1
         let profiler = Qwen4ExpForwardProfiler.make(sequenceLength: hidden.dim(1))
         let hostProfiler = Qwen4ExpHostProfiler.make(sequenceLength: hidden.dim(1))
+        // Verification never uses the AR async ladder. Synchronizing profilers
+        // must retain the eager path so they cannot evaluate an unfilled leaf.
+        let deferredPLE = verificationPolicy != nil && hidden.dim(1) > 1
+            && profiler == nil
+            && ProcessInfo.processInfo.environment["VMLX_DSV4_STAGE_PROFILE"] != "1"
+            ? Qwen4ExpDeferredPLE() : nil
         profiler?.start(hidden)
         var pending: Qwen4ExpPendingHyperConnectionWrite?
         for (index, layer) in layers.enumerated() {
@@ -4014,7 +4077,8 @@ private final class Qwen4ExpModelInner: Module {
                     attentionMask: mask, positionIDs: positionIDs, cache: layerCaches[index],
                     fusedQKAngles: sharedFusedQKAngles,
                     verificationPolicy: verificationPolicy,
-                    profiler: profiler)
+                    profiler: profiler,
+                    deferredPLE: deferredPLE)
             }
             if useDecodeAsyncLadder,
                index + 1 < layers.count,
@@ -4050,6 +4114,9 @@ private final class Qwen4ExpModelInner: Module {
         }
         profiler?.report()
         hostProfiler?.report()
+        // Complete host history and leaf contents before returning any lazy
+        // graph to callers that may evaluate it or perform cache rollback.
+        deferredPLE?.flush()
         return hidden
     }
 
@@ -4227,7 +4294,7 @@ public final class Qwen4ExpMTPHead: Module {
     private let hcCount: Int
     private let indexerCompressRatio: Int
 
-    fileprivate init(_ config: Qwen4ExpTextConfiguration) {
+    init(_ config: Qwen4ExpTextConfiguration) {
         hiddenSize = config.hiddenSize
         hcCount = config.hcCount
         indexerCompressRatio = config.indexerCompressRatio
