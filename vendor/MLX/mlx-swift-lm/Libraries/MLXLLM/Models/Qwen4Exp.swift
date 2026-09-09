@@ -5162,19 +5162,34 @@ struct Qwen4ExpMTPCycleDecision: Equatable {
 public final class Qwen4ExpMTPGenerator {
     private let model: Qwen4ExpModel
     private let head: Qwen4ExpMTPHead
+    private let draftDispatchStride: Int
     public let depth: Int
     public let verificationPolicy: MTPVerificationPolicy
 
-    public init(
+    public convenience init(
         model: Qwen4ExpModel,
         head: Qwen4ExpMTPHead,
         depth: Int = 3,
         verificationPolicy: MTPVerificationPolicy = .strictSingletonEquivalent
     ) {
+        self.init(
+            model: model, head: head, depth: depth,
+            verificationPolicy: verificationPolicy,
+            draftDispatchStride: Int(ProcessInfo.processInfo.environment[
+                "AFM_QWEN_MTP_DRAFT_ASYNC_LADDER"] ?? "0") ?? 0)
+    }
+
+    // Internal stride injection allows request-isolation/cancellation tests
+    // without mutating process-global environment settings.
+    init(
+        model: Qwen4ExpModel, head: Qwen4ExpMTPHead, depth: Int,
+        verificationPolicy: MTPVerificationPolicy, draftDispatchStride: Int
+    ) {
         self.model = model
         self.head = head
         self.depth = max(1, depth)
         self.verificationPolicy = verificationPolicy
+        self.draftDispatchStride = max(0, draftDispatchStride)
     }
 
     private static func tokens(_ ids: [Int]) -> MLXArray {
@@ -5302,6 +5317,18 @@ public final class Qwen4ExpMTPGenerator {
                 draftTokens.append(draft)
                 chainStream = draftOutput.stream
                 chainToken = draft
+                // Scheduling-only experiment: overlap early head execution
+                // with construction of later draft graphs. The head disables
+                // PLE, so it has no deferred host-filled leaves to flush.
+                // Unlike mlx-serve's chunk-boundary dispatch (David Dalcu,
+                // MIT, src/generate.zig mtpChainDispatch), this optionally
+                // submits within a fixed chain to measure Swift host overlap.
+                // No host read, extra draft, or cache-history update is added.
+                if draftDispatchStride > 0, index + 1 < depth,
+                   (index + 1).isMultiple(of: draftDispatchStride)
+                {
+                    asyncEval(draft)
+                }
             }
             totalDrafted += draftTokens.count
 

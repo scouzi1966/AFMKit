@@ -6,6 +6,81 @@ not release qualification, and default MTP is not yet consistently faster than A
 
 ## Measurement contract
 
+### Follow-up: bounded draft-dispatch overlap
+
+An additional off-by-default scheduling experiment dispatches early draft
+tokens while Swift constructs the rest of the fixed-depth head chain:
+`AFM_QWEN_MTP_DRAFT_ASYNC_LADDER=<stride>`. It neither adds draft steps nor
+changes the target verifier, weights, sampling, precision or committed head
+history. The head disables PLE; only the backbone verifier needs to flush
+deferred PLE leaves. Source comments distinguish this within-chain experiment
+from the reference's chunk-boundary dispatch.
+
+The Release build passes (`build-draft-ladder.log`, 97.21 s); all 23 focused
+tests pass (`test-draft-ladder.log`). The added test compares disabled dispatch
+with strides 1/2/4 under strict and batched policies, depths 1/3/4, repeated
+requests, first-token and later cancellation, EOS and exact output prefixes.
+
+The first uninstrumented stride-1/depth-4/verification-stride-8 arm measures
+91.93 / 82.15 / 89.12 / 75.15 tok/s, preserving all 12 previous candidate
+texts. **Do not attribute that whole improvement to draft dispatch:** the
+same rebuilt binary with draft dispatch disabled measures
+89.14 / 81.04 / 88.88 / 74.15. A repeated enabled arm measures
+90.63 / 81.06 / 89.66 / 75.50 and preserves all twelve texts. Thus the
+repeated enabled path is within about 3% of the frozen reference, but the
+increment over its same-binary disabled control is much smaller than the
+between-build gain. No claim of a 4–5% dispatch-only win is justified.
+
+The 23-test suite also passes with the native HC chain enabled
+(`test-draft-ladder-native-chain.log`). The enabled draft-dispatch candidate
+passes the 24/24 known-answer rerun. Full API cache/concurrency coexistence
+qualification is separate and must not be confused with continuous MTP
+batching: Qwen MTP currently uses a serial lane with request-owned cold caches;
+ineligible requests can use the ordinary AR scheduler.
+
+### Follow-up: verifier dispatch overlap reaches the experimental 10% gate
+
+Code checkpoint `2bb0c0c6` preserves the lazy-range change and bounded,
+off-by-default verification-dispatch experiment. With a dispatch every eight
+layers, **two separate uninstrumented runs** meet the first-four-context 10%
+minimum. This is not equality with the reference, default-setting parity, or
+release qualification.
+
+| Context | Frozen reference | Candidate run 1 | Candidate run 2 |
+|---|---:|---:|---:|
+| 0.5K | 90.94 | 88.11 | 87.59 |
+| 1K | 82.69 | 79.20 | 79.12 |
+| 2K | 91.99 | 85.24 | 85.75 |
+| 4K | 75.93 | 71.56 | 71.36 |
+
+Each cell is a median of three 128-token requests, with one excluded warmup
+per context. Same checkpoint, temperature zero, no thinking or prefix reuse.
+Neither run sets `AFM_DEBUG` or `AFM_PERF`. Both explicitly use depth 4,
+batched policy, attention chunk 2, fused HC/router, native HC chain, and
+`AFM_QWEN_VERIFY_ASYNC_LADDER=8`. The previously reported stride-16 run only
+narrowly passed, and its uninstrumented repeat missed 2K; it is not the basis
+for this claim. Launch manifests and binary SHA-256 values are retained.
+
+All 12 texts from each new arm match the corresponding pre-ladder depth-4
+candidate. Those texts are **not** identical to AR: batched arithmetic remains
+an explicitly approximate experiment. Basic coherence and repeatability are
+insufficient to promote that policy. Known-answer controls, live cache and
+concurrency checks, and further performance work remain necessary.
+
+The final binary's untuned `--mtp` control measures 72.89 / 71.04 / 61.89 /
+60.60 tok/s and matches all twelve pre-range, corrected-rollback default texts.
+The range construction improvement therefore also benefits default MTP,
+without enabling the experimental policy. It does not achieve default parity.
+
+The untuned AR control is 68.90 / 67.24 / 62.39 / 61.27 tok/s; all twelve
+texts match the earlier AR control. The bounded known-answer suite passes
+24/24 in each of candidate MTP, strict-default MTP, and AR. Candidate and AR
+texts also agree for all 24 of these short responses. The eight distinct
+cases cover arithmetic, sorting, extraction, logic, code evaluation, Unicode,
+current-versus-stale facts, and coordinates, repeated in alternating order.
+These checks are not a broad model-quality evaluation and are not included
+in the timed context benchmark.
+
 ### Follow-up: sampled host hotspot and lazy integer ranges
 
 A separate, non-comparable 512-token diagnostic at 4K was sampled with macOS
@@ -31,8 +106,8 @@ sentinels, multiple rows/requests, and position-history extension.
 These use the same 128-token measurement contract and explicit batched-policy,
 chunk-2, HC/router and diagnostic flags. They are not default performance.
 The range-only depth-3 comparison preserved **12/12 response texts**; 4K improved
-12.2%, while short-context differences are small. No single measured arm yet
-meets all four reference MTP points. Fixed depth 6 was slower
+12.2%, while short-context differences are small. At this stage no single arm
+met all four reference MTP points. Fixed depth 6 was slower
 (71.14 / 65.91 / 61.89 / 53.99), so blindly increasing depth is not a remedy.
 
 The fused router entry point is bounded to independent verification rows;
@@ -58,8 +133,8 @@ Two further experiments remain disabled by default:
   Before **every** submission it flushes pending mapped PLE leaves; an unfilled
   leaf must never reach the GPU. Full-model tests compare dispatch strides
   1/4/8 with no early dispatch, including EOS n-gram history, separate request
-  caches and every partial-acceptance rollback boundary. Its performance
-  qualification is still in progress.
+  caches and every partial-acceptance rollback boundary. The subsequent
+  uninstrumented performance measurements are recorded above.
 
 The current focused suite has 22 passing tests (`test-verify-ladder.log`). The
 first fused-mask attempt failed Metal compilation because its scalar input was

@@ -479,6 +479,38 @@ final class QwenNextMTPPipelineTests: XCTestCase {
         }
     }
 
+    func testEarlyDraftDispatchPreservesTokensCancellationAndRequestIsolation() async throws {
+        let model = try await makeModel()
+        let head = Qwen4ExpMTPHead(model.configuration)
+        eval(model, head)
+        for policy: MTPVerificationPolicy in [.strictSingletonEquivalent, .batched] {
+            for depth in [1, 3, 4] {
+                let baseline = Qwen4ExpMTPGenerator(
+                    model: model, head: head, depth: depth,
+                    verificationPolicy: policy, draftDispatchStride: 0)
+                let expected = baseline.generate(promptIds: [1, 2, 3], maxTokens: 12)
+                for stride in [1, 2, 4] {
+                    let candidate = Qwen4ExpMTPGenerator(
+                        model: model, head: head, depth: depth,
+                        verificationPolicy: policy, draftDispatchStride: stride)
+                    XCTAssertEqual(candidate.generate(promptIds: [1, 2, 3], maxTokens: 12), expected)
+                    for limit in [1, 4] {
+                        var count = 0
+                        let cancelled = candidate.generate(promptIds: [1, 2, 3], maxTokens: 12) { _ in
+                            count += 1
+                            return count < limit
+                        }
+                        XCTAssertEqual(cancelled, Array(expected.prefix(limit)))
+                    }
+                    XCTAssertEqual(candidate.generate(promptIds: [1, 2, 3], maxTokens: 12), expected)
+                    let eos = expected[0]
+                    XCTAssertEqual(candidate.generate(
+                        promptIds: [1, 2, 3], maxTokens: 12, eosIds: [eos]), [eos])
+                }
+            }
+        }
+    }
+
     func testVerificationQKNormRoPEMatchesIndependentARRowsExactly() throws {
         func values(_ count: Int) -> MLXArray {
             MLXArray((0..<count).map { Float(($0 % 71) - 35) / 64 }).asType(.bfloat16)
