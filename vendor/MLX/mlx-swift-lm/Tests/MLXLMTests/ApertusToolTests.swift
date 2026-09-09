@@ -11,6 +11,8 @@ final class ApertusToolTests: XCTestCase {
         XCTAssertTrue(processor.toolCalls.isEmpty)
         XCTAssertNil(processor.finishPendingText())
         XCTAssertEqual(processor.toolCalls.map(\.function.name), ["weather", "clock"])
+        XCTAssertEqual(processor.drainToolCalls(stopAfterFirst: true).map(\.function.name), ["weather"])
+        XCTAssertEqual(processor.drainToolCalls().map(\.function.name), ["clock"])
         for invalid in [String(valid.dropLast()), "<|tools_prefix|>[{\"weather\":{}},{\"bad\":null}]"] {
             let partial = ToolCallProcessor(format: .apertus)
             XCTAssertNil(partial.processChunk(invalid))

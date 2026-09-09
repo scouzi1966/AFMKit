@@ -1477,7 +1477,7 @@ public func generateTask(
             }
             // EOS can itself be a native tool terminator (Apertus). Publish
             // every call finalized above, including a multi-call array.
-            for call in toolCallProcessor.drainToolCalls() {
+            for call in toolCallProcessor.drainToolCalls(stopAfterFirst: stopAfterToolCall) {
                 continuation.yield(.toolCall(call))
             }
         }
