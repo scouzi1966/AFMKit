@@ -40,3 +40,8 @@ checked-in `Qwen4Exp.swift` adaptation. `AFM_QWEN_MTP_RETAIN_ANCHOR=1` only
 applies with batched verification; it does not change strict/default MTP.
 Preserve its cache-repair tests and
 `docs/QWEN_NEXT_COMMITTED_ANCHOR_EXPERIMENT.md` during upstream refreshes.
+
+`Qwen4ExpMappedNGramTable.swift` also contains an AFM CPU SIMD q4 unpacking
+experiment, off unless `AFM_QWEN_PLE_VECTOR_UNPACK=1`. Its byte-equality tests
+and `docs/QWEN_NEXT_PLE_VECTOR_UNPACK_EXPERIMENT.md` document the unchanged
+sidecar format, hash mapping and qualification limits.

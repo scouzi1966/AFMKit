@@ -43,6 +43,8 @@ enum Qwen4ExpMappedNGramTableError: Error, LocalizedError, Equatable {
 /// disk. Decode gathers use parallel positional reads to avoid serial VM page
 /// faults; larger prefill gathers use the mapped data directly.
 final class Qwen4ExpMappedNGramTable: @unchecked Sendable {
+    private static let vectorUnpack =
+        ProcessInfo.processInfo.environment["AFM_QWEN_PLE_VECTOR_UNPACK"] == "1"
     /// Sequentially reads the sidecar once after weight loading so the first
     /// prompt does not pay random page faults. This mirrors the 8 MiB
     /// background warmer in mlx-serve's `src/qwen4_exp.zig`, adapted to keep
@@ -723,6 +725,14 @@ final class Qwen4ExpMappedNGramTable: @unchecked Sendable {
         biasStart: Int,
         output: UnsafeMutablePointer<UInt16>
     ) {
+        if Self.vectorUnpack, bits == 4,
+           Self.dequantizeAffine4Row(
+               weight: weight, weightStart: weightStart, scaleStart: scaleStart,
+               biasStart: biasStart, dimensions: dimensions, groupSize: groupSize,
+               output: output)
+        {
+            return
+        }
         let mask = UInt32((1 << bits) - 1)
         for column in 0 ..< dimensions {
             let bitOffset = column * bits
@@ -738,6 +748,42 @@ final class Qwen4ExpMappedNGramTable: @unchecked Sendable {
             let bias = Self.bfloat16(weight, at: biasStart + group * 2)
             output[column] = Self.toBFloat16(Float(quantized) * scale + bias)
         }
+    }
+
+    /// CPU SIMD experiment: load each packed word once, reuse scale/bias for
+    /// a whole group, and round eight values to BF16 together. This changes
+    /// neither n-gram hashes nor table layout and introduces no GPU sync.
+    /// Checked table geometry guarantees the supplied byte ranges are valid.
+    static func dequantizeAffine4Row(
+        weight: UnsafeRawBufferPointer,
+        weightStart: Int, scaleStart: Int, biasStart: Int,
+        dimensions: Int, groupSize: Int,
+        output: UnsafeMutablePointer<UInt16>
+    ) -> Bool {
+        guard dimensions > 0, groupSize > 0,
+              groupSize.isMultiple(of: 8), dimensions.isMultiple(of: groupSize)
+        else { return false }
+        let shifts = SIMD8<UInt32>(0, 4, 8, 12, 16, 20, 24, 28)
+        for groupStart in stride(from: 0, to: dimensions, by: groupSize) {
+            let group = groupStart / groupSize
+            let scale = SIMD8<Float>(repeating: bfloat16(weight, at: scaleStart + group * 2))
+            let bias = SIMD8<Float>(repeating: bfloat16(weight, at: biasStart + group * 2))
+            for column in stride(from: groupStart, to: groupStart + groupSize, by: 8) {
+                let word = UInt32(littleEndian: weight.loadUnaligned(
+                    fromByteOffset: weightStart + column / 2, as: UInt32.self))
+                let quantized = (SIMD8<UInt32>(repeating: word) &>> shifts) & 15
+                let values = SIMD8<Float>(quantized) * scale + bias
+                let raw = unsafeBitCast(values, to: SIMD8<UInt32>.self)
+                let rounded = raw &+ 0x7FFF &+ ((raw &>> 16) & 1)
+                var packed = SIMD8<UInt16>(truncatingIfNeeded: rounded &>> 16)
+                // The destination is only UInt16-aligned; memcpy explicitly
+                // permits an unaligned vector store on supported Apple CPUs.
+                withUnsafeBytes(of: &packed) {
+                    _ = memcpy(output + column, $0.baseAddress!, $0.count)
+                }
+            }
+        }
+        return true
     }
 
     private static func validate(
