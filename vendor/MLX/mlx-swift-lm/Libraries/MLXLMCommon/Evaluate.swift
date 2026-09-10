@@ -649,9 +649,14 @@ public struct TokenIterator: Sequence, IteratorProtocol {
     ///   - model: the ``LanguageModel``
     ///   - cache: optional ``KVCache``
     ///   - parameters: the generation parameters
+    ///   - processorPrompt: complete prompt for logit processors when input is a cached suffix
+    ///   - preparedPrefill: optional caller-owned prefill that updates this iterator's cache
+    ///     and returns final-position logits; caller must preserve model.prepare semantics
     public init(
         input: LMInput, model: any LanguageModel, cache: [KVCache]? = nil,
-        parameters: GenerateParameters
+        parameters: GenerateParameters,
+        processorPrompt: MLXArray? = nil,
+        preparedPrefill: (([KVCache]) throws -> LMOutput)? = nil
     ) throws {
         self.model = model
         self.y = input.text
@@ -671,7 +676,16 @@ public struct TokenIterator: Sequence, IteratorProtocol {
         self.temperatureForLogprobs = parameters.temperature
 
         self.promptPrefillTime = try measure {
-            try prepare(input: input, windowSize: parameters.prefillStepSize)
+            if let preparedPrefill {
+                processor?.prompt(processorPrompt ?? input.text.tokens)
+                let result = try preparedPrefill(self.cache)
+                state = result.state
+                y = .init(tokens: convertToToken(logits: result.logits))
+                if let y { asyncEval(y.tokens) }
+            } else {
+                try prepare(input: input, windowSize: parameters.prefillStepSize,
+                            processorPrompt: processorPrompt)
+            }
         }
     }
 
@@ -713,8 +727,10 @@ public struct TokenIterator: Sequence, IteratorProtocol {
         }
     }
 
-    mutating func prepare(input: LMInput, windowSize: Int? = nil) throws {
-        processor?.prompt(input.text.tokens)
+    mutating func prepare(
+        input: LMInput, windowSize: Int? = nil, processorPrompt: MLXArray? = nil
+    ) throws {
+        processor?.prompt(processorPrompt ?? input.text.tokens)
 
         switch try model.prepare(input, cache: cache, windowSize: windowSize) {
         case .tokens(let tokens):

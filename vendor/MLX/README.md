@@ -45,3 +45,11 @@ Preserve its cache-repair tests and
 experiment, off unless `AFM_QWEN_PLE_VECTOR_UNPACK=1`. Its byte-equality tests
 and `docs/QWEN_NEXT_PLE_VECTOR_UNPACK_EXPERIMENT.md` document the unchanged
 sidecar format, hash mapping and qualification limits.
+
+`MLXLMCommon/Evaluate.swift` carries an AFM optional prepared-prefill callback
+and complete-prompt processor seed. `MLXReplayPrefill` uses it to capture exact
+hybrid-state boundaries before decoding instead of trimming later recurrent
+state. Service integration is opt-in with `AFM_PREFIX_REPLAY_BOUNDARIES=1`;
+ordinary callers retain the existing initialization path. No Metal source or
+prebuilt metallib changes are involved. Preserve the shared replay tests when
+refreshing this vendored snapshot.

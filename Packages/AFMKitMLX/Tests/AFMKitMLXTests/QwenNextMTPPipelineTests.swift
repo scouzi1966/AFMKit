@@ -4,8 +4,85 @@ import MLX
 import MLXLMCommon
 import MLXNN
 import XCTest
+@testable import AFMKitMLX
 
 final class QwenNextMTPPipelineTests: XCTestCase {
+    func testSharedReplayPrefillRestoresExactBoundaryWithoutMutatingSnapshot() async throws {
+        let model = try await makeModel()
+        eval(model)
+        let prompt = [1, 2, 3, 4, 5, 6, 7]
+        let radix = RadixTreeCache(modelID: "tiny-replay", maxEntries: 8)
+        let coldCache = model.newCache(parameters: nil)
+        let cold = try MLXReplayPrefill.prepare(
+            model: model, cache: coldCache, inputTokens: prompt,
+            restoredPrefix: 0, radix: radix)
+        let expected = cold.logits.asArray(Float.self)
+        let match = radix.findExactBoundaryMatch(prompt)
+        XCTAssertEqual(match.prefixLen, prompt.count - 1)
+        let stored = try XCTUnwrap(match.layerStates)
+        let metadata = try XCTUnwrap(match.layerMetaStates)
+        let frozen = stored.map { $0.map { $0.asArray(Float.self) } }
+        // Advance the original cache after capture; retained state must not move.
+        _ = model(LMInput.Text(tokens: MLXArray([8, 9]).reshaped([1, 2])),
+                  cache: coldCache, state: nil)
+        eval(coldCache.flatMap { $0.state })
+        XCTAssertEqual(stored.map { $0.map { $0.asArray(Float.self) } }, frozen)
+        for _ in 0..<2 {
+            var restored = model.newCache(parameters: nil)
+            for i in restored.indices {
+                restored[i].state = stored[i]
+                restored[i].metaState = metadata[i]
+            }
+            let output = try MLXReplayPrefill.prepare(
+                model: model, cache: restored, inputTokens: prompt,
+                restoredPrefix: match.prefixLen, radix: radix)
+            XCTAssertEqual(output.logits.asArray(Float.self), expected)
+        }
+    }
+
+    func testSharedReplayBoundaryPlanningIsBoundedAndOverflowSafe() {
+        XCTAssertEqual(MLXReplayPrefill.boundaries(restoredPrefix: 0, finalBoundary: 1024),
+                       [256, 512, 768])
+        XCTAssertEqual(MLXReplayPrefill.boundaries(restoredPrefix: 1024, finalBoundary: 1024), [])
+        XCTAssertEqual(MLXReplayPrefill.boundaries(restoredPrefix: -1, finalBoundary: 1024), [])
+        XCTAssertEqual(MLXReplayPrefill.boundaries(restoredPrefix: 0, finalBoundary: 1), [])
+        let large = MLXReplayPrefill.boundaries(restoredPrefix: 0, finalBoundary: Int.max)
+        XCTAssertLessThanOrEqual(large.count, MLXReplayPrefill.maximumCheckpoints)
+        XCTAssertTrue(large.allSatisfy { $0 > 0 && $0 < Int.max })
+    }
+
+    func testSharedReplayPrefillSupportsSmallChunkLimitsAndSingleTokenPrompts() async throws {
+        let model = try await makeModel()
+        eval(model)
+        for prompt in [[1], [1, 2, 3, 4, 5, 6, 7]] {
+            for chunkSize in [1, 2] {
+                let radix = RadixTreeCache(modelID: "tiny-chunk-replay", maxEntries: 8)
+                let cache = model.newCache(parameters: nil)
+                let cold = try MLXReplayPrefill.prepare(
+                    model: model, cache: cache, inputTokens: prompt,
+                    restoredPrefix: 0, radix: radix, prefillStepSize: chunkSize)
+                let expected = cold.logits.asArray(Float.self)
+                let match = radix.findExactBoundaryMatch(prompt)
+                XCTAssertEqual(match.prefixLen, prompt.count - 1)
+                if prompt.count == 1 {
+                    XCTAssertEqual(radix.count, 0)
+                    continue
+                }
+                var restored = model.newCache(parameters: nil)
+                let states = try XCTUnwrap(match.layerStates)
+                let metadata = try XCTUnwrap(match.layerMetaStates)
+                for i in restored.indices {
+                    restored[i].state = states[i]
+                    restored[i].metaState = metadata[i]
+                }
+                let warm = try MLXReplayPrefill.prepare(
+                    model: model, cache: restored, inputTokens: prompt,
+                    restoredPrefix: match.prefixLen, radix: radix, prefillStepSize: chunkSize)
+                XCTAssertEqual(warm.logits.asArray(Float.self), expected)
+            }
+        }
+    }
+
     func testHeadAnchorRepairPlanCoversEveryAcceptanceFrontier() {
         for depth in [1, 3, 4, 7] {
             for accepted in 0...depth {

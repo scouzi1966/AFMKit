@@ -346,7 +346,7 @@ actor BatchScheduler {
     /// beyond the current decode step. Views and already-contiguous arrays may
     /// otherwise alias mutable rotating-cache buffers.
     nonisolated static func snapshotCacheState(_ state: [MLXArray]) -> [MLXArray] {
-        state.map { $0 * 1 }
+        MLXReplayPrefill.snapshot(state)
     }
 
     /// Select bounded exact recurrent-state boundaries across a prefill. These
@@ -358,19 +358,9 @@ actor BatchScheduler {
         minimumStride: Int = 256,
         maximumCheckpoints: Int = 8
     ) -> [Int] {
-        guard finalBoundary > restoredPrefix,
-              minimumStride > 0,
-              maximumCheckpoints > 0
-        else { return [] }
-        let span = finalBoundary - restoredPrefix
-        let stride = max(minimumStride, (span + maximumCheckpoints - 1) / maximumCheckpoints)
-        var boundaries: [Int] = []
-        var boundary = restoredPrefix + stride
-        while boundary < finalBoundary && boundaries.count < maximumCheckpoints {
-            boundaries.append(boundary)
-            boundary += stride
-        }
-        return boundaries
+        MLXReplayPrefill.boundaries(
+            restoredPrefix: restoredPrefix, finalBoundary: finalBoundary,
+            minimumStride: minimumStride, maximumCheckpoints: maximumCheckpoints)
     }
 
     private func unsafeExactReplaySuffix() -> Int? {

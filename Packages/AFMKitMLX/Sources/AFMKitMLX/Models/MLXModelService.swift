@@ -3852,11 +3852,20 @@ public final class MLXModelService:
                 fflush(stdout)
             }
             try Task.checkCancellation()
+            let capturesReplayBoundaries = self.shouldCaptureSerialReplayBoundaries(
+                model: context.model, input: input, cache: generationCache, parameters: params)
             let generationIterator = try TokenIterator(
                 input: generateInput,
                 model: context.model,
                 cache: generationCache,
-                parameters: params
+                parameters: params,
+                processorPrompt: capturesReplayBoundaries ? MLXArray(inputTokens) : nil,
+                preparedPrefill: capturesReplayBoundaries ? { cache in
+                    try MLXReplayPrefill.prepare(
+                        model: context.model, cache: cache, inputTokens: inputTokens,
+                        restoredPrefix: inputTokens.count - generateInput.text.tokens.size,
+                        radix: self.radixCache!, prefillStepSize: params.prefillStepSize)
+                } : nil
             )
             let (generationStream, generationTask) = MLXLMCommon.generateTask(
                 promptTokenCount: generateInput.text.tokens.size,
@@ -3946,6 +3955,7 @@ public final class MLXModelService:
             // Save prompt cache state into radix tree.
             // Skip save when RotatingKVCache has wrapped past maxCacheSize (#94).
             if useCache, let radix = self.radixCache, !inputTokens.isEmpty,
+               !capturesReplayBoundaries,
                !self.hasWrappedRotatingCache(generationCache) {
                 let promptLen = inputTokens.count
                 let tSave0 = Date.timeIntervalSinceReferenceDate
@@ -4817,12 +4827,21 @@ public final class MLXModelService:
                             fflush(stdout)
                         }
                         let generationIterator: TokenIterator
+                        let capturesReplayBoundaries = self.shouldCaptureSerialReplayBoundaries(
+                            model: context.model, input: input, cache: generationCache, parameters: params)
                         do {
                             generationIterator = try TokenIterator(
                                 input: generateInput,
                                 model: context.model,
                                 cache: generationCache,
-                                parameters: params
+                                parameters: params,
+                                processorPrompt: capturesReplayBoundaries ? MLXArray(inputTokens) : nil,
+                                preparedPrefill: capturesReplayBoundaries ? { cache in
+                                    try MLXReplayPrefill.prepare(
+                                        model: context.model, cache: cache, inputTokens: inputTokens,
+                                        restoredPrefix: streamCachedTokens,
+                                        radix: self.radixCache!, prefillStepSize: params.prefillStepSize)
+                                } : nil
                             )
                         } catch {
                             if debugLogging {
@@ -5027,6 +5046,7 @@ public final class MLXModelService:
                         // Save prompt cache state into radix tree.
                         // Skip when RotatingKVCache has wrapped (#94).
                         if useCache, let radix = self.radixCache, !inputTokens.isEmpty, !Task.isCancelled,
+                           !capturesReplayBoundaries,
                            !self.hasWrappedRotatingCache(generationCache) {
                             let promptLen = inputTokens.count
                             let tSave0 = Date.timeIntervalSinceReferenceDate
@@ -8316,6 +8336,23 @@ public final class MLXModelService:
 
     private func supportsPhysicalTruncation(_ cache: KVCache) -> Bool {
         !(cache is RotatingKVCache)
+    }
+
+    /// Experimental shared replay capture. Kept opt-in until cold-prefill cost
+    /// and restore equivalence are qualified for each architecture.
+    private func shouldCaptureSerialReplayBoundaries(
+        model: any LanguageModel, input: LMInput, cache: [KVCache], parameters: GenerateParameters
+    ) -> Bool {
+        ProcessInfo.processInfo.environment["AFM_PREFIX_REPLAY_BOUNDARIES"] == "1"
+            // The helper is reusable, but bypassing model.prepare requires
+            // architecture qualification. Do not activate other adapters yet.
+            // The VL wrapper additionally creates positionDeltas in prepare,
+            // even for text input. Its continuation state needs a separate
+            // replay adapter; do not bypass that preparation here.
+            && model is Qwen4ExpModel
+            && radixCache != nil && !isMultimodalInput(input)
+            && parameters.kvBits == nil && input.text.tokens.size > 0
+            && MLXPrefixReplayPolicy.requiresExactBoundaryRestore(cache)
     }
 
     /// Check if any RotatingKVCache in the array has wrapped past maxCacheSize.
