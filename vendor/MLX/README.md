@@ -34,3 +34,9 @@ unless `AFM_QWEN_VERIFY_QMM=1` and batched verification are explicitly selected;
 strict verification, ordinary generation and other architectures retain their
 existing operators. See `docs/QWEN_NEXT_MTP_PARITY_PROGRESS.md` at repository root
 for qualification limits and performance evidence.
+
+The AFM-specific committed-anchor head-repair experiment also lives in the
+checked-in `Qwen4Exp.swift` adaptation. `AFM_QWEN_MTP_RETAIN_ANCHOR=1` only
+applies with batched verification; it does not change strict/default MTP.
+Preserve its cache-repair tests and
+`docs/QWEN_NEXT_COMMITTED_ANCHOR_EXPERIMENT.md` during upstream refreshes.

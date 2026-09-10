@@ -6,6 +6,115 @@ import MLXNN
 import XCTest
 
 final class QwenNextMTPPipelineTests: XCTestCase {
+    func testHeadAnchorRepairPlanCoversEveryAcceptanceFrontier() {
+        for depth in [1, 3, 4, 7] {
+            for accepted in 0...depth {
+                let full = Qwen4ExpMTPHeadRepairPlan(
+                    drafted: depth, accepted: accepted, retainAnchor: false)
+                let anchor = Qwen4ExpMTPHeadRepairPlan(
+                    drafted: depth, accepted: accepted, retainAnchor: true)
+                XCTAssertEqual(full.trimRows, depth)
+                XCTAssertEqual(full.replayRows, 0..<(accepted + 1))
+                XCTAssertEqual(anchor.trimRows, depth - 1)
+                XCTAssertEqual(anchor.replayRows, 1..<(accepted + 1))
+                XCTAssertEqual(depth - anchor.trimRows + anchor.replayRows.count, accepted + 1)
+                XCTAssertEqual(anchor.replayRows.isEmpty, accepted == 0)
+            }
+        }
+    }
+
+    func testRetainedHeadAnchorMatchesTrueStreamSingletonRepair() async throws {
+        let model = try await makeModel()
+        var config = model.configuration
+        config.indexerBudget = 4
+        let head = Qwen4ExpMTPHead(config)
+        eval(model, head)
+        for origin in [15, 16] {
+            for depth in [1, 4] {
+                for accepted in 0...depth {
+                    let baseline = head.newCache()
+                    let candidate = head.newCache()
+                    let streams = MLXRandom.normal(
+                        [1, origin + depth + 1, config.hiddenSize * config.hcCount],
+                        key: MLXRandom.key(71))
+                    func append(_ cache: [KVCache], _ position: Int, predicted: Bool = false) {
+                        let token = MLXArray([Int32(position % 30)]).reshaped(1, 1)
+                        let stream = streams[0..., position..<(position + 1), 0...]
+                        _ = head(hiddenStream: predicted ? -stream : stream,
+                                 tokenEmbeddings: model.embedTokens(token), tokenIDs: token,
+                                 positionIDs: MLXArray([Int32(position)]).reshaped(1, 1),
+                                 cache: cache)
+                    }
+                    for position in 0..<origin {
+                        append(baseline, position)
+                        append(candidate, position)
+                    }
+                    for row in 0..<depth {
+                        append(baseline, origin + row, predicted: row > 0)
+                        append(candidate, origin + row, predicted: row > 0)
+                    }
+                    _ = baseline[0].trim(depth)
+                    _ = candidate[0].trim(depth - 1)
+                    for row in 0...accepted { append(baseline, origin + row) }
+                    if accepted > 0 {
+                        for row in 1...accepted { append(candidate, origin + row) }
+                    }
+                    XCTAssertEqual(candidate[0].offset, origin + accepted + 1)
+                    let expected = baseline[0].state
+                    let actual = candidate[0].state
+                    XCTAssertEqual(actual.count, expected.count)
+                    for (a, b) in zip(actual, expected) {
+                        XCTAssertEqual(a.shape, b.shape)
+                        XCTAssertEqual(a.asArray(Float.self), b.asArray(Float.self),
+                                       "origin=\(origin), depth=\(depth), accepted=\(accepted)")
+                    }
+                }
+            }
+        }
+    }
+
+    func testHeadAnchorKeepsSeedCancellationAndRequestIsolation() async throws {
+        let model = try await makeModel()
+        let head = Qwen4ExpMTPHead(model.configuration)
+        eval(model, head)
+        for policy: MTPVerificationPolicy in [.strictSingletonEquivalent, .batched] {
+            for depth in [1, 4] {
+                let candidate = Qwen4ExpMTPGenerator(
+                    model: model, head: head, depth: depth, verificationPolicy: policy,
+                    draftDispatchStride: 1, retainHeadAnchor: true)
+                for temperature: Float in [0, 0.6] {
+                    func run(_ seed: UInt64 = 42, onToken: ((Int) -> Bool)? = nil) -> [Int] {
+                        candidate.generate(promptIds: [1, 2, 3], maxTokens: 12,
+                                           temperature: temperature, topP: 0.95,
+                                           seed: seed, onToken: onToken)
+                    }
+                    let expected = run()
+                    XCTAssertEqual(expected.count, 12)
+                    _ = run(43)
+                    XCTAssertEqual(run(), expected)
+                    for limit in [1, 4] {
+                        var count = 0
+                        XCTAssertEqual(run { _ in
+                            count += 1
+                            return count < limit
+                        }, Array(expected.prefix(limit)))
+                    }
+                    XCTAssertEqual(candidate.generate(
+                        promptIds: [1, 2, 3], maxTokens: 12, eosIds: [expected[0]],
+                        temperature: temperature, topP: 0.95, seed: 42), [expected[0]])
+                    if policy == .strictSingletonEquivalent {
+                        let disabled = Qwen4ExpMTPGenerator(
+                            model: model, head: head, depth: depth, verificationPolicy: policy,
+                            draftDispatchStride: 1, retainHeadAnchor: false)
+                        XCTAssertEqual(disabled.generate(
+                            promptIds: [1, 2, 3], maxTokens: 12,
+                            temperature: temperature, topP: 0.95, seed: 42), expected)
+                    }
+                }
+            }
+        }
+    }
+
     func testTopPSamplerKeepsLegacySingletonSeededOutputs() {
         let values = (0..<128).map { Float(($0 * 17) % 113 - 56) / 32 }
         for shape in [[128], [1, 128]] {
