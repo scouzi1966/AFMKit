@@ -330,17 +330,17 @@ private final class Qwen4ExpGatedResidual: Module {
             return (fused.mixed, input, fused.injection)
         }
         let normalized = hcNorm(input)
-        let down = VerifyWidthLinear.call(
+        let down = qwen4ExpVerificationLinear(
             inputMixWeightDown, normalized, verificationPolicy: verificationPolicy,
             role: .hyperConnection)
-        let weights = sigmoid(VerifyWidthLinear.call(
+        let weights = sigmoid(qwen4ExpVerificationLinear(
             inputMixWeightUp, silu(down / Float(hcCount)),
             verificationPolicy: verificationPolicy,
             role: .hyperConnection))
         let shape = Array(input.shape.dropLast())
         let mixed = (weights.reshaped(shape + [hcCount, hiddenSize])
             * normalized.reshaped(shape + [hcCount, hiddenSize])).mean(axis: -2)
-        let injection = 2 * sigmoid(VerifyWidthLinear.call(
+        let injection = 2 * sigmoid(qwen4ExpVerificationLinear(
             blockInjectWeight!, normalized, verificationPolicy: verificationPolicy,
             role: .hyperConnection) / Float(hcCount))
         return (mixed, input, injection)
@@ -397,10 +397,10 @@ private final class Qwen4ExpGatedResidual: Module {
             return fused.mixed
         }
         let normalized = hcNorm(input)
-        let down = VerifyWidthLinear.call(
+        let down = qwen4ExpVerificationLinear(
             inputMixWeightDown, normalized, verificationPolicy: verificationPolicy,
             role: .hyperConnection)
-        let weights = sigmoid(VerifyWidthLinear.call(
+        let weights = sigmoid(qwen4ExpVerificationLinear(
             inputMixWeightUp, silu(down / Float(hcCount)),
             verificationPolicy: verificationPolicy,
             role: .hyperConnection))
@@ -1376,7 +1376,7 @@ final class Qwen4ExpQSAIndexer: Module {
         let body: ([MLXArray]) -> [MLXArray] = { [unowned self] arguments in
             CompiledDecodeTrace.withActive {
                 let hidden = arguments[0]
-                let qk = VerifyWidthLinear.call(
+                let qk = qwen4ExpVerificationLinear(
                     self.indexQKProj, hidden, verificationPolicy: nil,
                     role: .indexer)
                 let splitPoint = self.heads * self.headDim
@@ -1478,7 +1478,7 @@ final class Qwen4ExpQSAIndexer: Module {
             queryRows = projected[0]
             currentKeys = projected[1]
         } else {
-            let qk = VerifyWidthLinear.call(
+            let qk = qwen4ExpVerificationLinear(
                 indexQKProj, hidden, verificationPolicy: verificationPolicy,
                 role: .indexer)
             let splitPoint = heads * headDim
@@ -1874,13 +1874,13 @@ private final class Qwen4ExpAttention: Module {
         let angles = arguments[1]
         let b = x.dim(0)
         let l = x.dim(1)
-        let qProjection = VerifyWidthLinear.call(
+        let qProjection = qwen4ExpVerificationLinear(
             self.qProj, x, verificationPolicy: nil,
             role: .attention)
-        let kProjection = VerifyWidthLinear.call(
+        let kProjection = qwen4ExpVerificationLinear(
             self.kProj, x, verificationPolicy: nil,
             role: .attention)
-        let vProjection = VerifyWidthLinear.call(
+        let vProjection = qwen4ExpVerificationLinear(
             self.vProj, x, verificationPolicy: nil,
             role: .attention)
         let qParts = MLX.split(
@@ -1927,7 +1927,7 @@ private final class Qwen4ExpAttention: Module {
                     .transposed(0, 2, 1, 3)
                     .reshaped(outputHeads.dim(0), outputHeads.dim(2), -1)
                     * sigmoid(gate)
-                return [VerifyWidthLinear.call(
+                return [qwen4ExpVerificationLinear(
                     self.oProj, output, verificationPolicy: nil,
                     role: .attention)]
             }
@@ -2010,13 +2010,13 @@ private final class Qwen4ExpAttention: Module {
             v = projected[2]
             gate = projected[3]
         } else {
-            let qProjection = VerifyWidthLinear.call(
+            let qProjection = qwen4ExpVerificationLinear(
                 qProj, x, verificationPolicy: verificationPolicy,
                 role: .attention)
-            let kProjection = VerifyWidthLinear.call(
+            let kProjection = qwen4ExpVerificationLinear(
                 kProj, x, verificationPolicy: verificationPolicy,
                 role: .attention)
-            let vProjection = VerifyWidthLinear.call(
+            let vProjection = qwen4ExpVerificationLinear(
                 vProj, x, verificationPolicy: verificationPolicy,
                 role: .attention)
             let qParts = MLX.split(
@@ -2221,7 +2221,7 @@ private final class Qwen4ExpAttention: Module {
             var output = outputHeads
                 .transposed(0, 2, 1, 3).reshaped(b, l, -1)
             output = output * sigmoid(gate)
-            result = VerifyWidthLinear.call(
+            result = qwen4ExpVerificationLinear(
                 oProj, output, verificationPolicy: verificationPolicy,
                 role: .attention)
         }
@@ -2331,13 +2331,13 @@ private final class Qwen4ExpGatedDeltaNet: Module {
                 let recurrentState = arguments[2]
                 let b = x.dim(0)
                 let l = x.dim(1)
-                let projected = VerifyWidthLinear.call(
+                let projected = qwen4ExpVerificationLinear(
                     self.inProjQKV, x, verificationPolicy: nil,
                     role: .gatedDelta)
-                let projectedA = VerifyWidthLinear.call(
+                let projectedA = qwen4ExpVerificationLinear(
                     self.inProjA, x, verificationPolicy: nil,
                     role: .gatedDelta)
-                let projectedB = VerifyWidthLinear.call(
+                let projectedB = qwen4ExpVerificationLinear(
                     self.inProjB, x, verificationPolicy: nil,
                     role: .gatedDelta)
                 let prework = Qwen4ExpGatedDeltaPrework.call(
@@ -2364,11 +2364,11 @@ private final class Qwen4ExpGatedDeltaNet: Module {
                     g: prepared.gate,
                     beta: prepared.beta,
                     state: recurrentState)
-                let z = VerifyWidthLinear.call(
+                let z = qwen4ExpVerificationLinear(
                     self.inProjZ, x, verificationPolicy: nil,
                     role: .gatedDelta)
                     .reshaped(b, l, self.valueHeads, self.valueHeadDim)
-                let output = VerifyWidthLinear.call(
+                let output = qwen4ExpVerificationLinear(
                     self.outProj,
                     self.norm(delta.0, gate: z).reshaped(b, l, self.valueDim),
                     verificationPolicy: nil,
@@ -2523,13 +2523,13 @@ private final class Qwen4ExpGatedDeltaNet: Module {
             cache?[1] = decoded[2]
             return decoded[0]
         }
-        let projected = VerifyWidthLinear.call(
+        let projected = qwen4ExpVerificationLinear(
             inProjQKV, x, verificationPolicy: verificationPolicy,
             role: .gatedDelta)
-        let a = VerifyWidthLinear.call(
+        let a = qwen4ExpVerificationLinear(
             inProjA, x, verificationPolicy: verificationPolicy,
             role: .gatedDelta)
-        let rawB = VerifyWidthLinear.call(
+        let rawB = qwen4ExpVerificationLinear(
             inProjB, x, verificationPolicy: verificationPolicy,
             role: .gatedDelta)
         let initialConvolutionState = cache?[0] ?? MLXArray.zeros(
@@ -2695,11 +2695,11 @@ private final class Qwen4ExpGatedDeltaNet: Module {
                 state: recurrentState, useKernel: true)
         }
         cache?[1] = state
-        let z = VerifyWidthLinear.call(
+        let z = qwen4ExpVerificationLinear(
             inProjZ, x, verificationPolicy: verificationPolicy,
             role: .gatedDelta)
             .reshaped(b, l, valueHeads, valueHeadDim)
-        return VerifyWidthLinear.call(
+        return qwen4ExpVerificationLinear(
             outProj,
             norm(output, gate: z).reshaped(b, l, valueDim),
             verificationPolicy: verificationPolicy,
@@ -2823,11 +2823,11 @@ private final class Qwen4ExpMLP: Module, UnaryLayer {
         _ x: MLXArray,
         verificationPolicy: MTPVerificationPolicy?
     ) -> MLXArray {
-        let gate = VerifyWidthLinear.call(
+        let gate = qwen4ExpVerificationLinear(
             gateProj, x, verificationPolicy: verificationPolicy, role: .expert)
-        let up = VerifyWidthLinear.call(
+        let up = qwen4ExpVerificationLinear(
             upProj, x, verificationPolicy: verificationPolicy, role: .expert)
-        return VerifyWidthLinear.call(
+        return qwen4ExpVerificationLinear(
             downProj, silu(gate) * up,
             verificationPolicy: verificationPolicy, role: .expert)
     }
@@ -2865,7 +2865,7 @@ private final class Qwen4ExpSparseMoE: Module, UnaryLayer {
         _ x: MLXArray,
         verificationPolicy: MTPVerificationPolicy?
     ) -> MLXArray {
-        let logits = VerifyWidthLinear.call(
+        let logits = qwen4ExpVerificationLinear(
             gate, x, verificationPolicy: verificationPolicy, role: .expert)
         let fusedRouting: (indices: MLXArray, scores: MLXArray)?
         if normalize && verificationPolicy == nil {
@@ -2905,7 +2905,7 @@ private final class Qwen4ExpSparseMoE: Module, UnaryLayer {
                     : switchMLP(x, indices))
             routed = (routedExperts * scores[.ellipsis, .newAxis]).sum(axis: -2)
         }
-        let sharedGate = VerifyWidthLinear.call(
+        let sharedGate = qwen4ExpVerificationLinear(
             sharedExpertGate, x, verificationPolicy: verificationPolicy,
             role: .expert)
         let shared = sharedExpert(x, verificationPolicy: verificationPolicy)
@@ -3446,11 +3446,11 @@ private final class Qwen4ExpPLE: Module {
             deferredPLE: deferredPLE)
         profiler?.lap(embedding, stage: .embedding)
         let shape = Array(hidden.shape.dropLast())
-        let keyProjection = VerifyWidthLinear.call(
+        let keyProjection = qwen4ExpVerificationLinear(
             keyProj, embedding, verificationPolicy: verificationPolicy,
             role: .positionalEmbedding)
         profiler?.lap(keyProjection, stage: .keyProjection)
-        let valueProjection = VerifyWidthLinear.call(
+        let valueProjection = qwen4ExpVerificationLinear(
             valueProj, embedding, verificationPolicy: verificationPolicy,
             role: .positionalEmbedding)
         profiler?.lap(valueProjection, stage: .valueProjection)
@@ -3638,9 +3638,10 @@ final class Qwen4ExpForwardProfiler {
 
 /// Opt-in profiler for Swift-side lazy-graph construction. Unlike
 /// ``Qwen4ExpForwardProfiler``, this never evaluates an array or synchronizes
-/// the GPU, so it isolates the host work performed before `asyncEval` walks
-/// and submits the graph. Totals are reported every 32 single-token forwards
-/// to keep diagnostic I/O out of the measured hot path.
+/// the GPU explicitly. It measures host construction and the time spent in
+/// `asyncEval` submission, which can itself wait inside the runtime. Totals
+/// are reported every 32 selected forwards (decode or verification), keeping
+/// diagnostic I/O infrequent; this is disabled in timed comparisons.
 final class Qwen4ExpHostProfiler {
     enum Block: Int, CaseIterable {
         case ple
@@ -3649,6 +3650,8 @@ final class Qwen4ExpHostProfiler {
         case attention
         case mlp
         case finalWrite
+        case submission
+        case pleFill
 
         var label: String {
             switch self {
@@ -3658,6 +3661,8 @@ final class Qwen4ExpHostProfiler {
             case .attention: "attn"
             case .mlp: "mlp"
             case .finalWrite: "finalWrite"
+            case .submission: "submission"
+            case .pleFill: "pleFill"
             }
         }
     }
@@ -3675,9 +3680,11 @@ final class Qwen4ExpHostProfiler {
         repeating: UInt64(0), count: Block.allCases.count)
 
     static func make(sequenceLength: Int) -> Qwen4ExpHostProfiler? {
-        guard sequenceLength == 1,
-              ProcessInfo.processInfo.environment["AFM_QWEN_PROFILE_HOST"] == "all"
-        else { return nil }
+        let mode = ProcessInfo.processInfo.environment["AFM_QWEN_PROFILE_HOST"]
+        let decode = sequenceLength == 1 && mode == "all"
+        let verify = sequenceLength > 1
+            && sequenceLength <= VerifyWidthLinear.maximumAcceleratedWidth && mode == "verify"
+        guard decode || verify else { return nil }
         return Qwen4ExpHostProfiler()
     }
 
@@ -3917,6 +3924,7 @@ final class Qwen4ExpDecoderLayer: Module {
         fusedQKAngles: MLXArray? = nil,
         verificationPolicy: MTPVerificationPolicy? = nil,
         profiler: Qwen4ExpForwardProfiler? = nil,
+        hostProfiler: Qwen4ExpHostProfiler? = nil,
         deferredPLE: Qwen4ExpDeferredPLE? = nil
     ) -> MLXArray {
         let arrayCache = cache as? ArraysCache
@@ -3929,12 +3937,14 @@ final class Qwen4ExpDecoderLayer: Module {
                 deferredPLE: deferredPLE)
             profiler?.lap(hidden, block: .ple)
         }
+        hostProfiler?.lap(.ple)
         var mixed: MLXArray
         var residual: MLXArray
         var injection: MLXArray
         (mixed, residual, injection) = attentionHyperConnection.mix(
             hidden, verificationPolicy: verificationPolicy)
         profiler?.lap(mixed, block: .hyperConnectionRead)
+        hostProfiler?.lap(.hyperConnectionRead)
         let attended = isLinear
             ? linearAttention!(
                 mixed, cache: arrayCache,
@@ -3944,6 +3954,8 @@ final class Qwen4ExpDecoderLayer: Module {
                 verificationPolicy: verificationPolicy,
                 fusedQKAngles: fusedQKAngles)
         profiler?.lap(attended, block: isLinear ? .gatedDelta : .attention)
+        hostProfiler?.lap(isLinear ? .gatedDelta : .attention)
+        defer { hostProfiler?.lap(.mlp) }
         if let profiler {
             let injected = attentionHyperConnection.inject(
                 attended, residual: residual, weights: injection)
@@ -4325,6 +4337,7 @@ private final class Qwen4ExpModelInner: Module {
                     fusedQKAngles: sharedFusedQKAngles,
                     verificationPolicy: verificationPolicy,
                     profiler: profiler,
+                    hostProfiler: hostProfiler,
                     deferredPLE: deferredPLE)
             }
             let dispatchDecode = useDecodeAsyncLadder
@@ -4333,7 +4346,10 @@ private final class Qwen4ExpModelInner: Module {
                 && (index + 1).isMultiple(of: verifyStride)
             if index + 1 < layers.count, dispatchDecode || dispatchVerify
             {
-                if dispatchVerify { deferredPLE?.flush() }
+                if dispatchVerify {
+                    deferredPLE?.flush()
+                    hostProfiler?.lap(.pleFill)
+                }
                 if let pending {
                     asyncEval([
                         pending.output,
@@ -4343,6 +4359,7 @@ private final class Qwen4ExpModelInner: Module {
                 } else {
                     asyncEval(hidden)
                 }
+                hostProfiler?.lap(.submission)
             }
         }
         if combineWithFinalMixer, let pending {
@@ -4814,7 +4831,7 @@ public final class Qwen4ExpModel: Module, LLMModel, KVCacheDimensionProvider {
         verificationPolicy: MTPVerificationPolicy? = nil
     ) -> MLXArray {
         if let lmHead {
-            return VerifyWidthLinear.call(
+            return qwen4ExpVerificationLinear(
                 lmHead, hidden, verificationPolicy: verificationPolicy,
                 role: .lmHead)
         }

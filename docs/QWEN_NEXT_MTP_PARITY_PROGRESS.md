@@ -6,6 +6,138 @@ not release qualification, and default MTP is not yet consistently faster than A
 
 ## Measurement contract
 
+### Follow-up: opt-in plain-SIMD verification projections
+
+The next checkpoint adds `Qwen4ExpBatchedQuantizedProjection.swift` to AFMKit's
+checked-in provider snapshot. It adapts the reference's split-K and wide-output
+4-bit verification kernels, with source provenance and both upstream license
+notices retained. This is inline Metal compiled through `MLXFast.metalKernel`,
+not a consumer checkout patch or a replacement prebuilt metallib.
+
+Dispatch requires **both** `AFM_QWEN_VERIFY_QMM=1` and batched verification.
+It accepts batch-one, 2–7-row BF16/FP16 inputs, compatible affine 4-bit weights
+with group size 32/64/128, and checked matrix geometry. Unsupported layouts
+fall back to the existing projection. Strict verification, ordinary decode,
+prefill and other architectures do not opt into this kernel. The bounded
+kernel definitions do not retain model weights or a global scalar cache;
+K/N are per-call scalar arguments. The different reduction order can change
+logits, wording and speculative acceptance: this is **not** an exact-AR path.
+Some existing compiled attention/indexer closures still pass a nil verification
+policy; do not assume that every projection uses the new kernel.
+
+The separate `AFM_QWEN_PROFILE_HOST=verify` diagnostic now breaks down host
+construction, deferred PLE filling and graph submission at verification widths.
+It adds no explicit GPU synchronization and is disabled in every timed arm.
+Graph submission may itself wait on the runtime; these host intervals are
+not individual GPU-kernel execution times.
+
+#### Completed same-checkpoint results
+
+All arms below completed sequentially on the M3 Ultra using
+`/Volumes/edata2/models/ddalcu/Qwen3.8-Flash-Next-MLX-Serve-4bit` and the frozen
+reference v26.9.2 binary. Each context has one excluded warmup and three
+128-token measured responses, with actual prompt lengths 493 / 864 / 2,112 /
+4,150 tokens. Thinking and prefix reuse are off; seed is 42. The new inference
+binary SHA-256 is
+`dfa595f33429038a14dc34d6bdd0a468deb4a3b963299a208997a5a791f65b52`.
+
+AFM uses depth 4 and the existing experimental settings:
+
+```text
+AFM_QWEN_MTP_VERIFICATION_POLICY=batched
+AFM_QWEN_VERIFY_ATTENTION_CHUNK=2
+AFM_QWEN_VERIFY_FUSED_HC=1
+AFM_QWEN_HC_NATIVE_CHAIN=1
+AFM_QWEN_VERIFY_FUSED_ROUTER=1
+AFM_QWEN_VERIFY_ASYNC_LADDER=8
+AFM_QWEN_MTP_DRAFT_ASYNC_LADDER=1
+```
+
+The enabled arm adds only `AFM_QWEN_VERIFY_QMM=1`; the disabled control uses
+the **same rebuilt binary**. Neither `AFM_DEBUG` nor `AFM_PERF` is enabled.
+The reference uses MTP with its adaptive policy, no PLD or drafter, no decode
+attention quantization, KV quantization off and both prefix/tokenize caches
+disabled. Launch manifests retain complete arguments and binary hashes.
+
+Median client decode tok/s at temperature 0.6 / top-p 0.95:
+
+| Context | AFM QMM off | AFM QMM on, run 1 | AFM QMM on, run 2 | Reference run 1 | Reference run 2 |
+|---|---:|---:|---:|---:|---:|
+| 0.5K | 80.29 | 88.21 | 87.38 | 88.29 | 90.83 |
+| 1K | 79.07 | 85.44 | 84.73 | 81.91 | 81.21 |
+| 2K | 74.69 | 74.34 | 72.95 | 79.61 | 77.94 |
+| 4K | 80.92 | 91.44 | 92.58 | 86.43 | 66.77 |
+
+The first enabled run improves 0.5K/1K/4K by 9.9%/8.1%/13.0% over the
+disabled control; 2K does not improve. All these sampled reference contexts
+produce three different measured texts despite the requested seed. AFM's
+three trials repeat their text within each context and arm. Thus these are
+same-input comparisons, **not identical generated-token workloads**, and the
+reference's large variance must not be hidden by selecting its slower run.
+
+Median client decode tok/s for the additional controls:
+
+| Context | AFM, temp 0.6 / top-p 1 | Reference, temp 0.6 / top-p 1 | AFM, greedy | Reference, greedy |
+|---|---:|---:|---:|---:|
+| 0.5K | 103.27 | 86.83 | 99.48 | 94.71 |
+| 1K | 75.92 | 79.33 | 94.05 | 84.47 |
+| 2K | 83.12 | 82.91 | 90.30 | 94.07 |
+| 4K | 85.70 | 78.11 | 70.21 | 84.47 |
+
+**No overall parity claim or default promotion follows.** Greedy 4K misses
+the fresh reference by 16.9%. The earlier sampled reference medians below
+also remain valid evidence: top-p 0.95 at 2K previously reached 87.65 tok/s,
+versus 72.95–74.34 now for AFM; top-p 1 at 1K previously reached 88.51,
+versus 75.92 now for AFM. The latter AFM point is also below the prior
+candidate's 85.01; it is a between-build/policy-output observation, not a
+same-binary QMM-off isolation. These gaps remain open.
+
+TTFT-derived prompt throughput for the repeated top-p 0.95 AFM arm is
+954.29 / 1,117.98 / 1,272.69 / 1,295.28 tok/s. This includes first-token
+and API work and is not pure GPU prefill throughput. The first disabled
+control's excluded warmups were unusually slow; its measured trials recovered.
+No particular cause for that warmup behavior has been established.
+
+#### Validation and checkpoint limits
+
+- Release consumer build passed in 197.28 s. The initial attempt retained a
+  stale source list that omitted the new Swift file; rebuilding through the
+  reliable wrapper with `--disable-build-manifest-caching` included it and
+  succeeded. The failed build was not benchmarked.
+- 59 focused Release tests passed: 27 Qwen MTP pipeline, 10 runtime policy,
+  19 admission and three new projection tests. One optional timing test was
+  skipped in that suite and passed when run separately.
+- Projection tests cover FP32-dequantized operand oracles, BF16/FP16, group
+  sizes, all accepted row counts, split-K/wide-output tails, unsupported
+  layouts, and compiled A/B/A model geometry isolation. Existing quantized
+  GDN pipeline tests exercise the enabled kernel with rollback coverage.
+- The isolated production-geometry probe showed lower elapsed evaluation
+  time for 5/7-row vocabulary projections (upper medians of 12 samples),
+  but mixed results for smaller matrices. These are not full-model GPU-only
+  measurements and are not a universal projection-speedup claim.
+- The enabled candidate passed 24/24 known-answer checks (eight prompts,
+  repeated three times) and 13 live API requests, including sampled defaults,
+  streaming equality, concurrent seed isolation and stop/logprobs fallback.
+  Debug evidence records 12 MTP summaries including startup warmup.
+- Saved context responses were inspected for coherence. No comprehensive
+  AI-judge or broad quality-equivalence qualification was run in this batch.
+  Prefix/concurrency checks establish coexistence, not speculative continuous
+  batching or MTP prefix-reuse acceleration.
+
+Raw manifests, SSE responses, logs and tests remain untracked under
+`/Volumes/edata2/afm-benchmarks/qwen-next-mtp-parity-20260909`, with prefixes
+`verify-qmm-*`, `test-verify-qmm-*`, `test-batched-projection-v1`,
+`microbench-batched-projection-v1` and `build-verify-qmm-*`.
+
+Two earlier controls were not adopted: sharing a host token snapshot / moving
+the integer reshape off the lazy graph did not improve the measured curve
+and was removed; command-buffer size/operation-limit experiments showed only
+small differences and did not justify changing global runtime defaults.
+Their evidence remains under `host-snapshot-*`, `buffer-*-p095-v1-*` and the
+corresponding driver logs. No host token snapshot or buffer tuning is required by
+the QMM candidate. Existing unrelated consumer build-script edits remain
+outside this provider checkpoint.
+
 ### Follow-up: non-greedy Qwen Next MTP
 
 Qwen Next's text-generation binding now accepts positive temperature with
