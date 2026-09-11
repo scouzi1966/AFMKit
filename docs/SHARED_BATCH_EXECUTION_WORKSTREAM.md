@@ -230,7 +230,88 @@ fallback combination (stops plus logprobs), but does not qualify grouped decode.
 This coverage distinction is intentional and its raw records are retained.
 Long-context/soak tests and broader semantic qualification remain outstanding.
 
-### Text-derived reuse estimate
+Reverse-order prefix/C15 repeat on the same binary confirms the effect:
+grouping off first/repeat **62.03 / 66.08 tok/s**, grouping on
+**104.31 / 117.34 tok/s**. Each arm again completed 30 requests with 24
+structural passes and unchanged cached-token counts. Records:
+`compatible-group-repeat-g{0,1}-afm-mtp-0/`.
+
+Sparse-attention follow-up: the expanded agentic prompt contains roughly
+4,096 input tokens. At the original 192-token cap, grouping off measured
+52.07 / 58.74 aggregate tok/s (first/repeat); grouping on measured
+84.19 / 102.68. Peak RSS was 67.55 / 67.56 GiB. Every request completed and
+every response repeated identically within its own arm. However, grouping
+changes 30/30 structural passes to 26/30: two responses per round reach the
+192-token cap. This fixed-cap difference remains part of the qualification
+record; it is not erased by a larger-cap rerun.
+
+Separate 384-token-cap diagnostic: both paths pass 30/30 structural checks.
+Grouping on measures 82.54 / 101.56 tok/s; grouping off 52.32 / 59.33.
+The previously truncated tenant-cache response completes at 204 tokens.
+The stream-task response changes wording in the rerun and completes cleanly;
+not every new response is an exact continuation of the truncated text.
+These checks establish completed JSON, not broad semantic or greedy equivalence.
+Records: `compatible-group-sparse-*` and `compatible-group-sparse-quality-*`.
+The early generic `launch.json` metadata retained the context harness's
+128-token default; the actual agentic request code used 192, as shown by its
+saved completions. Future runs explicitly record the effective request cap and
+sampling parameters; existing evidence is not rewritten.
+
+## Continuous group admission (separate opt-in experiment)
+
+`AFM_QWEN_BATCH_CONTINUOUS_GROUPS=1` additionally requires compatible grouping
+to be enabled. It bypasses the fixed-cohort admission barrier only for the
+qualified text Qwen adapter. Every request, including the initial singleton,
+keeps independent/group-owned caches, so later arrivals cannot accidentally
+enter the legacy padded batch representation. Existing groups are never
+padded or remapped to a new request's offset.
+
+With active requests, at most one available-slot prefill is admitted before
+returning to decode. This bounds the number of new prompts, not their token
+work: full token-budgeted prefill/decode interleaving remains outstanding.
+New arrivals with incompatible positions remain independent; arbitrary-offset
+multi-request verification is also not implemented by this switch. Both
+experiments stay off by default pending throughput/latency and quality review.
+
+### Initial continuous-admission screen (2026-09-10)
+
+Release SHA-256 `219006b93856e75a0d3bd20ff2ab86e96fc9e6e46b840c6dcf935af27baaa65a`.
+Same checkpoint, flags, C15, prefix enabled, MTP off and 192-token cap.
+The burst comparison measures 101.39 / 114.10 aggregate tok/s with continuous
+admission off, and 107.83 / 127.48 on. Both arms complete 30 requests with
+24 structural passes, identical reused-token totals and approximately 67.57
+GiB peak RSS. The extra request joins while 14 slots are active, before their
+first grouped forward; this is not yet proof of a late-arrival throughput win.
+
+The separate genuinely staggered workload starts eight requests, then seven
+more after an initial request emits three nonempty chunks:
+
+| Admission | First / repeat aggregate tok/s | Late median TTFT, seconds | Peak RSS GiB |
+|---|---:|---:|---:|
+| Fixed cohort | 78.87 / 87.36 | 14.20 / 12.25 | 67.58 |
+| Continuous, one prefill per turn | 72.41 / 81.45 | 6.56 / 6.09 | 67.68 |
+
+Both paths complete 30 requests with 28 structural passes and equal cached
+token totals. Continuous admission reduces late TTFT but costs 7–8% aggregate
+throughput, consistent with its one-at-a-time admissions fragmenting new GPU
+groups. It is **not** a default recommendation. Next experiment: bounded
+multi-request admission for cheap cache hits while preserving decode fairness.
+
+Timestamp audit counts only initial requests already streaming when the late
+group was submitted: fixed-cohort late requests overlap 0 such requests;
+continuous late requests overlap active initial work in all 7 cases each round.
+The raw summary's looser `late_streamed_before_initial_drained` field counts
+an eighth initial request that was itself queued and is not a reliable overlap
+test. Raw per-request timestamps and scheduler admission logs are retained.
+
+The continuous-enabled lifecycle smoke passes 255/255 checks, with actual
+grouping and admission telemetry. Together with 55 focused Release tests,
+these cover the implemented guards and lifecycle, not arbitrary-position
+batching, bounded speculative sessions, long-context quality or soak testing.
+Records: `continuous-group-screen-*`, `continuous-group-staggered-*`, and
+`continuous-group-safety-*` in the artifact root.
+
+## Appendix: text-derived PLE reuse estimate
 
 An offline CPU-only study retokenized the 15 saved replay-enabled outputs
 (2,503 tokens). It simulated a cold LRU of decoded row groups, eight

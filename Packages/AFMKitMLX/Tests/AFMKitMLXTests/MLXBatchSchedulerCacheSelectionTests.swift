@@ -1,5 +1,6 @@
 import Foundation
 import MLX
+import MLXLLM
 import MLXLMCommon
 import XCTest
 
@@ -33,6 +34,29 @@ private class TestUniformDecodeCache: ArraysCache, UniformBatchKVCache {
 private final class OtherUniformDecodeCache: TestUniformDecodeCache {}
 
 final class MLXBatchSchedulerCacheSelectionTests: XCTestCase {
+    func testContinuousAdmissionIsBoundedAndRespectsAvailableSlots() {
+        XCTAssertEqual(BatchScheduler.continuousAdmissionLimit(
+            maxConcurrent: 15, activeCount: 0, enabled: true), 15)
+        XCTAssertEqual(BatchScheduler.continuousAdmissionLimit(
+            maxConcurrent: 15, activeCount: 2, enabled: true), 1)
+        XCTAssertEqual(BatchScheduler.continuousAdmissionLimit(
+            maxConcurrent: 15, activeCount: 14, enabled: true), 1)
+        XCTAssertEqual(BatchScheduler.continuousAdmissionLimit(
+            maxConcurrent: 15, activeCount: 15, enabled: true), 0)
+        XCTAssertEqual(BatchScheduler.continuousAdmissionLimit(
+            maxConcurrent: 15, activeCount: 16, enabled: true), 0)
+        XCTAssertEqual(BatchScheduler.continuousAdmissionLimit(
+            maxConcurrent: 15, activeCount: 2, enabled: false), 15)
+    }
+
+    func testContinuousGroupAdmissionDoesNotDisableOtherModelsSafetyBarrier() {
+        XCTAssertTrue(BatchScheduler.requiresFixedDecodeCohorts(for: Qwen4ExpModel.self))
+        XCTAssertFalse(BatchScheduler.requiresFixedDecodeCohorts(
+            for: Qwen4ExpModel.self, continuousUniformGroups: true))
+        XCTAssertTrue(BatchScheduler.requiresFixedDecodeCohorts(
+            for: Gemma4Model.self, continuousUniformGroups: true))
+    }
+
     func testCompatibleGroupsUseActualOffsetsAndStableRowOrder() {
         let caches = [7, 9, 7, 8, 9].enumerated().map {
             [TestUniformDecodeCache(offset: $0.element, value: Float($0.offset)) as KVCache]

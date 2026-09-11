@@ -141,6 +141,8 @@ actor BatchScheduler {
     /// Experimental text-only Qwen adapter; no other architecture or default
     /// execution path changes until its state contract is qualified.
     private let enablesUniformDecodeGroups: Bool
+    private let enablesContinuousUniformGroups: Bool
+    private static let maximumContinuousPrefillsPerStep = 1
     private var uniformDecodeGroups: [UniformDecodeGroup] = []
     private var groupedSlotIDs: Set<UUID> = []
     private var needsUniformDecodeGrouping = false
@@ -349,8 +351,21 @@ actor BatchScheduler {
         hasMultimodalInput || Set(promptTokenCounts).count > 1
     }
 
-    nonisolated static func requiresFixedDecodeCohorts(for modelType: Any.Type) -> Bool {
+    nonisolated static func requiresFixedDecodeCohorts(
+        for modelType: Any.Type,
+        continuousUniformGroups: Bool = false
+    ) -> Bool {
+        // Only the text Qwen adapter has persistent independent group ownership.
+        // Other fixed-cohort models must retain their existing admission guard.
         modelType is any FixedDecodeCohortModel.Type
+            && !(continuousUniformGroups && modelType == Qwen4ExpModel.self)
+    }
+
+    nonisolated static func continuousAdmissionLimit(
+        maxConcurrent: Int, activeCount: Int, enabled: Bool
+    ) -> Int {
+        guard enabled, activeCount > 0 else { return maxConcurrent }
+        return min(maximumContinuousPrefillsPerStep, max(0, maxConcurrent - activeCount))
     }
 
     /// Copy cache tensors into independent MLX storage before retaining them
@@ -667,10 +682,14 @@ actor BatchScheduler {
         self.glmMTPReplayModelID = Self.glmMTPReplayModelID(
             serviceModelID: serviceModelID,
             configurationName: configuration.name)
-        self.requiresFixedDecodeCohorts = Self.requiresFixedDecodeCohorts(
-            for: type(of: model))
-        self.enablesUniformDecodeGroups = model is Qwen4ExpModel
+        let uniformGroups = model is Qwen4ExpModel
             && ProcessInfo.processInfo.environment["AFM_QWEN_BATCH_COMPATIBLE_GROUPS"] == "1"
+        let continuousGroups = uniformGroups
+            && ProcessInfo.processInfo.environment["AFM_QWEN_BATCH_CONTINUOUS_GROUPS"] == "1"
+        self.enablesUniformDecodeGroups = uniformGroups
+        self.enablesContinuousUniformGroups = continuousGroups
+        self.requiresFixedDecodeCohorts = Self.requiresFixedDecodeCohorts(
+            for: type(of: model), continuousUniformGroups: continuousGroups)
 
         let debug = ProcessInfo.processInfo.environment["AFM_DEBUG"] == "1"
         self.radixCache = enablePrefixCaching
@@ -800,7 +819,10 @@ actor BatchScheduler {
     /// splitting a large HTTP burst merely because its final connections were
     /// parsed a few milliseconds after its first connections.
     private func drainAdmissionBatch() async -> [PendingRequest] {
-        var requests = drainPendingQueue(limit: maxConcurrent)
+        let admissionLimit = Self.continuousAdmissionLimit(
+            maxConcurrent: maxConcurrent, activeCount: slots.count,
+            enabled: enablesContinuousUniformGroups)
+        var requests = drainPendingQueue(limit: admissionLimit)
         guard slots.isEmpty,
               requests.count == 1,
               maxConcurrent > 1,
@@ -958,6 +980,10 @@ actor BatchScheduler {
                     }
                 }
 
+                if enablesContinuousUniformGroups, !slots.isEmpty, !accepted.isEmpty {
+                    print("[BatchScheduler] Continuous admission: active=\(slots.count) admitted=\(accepted.count)")
+                }
+
                 // An active independent cohort must never merge a later AR
                 // request into `batchCaches`; that transition is unsupported
                 // and traps. Keep every later admission request-owned as well.
@@ -974,7 +1000,14 @@ actor BatchScheduler {
                                 prefillOne(req, forceIndependentCaches: true)
                             }
                         }
-                        continue
+                        if enablesContinuousUniformGroups {
+                            // Rejoin decode after one arriving prompt, rather
+                            // than draining all queued prefills first. This is
+                            // prompt-bounded admission, not token-chunk interleaving.
+                            accepted.removeAll()
+                        } else {
+                            continue
+                        }
                     case .unbatched, .batched:
                         // GLM speculative state is request-owned. Do not coerce
                         // it into an active dense AR cohort. Defer the entire
@@ -1004,7 +1037,7 @@ actor BatchScheduler {
                             $0.input.image != nil || $0.input.video != nil
                         }
                         let useIndependentCaches =
-                            Self.requiresIndependentUniformCacheCohort(
+                            enablesContinuousUniformGroups || Self.requiresIndependentUniformCacheCohort(
                                 promptTokenCounts: accepted.map {
                                     $0.input.text.tokens.size
                                 },
@@ -1046,7 +1079,7 @@ actor BatchScheduler {
                         prefillOne(req)
                     }
                 } else if let req = accepted.first {
-                    prefillOne(req)
+                    prefillOne(req, forceIndependentCaches: enablesContinuousUniformGroups)
                 }
             }
 
