@@ -35,6 +35,7 @@ final class QwenNextMTPPipelineTests: XCTestCase {
                     }
                     var output = [[Int](), [Int]()]
                     for _ in 0..<12 {
+                        for session in sessions { session.prepareDraftTokens() }
                         for session in sessions { session.prepareNextToken() }
                         for i in [0, 1, 1] {
                             if let token = sessions[i].nextToken() { output[i].append(token) }
@@ -81,6 +82,10 @@ final class QwenNextMTPPipelineTests: XCTestCase {
         // buffers, deferred head repairs and one session outliving the other.
         for _ in 0..<13 {
             if staged {
+                for session in sessions {
+                    session.prepareDraftTokens()
+                    XCTAssertFalse(session.prepareDraftTokens())
+                }
                 for session in sessions {
                     if session.prepareNextToken() { preparedCycles += 1 }
                     // Never submit another cycle before consuming this one.
@@ -138,6 +143,7 @@ final class QwenNextMTPPipelineTests: XCTestCase {
             temperature: 0.6, topP: 0.95, seed: 81)
         let limited = try XCTUnwrap(generator.makeSession(promptIds: prompt, maxTokens: 1))
         XCTAssertFalse(limited.prepareNextToken())
+        XCTAssertFalse(limited.prepareDraftTokens())
         XCTAssertNotNil(limited.nextToken())
         XCTAssertFalse(limited.prepareNextToken())
         XCTAssertEqual(limited.verificationCycleCount, 0)
@@ -146,6 +152,8 @@ final class QwenNextMTPPipelineTests: XCTestCase {
             temperature: 0.6, topP: 0.95, seed: 81)
         weak var weakSession = cancelled
         XCTAssertEqual(cancelled?.nextToken(), expected.first)
+        XCTAssertEqual(cancelled?.prepareDraftTokens(), true)
+        XCTAssertEqual(cancelled?.prepareDraftTokens(), false)
         XCTAssertEqual(cancelled?.prepareNextToken(), true)
         XCTAssertEqual(cancelled?.prepareNextToken(), false)
         XCTAssertEqual(cancelled?.verificationCycleCount, 1)
@@ -154,6 +162,13 @@ final class QwenNextMTPPipelineTests: XCTestCase {
         XCTAssertNil(cancelled?.nextToken())
         cancelled = nil
         XCTAssertNil(weakSession)
+        let draftOnly = try XCTUnwrap(generator.makeSession(promptIds: prompt, maxTokens: 9))
+        XCTAssertNotNil(draftOnly.nextToken())
+        XCTAssertTrue(draftOnly.prepareDraftTokens())
+        draftOnly.cancel()
+        XCTAssertFalse(draftOnly.prepareDraftTokens())
+        XCTAssertFalse(draftOnly.prepareNextToken())
+        XCTAssertNil(draftOnly.nextToken())
         // Cancellation of submitted work never changes another request's RNG,
         // recurrence, sparse cache, or prompt replay state.
         XCTAssertEqual(generator.generate(promptIds: prompt, maxTokens: 9,

@@ -606,6 +606,34 @@ The cap limits additional in-flight graphs, not total request memory. This is
 change verification arithmetic. Focused tests and same-binary throughput,
 memory and output comparisons are required before retaining the experiment.
 
+The first single-pass submission screen passed 133 focused Release tests and
+120 live mixed-lane/cancellation checks. Same binary
+`b194696d4a7e79ec2b395bb35ba5aff995593b07e2bd2e3d1c07476f1be3e2cc`,
+source `f6dcd1bd`, C15, complete replay capacity 4096 MiB:
+
+| Submission window | First / repeat aggregate tok/s | Peak process RSS GiB |
+|---|---:|---:|
+| 1, existing ordering | 59.65 / 88.08 | 69.55 |
+| 2 | 59.74 / 88.02 | 69.58 |
+| 4 | 60.32 / 89.08 | 69.56 |
+
+All 30 corresponding texts/token counts match across all three arms, and the
+control also matches the prior integrated checkpoint. Every arm completes 30
+requests with 24 structural checks and identical cached-token totals. The
+two-slot window provides no benefit; the four-slot difference is only 1.1%
+without reverse-order confirmation. This does not justify promotion. Raw
+records: `qwen-submission-window-{1,2,4}-*` and
+`qwen-submission-window-safety-*`.
+
+Source inspection identifies a remaining dependency: if each slot submits its
+whole chain in turn, the next head runs behind the prior target verifier. Its
+PLE token-ID host read can therefore drain that work before the next target
+graph is built. A revised two-phase experiment submits all bounded head chains
+first, then consumes their existing int32 IDs once per request for the already
+supported host-token PLE path. Request histories remain independent. This
+changes scheduling/transport, not token values or verifier arithmetic. It is
+under qualification; no additional gain is established yet.
+
 ## Rejected independent-row QMM screen
 
 A bounded adapter reused the existing MTP q4 projection shader for 2–7

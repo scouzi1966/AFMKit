@@ -2160,7 +2160,19 @@ actor BatchScheduler {
                 // No suspension inside this bounded window. Request-owned
                 // verification/repair state is consumed below in slot order;
                 // AR and other model sessions retain their existing path.
-                for ahead in slotIndex..<min(slots.count, slotIndex + qwenMTPSubmissionWindow) {
+                let window = slotIndex..<min(slots.count, slotIndex + qwenMTPSubmissionWindow)
+                // Queue every head before every target in the window. Otherwise
+                // the next request's PLE host read waits behind the preceding
+                // target verifier and collapses the intended overlap.
+                for ahead in window {
+                    let candidate = slots[ahead]
+                    if !isCancellationRequested(candidate.id),
+                       case .qwen(let session) = candidate.speculativeSession
+                    {
+                        session.prepareDraftTokens()
+                    }
+                }
+                for ahead in window {
                     let candidate = slots[ahead]
                     if !isCancellationRequested(candidate.id),
                        case .qwen(let session) = candidate.speculativeSession

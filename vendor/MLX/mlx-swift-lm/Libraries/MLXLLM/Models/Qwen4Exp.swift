@@ -4883,7 +4883,8 @@ public final class Qwen4ExpModel: Module, LLMModel, KVCacheDimensionProvider {
         inputEmbeddings: MLXArray? = nil,
         positionIDs: MLXArray? = nil,
         cache: [KVCache]?,
-        verificationPolicy: MTPVerificationPolicy? = nil
+        verificationPolicy: MTPVerificationPolicy? = nil,
+        hostTokenIDs: [Int]? = nil
     ) -> (stream: MLXArray, hidden: MLXArray) {
         if verificationPolicy != nil, let cache {
             let width = inputIDs.dim(1)
@@ -4900,6 +4901,7 @@ public final class Qwen4ExpModel: Module, LLMModel, KVCacheDimensionProvider {
             inputEmbeddings: inputEmbeddings,
             positionIDs: positionIDs,
             cache: cache,
+            hostTokenIDs: hostTokenIDs,
             verificationPolicy: verificationPolicy
         )
         return (
@@ -5396,6 +5398,12 @@ public final class Qwen4ExpMTPGenerator {
 /// Prefill is still one whole-prompt operation; exact replay snapshots are
 /// transferred separately through takePromptState.
 public final class Qwen4ExpMTPSession {
+    private struct PreparedDraft {
+        let headOffset: Int
+        let tokens: [MLXArray]
+        let tokenIDs: MLXArray
+    }
+
     private struct PreparedVerification {
         let headOffset: Int
         let draftTokenIDs: MLXArray
@@ -5432,6 +5440,7 @@ public final class Qwen4ExpMTPSession {
     private var primaryStream: MLXArray
     private var primaryPosition: Int
     private var firstPrimaryPending = true
+    private var preparedDraft: PreparedDraft?
     private var preparedVerification: PreparedVerification?
     private var pendingVerification: Verification?
     private var acceptedCursor = 0
@@ -5550,8 +5559,21 @@ public final class Qwen4ExpMTPSession {
     /// stream synchronization or cache snapshot publication is performed here.
     public func cancel() {
         finished = true
+        preparedDraft = nil
         preparedVerification = nil
         pendingVerification = nil
+    }
+
+    /// Submit this request's head chain before any target verifier in the
+    /// bounded owner window. The draft-only stage has no PLE host read. Once
+    /// all heads are submitted, prepareNextToken can reuse their token IDs on
+    /// the CPU rather than casting/reading IDs separately in every PLE layer.
+    @discardableResult
+    public func prepareDraftTokens() -> Bool {
+        guard !finished, !firstPrimaryPending, pendingVerification == nil,
+              preparedVerification == nil, preparedDraft == nil else { return false }
+        preparedDraft = prepareDraft()
+        return true
     }
 
     /// Submit at most one upcoming cycle without materializing its decision on
@@ -5613,7 +5635,7 @@ public final class Qwen4ExpMTPSession {
         }
     }
 
-    private func prepareVerification() -> PreparedVerification {
+    private func prepareDraft() -> PreparedDraft {
         totalCycles += 1
 
         startPhase()
@@ -5653,12 +5675,27 @@ public final class Qwen4ExpMTPSession {
         totalDrafted += draftTokens.count
 
         let draftTokenIDs = concatenated(draftTokens, axis: 1)
-        // Dispatch the complete lazy draft chain without crossing the
-        // host boundary. The verifier consumes the same array and the
-        // cycle decision performs the only GPU-to-CPU materialization.
+        // Dispatch the complete lazy draft chain without crossing the host
+        // boundary here. A staged window reads these IDs once for CPU PLE;
+        // the ordinary path keeps its deferred token lookup schedule.
         asyncEval(draftTokenIDs)
         endPhase(0)
+        return PreparedDraft(headOffset: roundHeadOffset, tokens: draftTokens, tokenIDs: draftTokenIDs)
+    }
+
+    private func prepareVerification() -> PreparedVerification {
+        let staged = preparedDraft != nil
+        let draft = preparedDraft ?? prepareDraft()
+        preparedDraft = nil
         startPhase()
+        let draftTokens = draft.tokens
+        let draftTokenIDs = draft.tokenIDs
+        // All head chains in a staged owner window were submitted before any
+        // target graph. Read the already-submitted int32 IDs without adding a
+        // per-layer int64 cast/read behind earlier target work on the stream.
+        // The ordinary single-request path preserves its deferred PLE overlap.
+        let hostTokenIDs = staged
+            ? [primary] + draftTokenIDs.asArray(Int32.self).map(Int.init) : nil
         let verifyTokenIDs = concatenated(
             [Self.tokens([primary]), draftTokenIDs], axis: 1)
         let targetSnapshot = Qwen3MTPCacheSnapshot.capture(targetCache)
@@ -5671,9 +5708,10 @@ public final class Qwen4ExpMTPSession {
             var streams: [MLXArray] = []
             var sampledRows: [MLXArray] = []
             let verifyInputs = [Self.tokens([primary])] + draftTokens
-            for token in verifyInputs {
+            for (index, token) in verifyInputs.enumerated() {
                 let state = model.forwardStreamState(
-                    inputIDs: token, cache: targetCache)
+                    inputIDs: token, cache: targetCache,
+                    hostTokenIDs: hostTokenIDs.map { [$0[index]] })
                 streams.append(state.stream)
                 sampledRows.append(targetTokens(state.hidden))
             }
@@ -5682,7 +5720,7 @@ public final class Qwen4ExpMTPSession {
         } else {
             let verified = model.forwardStreamState(
                 inputIDs: verifyTokenIDs, cache: targetCache,
-                verificationPolicy: verificationPolicy)
+                verificationPolicy: verificationPolicy, hostTokenIDs: hostTokenIDs)
             verifiedStream = verified.stream
             targetTokenIDs = targetTokens(
                 verified.hidden,
@@ -5690,7 +5728,7 @@ public final class Qwen4ExpMTPSession {
         }
         endPhase(1)
         return PreparedVerification(
-            headOffset: roundHeadOffset, draftTokenIDs: draftTokenIDs,
+            headOffset: draft.headOffset, draftTokenIDs: draftTokenIDs,
             targetTokenIDs: targetTokenIDs, verifiedStream: verifiedStream,
             snapshot: targetSnapshot, usedSequentialVerifier: usedSequentialVerifier)
     }
