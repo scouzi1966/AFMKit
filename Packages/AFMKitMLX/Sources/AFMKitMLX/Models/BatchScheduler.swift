@@ -142,7 +142,7 @@ actor BatchScheduler {
     /// execution path changes until its state contract is qualified.
     private let enablesUniformDecodeGroups: Bool
     private let enablesContinuousUniformGroups: Bool
-    private static let maximumContinuousPrefillsPerStep = 1
+    private let continuousPrefillTokenBudget: Int
     private var uniformDecodeGroups: [UniformDecodeGroup] = []
     private var groupedSlotIDs: Set<UUID> = []
     private var needsUniformDecodeGrouping = false
@@ -362,10 +362,27 @@ actor BatchScheduler {
     }
 
     nonisolated static func continuousAdmissionLimit(
-        maxConcurrent: Int, activeCount: Int, enabled: Bool
+        maxConcurrent: Int, activeCount: Int, enabled: Bool,
+        tokenBudget: Int = 1
     ) -> Int {
         guard enabled, activeCount > 0 else { return maxConcurrent }
-        return min(maximumContinuousPrefillsPerStep, max(0, maxConcurrent - activeCount))
+        let capacity = max(0, maxConcurrent - activeCount)
+        return tokenBudget > 1 ? capacity : min(1, capacity)
+    }
+
+    /// Preserve FIFO order and admit at least the head request for progress.
+    /// This bounds estimated new-token work across prompts, not individual
+    /// forward chunks. One oversized head prompt can still exceed the budget.
+    nonisolated static func continuousAdmissionPrefixCount(
+        estimatedTokenCounts: [Int], tokenBudget: Int
+    ) -> Int {
+        var remaining = max(1, tokenBudget)
+        for (index, count) in estimatedTokenCounts.enumerated() {
+            let cost = max(1, count)
+            if cost > remaining { return max(1, index) }
+            remaining -= cost
+        }
+        return estimatedTokenCounts.count
     }
 
     /// Copy cache tensors into independent MLX storage before retaining them
@@ -688,6 +705,9 @@ actor BatchScheduler {
             && ProcessInfo.processInfo.environment["AFM_QWEN_BATCH_CONTINUOUS_GROUPS"] == "1"
         self.enablesUniformDecodeGroups = uniformGroups
         self.enablesContinuousUniformGroups = continuousGroups
+        self.continuousPrefillTokenBudget = min(8192, max(1,
+            Int(ProcessInfo.processInfo.environment[
+                "AFM_QWEN_BATCH_PREFILL_TOKEN_BUDGET"] ?? "1024") ?? 1024))
         self.requiresFixedDecodeCohorts = Self.requiresFixedDecodeCohorts(
             for: type(of: model), continuousUniformGroups: continuousGroups)
 
@@ -821,8 +841,21 @@ actor BatchScheduler {
     private func drainAdmissionBatch() async -> [PendingRequest] {
         let admissionLimit = Self.continuousAdmissionLimit(
             maxConcurrent: maxConcurrent, activeCount: slots.count,
-            enabled: enablesContinuousUniformGroups)
+            enabled: enablesContinuousUniformGroups,
+            tokenBudget: continuousPrefillTokenBudget)
         var requests = drainPendingQueue(limit: admissionLimit)
+        if enablesContinuousUniformGroups, !slots.isEmpty, requests.count > 1 {
+            let admitted = Self.continuousAdmissionPrefixCount(
+                estimatedTokenCounts: requests.map(estimatedContinuousPrefillTokens),
+                tokenBudget: continuousPrefillTokenBudget)
+            let deferred = Array(requests.dropFirst(admitted))
+            requests = Array(requests.prefix(admitted))
+            if !deferred.isEmpty {
+                // Requests enqueued during cost estimation must remain behind
+                // the older work, without holding the queue lock for cache lookup.
+                _pendingQueue.withLock { $0.insert(contentsOf: deferred, at: 0) }
+            }
+        }
         guard slots.isEmpty,
               requests.count == 1,
               maxConcurrent > 1,
@@ -1001,9 +1034,9 @@ actor BatchScheduler {
                             }
                         }
                         if enablesContinuousUniformGroups {
-                            // Rejoin decode after one arriving prompt, rather
-                            // than draining all queued prefills first. This is
-                            // prompt-bounded admission, not token-chunk interleaving.
+                            // Rejoin decode after the budgeted incoming cohort,
+                            // rather than draining every queued prefill first.
+                            // This is not token-chunk prefill interleaving.
                             accepted.removeAll()
                         } else {
                             continue
@@ -1343,6 +1376,25 @@ actor BatchScheduler {
     }
 
     // MARK: - Prefill
+
+    /// CPU-only estimate for the qualified text Qwen admission path. The normal
+    /// prefill still validates and restores the entry; this lookup cannot bypass
+    /// replay checks. Treat unknown state as a full miss. Costs are estimates:
+    /// a failed restore or an oversized FIFO head can exceed the soft budget.
+    private func estimatedContinuousPrefillTokens(_ req: PendingRequest) -> Int {
+        let count = req.input.text.tokens.size
+        guard let radix = radixCache, req.input.image == nil, req.input.video == nil,
+              !req.usesGLMMTP
+        else { return max(1, count) }
+        let ids = req.input.text.tokens.reshaped(-1).asArray(Int.self)
+        let match = radix.findExactBoundaryMatch(ids)
+        guard match.prefixLen > 0, match.layerStates != nil else { return max(1, count) }
+        let prefix = Self.effectiveCachedPrefixLength(
+            matchedPrefix: match.prefixLen, inputTokenCount: count,
+            hasRecurrentLayers: true, forcedSuffix: unsafeExactReplaySuffix(),
+            sourceTokenCount: match.sourceTokenCount)
+        return max(1, count - prefix)
+    }
 
     /// Returns the prefix length that can actually be restored after applying the
     /// same replay-safety rules used by `prefillOne`.

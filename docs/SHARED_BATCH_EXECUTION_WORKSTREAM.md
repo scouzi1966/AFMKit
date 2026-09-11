@@ -266,9 +266,9 @@ keeps independent/group-owned caches, so later arrivals cannot accidentally
 enter the legacy padded batch representation. Existing groups are never
 padded or remapped to a new request's offset.
 
-With active requests, at most one available-slot prefill is admitted before
-returning to decode. This bounds the number of new prompts, not their token
-work: full token-budgeted prefill/decode interleaving remains outstanding.
+The first version admits at most one available-slot prefill before returning
+to decode. The follow-up below adds a soft uncached-token budget across arriving
+prompts; full token-chunk prefill/decode interleaving remains outstanding.
 New arrivals with incompatible positions remain independent; arbitrary-offset
 multi-request verification is also not implemented by this switch. Both
 experiments stay off by default pending throughput/latency and quality review.
@@ -310,6 +310,34 @@ these cover the implemented guards and lifecycle, not arbitrary-position
 batching, bounded speculative sessions, long-context quality or soak testing.
 Records: `continuous-group-screen-*`, `continuous-group-staggered-*`, and
 `continuous-group-safety-*` in the artifact root.
+
+### Budgeted incoming cohorts
+
+With continuous groups enabled, `AFM_QWEN_BATCH_PREFILL_TOKEN_BUDGET` controls
+a soft per-turn admission budget (default 1024; bounded to 1–8192). Setting 1
+reproduces the previous one-prompt admission. This has no effect when the
+continuous experiment is disabled. The queue stays FIFO; a large first prompt
+is admitted alone so it cannot starve. Exact-boundary radix lookup estimates
+uncached token work outside the queue lock; ordinary prefill still validates
+and restores state. A failed restore or oversized head can exceed this soft
+estimate. This is not a hard latency bound or chunked-prompt suspension.
+
+Same-binary staggered screen, SHA-256
+`050436205b7df63ef53d88290871557d308f44c2499d09337889d164268797ce`:
+
+| Token budget | First / repeat aggregate tok/s | Late median TTFT, seconds | Peak RSS GiB |
+|---|---:|---:|---:|
+| 1 | 71.05 / 80.10 | 6.93 / 5.76 | 67.63 |
+| 1024 | 73.89 / 89.61 | 6.40 / 2.90 | 67.61 |
+
+Both arms complete 30 requests with 28 structural passes and equal reused-token
+totals. Logs confirm multi-request admission under the larger budget. The repeat
+round begins emitting with only three initial requests visible versus eight in
+the control, so arrival/cohort timing varies: the 12% repeat gain is promising,
+not a stable throughput claim. Every late request overlaps already-streaming
+initial work in both arms. The new lifecycle smoke passes 255/255 checks and
+57 focused Release tests pass. Records: `budgeted-group-staggered-*` and
+`budgeted-group-safety-*`. Default production behavior is unchanged.
 
 ## Appendix: text-derived PLE reuse estimate
 

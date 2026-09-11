@@ -47,6 +47,35 @@ final class MLXBatchSchedulerCacheSelectionTests: XCTestCase {
             maxConcurrent: 15, activeCount: 16, enabled: true), 0)
         XCTAssertEqual(BatchScheduler.continuousAdmissionLimit(
             maxConcurrent: 15, activeCount: 2, enabled: false), 15)
+        XCTAssertEqual(BatchScheduler.continuousAdmissionLimit(
+            maxConcurrent: 15, activeCount: 2, enabled: true, tokenBudget: 1024), 13)
+        XCTAssertEqual(BatchScheduler.continuousAdmissionLimit(
+            maxConcurrent: 15, activeCount: 15, enabled: true, tokenBudget: 1024), 0)
+    }
+
+    func testContinuousPrefillBudgetPreservesFIFOAndAllowsOversizedHeadProgress() {
+        XCTAssertEqual(BatchScheduler.continuousAdmissionPrefixCount(
+            estimatedTokenCounts: [], tokenBudget: 1024), 0)
+        XCTAssertEqual(BatchScheduler.continuousAdmissionPrefixCount(
+            estimatedTokenCounts: [1, 1, 1, 1], tokenBudget: 1024), 4)
+        XCTAssertEqual(BatchScheduler.continuousAdmissionPrefixCount(
+            estimatedTokenCounts: [128, 128, 256, 1024, 1], tokenBudget: 512), 3)
+        // A cheap request cannot jump over a larger FIFO head.
+        XCTAssertEqual(BatchScheduler.continuousAdmissionPrefixCount(
+            estimatedTokenCounts: [1, 2048, 1], tokenBudget: 1024), 1)
+        XCTAssertEqual(BatchScheduler.continuousAdmissionPrefixCount(
+            estimatedTokenCounts: [8192, 1], tokenBudget: 1024), 1)
+    }
+
+    func testContinuousPrefillBudgetHandlesSingleModeAndIntegerBounds() {
+        XCTAssertEqual(BatchScheduler.continuousAdmissionPrefixCount(
+            estimatedTokenCounts: [1, 1, 1], tokenBudget: 1), 1)
+        XCTAssertEqual(BatchScheduler.continuousAdmissionPrefixCount(
+            estimatedTokenCounts: [0, -1, 1], tokenBudget: 2), 2)
+        XCTAssertEqual(BatchScheduler.continuousAdmissionPrefixCount(
+            estimatedTokenCounts: [Int.max, Int.max], tokenBudget: Int.max), 1)
+        XCTAssertEqual(BatchScheduler.continuousAdmissionPrefixCount(
+            estimatedTokenCounts: [0, 0], tokenBudget: Int.min), 1)
     }
 
     func testContinuousGroupAdmissionDoesNotDisableOtherModelsSafetyBarrier() {
