@@ -134,6 +134,10 @@ actor BatchScheduler {
     private let glmMTPGenerator: GLM5NextMTPGenerator?
     private let qwenMTPGenerator: Qwen4ExpMTPGenerator?
     private let qwenMTPReplayCache: ExactPromptReplayCache<Qwen4ExpMTPPromptState>?
+    /// Bounded independent graph submission, not cross-request verification.
+    /// One preserves the existing submit/wait order and is the default.
+    private let qwenMTPSubmissionWindow: Int
+    private var qwenMTPPreparedCycles = 0
     nonisolated let ownsQwenMTPSessions: Bool
     private let glmMTPPromptReplayCache: GLM5NextMTPPromptReplayCache?
     private let glmMTPReplayModelID: String
@@ -753,6 +757,9 @@ actor BatchScheduler {
             enabled: ProcessInfo.processInfo.environment["AFM_QWEN_MTP_SCHEDULER"] == "1")
         self.ownsQwenMTPSessions = ownsQwenMTP
         self.qwenMTPGenerator = ownsQwenMTP ? qwenMTPGenerator : nil
+        self.qwenMTPSubmissionWindow = ownsQwenMTP ? min(4, max(1,
+            Int(ProcessInfo.processInfo.environment[
+                "AFM_QWEN_MTP_SUBMISSION_WINDOW"] ?? "1") ?? 1)) : 1
         let replayMiB = min(4096, max(0,
             Int(ProcessInfo.processInfo.environment["AFM_QWEN_MTP_REPLAY_MIB"] ?? "0") ?? 0))
         self.qwenMTPReplayCache = ownsQwenMTP && enablePrefixCaching && replayMiB > 0
@@ -987,6 +994,9 @@ actor BatchScheduler {
         _inFlightCount.withLock { $0 = 0 }
         slots.removeAll()
         uniformDecodeGroups.removeAll()
+        if qwenMTPSubmissionWindow > 1 {
+            print("[BatchScheduler] Qwen MTP submitted cycles: \(qwenMTPPreparedCycles) | window=\(qwenMTPSubmissionWindow)")
+        }
         qwenMTPReplayCache?.removeAll()
         groupedSlotIDs.removeAll()
         needsUniformDecodeGrouping = false
@@ -2143,7 +2153,22 @@ actor BatchScheduler {
         sampledTokens.reserveCapacity(slots.count)
         sampledLogits.reserveCapacity(slots.count)
 
-        for slot in slots {
+        for (slotIndex, slot) in slots.enumerated() {
+            if qwenMTPSubmissionWindow > 1,
+               slotIndex.isMultiple(of: qwenMTPSubmissionWindow)
+            {
+                // No suspension inside this bounded window. Request-owned
+                // verification/repair state is consumed below in slot order;
+                // AR and other model sessions retain their existing path.
+                for ahead in slotIndex..<min(slots.count, slotIndex + qwenMTPSubmissionWindow) {
+                    let candidate = slots[ahead]
+                    if !isCancellationRequested(candidate.id),
+                       case .qwen(let session) = candidate.speculativeSession
+                    {
+                        if session.prepareNextToken() { qwenMTPPreparedCycles += 1 }
+                    }
+                }
+            }
             if let session = slot.speculativeSession,
                let token = session.nextToken()
             {

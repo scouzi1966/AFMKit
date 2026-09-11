@@ -581,6 +581,31 @@ manifest. `Scripts/swiftpm-reliable.sh build -c release --product afm
 compiled objects; the successful build took 70.61 seconds. Its source list was
 checked for the new cache file. No source checkout or compiled tree was deleted.
 
+## Bounded independent MTP graph submission experiment
+
+The scheduler previously called `nextToken()` for each speculative slot in
+turn. A slot that needs a new verification cycle submits its graph and waits
+for target/draft IDs before the next slot can build verification work. This
+leaves an explicit per-request synchronization boundary even though model
+weights are shared.
+
+`Qwen4ExpMTPSession.prepareNextToken()` splits graph construction/submission
+from the host decision and commit. It is idempotent while work is pending;
+accepted-token buffers and deferred head repairs preserve their existing
+behavior. Every session retains its own cache, rollback snapshot, PLE history
+and request-local sampler. Deferred PLE leaves are filled before submission.
+Cancellation discards the result; already-submitted GPU work cannot be undone.
+The session is not Sendable and is only driven by the serialized model owner.
+
+`AFM_QWEN_MTP_SUBMISSION_WINDOW=2` opts into preparing bounded windows of
+independent requests before consuming their decisions. Values are clamped to
+1–4, with 1/unset retaining the existing submission order. This requires the
+separate Qwen MTP scheduler switch; AR and other architectures are unchanged.
+The cap limits additional in-flight graphs, not total request memory. This is
+**not joint multi-request GPU verification** and does not share cache rows or
+change verification arithmetic. Focused tests and same-binary throughput,
+memory and output comparisons are required before retaining the experiment.
+
 ## Rejected independent-row QMM screen
 
 A bounded adapter reused the existing MTP q4 projection shader for 2–7

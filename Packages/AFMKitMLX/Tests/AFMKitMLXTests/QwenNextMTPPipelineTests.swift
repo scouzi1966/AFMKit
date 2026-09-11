@@ -35,6 +35,7 @@ final class QwenNextMTPPipelineTests: XCTestCase {
                     }
                     var output = [[Int](), [Int]()]
                     for _ in 0..<12 {
+                        for session in sessions { session.prepareNextToken() }
                         for i in [0, 1, 1] {
                             if let token = sessions[i].nextToken() { output[i].append(token) }
                         }
@@ -57,7 +58,8 @@ final class QwenNextMTPPipelineTests: XCTestCase {
     }
 
     private func assertSessionInterleaving(
-        _ model: Qwen4ExpModel, policy: MTPVerificationPolicy, temperature: Float
+        _ model: Qwen4ExpModel, policy: MTPVerificationPolicy, temperature: Float,
+        staged: Bool = false
     ) throws {
         let head = Qwen4ExpMTPHead(model.configuration)
         eval(model, head)
@@ -74,9 +76,17 @@ final class QwenNextMTPPipelineTests: XCTestCase {
                 temperature: temperature, topP: 0.95, seed: UInt64(i + 41)))
         }
         var output = [[Int](), [Int]()]
+        var preparedCycles = 0
         // Uneven turns exercise different prompt offsets, accepted-token
         // buffers, deferred head repairs and one session outliving the other.
         for _ in 0..<13 {
+            if staged {
+                for session in sessions {
+                    if session.prepareNextToken() { preparedCycles += 1 }
+                    // Never submit another cycle before consuming this one.
+                    XCTAssertFalse(session.prepareNextToken())
+                }
+            }
             for i in [0, 1, 1] {
                 let before = sessions[i].verificationCycleCount
                 if let token = sessions[i].nextToken() { output[i].append(token) }
@@ -84,7 +94,9 @@ final class QwenNextMTPPipelineTests: XCTestCase {
             }
         }
         XCTAssertEqual(output, expected)
+        if staged { XCTAssertGreaterThan(preparedCycles, 0) }
         for session in sessions {
+            XCTAssertFalse(session.prepareNextToken())
             XCTAssertNil(session.nextToken())
             XCTAssertEqual(session.tokenCount, 13)
         }
@@ -103,6 +115,49 @@ final class QwenNextMTPPipelineTests: XCTestCase {
         let model = try await makeModel(indexerBudget: 4)
         try assertSessionInterleaving(model, policy: .strictSingletonEquivalent, temperature: 0)
         try assertSessionInterleaving(model, policy: .batched, temperature: 0.6)
+    }
+
+    func testStagedVerificationPreservesIndependentGreedySampledAndSparseSessions() async throws {
+        let model = try await makeModel(indexerBudget: 4)
+        for policy: MTPVerificationPolicy in [.strictSingletonEquivalent, .batched] {
+            for temperature: Float in [0, 0.6] {
+                try assertSessionInterleaving(model, policy: policy,
+                    temperature: temperature, staged: true)
+            }
+        }
+    }
+
+    func testStagedVerificationCancellationAndFirstTokenLimits() async throws {
+        let model = try await makeModel(indexerBudget: 4)
+        let head = Qwen4ExpMTPHead(model.configuration)
+        eval(model, head)
+        let generator = Qwen4ExpMTPGenerator(model: model, head: head, depth: 3,
+            verificationPolicy: .batched, draftDispatchStride: 1)
+        let prompt = [1, 2, 3, 4, 5]
+        let expected = generator.generate(promptIds: prompt, maxTokens: 9,
+            temperature: 0.6, topP: 0.95, seed: 81)
+        let limited = try XCTUnwrap(generator.makeSession(promptIds: prompt, maxTokens: 1))
+        XCTAssertFalse(limited.prepareNextToken())
+        XCTAssertNotNil(limited.nextToken())
+        XCTAssertFalse(limited.prepareNextToken())
+        XCTAssertEqual(limited.verificationCycleCount, 0)
+
+        var cancelled = generator.makeSession(promptIds: prompt, maxTokens: 9,
+            temperature: 0.6, topP: 0.95, seed: 81)
+        weak var weakSession = cancelled
+        XCTAssertEqual(cancelled?.nextToken(), expected.first)
+        XCTAssertEqual(cancelled?.prepareNextToken(), true)
+        XCTAssertEqual(cancelled?.prepareNextToken(), false)
+        XCTAssertEqual(cancelled?.verificationCycleCount, 1)
+        cancelled?.cancel()
+        XCTAssertEqual(cancelled?.prepareNextToken(), false)
+        XCTAssertNil(cancelled?.nextToken())
+        cancelled = nil
+        XCTAssertNil(weakSession)
+        // Cancellation of submitted work never changes another request's RNG,
+        // recurrence, sparse cache, or prompt replay state.
+        XCTAssertEqual(generator.generate(promptIds: prompt, maxTokens: 9,
+            temperature: 0.6, topP: 0.95, seed: 81), expected)
     }
 
     func testResumableSessionStopsWithoutExtraVerificationAndReleasesOnCancel() async throws {
@@ -1261,6 +1316,7 @@ final class QwenNextMTPPipelineTests: XCTestCase {
         try model.configureMappedNGramTable(url: url)
         eval(model)
         try assertSessionInterleaving(model, policy: .batched, temperature: 0.6)
+        try assertSessionInterleaving(model, policy: .batched, temperature: 0.6, staged: true)
         try assertPromptReplay(model)
         // Verify an early dispatch cannot observe an unfilled mapped PLE
         // leaf, and that every acceptance boundary commits the same state.

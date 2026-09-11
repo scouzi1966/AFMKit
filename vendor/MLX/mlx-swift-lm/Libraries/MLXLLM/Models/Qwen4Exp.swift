@@ -5391,9 +5391,20 @@ public final class Qwen4ExpMTPGenerator {
 /// The already-known primary is returned before drafting. Head repair is
 /// deferred until accepted tokens have been consumed, preserving early-stop
 /// behavior without doing unnecessary repair after cancellation/EOS/length.
-/// This is the session primitive; it does not itself batch requests or provide
-/// reusable prompt snapshots. Prefill is still one whole-prompt operation.
+/// The optional prepareNextToken hook submits independent verification work
+/// before its host decision is needed. This is not a multi-request GPU batch.
+/// Prefill is still one whole-prompt operation; exact replay snapshots are
+/// transferred separately through takePromptState.
 public final class Qwen4ExpMTPSession {
+    private struct PreparedVerification {
+        let headOffset: Int
+        let draftTokenIDs: MLXArray
+        let targetTokenIDs: MLXArray
+        let verifiedStream: MLXArray
+        let snapshot: [Qwen3MTPCacheSnapshot.Layer]
+        let usedSequentialVerifier: Bool
+    }
+
     private struct Verification {
         let headOffset: Int
         let decision: Qwen4ExpMTPCycleDecision
@@ -5421,6 +5432,7 @@ public final class Qwen4ExpMTPSession {
     private var primaryStream: MLXArray
     private var primaryPosition: Int
     private var firstPrimaryPending = true
+    private var preparedVerification: PreparedVerification?
     private var pendingVerification: Verification?
     private var acceptedCursor = 0
     private var finished = false
@@ -5538,7 +5550,28 @@ public final class Qwen4ExpMTPSession {
     /// stream synchronization or cache snapshot publication is performed here.
     public func cancel() {
         finished = true
+        preparedVerification = nil
         pendingVerification = nil
+    }
+
+    /// Submit at most one upcoming cycle without materializing its decision on
+    /// the host. The serialized owner must bound how many sessions it prepares
+    /// ahead: each retains its own speculative cache graph and rollback state.
+    /// Idempotent until nextToken consumes the work; never advances a buffered
+    /// token, performs a deferred repair, or drafts past a finished session.
+    /// In-flight GPU work cannot be cancelled, but no result is emitted after
+    /// cancel(). No actor/task transfer or cross-request cache sharing occurs.
+    @discardableResult
+    public func prepareNextToken() -> Bool {
+        guard !finished, !firstPrimaryPending, pendingVerification == nil,
+              preparedVerification == nil else { return false }
+        let prepared = prepareVerification()
+        // forwardStreamState has flushed every request-owned deferred PLE
+        // leaf before returning. Both target sampling and draft IDs are safe
+        // to submit now, without waiting for their CPU decision payload.
+        asyncEval(prepared.targetTokenIDs, prepared.draftTokenIDs)
+        preparedVerification = prepared
+        return true
     }
 
     public func nextToken() -> Int? {
@@ -5548,7 +5581,9 @@ public final class Qwen4ExpMTPSession {
             return emit(primary)
         }
         if pendingVerification == nil {
-            pendingVerification = verifyCycle()
+            let prepared = preparedVerification ?? prepareVerification()
+            preparedVerification = nil
+            pendingVerification = resolveVerification(prepared)
             acceptedCursor = 0
         }
         let verification = pendingVerification!
@@ -5578,7 +5613,7 @@ public final class Qwen4ExpMTPSession {
         }
     }
 
-    private func verifyCycle() -> Verification {
+    private func prepareVerification() -> PreparedVerification {
         totalCycles += 1
 
         startPhase()
@@ -5654,25 +5689,33 @@ public final class Qwen4ExpMTPSession {
                 policy: verificationPolicy)[0, 0...]
         }
         endPhase(1)
+        return PreparedVerification(
+            headOffset: roundHeadOffset, draftTokenIDs: draftTokenIDs,
+            targetTokenIDs: targetTokenIDs, verifiedStream: verifiedStream,
+            snapshot: targetSnapshot, usedSequentialVerifier: usedSequentialVerifier)
+    }
+
+    private func resolveVerification(_ prepared: PreparedVerification) -> Verification {
         startPhase()
         let decision = Qwen4ExpMTPCycleDecision.resolve(
-            targetTokenIDs: targetTokenIDs,
-            draftTokenIDs: draftTokenIDs)
+            targetTokenIDs: prepared.targetTokenIDs,
+            draftTokenIDs: prepared.draftTokenIDs)
         endPhase(2)
         startPhase()
         for index in 0 ..< decision.acceptedDraftCount {
             acceptedByDepth[index] += 1
         }
         totalAccepted += decision.acceptedDraftCount
-        let targetCacheCommitted = !usedSequentialVerifier
+        let targetCacheCommitted = !prepared.usedSequentialVerifier
             && model.finishMTPVerification(
                 cache: targetCache,
                 acceptedDrafts: decision.acceptedDraftCount,
                 draftedTokens: decision.draftTokens.count)
         endPhase(3)
         return Verification(
-            headOffset: roundHeadOffset, decision: decision, verifiedStream: verifiedStream,
-            snapshot: targetSnapshot, targetCommitted: targetCacheCommitted)
+            headOffset: prepared.headOffset, decision: decision,
+            verifiedStream: prepared.verifiedStream,
+            snapshot: prepared.snapshot, targetCommitted: targetCacheCommitted)
     }
 
     private func repairAndAdvance(_ verification: Verification) {
