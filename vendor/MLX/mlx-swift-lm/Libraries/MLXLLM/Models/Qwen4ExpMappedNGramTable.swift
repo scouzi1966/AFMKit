@@ -43,6 +43,13 @@ enum Qwen4ExpMappedNGramTableError: Error, LocalizedError, Equatable {
 /// disk. Decode gathers use parallel positional reads to avoid serial VM page
 /// faults; larger prefill gathers use the mapped data directly.
 final class Qwen4ExpMappedNGramTable: @unchecked Sendable {
+    private static let mebibyte = 1_024 * 1_024
+    private static let maximumRowCacheMiB = 64
+    private static let statisticsInterval: UInt64 = 1_024
+    private static var configuredRowCacheBytes: Int {
+        let requested = Int(ProcessInfo.processInfo.environment["AFM_QWEN_PLE_ROW_CACHE_MIB"] ?? "0") ?? 0
+        return min(max(requested, 0), maximumRowCacheMiB) * mebibyte
+    }
     private static let vectorUnpack =
         ProcessInfo.processInfo.environment["AFM_QWEN_PLE_VECTOR_UNPACK"] == "1"
     /// Sequentially reads the sidecar once after weight loading so the first
@@ -432,13 +439,19 @@ final class Qwen4ExpMappedNGramTable: @unchecked Sendable {
     private var nativeReadPool: MLXFast.AffineRowGather?
     private var positionalReadPool: PositionalReadPool?
     private let pageCacheWarmer: PageCacheWarmer?
+    private let rowCache: ImmutableRowCache?
+    private let logRowCacheStatistics =
+        ProcessInfo.processInfo.environment["AFM_QWEN_PLE_ROW_CACHE_STATS"] == "1"
+
+    var rowCacheStatistics: ImmutableRowCache.Statistics? { rowCache?.statistics }
 
     init(
         url: URL,
         expectedRows: Int,
         expectedDimensions: Int,
         expectedBits: Int,
-        expectedGroupSize: Int
+        expectedGroupSize: Int,
+        rowCacheBytes: Int? = nil
     ) throws {
         let descriptor = url.withUnsafeFileSystemRepresentation { path in
             path.map { Darwin.open($0, O_RDONLY) } ?? -1
@@ -569,6 +582,9 @@ final class Qwen4ExpMappedNGramTable: @unchecked Sendable {
             self.biasOffset = try Self.checkedAdd(dataOffset, header.biases.dataOffsets[0])
             self.weightBytesPerRow = try Self.checkedMultiply(packedColumns, 4)
             self.scaleBytesPerRow = try Self.checkedMultiply(scaleColumns, 2)
+            self.rowCache = ImmutableRowCache(
+                dimensions: actualDimensions,
+                capacityBytes: rowCacheBytes ?? Self.configuredRowCacheBytes)
             self.pageCacheWarmer = PageCacheWarmer(
                 descriptor: descriptor,
                 fileSize: data.count)
@@ -603,6 +619,7 @@ final class Qwen4ExpMappedNGramTable: @unchecked Sendable {
     }
 
     deinit {
+        if logRowCacheStatistics { reportRowCacheStatistics() }
         pageCacheWarmer?.cancelAndWait()
         nativeReadPool = nil
         positionalReadPool?.shutdown()
@@ -651,17 +668,16 @@ final class Qwen4ExpMappedNGramTable: @unchecked Sendable {
         guard let invalid = ids.first(where: { $0 < 0 || $0 >= Int64(rows) }) else {
             let count = try Self.checkedMultiply(ids.count, dimensions)
             let output = OutputBuffer(count: count)
-            if ids.count <= parallelReadLimit {
-                if !gatherWithNativeReads(ids, output: output)
-                    && !gatherWithPositionalReads(ids, output: output)
-                {
-                    // A regular-file pread can be interrupted or fail after the
-                    // sidecar was opened. The already validated read-only mapping
-                    // is the safe in-process fallback for this generation step.
-                    gatherFromMapping(ids, output: output)
+            if let rowCache {
+                rowCache.gather(ids, output: output.pointer) { missing, destination in
+                    gatherUncached(missing, output: destination)
+                }
+                if logRowCacheStatistics,
+                   rowCache.statistics.gathers.isMultiple(of: Self.statisticsInterval) {
+                    reportRowCacheStatistics()
                 }
             } else {
-                gatherFromMapping(ids, output: output)
+                gatherUncached(ids, output: output.pointer)
             }
             let data = Data(
                 bytes: output.pointer,
@@ -671,17 +687,32 @@ final class Qwen4ExpMappedNGramTable: @unchecked Sendable {
         throw Qwen4ExpMappedNGramTableError.rowOutOfRange(invalid)
     }
 
+    private func reportRowCacheStatistics() {
+        guard let s = rowCache?.statistics else { return }
+        print("[QwenPLECache] gathers=\(s.gathers) rows=\(s.requestedRows) hits=\(s.hits) decoded=\(s.decodedRows) coalesced=\(s.coalescedRows) evictions=\(s.evictions) resident=\(s.residentRows) capacity=\(s.capacityRows) storage_bytes=\(s.storageBytes)")
+    }
+
+    private func gatherUncached(_ ids: [Int64], output: UnsafeMutablePointer<UInt16>) {
+        if ids.count <= parallelReadLimit,
+           gatherWithNativeReads(ids, output: output) || gatherWithPositionalReads(ids, output: output) {
+            return
+        }
+        // Positional reads can fail or be interrupted; the validated read-only
+        // mapping remains the safe fallback. Cache hits never enter this path.
+        gatherFromMapping(ids, output: output)
+    }
+
     private func gatherWithNativeReads(
-        _ ids: [Int64], output: OutputBuffer
+        _ ids: [Int64], output: UnsafeMutablePointer<UInt16>
     ) -> Bool {
         nativeReadPool?.gather(
             rowIDs: ids,
-            output: output.pointer,
+            output: output,
             outputCount: ids.count * dimensions) ?? false
     }
 
     private func gatherWithPositionalReads(
-        _ ids: [Int64], output: OutputBuffer
+        _ ids: [Int64], output: UnsafeMutablePointer<UInt16>
     ) -> Bool {
         guard let positionalReadPool else { return false }
         let rowBytes = weightBytesPerRow + 2 * scaleBytesPerRow
@@ -697,13 +728,13 @@ final class Qwen4ExpMappedNGramTable: @unchecked Sendable {
                 weightStart: rowStart,
                 scaleStart: rowStart + weightBytesPerRow,
                 biasStart: rowStart + weightBytesPerRow + scaleBytesPerRow,
-                output: output.pointer + index * dimensions)
+                output: output + index * dimensions)
         }
         return true
     }
 
     private func gatherFromMapping(
-        _ ids: [Int64], output: OutputBuffer
+        _ ids: [Int64], output: UnsafeMutablePointer<UInt16>
     ) {
         mappedData.withUnsafeBytes { raw in
             for (index, rawRow) in ids.enumerated() {
@@ -713,7 +744,7 @@ final class Qwen4ExpMappedNGramTable: @unchecked Sendable {
                     weightStart: weightOffset + row * weightBytesPerRow,
                     scaleStart: scaleOffset + row * scaleBytesPerRow,
                     biasStart: biasOffset + row * scaleBytesPerRow,
-                    output: output.pointer + index * dimensions)
+                    output: output + index * dimensions)
             }
         }
     }

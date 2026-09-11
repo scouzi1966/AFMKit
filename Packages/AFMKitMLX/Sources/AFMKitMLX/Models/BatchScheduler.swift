@@ -138,6 +138,14 @@ actor BatchScheduler {
     /// left-padded into an active batch. Keep their decode cohorts fixed so
     /// staggered arrivals retain the same path as serial generation.
     private let requiresFixedDecodeCohorts: Bool
+    /// Experimental text-only Qwen adapter; no other architecture or default
+    /// execution path changes until its state contract is qualified.
+    private let enablesUniformDecodeGroups: Bool
+    private var uniformDecodeGroups: [UniformDecodeGroup] = []
+    private var groupedSlotIDs: Set<UUID> = []
+    private var needsUniformDecodeGrouping = false
+    private var uniformGroupForwardCalls = 0
+    private var uniformGroupSlotSteps = 0
 
     /// EOS token IDs built once at init.
     private let eosTokenIds: Set<Int>
@@ -175,10 +183,13 @@ actor BatchScheduler {
         /// Snapshotted per-layer KV state from prefill (for prefix cache save).
         /// Stored as arrays rather than live KVCache references to avoid mutation
         /// by the decode loop (batchCaches shares objects in .unbatched mode).
-        let prefillCaches: [KVCache]
+        // Decode ownership moves to a persistent group after admission. The
+        // immutable prefillStates below remain available for radix insertion.
+        var prefillCaches: [KVCache]
         let prefillStates: [[MLXArray]]
         let prefillMetaStates: [[String]]
         var modelState: LMOutput.State?
+        var permitsUniformDecodeGroup = false
 
         // Per-sequence decode state
         var lastTokenId: Int
@@ -658,6 +669,8 @@ actor BatchScheduler {
             configurationName: configuration.name)
         self.requiresFixedDecodeCohorts = Self.requiresFixedDecodeCohorts(
             for: type(of: model))
+        self.enablesUniformDecodeGroups = model is Qwen4ExpModel
+            && ProcessInfo.processInfo.environment["AFM_QWEN_BATCH_COMPATIBLE_GROUPS"] == "1"
 
         let debug = ProcessInfo.processInfo.environment["AFM_DEBUG"] == "1"
         self.radixCache = enablePrefixCaching
@@ -851,6 +864,9 @@ actor BatchScheduler {
         // Reset in-flight counter
         _inFlightCount.withLock { $0 = 0 }
         slots.removeAll()
+        uniformDecodeGroups.removeAll()
+        groupedSlotIDs.removeAll()
+        needsUniformDecodeGrouping = false
         batchCaches = []
         batchState = nil
         cacheMode = .empty
@@ -1052,6 +1068,8 @@ actor BatchScheduler {
                 if stepCount % 512 == 0 {
                     eval(slots.flatMap { slot in
                         slot.prefillCaches.flatMap { $0.innerState() }
+                    } + uniformDecodeGroups.flatMap { group in
+                        group.caches.flatMap { $0.innerState() }
                     })
                 }
                 stepCount += 1
@@ -1842,7 +1860,10 @@ actor BatchScheduler {
         )
         print("[\(batchTs())] [ChunkStats] stage=preliminary | stream=true | cached_tokens=\(cachedTokens) | prompt_tokens=pending | completion_tokens=pending | prompt_time=pending | generate_time=pending")
 
+        slot.permitsUniformDecodeGroup = enablesUniformDecodeGroups
+            && forceIndependentCaches && !isMultimodal && result.state == nil
         slots.append(slot)
+        if slot.permitsUniformDecodeGroup { needsUniformDecodeGrouping = true }
         if firstTokenFinished {
             finishSlot(at: slots.count - 1)
             return
@@ -1851,6 +1872,27 @@ actor BatchScheduler {
     }
 
     // MARK: - Native-cache cohort decode
+
+    private func prepareUniformDecodeGroups() {
+        guard enablesUniformDecodeGroups, needsUniformDecodeGrouping else { return }
+        needsUniformDecodeGrouping = false
+        let candidates = slots.filter {
+            $0.permitsUniformDecodeGroup && !groupedSlotIDs.contains($0.id) && $0.modelState == nil
+                && $0.glmMTPSession == nil && !$0.prefillCaches.isEmpty
+        }
+        for indices in UniformDecodeGroup.compatibleIndices(candidates.map(\.prefillCaches)) {
+            let members = indices.map { candidates[$0] }
+            guard let group = UniformDecodeGroup(
+                slotIDs: members.map(\.id), requestCaches: members.map(\.prefillCaches))
+            else { continue }
+            uniformDecodeGroups.append(group)
+            groupedSlotIDs.formUnion(group.slotIDs)
+            // Do not retain a second, obsolete set of live recurrent/KV caches.
+            // Prefix snapshots have separate ownership and are left untouched.
+            for member in members { member.prefillCaches.removeAll() }
+            print("[BatchScheduler] Compatible decode group: rows=\(group.slotIDs.count)")
+        }
+    }
 
     /// Advance every active request that owns a model-specific cache by one
     /// token. Graphs are built with each concrete cache intact, then submitted
@@ -1867,6 +1909,28 @@ actor BatchScheduler {
         }
         cancelledIndices.removeAll(keepingCapacity: true)
         guard !slots.isEmpty else { return 0 }
+        prepareUniformDecodeGroups()
+
+        var groupedLogits: [UUID: MLXArray] = [:]
+        if !uniformDecodeGroups.isEmpty {
+            let byID = Dictionary(uniqueKeysWithValues: slots.map { ($0.id, $0) })
+            for group in uniformDecodeGroups {
+                let members = group.slotIDs.map { byID[$0]! }
+                let tokens = stacked(members.map { $0.lastTokenArray.reshaped([]) })
+                    .reshaped(members.count, 1)
+                let output = model(
+                    LMInput.Text(tokens: tokens), cache: group.caches, state: nil,
+                    hostTokenIDs: model.consumesHostTokenIDs ? members.map(\.lastTokenId) : nil)
+                // The opt-in adapter is Qwen4ExpModel, whose text continuation
+                // state lives entirely in its model-owned concrete caches.
+                precondition(output.state == nil, "Uniform decode adapter omitted model state")
+                for (row, member) in members.enumerated() {
+                    groupedLogits[member.id] = output.logits[row, -1, 0...]
+                }
+                uniformGroupForwardCalls += 1
+                uniformGroupSlotSteps += members.count
+            }
+        }
 
         let activeSlotIDs = slots.map(\.id)
         var sampledTokens: [MLXArray] = []
@@ -1881,17 +1945,19 @@ actor BatchScheduler {
                 sampledTokens.append(MLXArray(Int32(token)))
                 sampledLogits.append(nil)
             } else if slot.glmMTPSession == nil {
-                let input = LMInput.Text(tokens: slot.lastTokenArray.reshaped([1, 1]))
-                let output = model(
-                    input,
-                    cache: slot.prefillCaches,
-                    state: slot.modelState,
-                    hostTokenIDs: model.consumesHostTokenIDs
-                        ? [slot.lastTokenId]
-                        : nil)
-                slot.modelState = output.state
-
-                let logits = output.logits[0, -1, 0...]
+                let logits: MLXArray
+                if let batched = groupedLogits[slot.id] {
+                    logits = batched
+                } else {
+                    let input = LMInput.Text(tokens: slot.lastTokenArray.reshaped([1, 1]))
+                    let output = model(
+                        input, cache: slot.prefillCaches, state: slot.modelState,
+                        hostTokenIDs: model.consumesHostTokenIDs ? [slot.lastTokenId] : nil)
+                    slot.modelState = output.state
+                    logits = output.logits[0, -1, 0...]
+                }
+                // Preserve per-request sampling order even when forwards are
+                // grouped; processors, grammar matchers and RNGs stay separate.
                 let processed = slot.processor?.process(logits: logits) ?? logits
                 let sampled = slot.sampler.sample(logits: processed)
                 sampledTokens.append(sampled)
@@ -2453,8 +2519,22 @@ actor BatchScheduler {
         DebugLogger.log("[BatchScheduler] Finished slot req=\(slot.requestId) (\(slot.tokenCount) tok, \(String(format: "%.2f", elapsed))s, in-flight: \(_inFlightCount.withLock { $0 })/\(maxConcurrent))")
 
         // Remove from batch cache and state
+        if groupedSlotIDs.remove(slot.id) != nil {
+            for group in uniformDecodeGroups where group.slotIDs.contains(slot.id) {
+                group.remove(slot.id)
+            }
+            uniformDecodeGroups.removeAll { $0.slotIDs.isEmpty }
+        }
         let keepIndices = (0..<slots.count).filter { $0 != index }
         if keepIndices.isEmpty {
+            if uniformGroupForwardCalls > 0 {
+                print("[BatchScheduler] Compatible decode work: forwards=\(uniformGroupForwardCalls) slot_steps=\(uniformGroupSlotSteps)")
+            }
+            uniformGroupForwardCalls = 0
+            uniformGroupSlotSteps = 0
+            uniformDecodeGroups.removeAll()
+            groupedSlotIDs.removeAll()
+            needsUniformDecodeGrouping = false
             batchCaches = []
             batchState = nil
             cacheMode = .empty

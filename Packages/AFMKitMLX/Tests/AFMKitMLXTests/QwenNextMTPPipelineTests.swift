@@ -7,6 +7,42 @@ import XCTest
 @testable import AFMKitMLX
 
 final class QwenNextMTPPipelineTests: XCTestCase {
+    func testPersistentUniformGroupMatchesNativeQwenStateAfterRowRemoval() async throws {
+        let model = try await makeModel()
+        eval(model)
+        let ids = [UUID(), UUID(), UUID()]
+        let caches = ids.map { _ in model.newCache(parameters: nil) }
+        for row in ids.indices {
+            let prompt = [1, 2, 3, 4, 5, row + 6, 9]
+            let output = model(LMInput.Text(tokens: MLXArray(prompt).reshaped(1, -1)),
+                               cache: caches[row], state: nil, hostTokenIDs: prompt)
+            eval(output.logits)
+        }
+        let snapshots = caches.map { $0.map { MLXReplayPrefill.snapshot($0.state) } }
+        eval(snapshots.flatMap { $0.flatMap { $0 } })
+        let frozen = snapshots.map { $0.map { $0.map { $0.asArray(Float.self) } } }
+        let group = try XCTUnwrap(UniformDecodeGroup(slotIDs: ids, requestCaches: caches))
+        var active = [0, 1, 2]
+        for step in 0..<6 {
+            if step == 2 { group.remove(ids[1]); active = [0, 2] }
+            if step == 4 { group.remove(ids[0]); active = [2] }
+            let tokens = active.map { ($0 + step + 10) % 30 }
+            let grouped = model(LMInput.Text(tokens: MLXArray(tokens).reshaped(-1, 1)),
+                                cache: group.caches, state: nil, hostTokenIDs: tokens)
+            eval(grouped.logits)
+            for (position, row) in active.enumerated() {
+                let token = tokens[position]
+                let independent = model(LMInput.Text(tokens: MLXArray([token]).reshaped(1, 1)),
+                                        cache: caches[row], state: nil, hostTokenIDs: [token])
+                let error = abs(grouped.logits[position] - independent.logits[0]).max().item(Float.self)
+                XCTAssertLessThan(error, 0.001, "step=\(step) row=\(row)")
+            }
+        }
+        XCTAssertEqual(snapshots.map { $0.map { $0.map { $0.asArray(Float.self) } } }, frozen)
+        group.remove(ids[2])
+        XCTAssertTrue(group.slotIDs.isEmpty)
+    }
+
     func testSharedReplayPrefillRestoresExactBoundaryWithoutMutatingSnapshot() async throws {
         let model = try await makeModel()
         eval(model)

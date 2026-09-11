@@ -53,3 +53,12 @@ state. Service integration is opt-in with `AFM_PREFIX_REPLAY_BOUNDARIES=1`;
 ordinary callers retain the existing initialization path. No Metal source or
 prebuilt metallib changes are involved. Preserve the shared replay tests when
 refreshing this vendored snapshot.
+
+`ImmutableRowCache.swift` is an AFM-owned bounded host row cache. The mapped
+Qwen PLE table can opt into it with `AFM_QWEN_PLE_ROW_CACHE_MIB` (default 0,
+maximum 64 MiB per opened table). It coalesces duplicate misses within gathers
+and retains exact decoded BF16 rows, without sharing request histories or
+changing n-gram hashing. Preserve `ImmutableRowCacheTests` during refreshes.
+`AFM_QWEN_PLE_ROW_CACHE_STATS=1` enables diagnostic counters; leave it unset in
+timed comparisons. This is an experimental supporting optimization, not the
+implementation of continuous batching or speculative sessions.

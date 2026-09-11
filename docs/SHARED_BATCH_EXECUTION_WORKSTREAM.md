@@ -103,14 +103,14 @@ and 22/23 prompt tokens respectively. Raw records are in
 `shared-replay-api-v3-afm-mtp-0/`. This four-request smoke is not a replacement
 for comprehensive API or quality qualification.
 
-## Shared immutable lookup cache (proposed experiment)
+## Shared immutable lookup cache (opt-in prototype)
 
 The user's "engram cache" suggestion is useful as a separate immutable-data
 optimization. PLE currently maps the sidecar and may warm filesystem pages,
 but does not retain decoded rows between gathers.
 
-Proposed stages: deduplicate row IDs within a scheduled batch; coalesce misses;
-test a bounded cache of unpacked rows scoped to the immutable table instance.
+The prototype deduplicates row IDs within a gather, coalesces misses, and
+uses a bounded cache of unpacked rows scoped to the immutable table instance.
 Use table/model identity plus row ID, not row ID alone in a global dictionary.
 Avoid disk IO or GPU synchronization under a shared cache lock. Record hit
 rate, unpacked bytes avoided, lookup overhead, eviction and added resident
@@ -118,6 +118,117 @@ memory. Keep request-specific n-gram history outside the shared cache. Other
 architectures can reuse the immutable-row cache mechanism only where they have
 a suitable lookup table; this is not a generic replacement for KV/recurrent
 state or a claim that all models have PLE.
+
+`ImmutableRowCache` uses fixed four-way sets with age-based replacement. Its
+budget includes row payload and fixed per-slot tag/age arrays, but excludes
+constant object headers and temporary per-gather buffers. Lookup and insertion
+locks cover at most 64 rows at a time. Decoding misses occurs outside the lock;
+two independent callers may decode the same simultaneous cold miss to avoid
+waiting behind file IO. Exact bits are copied into request-owned output.
+No borrowed cache pointers reach the GPU. The row cache dies with its table.
+
+`AFM_QWEN_PLE_ROW_CACHE_MIB=4` enables a 4 MiB experiment; unset/0 disables it.
+Values are bounded at 64 MiB per table. `AFM_QWEN_PLE_ROW_CACHE_STATS=1` emits
+cumulative diagnostic counters every 1,024 gathers and at destruction when
+the table is released normally. Leave diagnostic logging unset for timing.
+The cache-off transport selection and arithmetic remain unchanged.
+
+Eight new tests cover isolation, caller mutation, miss coalescing, eviction,
+failed decoders, budget bounds, concurrent users, non-blocking slow misses and
+mapped-table gather parity. The focused Release run passed 61 tests with two
+optional microbenchmarks skipped. End-to-end performance qualification is
+separate; hit rate does not establish a speedup.
+
+Priority remains genuine GPU batching and scheduler-owned speculative work.
+This suggestion gets a bounded A/B screen, not an open-ended tuning campaign
+or a new performance target. The earlier 3.4x unpack microbenchmark without a
+material full-decode win is reason to be cautious about expected impact.
+
+### Bounded same-binary screen (2026-09-10)
+
+Release SHA-256 `e7b3c67961604d897c6d048c51b8f381b1fec99ab304dc1da78443e27fb26f7c`,
+same ddalcu checkpoint, prefix caching enabled, 15 clients, 192-token cap.
+AR runs cache off/on; MTP runs on/off, with no concurrent compilation.
+Only the row-cache budget differs within each pair; the other experiment
+flags are fixed. This is not a no-flags release qualification.
+
+| MTP | Row budget | First / repeat aggregate tok/s | Peak RSS GiB |
+|---|---:|---:|---:|
+| Off | 0 MiB | 61.11 / 65.01 | 67.72 |
+| Off | 4 MiB | 61.53 / 66.45 | 67.68 |
+| On | 0 MiB | 57.91 / 58.45 | 69.41 |
+| On | 4 MiB | 58.50 / 58.66 | 69.42 |
+
+All 60 matched off/on response pairs have identical text and output token
+counts. Each arm completed 30 requests with 24 JSON/identity passes and six
+token-limit truncations. These are structural checks, not a semantic judge.
+The observed 0.4–2.2% gains are small and need repeats to establish significance;
+the prototype remains off by default. Do not delay the scheduler work for
+additional row-cache tuning. Records: `ple-row-cache-screen-*` in the artifact
+root. Debug cache counters were disabled during timing.
+
+## Compatible uniform decode groups (opt-in prototype)
+
+`AFM_QWEN_BATCH_COMPATIBLE_GROUPS=1` allows text-only Qwen4ExpModel requests in
+an independent mixed-offset cohort to form persistent compatible subgroups.
+Compatibility uses every layer's concrete type, actual offset, metadata,
+tensor shape and dtype, not just prompt length. Unknown state, multimodal
+inputs and other models are excluded. The existing all-uniform fast path is
+unchanged. This does not add continuous admission or scheduler-owned Qwen MTP.
+
+`UniformDecodeGroup` retains one merged cache for its members across steps.
+Slots release obsolete decode caches, while immutable radix snapshots remain
+separate. Completed/cancelled rows are filtered by stable request identity;
+one-row survivors keep their current state. Periodic graph materialization
+includes group caches, and shutdown releases them. Sampling, grammar state,
+stops, logprobs and token dispatch remain per request in original slot order.
+Admission diagnostics report group widths; completion diagnostics count actual
+group forwards and slot steps.
+
+### Initial subgroup API screen (2026-09-10)
+
+Same release binary in all four arms, SHA-256
+`8dbc950c4ce76d103daed3f38a9a57a506b65800a0eb88a706b94adcd412f0ed`.
+Same checkpoint, prompts, greedy settings, 15 clients and 192-token cap as the
+matrix above. Row cache disabled. Prefix-enabled arms ran grouping off/on;
+prefix-disabled arms ran on/off. No compilation overlapped measurement.
+
+| Prefix | Grouping | First / repeat aggregate tok/s | Peak RSS GiB |
+|---|---|---:|---:|
+| On | Off | 61.30 / 67.08 | 67.70 |
+| On | On | 103.69 / 116.98 | 67.61 |
+| Off | Off | 48.12 / 48.21 | 67.75 |
+| Off | On | 68.87 / 68.00 | 67.63 |
+
+This screen improves aggregate throughput about 69–74% with prefix reuse and
+41–43% without it. The previous matched reference reached 152.71 tok/s on the
+prefix-enabled repeat: aggregate parity is not achieved. These are complete
+phase output tokens divided by wall time, not a sum of individual decode rates.
+
+All 120 requests completed. Prefix arms retain 24/30 JSON/identity passes and
+the same 15,479/17,112 cached tokens. Without prefix, grouping changes 24/30 to
+26/30 structural passes. That is not a broad semantic quality certification.
+Thirteen of fifteen first-round prefix responses change wording between arms;
+representative outputs are coherent, but changed arithmetic is not proof that
+every difference is harmless. Both features remain opt-in. Group telemetry
+confirms real merged forwards: prefix first-round 699 forwards service 2,344
+slot steps, with group widths 3/5/3/3 and remaining independent work.
+
+The focused Release suite passes 53 tests, including actual Qwen forward-state
+comparisons while removing the middle and first rows, snapshot immutability,
+geometry/offset/type gating, stale-cache avoidance, and existing MTP regressions.
+The grouping-disabled control retains all 30 preceding PLE-cache-off control
+responses. Raw records: `compatible-group-screen-*` in the artifact root.
+
+The `compatible-group-safety-v2` API smoke passes 255/255 checks across 45
+requests: three early cancellations, mixed 8/24/64-token limits, sampled
+temperature 0.6/top-p 0.95, request-local seeds and presence penalty, alternating
+logprobs or stop sequences, followed by two further request rounds. Group
+telemetry confirms merged execution in every round; repeated requests reused
+17,022 tokens. The first `compatible-group-safety` run passed the serial
+fallback combination (stops plus logprobs), but does not qualify grouped decode.
+This coverage distinction is intentional and its raw records are retained.
+Long-context/soak tests and broader semantic qualification remain outstanding.
 
 ### Text-derived reuse estimate
 
