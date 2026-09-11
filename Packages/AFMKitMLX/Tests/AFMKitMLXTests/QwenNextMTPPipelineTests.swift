@@ -7,6 +7,105 @@ import XCTest
 @testable import AFMKitMLX
 
 final class QwenNextMTPPipelineTests: XCTestCase {
+    private func assertSharedVerificationRows(_ model: Qwen4ExpModel) throws {
+        eval(model)
+        let originals = (0..<3).map { _ in model.newCache(parameters: nil) }
+        let independent = (0..<3).map { _ in model.newCache(parameters: nil) }
+        for row in 0..<3 {
+            let prompt = MLXArray([1, 2, 3, 4, 5, 6, 7, row + 8]).reshaped(1, -1)
+            eval(model.forwardStreamState(inputIDs: prompt, cache: originals[row]).hidden,
+                 model.forwardStreamState(inputIDs: prompt, cache: independent[row]).hidden)
+        }
+        let frozen = originals.map { $0.map { $0.state.map { $0.asArray(Float.self) } } }
+        let merged = try XCTUnwrap(model.mergedMTPVerificationCaches(originals))
+        let tokens = [[10, 11, 12, 13], [14, 15, 16, 17], [18, 19, 20, 21]]
+        let batch = model.forwardStreamState(
+            inputIDs: MLXArray(tokens.flatMap { $0 }).reshaped(3, 4), cache: merged,
+            verificationPolicy: .batched, hostTokenIDs: tokens.flatMap { $0 })
+        eval(batch.stream, batch.hidden)
+        XCTAssertEqual(originals.map { $0.map { $0.state.map { $0.asArray(Float.self) } } }, frozen)
+        for row in 0..<3 {
+            let expected = model.forwardStreamState(
+                inputIDs: MLXArray(tokens[row]).reshaped(1, 4), cache: independent[row],
+                verificationPolicy: .batched, hostTokenIDs: tokens[row])
+            XCTAssertLessThan(abs(batch.hidden[row..<(row + 1)] - expected.hidden).max().item(Float.self), 0.002)
+            model.adoptMTPVerificationRow(from: merged, row: row, batchSize: 3, into: originals[row])
+        }
+        // Separate acceptance depths must not trim another row or discard its
+        // recurrent/PLE rollback intermediates. Continue each row independently.
+        for (row, accepted) in [0, 1, 3].enumerated() {
+            XCTAssertTrue(model.finishMTPVerification(cache: originals[row], acceptedDrafts: accepted, draftedTokens: 3))
+            XCTAssertTrue(model.finishMTPVerification(cache: independent[row], acceptedDrafts: accepted, draftedTokens: 3))
+            let next = MLXArray([Int32(row + 22)]).reshaped(1, 1)
+            let actual = model.forwardStreamHidden(inputIDs: next, cache: originals[row]).logits
+            let expected = model.forwardStreamHidden(inputIDs: next, cache: independent[row]).logits
+            XCTAssertLessThan(abs(actual - expected).max().item(Float.self), 0.002)
+        }
+        XCTAssertNil(model.mergedMTPVerificationCaches(originals), "Diverged positions must fail closed")
+        XCTAssertNil(model.mergedMTPVerificationCaches([originals[0]]))
+        XCTAssertNil(model.mergedMTPVerificationCaches([originals[0], []]))
+    }
+
+    func testSharedVerificationRestoresIndependentSparseAndRecurrentRollbackRows() async throws {
+        try await assertSharedVerificationRows(makeModel(indexerBudget: 4))
+    }
+
+    private func assertSharedSessionVerification(_ model: Qwen4ExpModel, temperature: Float) throws {
+        let head = Qwen4ExpMTPHead(model.configuration)
+        eval(model, head)
+        let generator = Qwen4ExpMTPGenerator(model: model, head: head, depth: 3,
+            verificationPolicy: .batched, draftDispatchStride: 1)
+        let prompts = [[1, 2, 3, 4, 5, 6, 7, 8], [1, 2, 3, 4, 5, 6, 7, 9],
+                       [9, 8, 7, 6, 5, 4, 3, 2], [1, 2, 3, 4, 5]]
+        let expected = prompts.enumerated().map { i, prompt in
+            generator.generate(promptIds: prompt, maxTokens: 12,
+                temperature: temperature, topP: 0.95, seed: UInt64(61 + i))
+        }
+        let sessions = try prompts.enumerated().map { i, prompt in
+            try XCTUnwrap(generator.makeSession(promptIds: prompt, maxTokens: 12,
+                temperature: temperature, topP: 0.95, seed: UInt64(61 + i)))
+        }
+        XCTAssertEqual(Qwen4ExpMTPSession.prepareCompatibleVerificationBatches([sessions[0], sessions[0]]).rows, 0)
+        var output = [[Int]](repeating: [], count: sessions.count)
+        var batchedRows = 0
+        for step in 0..<12 {
+            for session in sessions { session.prepareDraftTokens() }
+            let shared = Qwen4ExpMTPSession.prepareCompatibleVerificationBatches(sessions)
+            batchedRows += shared.rows
+            // A row may be cancelled after a shared graph was submitted. Its
+            // state must not be reused or prevent the other rows from finishing.
+            if step == 1 {
+                XCTAssertEqual(shared.rows, 3)
+                sessions[1].cancel()
+            }
+            for (i, session) in sessions.enumerated() {
+                if let token = session.nextToken() { output[i].append(token) }
+            }
+        }
+        XCTAssertGreaterThan(batchedRows, 0)
+        for i in sessions.indices {
+            XCTAssertEqual(output[i], i == 1 ? Array(expected[i].prefix(1)) : expected[i])
+            XCTAssertNil(sessions[i].nextToken())
+        }
+        XCTAssertEqual(Qwen4ExpMTPSession.prepareCompatibleVerificationBatches(sessions).rows, 0)
+        let strict = Qwen4ExpMTPGenerator(model: model, head: head, depth: 3)
+        let strictSessions = try (0..<2).map { _ in
+            try XCTUnwrap(strict.makeSession(promptIds: prompts[0], maxTokens: 3))
+        }
+        for session in strictSessions {
+            XCTAssertNotNil(session.nextToken())
+            XCTAssertTrue(session.prepareDraftTokens())
+        }
+        XCTAssertEqual(Qwen4ExpMTPSession.prepareCompatibleVerificationBatches(strictSessions).rows, 0)
+    }
+
+    func testSharedSessionVerificationPreservesSamplingCancellationAndFallbacks() async throws {
+        let model = try await makeModel(indexerBudget: 4)
+        for temperature: Float in [0, 0.6] {
+            try assertSharedSessionVerification(model, temperature: temperature)
+        }
+    }
+
     private func assertPromptReplay(_ model: Qwen4ExpModel) throws {
         let head = Qwen4ExpMTPHead(model.configuration)
         eval(model, head)
@@ -1327,12 +1426,14 @@ final class QwenNextMTPPipelineTests: XCTestCase {
         }
         file.append(Data(count: 144))
         try file.write(to: url)
-        let model = try await makeModel(withPLE: true)
+        let model = try await makeModel(withPLE: true, indexerBudget: 4)
         try model.configureMappedNGramTable(url: url)
         eval(model)
         try assertSessionInterleaving(model, policy: .batched, temperature: 0.6)
         try assertSessionInterleaving(model, policy: .batched, temperature: 0.6, staged: true)
         try assertPromptReplay(model)
+        try assertSharedVerificationRows(model)
+        try assertSharedSessionVerification(model, temperature: 0.6)
         // Verify an early dispatch cannot observe an unfilled mapped PLE
         // leaf, and that every acceptance boundary commits the same state.
         for stride in [1, 4, 8] {

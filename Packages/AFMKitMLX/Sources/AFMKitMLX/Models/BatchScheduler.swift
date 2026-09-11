@@ -138,6 +138,9 @@ actor BatchScheduler {
     /// One preserves the existing submit/wait order and is the default.
     private let qwenMTPSubmissionWindow: Int
     private var qwenMTPPreparedCycles = 0
+    private let qwenMTPSharedVerification: Bool
+    private var qwenMTPSharedVerificationBatches = 0
+    private var qwenMTPSharedVerificationRows = 0
     nonisolated let ownsQwenMTPSessions: Bool
     private let glmMTPPromptReplayCache: GLM5NextMTPPromptReplayCache?
     private let glmMTPReplayModelID: String
@@ -757,7 +760,10 @@ actor BatchScheduler {
             enabled: ProcessInfo.processInfo.environment["AFM_QWEN_MTP_SCHEDULER"] == "1")
         self.ownsQwenMTPSessions = ownsQwenMTP
         self.qwenMTPGenerator = ownsQwenMTP ? qwenMTPGenerator : nil
-        self.qwenMTPSubmissionWindow = ownsQwenMTP ? min(4, max(1,
+        let sharedVerification = ownsQwenMTP
+            && ProcessInfo.processInfo.environment["AFM_QWEN_MTP_SHARED_VERIFY"] == "1"
+        self.qwenMTPSharedVerification = sharedVerification
+        self.qwenMTPSubmissionWindow = ownsQwenMTP ? min(4, max(sharedVerification ? 2 : 1,
             Int(ProcessInfo.processInfo.environment[
                 "AFM_QWEN_MTP_SUBMISSION_WINDOW"] ?? "1") ?? 1)) : 1
         let replayMiB = min(4096, max(0,
@@ -996,6 +1002,9 @@ actor BatchScheduler {
         uniformDecodeGroups.removeAll()
         if qwenMTPSubmissionWindow > 1 {
             print("[BatchScheduler] Qwen MTP submitted cycles: \(qwenMTPPreparedCycles) | window=\(qwenMTPSubmissionWindow)")
+        }
+        if qwenMTPSharedVerification {
+            print("[BatchScheduler] Qwen MTP shared verification: batches=\(qwenMTPSharedVerificationBatches) | rows=\(qwenMTPSharedVerificationRows)")
         }
         qwenMTPReplayCache?.removeAll()
         groupedSlotIDs.removeAll()
@@ -2171,6 +2180,17 @@ actor BatchScheduler {
                     {
                         session.prepareDraftTokens()
                     }
+                }
+                if qwenMTPSharedVerification {
+                    let sessions = window.compactMap { ahead -> Qwen4ExpMTPSession? in
+                        let candidate = slots[ahead]
+                        guard !isCancellationRequested(candidate.id),
+                              case .qwen(let session) = candidate.speculativeSession else { return nil }
+                        return session
+                    }
+                    let shared = Qwen4ExpMTPSession.prepareCompatibleVerificationBatches(sessions)
+                    qwenMTPSharedVerificationBatches += shared.batches
+                    qwenMTPSharedVerificationRows += shared.rows
                 }
                 for ahead in window {
                     let candidate = slots[ahead]

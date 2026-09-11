@@ -763,6 +763,15 @@ final class Qwen4ExpAttentionCache: KVCache, UniformBatchKVCache {
         state = state.map { $0[indexArray] }
         clearMTPVerification()
     }
+
+    /// Preserve sparse optional fields AND verification metadata when splitting
+    /// a genuine target batch. The ordinary compact state API is insufficient.
+    fileprivate func adoptVerificationRow(from batch: Qwen4ExpAttentionCache, row: Int) {
+        let range = row..<(row + 1)
+        promptReplayArrays = batch.promptReplayArrays.map { $0.map { $0[range] } }
+        mtpVerificationStartOffset = batch.mtpVerificationStartOffset
+        mtpVerificationWidth = batch.mtpVerificationWidth
+    }
 }
 
 /// Per-layer recurrent cache metadata used to commit a partially accepted
@@ -854,6 +863,37 @@ private final class Qwen4ExpLayerCache: ArraysCache, UniformBatchKVCache {
         state = state.map { $0[indexArray] }
         hostNGramHistory = nil
         clearMTPRollback()
+    }
+
+    fileprivate func adoptVerificationRow(from batch: Qwen4ExpLayerCache, row: Int, batchSize: Int) {
+        func slice(_ array: MLXArray) -> MLXArray { array[row..<(row + 1)] }
+        for index in 0..<4 { self[index] = batch[index].map(slice) }
+        offset = batch.offset
+        mtpVerificationWidth = batch.mtpVerificationWidth
+        if let history = batch.hostNGramHistory {
+            precondition(history.count.isMultiple(of: batchSize))
+            let width = history.count / batchSize
+            hostNGramHistory = Array(history[(row * width)..<((row + 1) * width)])
+        } else {
+            hostNGramHistory = nil
+        }
+        gatedDeltaRollback = batch.gatedDeltaRollback.map { value in
+            GatedDeltaRollback(
+                convolutionState: slice(value.convolutionState),
+                recurrentState: slice(value.recurrentState),
+                projectedQKV: slice(value.projectedQKV),
+                queries: slice(value.queries), keys: slice(value.keys), values: slice(value.values),
+                projectedA: slice(value.projectedA), projectedB: slice(value.projectedB),
+                explicitGating: value.explicitGating,
+                gate: value.gate.map(slice), beta: value.beta.map(slice),
+                // State history uses [time, batch, ...], unlike other fields.
+                recurrentHistory: value.recurrentHistory.map { $0[0..., row..<(row + 1)] })
+        }
+        pleRollback = batch.pleRollback.map { value in
+            PLERollback(convolutionState: slice(value.convolutionState),
+                tokenHistory: slice(value.tokenHistory),
+                convolutionInputs: slice(value.convolutionInputs), inputIDs: slice(value.inputIDs))
+        }
     }
 }
 
@@ -1786,11 +1826,16 @@ final class Qwen4ExpQSAIndexer: Module {
         let selectedCapacity = min(completeBlocks, blockTopK)
         let bytesPerRow = max(
             1,
-            heads * completeBlocks * Self.scoreBytes)
+            batch * heads * completeBlocks * Self.scoreBytes)
         let rowsPerChunk = max(
             Self.minimumScoreRows,
             min(length, Self.scoreSheetBudgetBytes / bytesPerRow))
         let keyBank = blockKeys.asType(.float32).swappedAxes(-1, -2)
+        // Queries are [B,H,Q,D], while the bank is [B,D,K]. For B>1
+        // insert the head broadcast axis explicitly; otherwise matmul aligns
+        // the bank's batch dimension with H (or fails when B != H).
+        // Preserve the existing B=1 graph and its measured fast path.
+        let perHeadKeyBank = batch == 1 ? keyBank : expandedDimensions(keyBank, axis: 1)
         let blockIDs = MLX.arange(completeBlocks, dtype: .int32)[
             .newAxis, .newAxis, 0...]
         let tieBreak = blockIDs.asType(.float32) * Self.tieBreakScale
@@ -1815,7 +1860,7 @@ final class Qwen4ExpQSAIndexer: Module {
                 let queryChunk = queries[0..., 0..., start ..< end, 0...]
                     .asType(.float32)
                 let rawScores = maximum(
-                    matmul(queryChunk, keyBank),
+                    matmul(queryChunk, perHeadKeyBank),
                     MLXArray(0)).sum(axis: 1)
                 let biasedScores = rawScores - tieBreak
                 if allowRadixSelection,
@@ -5003,6 +5048,81 @@ public final class Qwen4ExpModel: Module, LLMModel, KVCacheDimensionProvider {
         return lmHead?(hidden) ?? model.embedTokens.asLinear(hidden)
     }
 
+    /// Build an equal-position target batch with complete optional state.
+    /// No padding or scalar-offset guessing is permitted. The owner must split
+    /// verification metadata back into the original rows before committing.
+    func mergedMTPVerificationCaches(_ rows: [[KVCache]]) -> [KVCache]? {
+        guard (2...4).contains(rows.count),
+              rows.allSatisfy({ $0.count == model.layers.count }) else { return nil }
+        func merge(_ arrays: [[MLXArray?]]) -> [MLXArray?]? {
+            guard let first = arrays.first,
+                  arrays.allSatisfy({ $0.count == first.count }) else { return nil }
+            var result: [MLXArray?] = []
+            for index in first.indices {
+                guard let initial = first[index] else {
+                    guard arrays.allSatisfy({ $0[index] == nil }) else { return nil }
+                    result.append(nil)
+                    continue
+                }
+                guard initial.ndim > 0, initial.dim(0) == 1 else { return nil }
+                let values = arrays.compactMap { $0[index] }
+                guard values.count == rows.count,
+                      values.allSatisfy({ $0.shape == initial.shape && $0.dtype == initial.dtype })
+                else { return nil }
+                result.append(concatenated(values, axis: 0))
+            }
+            return result
+        }
+        var result: [KVCache] = []
+        for index in model.layers.indices {
+            if let first = rows[0][index] as? Qwen4ExpAttentionCache {
+                let caches = rows.compactMap { $0[index] as? Qwen4ExpAttentionCache }
+                guard caches.count == rows.count,
+                      caches.allSatisfy({ $0.offset == first.offset
+                          && $0.indexerCompressRatio == first.indexerCompressRatio
+                          && $0.mtpVerificationWidth == nil }),
+                      let arrays = merge(caches.map(\.promptReplayArrays)) else { return nil }
+                let cache = Qwen4ExpAttentionCache(indexerCompressRatio: first.indexerCompressRatio)
+                cache.promptReplayArrays = arrays
+                result.append(cache)
+            } else if rows[0][index] is Qwen4ExpLayerCache {
+                let caches = rows.compactMap { $0[index] as? Qwen4ExpLayerCache }
+                guard caches.count == rows.count,
+                      caches.allSatisfy({ $0.mtpVerificationWidth == nil }),
+                      let arrays = merge(caches.map { cache in (0..<4).map { cache[$0] } })
+                else { return nil }
+                let cache = Qwen4ExpLayerCache()
+                for slot in 0..<4 { cache[slot] = arrays[slot] }
+                // Preserve every row's CPU mirror only when all are populated;
+                // otherwise the model rebuilds it from the authoritative tensor.
+                let histories = caches.compactMap(\.hostNGramHistory)
+                if histories.count == rows.count,
+                   histories.allSatisfy({ $0.count == histories[0].count }) {
+                    cache.hostNGramHistory = histories.flatMap { $0 }
+                }
+                result.append(cache)
+            } else {
+                return nil
+            }
+        }
+        return result
+    }
+
+    func adoptMTPVerificationRow(from batch: [KVCache], row: Int, batchSize: Int, into cache: [KVCache]) {
+        precondition(batch.count == cache.count && row >= 0 && row < batchSize)
+        for (source, destination) in zip(batch, cache) {
+            if let source = source as? Qwen4ExpAttentionCache,
+               let destination = destination as? Qwen4ExpAttentionCache {
+                destination.adoptVerificationRow(from: source, row: row)
+            } else if let source = source as? Qwen4ExpLayerCache,
+                      let destination = destination as? Qwen4ExpLayerCache {
+                destination.adoptVerificationRow(from: source, row: row, batchSize: batchSize)
+            } else {
+                preconditionFailure("Qwen verification row cache mismatch")
+            }
+        }
+    }
+
     /// Commit the accepted prefix of an MTP target-verification window.
     /// Full-attention layers trim their rejected KV suffix. Hybrid recurrent
     /// layers rebuild only their fixed-size state from verifier intermediates,
@@ -5574,6 +5694,72 @@ public final class Qwen4ExpMTPSession {
               preparedVerification == nil, preparedDraft == nil else { return false }
         preparedDraft = prepareDraft()
         return true
+    }
+
+    /// Verify compatible request rows in a genuine [B, T] target forward.
+    /// The caller supplies one bounded window on the serialized model owner.
+    /// Only the explicit batched arithmetic policy is eligible; strict policy,
+    /// different positions/models/depths and incomplete state fall back. Heads,
+    /// target sampling, acceptance, cache commit and repairs remain per request.
+    public static func prepareCompatibleVerificationBatches(
+        _ sessions: [Qwen4ExpMTPSession]
+    ) -> (batches: Int, rows: Int) {
+        guard (2...4).contains(sessions.count),
+              Set(sessions.map(ObjectIdentifier.init)).count == sessions.count,
+              ProcessInfo.processInfo.environment["AFM_QWEN_VERIFY_SEQUENTIAL"] != "1"
+        else { return (0, 0) }
+        let eligible = sessions.filter {
+            !$0.finished && !$0.firstPrimaryPending && $0.pendingVerification == nil
+                && $0.preparedVerification == nil && $0.preparedDraft != nil
+                && $0.verificationPolicy == .batched
+        }
+        var consumed = Set<ObjectIdentifier>()
+        var batchCount = 0
+        var rowCount = 0
+        for first in eligible where !consumed.contains(ObjectIdentifier(first)) {
+            let group = eligible.filter {
+                !consumed.contains(ObjectIdentifier($0)) && $0.model === first.model
+                    && $0.head === first.head && $0.depth == first.depth
+                    && $0.primaryPosition == first.primaryPosition
+            }
+            guard group.count > 1,
+                  let cache = first.model.mergedMTPVerificationCaches(group.map(\.targetCache))
+            else { continue }
+            let drafts = group.map { $0.preparedDraft! }
+            let snapshots = group.map { Qwen3MTPCacheSnapshot.capture($0.targetCache) }
+            let inputs = zip(group, drafts).map { session, draft in
+                concatenated([tokens([session.primary]), draft.tokenIDs], axis: 1)
+            }
+            let hostIDs = zip(group, drafts).flatMap { session, draft in
+                [session.primary] + draft.tokenIDs.asArray(Int32.self).map(Int.init)
+            }
+            first.startPhase()
+            let verified = first.model.forwardStreamState(
+                inputIDs: concatenated(inputs, axis: 0), cache: cache,
+                verificationPolicy: .batched, hostTokenIDs: hostIDs)
+            var sampled: [MLXArray] = []
+            for (row, session) in group.enumerated() {
+                first.model.adoptMTPVerificationRow(
+                    from: cache, row: row, batchSize: group.count, into: session.targetCache)
+                // Keep request-local sampler order and the existing per-row
+                // output projection; only the target backbone is shared here.
+                let targetIDs = session.targetTokens(
+                    verified.hidden[row..<(row + 1)], policy: .batched)[0, 0...]
+                session.preparedDraft = nil
+                session.preparedVerification = PreparedVerification(
+                    headOffset: drafts[row].headOffset, draftTokenIDs: drafts[row].tokenIDs,
+                    targetTokenIDs: targetIDs, verifiedStream: verified.stream[row..<(row + 1)],
+                    snapshot: snapshots[row], usedSequentialVerifier: false)
+                sampled.append(targetIDs)
+                consumed.insert(ObjectIdentifier(session))
+            }
+            // Shared host construction is charged once, to the first member.
+            first.endPhase(1)
+            asyncEval(sampled)
+            batchCount += 1
+            rowCount += group.count
+        }
+        return (batchCount, rowCount)
     }
 
     /// Submit at most one upcoming cycle without materializing its decision on

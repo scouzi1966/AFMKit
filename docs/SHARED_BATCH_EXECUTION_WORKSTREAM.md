@@ -650,6 +650,49 @@ each row's complete speculative rollback state before making separate
 acceptance decisions. It must not flatten independent requests into one
 sequence or silently reuse another request's recurrence/history.
 
+## Shared target-verification prototype
+
+The next opt-in path combines compatible MTP requests as `[batch, tokens]`
+in a genuine target-backbone forward. It never concatenates requests along
+the sequence dimension. Each request still owns its draft head, sampling key,
+acceptance decision, target/head repair and output stream.
+
+`AFM_QWEN_MTP_SHARED_VERIFY=1` requires the Qwen MTP scheduler. It uses a
+submission window of at least two and at most four requests and only combines
+the explicit `.batched` verifier policy with identical model/head identity,
+draft depth, logical position and complete cache geometry. Strict verification,
+different positions and incompatible state retain independent execution.
+Output projection/sampling remain per request; only the backbone is shared.
+This is not arbitrary-position batching or a new stable default.
+
+The model-owned adapter preserves optional sparse cache fields instead of
+using their compact serialization. After the shared forward it splits all
+recurrent/PLE rollback intermediates and CPU history by request. Recurrent
+state-history tensors use `[time, batch, ...]`, unlike the other arrays;
+that axis distinction is explicit. Each row can then accept a different
+number of drafts without changing another row's state. Prefix replay still
+captures pre-generation, single-request snapshots only.
+
+A tiny sparse-QSA test exposed an existing multi-token/multi-request shape
+error: `[B,H,Q,D] @ [B,D,K]` aligns the bank batch with the query head axis.
+For `B>1` the bank now has an explicit singleton head dimension. The existing
+`B=1` graph is unchanged. Score-sheet budgeting also counts the batch size.
+The failure was an isolated XCTest shape trap, not an OOM or host crash.
+Both sparse rollback and real mapped-PLE tests subsequently pass.
+
+Both complete focused runs pass 135 tests. The strengthened cancellation
+test requires a confirmed three-row shared forward before dropping one row.
+The consumer Release build passes (117.30 seconds). Live mixed API checks pass
+120/120 with equal-length independent MTP prompts to force path coverage:
+telemetry confirms six shared forwards covering twelve request rows. The
+expected broken-pipe log is from the deliberate client disconnect.
+
+Binary `3b77ca5eff3f94ae7b1c911ca404a9284603942ee23be15cce56a2a116c521ff`;
+records `qwen-shared-verifier-safety-*`. The same-checkpoint C15 throughput
+A/B is running with complete replay at 4096 MiB, a four-request submission
+window and only shared verification differing. No speedup or wider quality
+claim is established yet.
+
 ## Rejected independent-row QMM screen
 
 A bounded adapter reused the existing MTP q4 projection shader for 2–7
