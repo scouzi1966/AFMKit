@@ -27,12 +27,12 @@ These are branch experiments, not production-default or release qualifications.
 | Same-checkpoint baseline matrix | Six AFM/reference configurations and saved raw responses; integrated six-mode checkpoint repeated | Wider concurrency curve and workload coverage |
 | Shared exact-prefix replay | Serial AR and scheduler boundary helpers; opt-in API checks | Broader quality, long-context and model-switch qualification |
 | Qwen MTP replay | Opt-in complete exact-prompt target/head/history snapshots; focused and lifecycle tests pass | Working-set/memory qualification, partial-prefix continuation and serial-lane reuse |
-| Scheduler-owned Qwen MTP sessions | Opt-in streaming scheduler integration; mixed MTP/AR lifecycle and six-mode aggregate screen pass | Staged multi-request verification and wider qualification |
-| Genuine GPU batches | Persistent equal-offset subgroups with row-removal tests | Arbitrary-position batches and multi-request verification |
+| Scheduler-owned Qwen MTP sessions | Opt-in streaming scheduler integration, staged draft/verify operations; mixed MTP/AR lifecycle and six-mode aggregate screen pass | Wider qualification and adaptive speculation |
+| Genuine GPU batches | Persistent equal-offset AR subgroups and compatible multi-request MTP target verification; cancellation/row-isolation tests | Arbitrary-position batches and a measured MTP sharing benefit |
 | Continuous admission | Opt-in independent/group ownership; burst and staggered measurements | Avoid fragmentation across arbitrary arrival/position patterns |
 | Prefill/decode interleaving | Soft uncached-token admission budget across whole prompts | Suspend/resume individual prefills at token-chunk boundaries |
 | Adaptive speculation | Existing fixed-depth Qwen path retained | Workload-aware depth and useful-token cost policy |
-| CPU/GPU overlap | Existing single-request overlap retained | Cross-slot scheduling after bounded sessions exist |
+| CPU/GPU overlap | Bounded cross-slot submission and draft-first experiments; no material throughput improvement yet | Profile remaining host/device gaps and amortize work with shared execution |
 | Optional immutable PLE row cache | Bounded cache, exact-bit tests, limited measured benefit | Repeats before any default proposal; not the main throughput lever |
 | Batch kernels and graph overhead | Existing fused kernels retained; independent-row QMM screened and rejected | Profile remaining batch hot paths |
 | Memory budgets and reclamation | Group ownership/filtering and row-cache budget tested; RSS recorded | Long-context concurrency soak and request-memory admission budgets |
@@ -689,9 +689,34 @@ expected broken-pipe log is from the deliberate client disconnect.
 
 Binary `3b77ca5eff3f94ae7b1c911ca404a9284603942ee23be15cce56a2a116c521ff`;
 records `qwen-shared-verifier-safety-*`. The same-checkpoint C15 throughput
-A/B is running with complete replay at 4096 MiB, a four-request submission
-window and only shared verification differing. No speedup or wider quality
-claim is established yet.
+A/B with complete replay at 4096 MiB and a four-request submission window:
+
+| Shared verification | First / repeat aggregate tok/s | Peak process RSS GiB |
+|---|---:|---:|
+| Off | 60.27 / 87.97 | 69.62 |
+| On, neighboring-slot windows | 59.54 / 86.39 | 69.68 |
+
+This first prototype is **1.8% slower** on repeats and is not promoted. All
+requests complete with the same 24/30 structural checks and cached-token
+counts; 23/30 texts/token counts match across arms. Wider quality equivalence
+is not established. Telemetry confirms 104 shared forwards / 208 request rows,
+alongside 1,747 independent prepared cycles. Neighboring-slot windows combine
+too little of the active work to demonstrate a benefit. Records:
+`qwen-shared-verifier-{off,on}-*`.
+
+The follow-up groups compatible positions across the active queue, not only
+adjacent slots. Each group still contains at most four requests, and all its
+decisions are consumed before submitting another group. Output dispatch stays
+in original slot order. The revised consumer Release build passes (99.36
+seconds), as do all 136 focused tests and 120/120 live mixed API checks.
+Lifecycle telemetry confirms ten shared forwards covering 23 request rows.
+The bounded grouping tests explicitly cover nonadjacent rows, group size caps,
+different positions, cancellation and strict-policy fallback.
+
+Revision binary
+`86422ec3655d04b02aeb95c4eeee0d9055dd5e8b1887b38d724b2c83f14a19c0`;
+records `qwen-shared-grouping-safety-*`. The same-binary C15 A/B is next;
+no throughput gain is claimed yet.
 
 ## Rejected independent-row QMM screen
 

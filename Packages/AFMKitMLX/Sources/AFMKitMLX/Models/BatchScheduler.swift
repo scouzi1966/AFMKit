@@ -2162,8 +2162,34 @@ actor BatchScheduler {
         sampledTokens.reserveCapacity(slots.count)
         sampledLogits.reserveCapacity(slots.count)
 
+        var sharedQwenTokens: [UUID: Int] = [:]
+        if qwenMTPSharedVerification {
+            let candidates = slots.compactMap { slot -> (slot: SlotState, session: Qwen4ExpMTPSession)? in
+                guard !isCancellationRequested(slot.id),
+                      case .qwen(let session) = slot.speculativeSession else { return nil }
+                return (slot, session)
+            }
+            for indices in Qwen4ExpMTPSession.compatibleVerificationGroups(
+                candidates.map(\.session), maximumRows: qwenMTPSubmissionWindow)
+            {
+                let members = indices.map { candidates[$0] }.filter { !isCancellationRequested($0.slot.id) }
+                let sessions = members.map(\.session)
+                for session in sessions { session.prepareDraftTokens() }
+                let shared = Qwen4ExpMTPSession.prepareCompatibleVerificationBatches(sessions)
+                qwenMTPSharedVerificationBatches += shared.batches
+                qwenMTPSharedVerificationRows += shared.rows
+                for member in members {
+                    if member.session.prepareNextToken() { qwenMTPPreparedCycles += 1 }
+                    if let token = member.session.nextToken() { sharedQwenTokens[member.slot.id] = token }
+                }
+                // All decisions in this bounded group are consumed before
+                // submitting another group. Only token IDs are staged for the
+                // existing ordered output dispatcher; never reorder its slots.
+            }
+        }
+
         for (slotIndex, slot) in slots.enumerated() {
-            if qwenMTPSubmissionWindow > 1,
+            if !qwenMTPSharedVerification, qwenMTPSubmissionWindow > 1,
                slotIndex.isMultiple(of: qwenMTPSubmissionWindow)
             {
                 // No suspension inside this bounded window. Request-owned
@@ -2181,17 +2207,6 @@ actor BatchScheduler {
                         session.prepareDraftTokens()
                     }
                 }
-                if qwenMTPSharedVerification {
-                    let sessions = window.compactMap { ahead -> Qwen4ExpMTPSession? in
-                        let candidate = slots[ahead]
-                        guard !isCancellationRequested(candidate.id),
-                              case .qwen(let session) = candidate.speculativeSession else { return nil }
-                        return session
-                    }
-                    let shared = Qwen4ExpMTPSession.prepareCompatibleVerificationBatches(sessions)
-                    qwenMTPSharedVerificationBatches += shared.batches
-                    qwenMTPSharedVerificationRows += shared.rows
-                }
                 for ahead in window {
                     let candidate = slots[ahead]
                     if !isCancellationRequested(candidate.id),
@@ -2201,7 +2216,16 @@ actor BatchScheduler {
                     }
                 }
             }
-            if let session = slot.speculativeSession,
+            if let token = sharedQwenTokens[slot.id] {
+                sampledTokens.append(MLXArray(Int32(token)))
+                sampledLogits.append(nil)
+            } else if qwenMTPSharedVerification, isCancellationRequested(slot.id),
+                      case .qwen = slot.speculativeSession {
+                // The dispatcher checks cancellation before consuming this
+                // placeholder; no token is emitted or counted for this row.
+                sampledTokens.append(MLXArray(Int32(0)))
+                sampledLogits.append(nil)
+            } else if let session = slot.speculativeSession,
                let token = session.nextToken()
             {
                 sampledTokens.append(MLXArray(Int32(token)))

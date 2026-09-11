@@ -69,17 +69,20 @@ final class QwenNextMTPPipelineTests: XCTestCase {
         var output = [[Int]](repeating: [], count: sessions.count)
         var batchedRows = 0
         for step in 0..<12 {
-            for session in sessions { session.prepareDraftTokens() }
-            let shared = Qwen4ExpMTPSession.prepareCompatibleVerificationBatches(sessions)
-            batchedRows += shared.rows
-            // A row may be cancelled after a shared graph was submitted. Its
-            // state must not be reused or prevent the other rows from finishing.
-            if step == 1 {
-                XCTAssertEqual(shared.rows, 3)
-                sessions[1].cancel()
-            }
-            for (i, session) in sessions.enumerated() {
-                if let token = session.nextToken() { output[i].append(token) }
+            for indices in Qwen4ExpMTPSession.compatibleVerificationGroups(sessions) {
+                let group = indices.map { sessions[$0] }
+                for session in group { session.prepareDraftTokens() }
+                let shared = Qwen4ExpMTPSession.prepareCompatibleVerificationBatches(group)
+                batchedRows += shared.rows
+                // A row is cancelled after a confirmed shared graph was
+                // submitted, without preventing other rows from finishing.
+                if step == 1, indices.contains(1) {
+                    XCTAssertEqual(shared.rows, 3)
+                    sessions[1].cancel()
+                }
+                for i in indices {
+                    if let token = sessions[i].nextToken() { output[i].append(token) }
+                }
             }
         }
         XCTAssertGreaterThan(batchedRows, 0)
@@ -97,6 +100,30 @@ final class QwenNextMTPPipelineTests: XCTestCase {
             XCTAssertTrue(session.prepareDraftTokens())
         }
         XCTAssertEqual(Qwen4ExpMTPSession.prepareCompatibleVerificationBatches(strictSessions).rows, 0)
+        XCTAssertEqual(Qwen4ExpMTPSession.compatibleVerificationGroups(strictSessions), [[0], [1]])
+    }
+
+    func testCompatibleVerificationGroupsFindNonadjacentRowsAndRespectBounds() async throws {
+        let model = try await makeModel()
+        let head = Qwen4ExpMTPHead(model.configuration)
+        eval(model, head)
+        let generator = Qwen4ExpMTPGenerator(model: model, head: head, depth: 3,
+            verificationPolicy: .batched)
+        let sessions = try [8, 5, 8, 5, 8, 8].map { length in
+            try XCTUnwrap(generator.makeSession(promptIds: Array(1...length), maxTokens: 4))
+        }
+        XCTAssertEqual(Qwen4ExpMTPSession.compatibleVerificationGroups(sessions),
+                       [[0], [1], [2], [3], [4], [5]])
+        for session in sessions { XCTAssertNotNil(session.nextToken()) }
+        XCTAssertEqual(Qwen4ExpMTPSession.compatibleVerificationGroups(sessions, maximumRows: 3),
+                       [[0, 2, 4], [1, 3], [5]])
+        XCTAssertEqual(Qwen4ExpMTPSession.compatibleVerificationGroups(sessions, maximumRows: 99),
+                       [[0, 2, 4, 5], [1, 3]])
+        XCTAssertEqual(Qwen4ExpMTPSession.compatibleVerificationGroups(sessions, maximumRows: 1),
+                       [[0, 2], [1, 3], [4, 5]])
+        sessions[2].cancel()
+        XCTAssertEqual(Qwen4ExpMTPSession.compatibleVerificationGroups(sessions),
+                       [[0, 4, 5], [1, 3], [2]])
     }
 
     func testSharedSessionVerificationPreservesSamplingCancellationAndFallbacks() async throws {

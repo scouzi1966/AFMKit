@@ -5696,6 +5696,40 @@ public final class Qwen4ExpMTPSession {
         return true
     }
 
+    /// Stable first-seen grouping across the active queue, not just neighboring
+    /// slots. The owner processes and consumes one bounded group at a time.
+    /// Buffered tokens, repairs and strict-policy sessions remain singletons.
+    public static func compatibleVerificationGroups(
+        _ sessions: [Qwen4ExpMTPSession], maximumRows: Int = 4
+    ) -> [[Int]] {
+        struct Key: Hashable {
+            let model: ObjectIdentifier
+            let head: ObjectIdentifier
+            let depth: Int
+            let position: Int
+        }
+        let limit = min(4, max(2, maximumRows))
+        var locations: [Key: Int] = [:]
+        var groups: [[Int]] = []
+        for (index, session) in sessions.enumerated() {
+            guard !session.finished, !session.firstPrimaryPending,
+                  session.pendingVerification == nil, session.preparedVerification == nil,
+                  session.verificationPolicy == .batched else {
+                groups.append([index])
+                continue
+            }
+            let key = Key(model: ObjectIdentifier(session.model), head: ObjectIdentifier(session.head),
+                depth: session.depth, position: session.primaryPosition)
+            if let location = locations[key], groups[location].count < limit {
+                groups[location].append(index)
+            } else {
+                locations[key] = groups.count
+                groups.append([index])
+            }
+        }
+        return groups
+    }
+
     /// Verify compatible request rows in a genuine [B, T] target forward.
     /// The caller supplies one bounded window on the serialized model owner.
     /// Only the explicit batched arithmetic policy is eligible; strict policy,
