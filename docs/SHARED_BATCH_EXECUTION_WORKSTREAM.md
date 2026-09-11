@@ -632,7 +632,23 @@ graph is built. A revised two-phase experiment submits all bounded head chains
 first, then consumes their existing int32 IDs once per request for the already
 supported host-token PLE path. Request histories remain independent. This
 changes scheduling/transport, not token values or verifier arithmetic. It is
-under qualification; no additional gain is established yet.
+not a measured material improvement: source `05b5155c`, binary
+`7ec616a76a4fb13095bdb1523d6dfda7c5ea0073e1059433e929b7b50bedf11e`,
+passed the same 133 focused and 120 live lifecycle checks, then measured:
+
+| Draft-first window | First / repeat aggregate tok/s |
+|---|---:|
+| 1, existing ordering | 59.95 / 87.29 |
+| 2 | 59.43 / 87.16 |
+| 4 | 60.16 / 87.99 |
+
+No default change is justified by this sub-1% repeat difference. The staged
+session operations remain a foundation for actual shared verification, not a
+claimed aggregate breakthrough. Raw records: `qwen-draft-window-*`. The next
+prototype must share a target forward across compatible requests and restore
+each row's complete speculative rollback state before making separate
+acceptance decisions. It must not flatten independent requests into one
+sequence or silently reuse another request's recurrence/history.
 
 ## Rejected independent-row QMM screen
 
