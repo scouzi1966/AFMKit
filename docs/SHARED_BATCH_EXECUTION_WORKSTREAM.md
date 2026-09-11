@@ -794,6 +794,24 @@ the explicit 4096 MiB bound. Records:
 `qwen-prompt-extensions-complete-{off,on}-*`.
 No production default or broad quality-equivalence claim is made.
 
+## Reusing fused HC for multi-request verification
+
+The existing fused HC kernels and compound native chain operate independently
+on up to 16 rows. The experimental verifier predicate now permits up to four
+requests while preserving the existing per-request verification-width limit
+and a total 16-row limit. This retains the qualified row arithmetic and graph
+boundary instead of falling back solely because `B>1`. It does not flatten
+attention or recurrence, relax cache compatibility, or change the strict/AR
+defaults. The existing explicit fused-verifier switch is still required.
+
+All 138 focused tests pass with `AFM_QWEN_HC_NATIVE_CHAIN=1`, including exact
+multi-request versus independent-row HC comparisons through 16 rows, 4/8-bit
+weights, pending injection and rejection outside the bounds. Consumer Release
+build passes (47.73 seconds). Live API checks pass 120/120 and confirm nine
+shared verification forwards / 21 request rows. Binary
+`b588ceed50aa2cfeb7450f2770b9ddf63cd48ea969487f9e72087dbd8ac6feef`;
+records `qwen-shared-hc-safety-*`. Throughput A/B is pending.
+
 ## Rejected independent-row QMM screen
 
 A bounded adapter reused the existing MTP q4 projection shader for 2–7

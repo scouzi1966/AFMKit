@@ -918,13 +918,17 @@ final class QwenNextMTPPipelineTests: XCTestCase {
         }
     }
 
-    func testExperimentalHCIsLimitedToBatchedSingleRequestVerification() {
+    func testExperimentalHCIsLimitedToBoundedBatchedVerificationRows() {
         let input = MLXArray.zeros([1, 4, 10240], dtype: .bfloat16)
         XCTAssertTrue(qwen4ExpCanFuseVerificationHC(input, policy: .batched, enabled: true))
         XCTAssertFalse(qwen4ExpCanFuseVerificationHC(input, policy: .batched, enabled: false))
         XCTAssertFalse(qwen4ExpCanFuseVerificationHC(input, policy: .strictSingletonEquivalent, enabled: true))
         XCTAssertFalse(qwen4ExpCanFuseVerificationHC(input, policy: nil, enabled: true))
-        for shape in [[2, 4, 10240], [1, 1, 10240], [1, 16, 10240]] {
+        for shape in [[2, 4, 10240], [4, 4, 10240], [2, 7, 10240]] {
+            XCTAssertTrue(qwen4ExpCanFuseVerificationHC(
+                MLXArray.zeros(shape, dtype: .bfloat16), policy: .batched, enabled: true))
+        }
+        for shape in [[5, 2, 10240], [4, 7, 10240], [1, 1, 10240], [1, 16, 10240]] {
             XCTAssertFalse(qwen4ExpCanFuseVerificationHC(
                 MLXArray.zeros(shape, dtype: .bfloat16), policy: .batched, enabled: true))
         }
@@ -1366,7 +1370,7 @@ final class QwenNextMTPPipelineTests: XCTestCase {
             let up = QuantizedLinear(
                 weight: values(columns * rank, 1024).reshaped(columns, rank),
                 bias: nil, groupSize: 64, bits: bits)
-            for width in [2, 4, 7, 8] {
+            for width in [2, 4, 7, 8, 12, 16] {
                 let input = values(width * columns, 64).reshaped(1, width, columns)
                 func fused(_ rows: MLXArray) throws -> Qwen4ExpHyperConnectionFusionOutput {
                     try XCTUnwrap(Qwen4ExpHyperConnectionFusion.call(
@@ -1385,6 +1389,15 @@ final class QwenNextMTPPipelineTests: XCTestCase {
                                "HC mix bits=\(bits) width=\(width)")
                 XCTAssertEqual(actual.injection.asArray(Float.self), expectedInjection.asArray(Float.self),
                                "HC injection bits=\(bits) width=\(width)")
+                if width.isMultiple(of: 4) {
+                    let requests = width / 4
+                    let batch = try fused(input.reshaped(requests, 4, columns))
+                    eval(batch.mixed, batch.injection)
+                    XCTAssertEqual(batch.mixed.shape, [requests, 4, hidden])
+                    XCTAssertEqual(batch.injection.shape, [requests, 4, streams])
+                    XCTAssertEqual(batch.mixed.asArray(Float.self), expectedMix.asArray(Float.self))
+                    XCTAssertEqual(batch.injection.asArray(Float.self), expectedInjection.asArray(Float.self))
+                }
                 let pendingOutput = values(width * hidden, 128).reshaped(1, width, hidden)
                 let pendingWeights = values(width * streams, 128).reshaped(1, width, streams)
                 let injected = try XCTUnwrap(Qwen4ExpHyperConnectionFusion.inject(

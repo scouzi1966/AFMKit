@@ -271,9 +271,13 @@ private final class Qwen4ExpGatedNorm: Module {
 func qwen4ExpCanFuseVerificationHC(
     _ input: MLXArray, policy: MTPVerificationPolicy?, enabled: Bool
 ) -> Bool {
+    // HC acts independently on each [request, token] row. Its existing kernel
+    // and compound native chain both support up to 16 rows; do not abandon
+    // that graph solely because a bounded verifier has more than one request.
     enabled && policy == .batched && input.ndim == 3
-        && input.dim(0) == 1 && input.dim(1) > 1
+        && (1...4).contains(input.dim(0)) && input.dim(1) > 1
         && input.dim(1) <= VerifyWidthLinear.maximumAcceleratedWidth
+        && input.dim(0) * input.dim(1) <= 16
         && input.dtype == .bfloat16
 }
 
