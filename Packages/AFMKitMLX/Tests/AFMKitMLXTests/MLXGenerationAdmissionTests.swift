@@ -77,6 +77,23 @@ final class MLXGenerationAdmissionTests: XCTestCase {
             schedulerCanPreserveLogprobVisibility: false))
     }
 
+    func testQwenMTPSchedulerRetainsAvailabilityAndVisibilityGuards() {
+        for available in [false, true] {
+            for eligible in [false, true] {
+                for visible in [false, true] {
+                    for ownsQwen in [false, true] {
+                        XCTAssertEqual(MLXModelService.shouldUseStreamingScheduler(
+                            schedulerAvailable: available,
+                            mtpStreamEligible: eligible,
+                            schedulerCanPreserveLogprobVisibility: visible,
+                            schedulerOwnsQwenMTP: ownsQwen),
+                            available && visible && (!eligible || ownsQwen))
+                    }
+                }
+            }
+        }
+    }
+
     func testGLMMTPSchedulerReplayUsesServiceModelIdentity() {
         let serviceModelID = "/Volumes/edata2/models/afm/GLM-5.3-Flash-AFM-MLX-4bit-MTP"
         let configurationName = "afm/GLM-5.3-Flash-AFM-MLX-4bit-MTP"

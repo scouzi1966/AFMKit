@@ -736,10 +736,11 @@ public final class MLXModelService:
         schedulerAvailable: Bool,
         mtpStreamEligible: Bool,
         schedulerCanPreserveLogprobVisibility: Bool,
-        schedulerOwnsGLMMTP: Bool = false
+        schedulerOwnsGLMMTP: Bool = false,
+        schedulerOwnsQwenMTP: Bool = false
     ) -> Bool {
         schedulerAvailable
-            && (!mtpStreamEligible || schedulerOwnsGLMMTP)
+            && (!mtpStreamEligible || schedulerOwnsGLMMTP || schedulerOwnsQwenMTP)
             && schedulerCanPreserveLogprobVisibility
     }
 
@@ -2924,6 +2925,13 @@ public final class MLXModelService:
         }
         let prefixCaching = self.enablePrefixCaching
         let limit = self.maxConcurrent
+        let qwenMTPBinding: MTPGeneratorBinding? = withStateLock {
+            guard !modelSwitchInProgress,
+                  let binding = currentMTPBinding, binding.modelID == runtime.0,
+                  case .qwenNext = binding.generator
+            else { return nil }
+            return binding
+        }
         let glmMTPGenerator: GLM5NextMTPGenerator? = withStateLock {
             guard case .glm(let generator)? = currentMTPBinding?.generator else {
                 return nil
@@ -2945,7 +2953,15 @@ public final class MLXModelService:
                     + "exact-prompt speculative replay remains active")
         }
         let sched = await runtime.1.perform { context -> BatchScheduler in
-            BatchScheduler(
+            // Cross the executor boundary through the existing model-identity
+            // binding, not a new Sendable promise on the generator/session.
+            let qwenMTPGenerator: Qwen4ExpMTPGenerator?
+            if case .qwenNext(let generator)? = qwenMTPBinding?.generator {
+                qwenMTPGenerator = generator
+            } else {
+                qwenMTPGenerator = nil
+            }
+            return BatchScheduler(
                 model: context.model,
                 tokenizer: context.tokenizer,
                 processor: context.processor,
@@ -2954,6 +2970,7 @@ public final class MLXModelService:
                 enablePrefixCaching: schedulerPrefixCaching,
                 cacheProfilePath: self.cacheProfilePath,
                 glmMTPGenerator: glmMTPGenerator,
+                qwenMTPGenerator: qwenMTPGenerator,
                 glmMTPPromptReplayCache: glmMTPPromptReplayCache,
                 serviceModelID: runtime.0
             )
@@ -3051,6 +3068,13 @@ public final class MLXModelService:
         }
 
         let prefixCaching = self.enablePrefixCaching
+        let qwenMTPBinding: MTPGeneratorBinding? = withStateLock {
+            guard !modelSwitchInProgress,
+                  let binding = currentMTPBinding, binding.modelID == runtime.0,
+                  case .qwenNext = binding.generator
+            else { return nil }
+            return binding
+        }
         let glmMTPGenerator: GLM5NextMTPGenerator? = withStateLock {
             guard case .glm(let generator)? = currentMTPBinding?.generator else {
                 return nil
@@ -3064,7 +3088,13 @@ public final class MLXModelService:
             prefixCaching: prefixCaching,
             hasGLMMTPReplayCache: glmMTPPromptReplayCache != nil)
         let sched = await runtime.1.perform { context -> BatchScheduler in
-            BatchScheduler(
+            let qwenMTPGenerator: Qwen4ExpMTPGenerator?
+            if case .qwenNext(let generator)? = qwenMTPBinding?.generator {
+                qwenMTPGenerator = generator
+            } else {
+                qwenMTPGenerator = nil
+            }
+            return BatchScheduler(
                 model: context.model,
                 tokenizer: context.tokenizer,
                 processor: context.processor,
@@ -3073,6 +3103,7 @@ public final class MLXModelService:
                 enablePrefixCaching: schedulerPrefixCaching,
                 cacheProfilePath: self.cacheProfilePath,
                 glmMTPGenerator: glmMTPGenerator,
+                qwenMTPGenerator: qwenMTPGenerator,
                 glmMTPPromptReplayCache: glmMTPPromptReplayCache,
                 serviceModelID: runtime.0
             )
@@ -4292,22 +4323,24 @@ public final class MLXModelService:
             || ((stop?.isEmpty ?? true) && (tools?.isEmpty ?? true))
 
         // --- Concurrent path: bypass container.perform lock, route through BatchScheduler ---
-        // Generic MTP remains serial because BatchScheduler is autoregressive-only.
-        // GLM is the staged exception: its request-owned session retains target
-        // and NextN rollback state while participating in the independent cohort.
+        // GLM and the opt-in Qwen adapter retain request-owned target/head state
+        // in the scheduler. Other MTP implementations keep the serial lane.
         let schedulerOwnsGLMMTP = mtpStreamEligible
             && currentModelArchitecture?.canonicalModelType == "glm5_next"
             && maxConcurrent > 1
         let requestScheduler = withStateLock {
             schedulerModelID == modelID ? self.scheduler : nil
         }
+        let schedulerOwnsQwenMTP = mtpStreamEligible && maxConcurrent > 1
+            && requestScheduler?.ownsQwenMTPSessions == true
         if let scheduler = requestScheduler,
            Self.shouldUseStreamingScheduler(
                 schedulerAvailable: true,
                 mtpStreamEligible: mtpStreamEligible,
                 schedulerCanPreserveLogprobVisibility:
                     schedulerLogprobsAreVisible,
-                schedulerOwnsGLMMTP: schedulerOwnsGLMMTP)
+                schedulerOwnsGLMMTP: schedulerOwnsGLMMTP,
+                schedulerOwnsQwenMTP: schedulerOwnsQwenMTP)
         {
             let pipelineStart = debugLogging ? Date() : Date.distantPast
 
@@ -4375,7 +4408,8 @@ public final class MLXModelService:
                     thinkStartTag: rawPrompt == nil ? self.thinkStartTag : nil,
                     thinkEndTag: rawPrompt == nil ? self.thinkEndTag : nil,
                     requestId: reqId,
-                    usesGLMMTP: schedulerOwnsGLMMTP
+                    usesGLMMTP: schedulerOwnsGLMMTP,
+                    usesQwenMTP: schedulerOwnsQwenMTP
                 )
             }
             let effectiveStream: AsyncThrowingStream<StreamChunk, Error>

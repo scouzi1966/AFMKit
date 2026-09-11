@@ -27,7 +27,7 @@ These are branch experiments, not production-default or release qualifications.
 | Same-checkpoint baseline matrix | Six AFM/reference configurations and saved raw responses | Repeat after integration; wider concurrency curve |
 | Shared exact-prefix replay | Serial AR and scheduler boundary helpers; opt-in API checks | Broader quality, long-context and model-switch qualification |
 | Qwen MTP replay | Existing AR replay does not cover the speculative head | Complete target/head/history prompt-state contract |
-| Scheduler-owned Qwen MTP sessions | Resumable request-owned session extracted and tested | Wire scheduler ownership and staged multi-request verification |
+| Scheduler-owned Qwen MTP sessions | Opt-in streaming scheduler integration; mixed MTP/AR lifecycle passes | Aggregate qualification and staged multi-request verification |
 | Genuine GPU batches | Persistent equal-offset subgroups with row-removal tests | Arbitrary-position batches and multi-request verification |
 | Continuous admission | Opt-in independent/group ownership; burst and staggered measurements | Avoid fragmentation across arbitrary arrival/position patterns |
 | Prefill/decode interleaving | Soft uncached-token admission budget across whole prompts | Suspend/resume individual prefills at token-chunk boundaries |
@@ -413,6 +413,40 @@ Baseline artifact: `fce3015516659fcafe0d9086e69df8c0517a21687ca11f4c4e18c4943097
 candidate: `d30a0ee94deedd3cf0826b45a6888da55aac8d86e01ef8f0503e11860602a595`.
 Records: `session-refactor-{before,after}-*` in the artifact root.
 
+### Scheduler-owned streaming sessions
+
+`AFM_QWEN_MTP_SCHEDULER=1` enables the new lane only for the direct text
+`Qwen4ExpModel`, with a loaded, matching-model MTP generator and concurrency
+greater than one. All other models and the unset default retain their paths.
+Transfer the existing model-identity binding into scheduler construction;
+neither the generator nor mutable sessions are newly declared Sendable.
+
+The scheduler advances independent speculative sessions through the same
+token dispatcher as AR. A common private session adapter also retains the
+existing GLM implementation. Qwen AR fallback admissions remain independent,
+so later speculative requests cannot coerce a live dense cache. Output caps,
+EOS, cancellation, stops, streaming and accounting stay with the dispatcher.
+Ineligible contracts retain AR/serial fallback. Prefill remains whole-prompt,
+and one session's verification is not yet merged with another's GPU forward.
+
+Qwen speculative sessions deliberately do not read or write AR radix snapshots.
+Those snapshots lack the head/target/rolling-history boundary. Cache-hit counts
+remain zero for Qwen MTP rather than claiming false reuse. AR requests can
+still restore and save their independently owned radix entries in this mode.
+
+Validation: 127 focused Release tests pass, including GLM architecture and
+existing admission tests. Consumer Release build passes (68.71 seconds).
+The mixed live API test passes 120/120 assertions across 18 requests, plus an
+excluded successful warmup: greedy/sampled MTP, logprob/presence/stop AR
+fallbacks, early cancellation, caps, subsequent/repeat requests and absence
+of false MTP cache hits. Telemetry verifies ten user MTP admissions; AFM's own
+prewarm is excluded. The first harness counted that prewarm and incorrectly
+flagged coverage after all assertions passed; the corrected rerun also passes.
+Artifacts: `qwen-scheduler-lifecycle-v{1,2}-*`.
+
+Same-binary C15 aggregate/memory comparison is running. This is a state-ownership
+and scheduling implementation, not yet a claim of higher speculative throughput.
+
 ## Rejected independent-row QMM screen
 
 A bounded adapter reused the existing MTP q4 projection shader for 2–7
@@ -523,6 +557,15 @@ experiment only within opt-in continuous Qwen groups. Its unset default and
 every other architecture retain 64. Raw records: `fair-admission-before-*`,
 `fair-admission-after-*`, and `fair-admission-safety-*`. An intermediate interval
 is being screened; no improved-throughput claim is made for it yet.
+
+The same-binary intermediate screen subsequently measured interval 8 versus
+64: first/repeat aggregate **80.04/80.35** versus **74.03/81.99** tok/s; late
+TTFT **1.54/0.64** versus **6.45/5.74** seconds. All eight initial streams were
+active at late submission in every phase. Both arms retain 30 completions,
+28 structural passes and equal cached-token totals. There is no consistent
+aggregate improvement; default remains 64. Records: `fair-admission-interval*`.
+The interval experiment also applies when the explicit Qwen MTP scheduler
+switch selects independent continuous admission.
 
 Record end-to-end aggregate output throughput separately from decode-only
 throughput, and report actual cached tokens, request queue time and memory.

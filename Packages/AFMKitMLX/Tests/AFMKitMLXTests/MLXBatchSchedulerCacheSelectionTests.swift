@@ -101,6 +101,18 @@ final class MLXBatchSchedulerCacheSelectionTests: XCTestCase {
         }
     }
 
+    func testQwenMTPSchedulerRequiresExplicitOptInAndMatchingTextArchitecture() {
+        for enabled in [false, true] {
+            for hasGenerator in [false, true] {
+                XCTAssertEqual(BatchScheduler.supportsQwenMTPScheduler(
+                    modelType: Qwen4ExpModel.self, hasGenerator: hasGenerator, enabled: enabled),
+                    enabled && hasGenerator)
+                XCTAssertFalse(BatchScheduler.supportsQwenMTPScheduler(
+                    modelType: Gemma4Model.self, hasGenerator: hasGenerator, enabled: enabled))
+            }
+        }
+    }
+
     func testCompatibleGroupsUseActualOffsetsAndStableRowOrder() {
         let caches = [7, 9, 7, 8, 9].enumerated().map {
             [TestUniformDecodeCache(offset: $0.element, value: Float($0.offset)) as KVCache]

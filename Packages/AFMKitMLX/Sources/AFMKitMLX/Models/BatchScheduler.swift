@@ -132,6 +132,8 @@ actor BatchScheduler {
     private let cacheProfilePath: String?
     private let admissionWindowNanoseconds: UInt64
     private let glmMTPGenerator: GLM5NextMTPGenerator?
+    private let qwenMTPGenerator: Qwen4ExpMTPGenerator?
+    nonisolated let ownsQwenMTPSessions: Bool
     private let glmMTPPromptReplayCache: GLM5NextMTPPromptReplayCache?
     private let glmMTPReplayModelID: String
     /// Some models change attention behavior when a later, shorter sequence is
@@ -141,7 +143,7 @@ actor BatchScheduler {
     /// Experimental text-only Qwen adapter; no other architecture or default
     /// execution path changes until its state contract is qualified.
     private let enablesUniformDecodeGroups: Bool
-    private let enablesContinuousUniformGroups: Bool
+    private let enablesContinuousIndependentAdmission: Bool
     private let continuousPrefillTokenBudget: Int
     private let continuousYieldInterval: Int
     private var uniformDecodeGroups: [UniformDecodeGroup] = []
@@ -157,6 +159,36 @@ actor BatchScheduler {
     private let radixCache: RadixTreeCache?
 
     // MARK: - Slot State
+
+    /// Request-owned speculative state uses the same token dispatcher as AR.
+    /// Sessions are advanced only by this actor, never by concurrent GPU tasks.
+    private enum SpeculativeSession {
+        case glm(GLM5NextMTPSession)
+        case qwen(Qwen4ExpMTPSession)
+
+        func nextToken() -> Int? {
+            switch self {
+            case .glm(let session): session.nextToken()
+            case .qwen(let session): session.nextToken()
+            }
+        }
+
+        var periodicCaches: [KVCache] {
+            switch self {
+            case .glm(let session): session.targetCache
+            // Qwen materializes its bounded verification/repair work internally.
+            // Do not expose or publish incomplete target-only radix snapshots.
+            case .qwen: []
+            }
+        }
+
+        var label: String {
+            switch self {
+            case .glm: "GLM"
+            case .qwen: "Qwen"
+            }
+        }
+    }
 
     /// Per-request state for batched generation.
     /// Each slot holds its own sampler/processor (since each request can have
@@ -224,7 +256,7 @@ actor BatchScheduler {
         var stopBuffer = ""
         var insideThink = false
         var stoppedBySequence = false
-        let glmMTPSession: GLM5NextMTPSession?
+        let speculativeSession: SpeculativeSession?
 
         init(
             id: UUID,
@@ -256,7 +288,7 @@ actor BatchScheduler {
             computeLogprobs: Bool = false,
             topLogprobsCount: Int = 0,
             temperatureForLogprobs: Float = 1.0,
-            glmMTPSession: GLM5NextMTPSession? = nil
+            speculativeSession: SpeculativeSession? = nil
         ) {
             self.id = id
             self.requestId = requestId
@@ -294,7 +326,7 @@ actor BatchScheduler {
             self.computeLogprobs = computeLogprobs
             self.topLogprobsCount = topLogprobsCount
             self.temperatureForLogprobs = temperatureForLogprobs
-            self.glmMTPSession = glmMTPSession
+            self.speculativeSession = speculativeSession
         }
     }
 
@@ -393,6 +425,12 @@ actor BatchScheduler {
         stepCount: Int, continuousGroups: Bool, interval: Int = 64
     ) -> Bool {
         stepCount.isMultiple(of: continuousGroups ? min(64, max(1, interval)) : 64)
+    }
+
+    nonisolated static func supportsQwenMTPScheduler(
+        modelType: Any.Type, hasGenerator: Bool, enabled: Bool
+    ) -> Bool {
+        enabled && hasGenerator && modelType == Qwen4ExpModel.self
     }
 
     /// Copy cache tensors into independent MLX storage before retaining them
@@ -549,6 +587,9 @@ actor BatchScheduler {
         let thinkEndTag: String?
         let continuation: AsyncThrowingStream<StreamChunk, Error>.Continuation
         let usesGLMMTP: Bool
+        let usesQwenMTP: Bool
+
+        var usesSpeculativeSession: Bool { usesGLMMTP || usesQwenMTP }
     }
 
     /// Thread-safe request queue — accessed without actor isolation.
@@ -694,6 +735,7 @@ actor BatchScheduler {
         cacheProfilePath: String? = nil,
         admissionWindowNanoseconds: UInt64 = BatchScheduler.defaultAdmissionWindowNanoseconds,
         glmMTPGenerator: GLM5NextMTPGenerator? = nil,
+        qwenMTPGenerator: Qwen4ExpMTPGenerator? = nil,
         glmMTPPromptReplayCache: GLM5NextMTPPromptReplayCache? = nil,
         serviceModelID: String? = nil
     ) {
@@ -705,6 +747,11 @@ actor BatchScheduler {
         self.cacheProfilePath = cacheProfilePath
         self.admissionWindowNanoseconds = admissionWindowNanoseconds
         self.glmMTPGenerator = glmMTPGenerator
+        let ownsQwenMTP = Self.supportsQwenMTPScheduler(
+            modelType: type(of: model), hasGenerator: qwenMTPGenerator != nil,
+            enabled: ProcessInfo.processInfo.environment["AFM_QWEN_MTP_SCHEDULER"] == "1")
+        self.ownsQwenMTPSessions = ownsQwenMTP
+        self.qwenMTPGenerator = ownsQwenMTP ? qwenMTPGenerator : nil
         self.glmMTPPromptReplayCache = glmMTPPromptReplayCache
         self.glmMTPReplayModelID = Self.glmMTPReplayModelID(
             serviceModelID: serviceModelID,
@@ -714,7 +761,7 @@ actor BatchScheduler {
         let continuousGroups = uniformGroups
             && ProcessInfo.processInfo.environment["AFM_QWEN_BATCH_CONTINUOUS_GROUPS"] == "1"
         self.enablesUniformDecodeGroups = uniformGroups
-        self.enablesContinuousUniformGroups = continuousGroups
+        self.enablesContinuousIndependentAdmission = continuousGroups || ownsQwenMTP
         self.continuousPrefillTokenBudget = min(8192, max(1,
             Int(ProcessInfo.processInfo.environment[
                 "AFM_QWEN_BATCH_PREFILL_TOKEN_BUDGET"] ?? "1024") ?? 1024))
@@ -722,7 +769,7 @@ actor BatchScheduler {
             Int(ProcessInfo.processInfo.environment[
                 "AFM_QWEN_BATCH_YIELD_INTERVAL"] ?? "64") ?? 64))
         self.requiresFixedDecodeCohorts = Self.requiresFixedDecodeCohorts(
-            for: type(of: model), continuousUniformGroups: continuousGroups)
+            for: type(of: model), continuousUniformGroups: continuousGroups || ownsQwenMTP)
 
         let debug = ProcessInfo.processInfo.environment["AFM_DEBUG"] == "1"
         self.radixCache = enablePrefixCaching
@@ -788,7 +835,8 @@ actor BatchScheduler {
         thinkStartTag: String? = nil,
         thinkEndTag: String? = nil,
         requestId: String = "",
-        usesGLMMTP: Bool = false
+        usesGLMMTP: Bool = false,
+        usesQwenMTP: Bool = false
     ) -> AsyncThrowingStream<StreamChunk, Error> {
         if _isShutdown.withLock({ $0 }) {
             return AsyncThrowingStream { $0.finish(throwing: MLXServiceError.serviceShuttingDown) }
@@ -818,7 +866,8 @@ actor BatchScheduler {
                 thinkStartTag: thinkStartTag,
                 thinkEndTag: thinkEndTag,
                 continuation: continuation,
-                usesGLMMTP: usesGLMMTP
+                usesGLMMTP: usesGLMMTP,
+                usesQwenMTP: usesQwenMTP
             ))
         }
 
@@ -854,10 +903,10 @@ actor BatchScheduler {
     private func drainAdmissionBatch() async -> [PendingRequest] {
         let admissionLimit = Self.continuousAdmissionLimit(
             maxConcurrent: maxConcurrent, activeCount: slots.count,
-            enabled: enablesContinuousUniformGroups,
+            enabled: enablesContinuousIndependentAdmission,
             tokenBudget: continuousPrefillTokenBudget)
         var requests = drainPendingQueue(limit: admissionLimit)
-        if enablesContinuousUniformGroups, !slots.isEmpty, requests.count > 1 {
+        if enablesContinuousIndependentAdmission, !slots.isEmpty, requests.count > 1 {
             let admitted = Self.continuousAdmissionPrefixCount(
                 estimatedTokenCounts: requests.map(estimatedContinuousPrefillTokens),
                 tokenBudget: continuousPrefillTokenBudget)
@@ -1026,7 +1075,7 @@ actor BatchScheduler {
                     }
                 }
 
-                if enablesContinuousUniformGroups, !slots.isEmpty, !accepted.isEmpty {
+                if enablesContinuousIndependentAdmission, !slots.isEmpty, !accepted.isEmpty {
                     print("[BatchScheduler] Continuous admission: active=\(slots.count) admitted=\(accepted.count)")
                 }
 
@@ -1034,19 +1083,21 @@ actor BatchScheduler {
                 // request into `batchCaches`; that transition is unsupported
                 // and traps. Keep every later admission request-owned as well.
                 if Self.shouldUseIndependentPrefill(
-                    cacheModeIsIndependent: cacheMode == .independent,
-                    acceptedContainsGLMMTP: accepted.contains(where: \.usesGLMMTP))
+                    cacheModeIsIndependent: cacheMode == .independent || ownsQwenMTPSessions,
+                    acceptedContainsGLMMTP: accepted.contains(where: \.usesSpeculativeSession))
                 {
                     switch cacheMode {
                     case .empty, .independent:
                         for req in accepted {
                             if req.usesGLMMTP {
                                 prefillGLMMTP(req)
+                            } else if req.usesQwenMTP {
+                                prefillQwenMTP(req)
                             } else {
                                 prefillOne(req, forceIndependentCaches: true)
                             }
                         }
-                        if enablesContinuousUniformGroups {
+                        if enablesContinuousIndependentAdmission {
                             // Rejoin decode after the budgeted incoming cohort,
                             // rather than draining every queued prefill first.
                             // This is not token-chunk prefill interleaving.
@@ -1083,7 +1134,7 @@ actor BatchScheduler {
                             $0.input.image != nil || $0.input.video != nil
                         }
                         let useIndependentCaches =
-                            enablesContinuousUniformGroups || Self.requiresIndependentUniformCacheCohort(
+                            enablesContinuousIndependentAdmission || Self.requiresIndependentUniformCacheCohort(
                                 promptTokenCounts: accepted.map {
                                     $0.input.text.tokens.size
                                 },
@@ -1125,7 +1176,7 @@ actor BatchScheduler {
                         prefillOne(req)
                     }
                 } else if let req = accepted.first {
-                    prefillOne(req, forceIndependentCaches: enablesContinuousUniformGroups)
+                    prefillOne(req, forceIndependentCaches: enablesContinuousIndependentAdmission)
                 }
             }
 
@@ -1154,7 +1205,7 @@ actor BatchScheduler {
                 stepCount += 1
                 if Self.shouldYieldIndependentDecode(
                     stepCount: stepCount,
-                    continuousGroups: enablesContinuousUniformGroups,
+                    continuousGroups: enablesContinuousIndependentAdmission,
                     interval: continuousYieldInterval)
                 {
                     await Task.yield()
@@ -1401,7 +1452,7 @@ actor BatchScheduler {
     private func estimatedContinuousPrefillTokens(_ req: PendingRequest) -> Int {
         let count = req.input.text.tokens.size
         guard let radix = radixCache, req.input.image == nil, req.input.video == nil,
-              !req.usesGLMMTP
+              !req.usesSpeculativeSession
         else { return max(1, count) }
         let ids = req.input.text.tokens.reshaped(-1).asArray(Int.self)
         let match = radix.findExactBoundaryMatch(ids)
@@ -1534,22 +1585,54 @@ actor BatchScheduler {
             _ = replayCache.insert(capturedState, modelID: glmMTPReplayModelID)
         }
 
+        installSpeculativeSession(.glm(session), request: req,
+            inputTokens: inputTokens, prefillStart: prefillStart,
+            cachedTokens: replayState?.promptIds.count ?? 0)
+    }
+
+    private func prefillQwenMTP(_ req: PendingRequest) {
+        guard let generator = qwenMTPGenerator else {
+            failPendingRequest(req,
+                error: MLXServiceError.loadFailed("Qwen MTP generator is unavailable"))
+            return
+        }
+        let prefillStart = Date()
+        let inputTokens = req.input.text.tokens.reshaped(-1).asArray(Int.self)
+        // The common dispatcher owns caps, EOS suppression and cancellation.
+        // No target-only prefix reuse: Qwen replay must include the head/history.
+        guard let session = generator.makeSession(
+            promptIds: inputTokens, maxTokens: Int.max, eosIds: [],
+            temperature: req.parameters.temperature, topP: req.parameters.topP,
+            seed: req.parameters.seed)
+        else {
+            failPendingRequest(req,
+                error: MLXServiceError.loadFailed("Unable to create Qwen MTP session"))
+            return
+        }
+        installSpeculativeSession(.qwen(session), request: req,
+            inputTokens: inputTokens, prefillStart: prefillStart, cachedTokens: 0)
+    }
+
+    private func installSpeculativeSession(
+        _ session: SpeculativeSession, request req: PendingRequest,
+        inputTokens: [Int], prefillStart: Date, cachedTokens: Int
+    ) {
+
         if case .empty = cacheMode {
             cacheMode = .independent
         } else if case .independent = cacheMode {
             // Additional GLM and native-cache requests share the fair cohort.
         } else {
-            preconditionFailure("Cannot add GLM MTP state to a dense AR cohort")
+            preconditionFailure("Cannot add speculative state to a dense AR cohort")
         }
 
         guard let firstToken = session.nextToken() else {
             failPendingRequest(
                 req,
-                error: MLXServiceError.loadFailed("GLM MTP session produced no first token"))
+                error: MLXServiceError.loadFailed("\(session.label) MTP session produced no first token"))
             return
         }
         let tokenArray = MLXArray(Int32(firstToken))
-        let cachedTokens = replayState?.promptIds.count ?? 0
         let prefillTime = Date().timeIntervalSince(prefillStart)
 
         let slot = SlotState(
@@ -1562,7 +1645,7 @@ actor BatchScheduler {
             prefillTime: prefillTime,
             inputTokens: inputTokens,
             cachedTokens: cachedTokens,
-            prefillCaches: session.targetCache,
+            prefillCaches: session.periodicCaches,
             prefixCacheTokens: [],
             prefixCacheStates: [],
             prefixCacheMetaStates: [],
@@ -1599,7 +1682,7 @@ actor BatchScheduler {
             computeLogprobs: false,
             topLogprobsCount: 0,
             temperatureForLogprobs: req.parameters.temperature,
-            glmMTPSession: session)
+            speculativeSession: session)
 
         let firstTokenFinished = dispatchSampledToken(
             tokenArray,
@@ -1620,7 +1703,7 @@ actor BatchScheduler {
         }
 
         print(
-            "[\(batchTs())] [GLM-MTPScheduler] Prefilled speculative slot "
+            "[\(batchTs())] [\(session.label)-MTPScheduler] Prefilled speculative slot "
                 + "req=\(slot.requestId) cached=\(cachedTokens) "
                 + "time=\(String(format: "%.3f", prefillTime))s")
         slots.append(slot)
@@ -1980,7 +2063,7 @@ actor BatchScheduler {
         needsUniformDecodeGrouping = false
         let candidates = slots.filter {
             $0.permitsUniformDecodeGroup && !groupedSlotIDs.contains($0.id) && $0.modelState == nil
-                && $0.glmMTPSession == nil && !$0.prefillCaches.isEmpty
+                && $0.speculativeSession == nil && !$0.prefillCaches.isEmpty
         }
         for indices in UniformDecodeGroup.compatibleIndices(candidates.map(\.prefillCaches)) {
             let members = indices.map { candidates[$0] }
@@ -2041,12 +2124,12 @@ actor BatchScheduler {
         sampledLogits.reserveCapacity(slots.count)
 
         for slot in slots {
-            if let session = slot.glmMTPSession,
+            if let session = slot.speculativeSession,
                let token = session.nextToken()
             {
                 sampledTokens.append(MLXArray(Int32(token)))
                 sampledLogits.append(nil)
-            } else if slot.glmMTPSession == nil {
+            } else if slot.speculativeSession == nil {
                 let logits: MLXArray
                 if let batched = groupedLogits[slot.id] {
                     logits = batched
@@ -2065,7 +2148,7 @@ actor BatchScheduler {
                 sampledTokens.append(sampled)
                 sampledLogits.append(slot.computeLogprobs ? processed : nil)
             } else {
-                preconditionFailure("GLM MTP session ended without a token")
+                preconditionFailure("Speculative session ended without a token")
             }
         }
 
