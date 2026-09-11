@@ -499,6 +499,31 @@ bounded speculative sessions remain major implementation work.
 
 ## Evidence policy
 
+### Admission CPU turns: latency/throughput tradeoff
+
+Input preparation shares the scheduler actor. Its existing 64-step cooperative
+yield interval can delay tokenization of new requests while GPU work is active.
+A yield every step passed 255 lifecycle assertions, but it fragmented incoming
+compatible groups. On the same-checkpoint staggered 8+7 workload:
+
+| Interval | First / repeat aggregate tok/s | Late median TTFT, first / repeat |
+|---|---:|---:|
+| 64 steps, control | 78.56 / 84.19 | 6.07 / 5.30 s |
+| Every step | 74.13 / 75.85 | 1.15 / 0.24 s |
+
+Both completed 30 requests with 28 structural passes and identical cached-token
+totals. The first arm had eight initial streams active at late arrival in both
+phases; the every-step repeat had seven. Arrival timing affects grouping, so
+these are not identical GPU schedules. Earlier units, including independent
+sparse-attention MTP sessions, passed 64 tests with one optional probe skipped.
+
+Do not promote the 6–10% aggregate regression in exchange for latency without
+user agreement. `AFM_QWEN_BATCH_YIELD_INTERVAL` permits a bounded 1–64-step
+experiment only within opt-in continuous Qwen groups. Its unset default and
+every other architecture retain 64. Raw records: `fair-admission-before-*`,
+`fair-admission-after-*`, and `fair-admission-safety-*`. An intermediate interval
+is being screened; no improved-throughput claim is made for it yet.
+
 Record end-to-end aggregate output throughput separately from decode-only
 throughput, and report actual cached tokens, request queue time and memory.
 Concurrency enabled does not prove batched execution. MTP enabled does not

@@ -143,6 +143,7 @@ actor BatchScheduler {
     private let enablesUniformDecodeGroups: Bool
     private let enablesContinuousUniformGroups: Bool
     private let continuousPrefillTokenBudget: Int
+    private let continuousYieldInterval: Int
     private var uniformDecodeGroups: [UniformDecodeGroup] = []
     private var groupedSlotIDs: Set<UUID> = []
     private var needsUniformDecodeGrouping = false
@@ -383,6 +384,15 @@ actor BatchScheduler {
             remaining -= cost
         }
         return estimatedTokenCounts.count
+    }
+
+    /// Input preparation shares this actor. Shorter yield intervals improve
+    /// admission latency but can fragment compatible batches. Preserve the
+    /// existing schedule unless a controlled experiment requests otherwise.
+    nonisolated static func shouldYieldIndependentDecode(
+        stepCount: Int, continuousGroups: Bool, interval: Int = 64
+    ) -> Bool {
+        stepCount.isMultiple(of: continuousGroups ? min(64, max(1, interval)) : 64)
     }
 
     /// Copy cache tensors into independent MLX storage before retaining them
@@ -708,6 +718,9 @@ actor BatchScheduler {
         self.continuousPrefillTokenBudget = min(8192, max(1,
             Int(ProcessInfo.processInfo.environment[
                 "AFM_QWEN_BATCH_PREFILL_TOKEN_BUDGET"] ?? "1024") ?? 1024))
+        self.continuousYieldInterval = min(64, max(1,
+            Int(ProcessInfo.processInfo.environment[
+                "AFM_QWEN_BATCH_YIELD_INTERVAL"] ?? "64") ?? 64))
         self.requiresFixedDecodeCohorts = Self.requiresFixedDecodeCohorts(
             for: type(of: model), continuousUniformGroups: continuousGroups)
 
@@ -1139,7 +1152,11 @@ actor BatchScheduler {
                     })
                 }
                 stepCount += 1
-                if stepCount % 64 == 0 {
+                if Self.shouldYieldIndependentDecode(
+                    stepCount: stepCount,
+                    continuousGroups: enablesContinuousUniformGroups,
+                    interval: continuousYieldInterval)
+                {
                     await Task.yield()
                 }
                 continue

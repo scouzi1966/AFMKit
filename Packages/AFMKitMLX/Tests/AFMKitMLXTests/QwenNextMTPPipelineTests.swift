@@ -50,6 +50,12 @@ final class QwenNextMTPPipelineTests: XCTestCase {
         }
     }
 
+    func testResumableSessionsPreserveInterleavingAcrossSparseAttentionBoundary() async throws {
+        let model = try await makeModel(indexerBudget: 4)
+        try assertSessionInterleaving(model, policy: .strictSingletonEquivalent, temperature: 0)
+        try assertSessionInterleaving(model, policy: .batched, temperature: 0.6)
+    }
+
     func testResumableSessionStopsWithoutExtraVerificationAndReleasesOnCancel() async throws {
         let model = try await makeModel()
         let head = Qwen4ExpMTPHead(model.configuration)
@@ -1141,7 +1147,8 @@ final class QwenNextMTPPipelineTests: XCTestCase {
     // Ten layers deliberately cross the default eight-layer dispatch boundary.
     // The usual two-layer architecture fixture cannot exercise that boundary.
     private func makeModel(
-        withPLE: Bool = false, attentionHeadDimension: Int = 64
+        withPLE: Bool = false, attentionHeadDimension: Int = 64,
+        indexerBudget: Int = 2048
     ) async throws -> Qwen4ExpModel {
         var text: [String: Any] = [
             "model_type": "qwen4_exp_text", "hidden_size": 128,
@@ -1156,7 +1163,7 @@ final class QwenNextMTPPipelineTests: XCTestCase {
             "rms_norm_eps": 0.000001, "vocab_size": 32,
             "hc_count": 4, "hc_lowrank": 32, "ple_layer_ids": [],
             "indexer_n_heads": 2, "indexer_kv_heads": 1,
-            "indexer_head_dim": 64, "indexer_budget": 2048,
+            "indexer_head_dim": 64, "indexer_budget": indexerBudget,
             "indexer_compress_ratio": 4, "output_gate_type": "sigmoid",
             "eos_token_id": 31,
             "rope_parameters": ["partial_rotary_factor": 0.25, "rope_theta": 10000000],

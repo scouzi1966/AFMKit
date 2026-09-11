@@ -86,6 +86,21 @@ final class MLXBatchSchedulerCacheSelectionTests: XCTestCase {
             for: Gemma4Model.self, continuousUniformGroups: true))
     }
 
+    func testContinuousYieldExperimentPreservesDefaultAndOtherModelsSchedule() {
+        for step in 1...128 {
+            XCTAssertEqual(BatchScheduler.shouldYieldIndependentDecode(
+                stepCount: step, continuousGroups: true), step.isMultiple(of: 64))
+            for interval in [-1, 0, 1, 8, 16, 64, 128] {
+                XCTAssertEqual(BatchScheduler.shouldYieldIndependentDecode(
+                    stepCount: step, continuousGroups: false, interval: interval),
+                    step.isMultiple(of: 64))
+                XCTAssertEqual(BatchScheduler.shouldYieldIndependentDecode(
+                    stepCount: step, continuousGroups: true, interval: interval),
+                    step.isMultiple(of: min(64, max(1, interval))))
+            }
+        }
+    }
+
     func testCompatibleGroupsUseActualOffsetsAndStableRowOrder() {
         let caches = [7, 9, 7, 8, 9].enumerated().map {
             [TestUniformDecodeCache(offset: $0.element, value: Float($0.offset)) as KVCache]
