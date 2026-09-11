@@ -28,7 +28,7 @@ These are branch experiments, not production-default or release qualifications.
 | Shared exact-prefix replay | Serial AR and scheduler boundary helpers; opt-in API checks | Broader quality, long-context and model-switch qualification |
 | Qwen MTP replay | Opt-in complete target/head/history snapshots, exact replay and prompt-prefix continuation; focused and lifecycle tests pass | Working-set/memory and continuation quality qualification, serial-lane reuse |
 | Scheduler-owned Qwen MTP sessions | Opt-in streaming scheduler integration, staged draft/verify operations; mixed MTP/AR lifecycle and six-mode aggregate screen pass | Wider qualification and adaptive speculation |
-| Genuine GPU batches | Persistent equal-offset AR subgroups and compatible multi-request MTP target verification; cancellation/row-isolation tests | Arbitrary-position batches and a measured MTP sharing benefit |
+| Genuine GPU batches | Persistent equal-offset AR subgroups and compatible multi-request MTP target verification; cancellation/row-isolation tests | Arbitrary-position batches and a material MTP sharing benefit |
 | Continuous admission | Opt-in independent/group ownership; burst and staggered measurements | Avoid fragmentation across arbitrary arrival/position patterns |
 | Prefill/decode interleaving | Soft uncached-token admission budget across whole prompts | Suspend/resume individual prefills at token-chunk boundaries |
 | Adaptive speculation | Existing fixed-depth Qwen path retained | Workload-aware depth and useful-token cost policy |
@@ -730,9 +730,9 @@ sharing across first/repeat phases. Only 3/30 paired texts/token counts match.
 This is not a quality-equivalence claim and does not justify promotion.
 Records: `qwen-shared-grouping-{off,on}-*`; source checkpoint `dec387b1`.
 
-Source inspection identifies follow-up work, not a measured attribution:
-the small-row q4 projection, fused verification HC predicate and compiled
-verification tail currently require `B=1`. A multi-request forward therefore
+Source inspection at that checkpoint identified follow-up work, not a measured
+attribution: the small-row q4 projection, fused verification HC predicate and
+compiled verification tail required `B=1`. A multi-request forward therefore
 does not automatically retain the optimized single-request verifier graph.
 Wider row-safe kernels/graphs must be measured separately; removing cache
 position guards is not an acceptable shortcut.
@@ -810,7 +810,28 @@ weights, pending injection and rejection outside the bounds. Consumer Release
 build passes (47.73 seconds). Live API checks pass 120/120 and confirm nine
 shared verification forwards / 21 request rows. Binary
 `b588ceed50aa2cfeb7450f2770b9ddf63cd48ea969487f9e72087dbd8ac6feef`;
-records `qwen-shared-hc-safety-*`. Throughput A/B is pending.
+records `qwen-shared-hc-safety-*`; source checkpoint `bb72a146`.
+
+Same-binary C15 comparison, with the explicit fused-HC option in both arms:
+
+| Shared verification | First / repeat aggregate tok/s | Peak RSS GiB |
+|---|---:|---:|
+| Off | 60.35 / 87.76 | 69.62 |
+| On, with bounded fused HC | 60.82 / 90.39 | 69.66 |
+
+This is a **3.0% repeat gain**, not a large batching improvement. Both arms
+complete 30 requests; structural checks are 24/30 off versus 25/30 on.
+Only 5/30 paired response texts/token counts match. Shared telemetry confirms
+516 forwards / 1,359 request rows plus 517 independent prepared cycles.
+Records `qwen-shared-hc-{off,on}-*`.
+
+The reverse-order comparison measured **60.23 / 89.18** with sharing versus
+**60.01 / 88.07** without: a smaller **1.3% repeat gain**. Each arm completed
+30 requests and passed 24 structural checks. Records
+`qwen-shared-hc-repeat-{on,off}-*`. This small benefit and changed wording do
+not establish broad quality equivalence, substantial aggregate improvement,
+or readiness to change defaults. Compiled verification tails, small-row
+projections and arbitrary-position batching remain separate follow-up work.
 
 ## Rejected independent-row QMM screen
 
