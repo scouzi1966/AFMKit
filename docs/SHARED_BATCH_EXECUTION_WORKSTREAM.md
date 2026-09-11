@@ -26,7 +26,7 @@ These are branch experiments, not production-default or release qualifications.
 |---|---|---|
 | Same-checkpoint baseline matrix | Six AFM/reference configurations and saved raw responses; integrated six-mode checkpoint repeated | Wider concurrency curve and workload coverage |
 | Shared exact-prefix replay | Serial AR and scheduler boundary helpers; opt-in API checks | Broader quality, long-context and model-switch qualification |
-| Qwen MTP replay | Opt-in complete exact-prompt target/head/history snapshots; focused and lifecycle tests pass | Working-set/memory qualification, partial-prefix continuation and serial-lane reuse |
+| Qwen MTP replay | Opt-in complete target/head/history snapshots, exact replay and prompt-prefix continuation; focused and lifecycle tests pass | Working-set/memory and continuation quality qualification, serial-lane reuse |
 | Scheduler-owned Qwen MTP sessions | Opt-in streaming scheduler integration, staged draft/verify operations; mixed MTP/AR lifecycle and six-mode aggregate screen pass | Wider qualification and adaptive speculation |
 | Genuine GPU batches | Persistent equal-offset AR subgroups and compatible multi-request MTP target verification; cancellation/row-isolation tests | Arbitrary-position batches and a measured MTP sharing benefit |
 | Continuous admission | Opt-in independent/group ownership; burst and staggered measurements | Avoid fragmentation across arbitrary arrival/position patterns |
@@ -759,9 +759,40 @@ wrong prefixes, longest-boundary LRU behavior and exact replay after extension.
 The consumer Release build passes (119.87 seconds), and the live mixed API
 lifecycle checks pass 120/120. Binary
 `c59c112dd9c05815e9c81d5673435a518cc73014a5f5aa08e16899fdc1f17add`;
-records `qwen-prompt-prefix-safety-*`. A same-binary agentic chat-extension
-A/B is pending. No default change or
-throughput improvement is claimed for this new continuation path yet.
+records `qwen-prompt-prefix-safety-*`. Source checkpoint `ec29bdd2`.
+
+Initial C15 continuation screen: replay off **55.58 / 55.20 aggregate tok/s**,
+replay on **77.90 / 78.64** for two distinct sets of 15 agentic follow-up
+requests. Every replay-enabled request reused exactly 1,139 tokens from the
+initial prompt (17,085 per phase); these were partial hits, not exact repeats.
+All requests completed. Across arms 30/30 request prompts matched, but only
+4/30 output texts/token counts did. Structural checks were 11/30 without
+replay and 19/30 with replay. The excluded initial response was identical in
+both arms but hit its 192-token cap without completing its JSON, so this is
+an incomplete-history workload, not a clean quality qualification. Raw records
+remain as `qwen-prompt-extensions-{off,on}-*`.
+
+A fresh comparison raises only the excluded initial turn's token cap to 384
+and requires valid initial JSON. Measured continuation prompts still use a
+192-token cap, 15 clients, fixed seed, greedy sampling and the same checkpoint.
+It completed with the same binary and identical valid initial history:
+
+| Complete-history continuation | Replay off | Replay on |
+|---|---:|---:|
+| First set aggregate tok/s | 56.29 | 78.90 |
+| Second distinct set aggregate tok/s | 55.67 | 77.52 |
+| Completed / structural checks | 30/30 | 30/30 |
+| Partial-prefix hits | 0/30 | 30/30 |
+| Peak process RSS GiB | 69.78 | 69.61 |
+
+The gain is **40.2% / 39.2%** on these two sets of new follow-ups, not just
+repeated prompts. All 30 request prompts match across arms; 10/30 response
+texts/token counts match. Splitting prefill changes the execution geometry,
+so unchanged structural totals do not establish general semantic equivalence.
+RSS is not total Metal/unified-memory accounting; snapshots remain subject to
+the explicit 4096 MiB bound. Records:
+`qwen-prompt-extensions-complete-{off,on}-*`.
+No production default or broad quality-equivalence claim is made.
 
 ## Rejected independent-row QMM screen
 
