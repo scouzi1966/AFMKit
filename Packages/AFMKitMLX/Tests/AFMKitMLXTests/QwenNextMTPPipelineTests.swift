@@ -7,6 +7,85 @@ import XCTest
 @testable import AFMKitMLX
 
 final class QwenNextMTPPipelineTests: XCTestCase {
+    private func assertSessionInterleaving(
+        _ model: Qwen4ExpModel, policy: MTPVerificationPolicy, temperature: Float
+    ) throws {
+        let head = Qwen4ExpMTPHead(model.configuration)
+        eval(model, head)
+        let generator = Qwen4ExpMTPGenerator(
+            model: model, head: head, depth: 3, verificationPolicy: policy,
+            draftDispatchStride: 1, retainHeadAnchor: true)
+        let prompts = [[1, 2, 3, 4], [9, 8, 7, 6, 5, 4, 3]]
+        let expected = prompts.enumerated().map { i, prompt in
+            generator.generate(promptIds: prompt, maxTokens: 13,
+                temperature: temperature, topP: 0.95, seed: UInt64(i + 41))
+        }
+        let sessions = try prompts.enumerated().map { i, prompt in
+            try XCTUnwrap(generator.makeSession(promptIds: prompt, maxTokens: 13,
+                temperature: temperature, topP: 0.95, seed: UInt64(i + 41)))
+        }
+        var output = [[Int](), [Int]()]
+        // Uneven turns exercise different prompt offsets, accepted-token
+        // buffers, deferred head repairs and one session outliving the other.
+        for _ in 0..<13 {
+            for i in [0, 1, 1] {
+                let before = sessions[i].verificationCycleCount
+                if let token = sessions[i].nextToken() { output[i].append(token) }
+                XCTAssertTrue((0...1).contains(sessions[i].verificationCycleCount - before))
+            }
+        }
+        XCTAssertEqual(output, expected)
+        for session in sessions {
+            XCTAssertNil(session.nextToken())
+            XCTAssertEqual(session.tokenCount, 13)
+        }
+    }
+
+    func testResumableSessionsPreserveGreedyAndSampledInterleaving() async throws {
+        let model = try await makeModel()
+        for policy: MTPVerificationPolicy in [.strictSingletonEquivalent, .batched] {
+            for temperature: Float in [0, 0.6] {
+                try assertSessionInterleaving(model, policy: policy, temperature: temperature)
+            }
+        }
+    }
+
+    func testResumableSessionStopsWithoutExtraVerificationAndReleasesOnCancel() async throws {
+        let model = try await makeModel()
+        let head = Qwen4ExpMTPHead(model.configuration)
+        eval(model, head)
+        let generator = Qwen4ExpMTPGenerator(model: model, head: head, depth: 3)
+        XCTAssertNil(generator.makeSession(promptIds: [], maxTokens: 5))
+        XCTAssertNil(generator.makeSession(promptIds: [1], maxTokens: 0))
+        let expected = generator.generate(promptIds: [1, 2, 3], maxTokens: 9,
+            temperature: 0.6, topP: 0.95, seed: 81)
+        let singleton = try XCTUnwrap(generator.makeSession(promptIds: [1, 2, 3],
+            maxTokens: 1, temperature: 0.6, topP: 0.95, seed: 81))
+        XCTAssertEqual(singleton.nextToken(), expected.first)
+        XCTAssertEqual(singleton.verificationCycleCount, 0)
+        XCTAssertNil(singleton.nextToken())
+        XCTAssertEqual(singleton.verificationCycleCount, 0)
+        let eos = try XCTUnwrap(generator.makeSession(promptIds: [1, 2, 3], maxTokens: 9,
+            eosIds: [expected[0]], temperature: 0.6, topP: 0.95, seed: 81))
+        XCTAssertEqual(eos.nextToken(), expected.first)
+        XCTAssertNil(eos.nextToken())
+        XCTAssertEqual(eos.verificationCycleCount, 0)
+
+        var cancelled = generator.makeSession(promptIds: [1, 2, 3], maxTokens: 9,
+            temperature: 0.6, topP: 0.95, seed: 81)
+        weak var weakSession = cancelled
+        XCTAssertEqual(cancelled?.nextToken(), expected[0])
+        XCTAssertEqual(cancelled?.nextToken(), expected[1])
+        let cycles = cancelled?.verificationCycleCount
+        cancelled?.cancel()
+        XCTAssertNil(cancelled?.nextToken())
+        XCTAssertEqual(cancelled?.verificationCycleCount, cycles)
+        cancelled = nil
+        XCTAssertNil(weakSession)
+        XCTAssertEqual(generator.generate(promptIds: [1, 2, 3], maxTokens: 9,
+            temperature: 0.6, topP: 0.95, seed: 81), expected)
+    }
+
     func testPersistentUniformGroupMatchesNativeQwenStateAfterRowRemoval() async throws {
         let model = try await makeModel()
         eval(model)
@@ -1125,6 +1204,7 @@ final class QwenNextMTPPipelineTests: XCTestCase {
         let model = try await makeModel(withPLE: true)
         try model.configureMappedNGramTable(url: url)
         eval(model)
+        try assertSessionInterleaving(model, policy: .batched, temperature: 0.6)
         // Verify an early dispatch cannot observe an unfilled mapped PLE
         // leaf, and that every acceptance boundary commits the same state.
         for stride in [1, 4, 8] {

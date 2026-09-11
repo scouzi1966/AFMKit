@@ -27,7 +27,7 @@ These are branch experiments, not production-default or release qualifications.
 | Same-checkpoint baseline matrix | Six AFM/reference configurations and saved raw responses | Repeat after integration; wider concurrency curve |
 | Shared exact-prefix replay | Serial AR and scheduler boundary helpers; opt-in API checks | Broader quality, long-context and model-switch qualification |
 | Qwen MTP replay | Existing AR replay does not cover the speculative head | Complete target/head/history prompt-state contract |
-| Scheduler-owned Qwen MTP sessions | Not implemented in this increment | Bounded draft/verify/commit, request-owned RNG and cancellation |
+| Scheduler-owned Qwen MTP sessions | Resumable request-owned session extracted and tested | Wire scheduler ownership and staged multi-request verification |
 | Genuine GPU batches | Persistent equal-offset subgroups with row-removal tests | Arbitrary-position batches and multi-request verification |
 | Continuous admission | Opt-in independent/group ownership; burst and staggered measurements | Avoid fragmentation across arbitrary arrival/position patterns |
 | Prefill/decode interleaving | Soft uncached-token admission budget across whole prompts | Suspend/resume individual prefills at token-chunk boundaries |
@@ -373,6 +373,45 @@ structural and cached-token totals remain unchanged. This repeat supports a
 roughly 12% repeat-throughput gain from budgeted admission; the much larger
 initial TTFT improvement does not reproduce. It does not establish arbitrary
 arrival-pattern or long-context performance. Records: `budgeted-group-repeat-*`.
+
+## Resumable Qwen Next MTP session
+
+`Qwen4ExpMTPGenerator.makeSession` creates request-owned target/head caches,
+RNG, current target stream/position, accepted-token cursor and verification
+snapshot. `nextToken` returns the already-known primary immediately, then
+returns a buffered accepted token or performs at most one configured-depth
+verification cycle. Head repair remains deferred until accepted tokens have
+been consumed, so EOS, output caps and early cancellation do not force an
+unnecessary repair. The existing whole-response `generate` method drives this
+same session; there is no second production algorithm to maintain.
+
+The session is deliberately not Sendable: use a serialized model/GPU executor.
+It adds no global synchronization, cache publication or independent model
+ownership. Prefill is still a whole-prompt operation. This is a prerequisite
+for scheduler integration, **not** completed speculative batching or prefix
+replay. Complete target/head prompt snapshots and staged batched verification
+remain outstanding.
+
+The focused Release suite passed 62 tests, with one optional microbenchmark
+skipped. Added coverage checks uneven interleaving of two requests under
+greedy/sampled strict/batched policies, independent RNG, EOS/length without an
+extra cycle, cancellation/deallocation and mapped PLE history interleaving.
+
+Frozen API control: same ddalcu checkpoint, C1, MTP depth 3, explicit batched
+experiment settings, temperature 0/top-p 1, 192-token cap, 15 agentic prompts
+and their repeats. Prefix caching is enabled but Qwen MTP does not reuse it.
+
+| Implementation | First / repeat aggregate tok/s | Peak RSS GiB |
+|---|---:|---:|
+| Prior generator | 59.06 / 59.15 | 69.41 |
+| Session-backed generator | 59.00 / 58.78 | 69.38 |
+
+All 30 response texts and completion-token counts match exactly across builds;
+both complete 30 requests with 24 structural passes and zero cached tokens.
+The observed throughput difference is below 0.7%, not a throughput gain.
+Baseline artifact: `fce3015516659fcafe0d9086e69df8c0517a21687ca11f4c4e18c49430973cb1`;
+candidate: `d30a0ee94deedd3cf0826b45a6888da55aac8d86e01ef8f0503e11860602a595`.
+Records: `session-refactor-{before,after}-*` in the artifact root.
 
 ## Rejected independent-row QMM screen
 

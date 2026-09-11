@@ -5242,12 +5242,21 @@ public final class Qwen4ExpMTPGenerator {
         self.retainHeadAnchor = retainHeadAnchor && verificationPolicy == .batched
     }
 
-    private static func tokens(_ ids: [Int]) -> MLXArray {
-        MLXArray(ids.map(Int32.init)).reshaped([1, ids.count])
-    }
-
-    private static func positions(_ range: Range<Int>) -> MLXArray {
-        MLXArray(range.map(Int32.init)).reshaped([1, range.count])
+    /// Creates request-owned state for serialized, resumable speculative work.
+    /// Sharing immutable model/head weights does not share caches or RNG state.
+    public func makeSession(
+        promptIds: [Int], maxTokens: Int, eosIds: Set<Int> = [],
+        temperature: Float = 0, topP: Float = 1, seed: UInt64? = nil
+    ) -> Qwen4ExpMTPSession? {
+        precondition(temperature.isFinite && temperature >= 0)
+        precondition(topP.isFinite && (0...1).contains(topP))
+        guard !promptIds.isEmpty, maxTokens > 0 else { return nil }
+        return Qwen4ExpMTPSession(
+            model: model, head: head, depth: depth,
+            verificationPolicy: verificationPolicy,
+            draftDispatchStride: draftDispatchStride, retainHeadAnchor: retainHeadAnchor,
+            promptIds: promptIds, maxTokens: maxTokens, eosIds: eosIds,
+            temperature: temperature, topP: topP, seed: seed)
     }
 
     public func generate(
@@ -5259,9 +5268,80 @@ public final class Qwen4ExpMTPGenerator {
         seed: UInt64? = nil,
         onToken: ((Int) -> Bool)? = nil
     ) -> [Int] {
-        precondition(temperature.isFinite && temperature >= 0)
-        precondition(topP.isFinite && (0...1).contains(topP))
-        guard !promptIds.isEmpty, maxTokens > 0 else { return [] }
+        guard let session = makeSession(
+            promptIds: promptIds, maxTokens: maxTokens, eosIds: eosIds,
+            temperature: temperature, topP: topP, seed: seed)
+        else { return [] }
+        defer { session.reportDiagnostics() }
+        var output: [Int] = []
+        while let token = session.nextToken() {
+            output.append(token)
+            if let onToken, !onToken(token) { break }
+        }
+        return output
+    }
+}
+
+/// A request-owned Qwen Next speculative state machine, not Sendable.
+///
+/// Call on one serialized model/GPU executor. Each nextToken call returns a
+/// buffered accepted token or performs at most one bounded draft/verify cycle.
+/// The already-known primary is returned before drafting. Head repair is
+/// deferred until accepted tokens have been consumed, preserving early-stop
+/// behavior without doing unnecessary repair after cancellation/EOS/length.
+/// This is the session primitive; it does not itself batch requests or provide
+/// reusable prompt snapshots. Prefill is still one whole-prompt operation.
+public final class Qwen4ExpMTPSession {
+    private struct Verification {
+        let headOffset: Int
+        let decision: Qwen4ExpMTPCycleDecision
+        let verifiedStream: MLXArray
+        let snapshot: [Qwen3MTPCacheSnapshot.Layer]
+        let targetCommitted: Bool
+    }
+
+    private let model: Qwen4ExpModel
+    private let head: Qwen4ExpMTPHead
+    private let targetCache: [KVCache]
+    private let mtpCache: [KVCache]
+    private let sampler: LogitSampler?
+    private let maxTokens: Int
+    private let eosIds: Set<Int>
+    private let depth: Int
+    private let verificationPolicy: MTPVerificationPolicy
+    private let draftDispatchStride: Int
+    private let retainHeadAnchor: Bool
+    public let promptTokenCount: Int
+    public private(set) var tokenCount = 0
+    public var verificationCycleCount: Int { totalCycles }
+
+    private var primary: Int
+    private var primaryStream: MLXArray
+    private var primaryPosition: Int
+    private var firstPrimaryPending = true
+    private var pendingVerification: Verification?
+    private var acceptedCursor = 0
+    private var finished = false
+
+    private var totalCycles = 0
+    private var totalDrafted = 0
+    private var totalAccepted = 0
+    private var totalReplays = 0
+    private var totalBackboneReplayFallbacks = 0
+    private var totalRetainedAnchors = 0
+    private var acceptedByDepth: [Int]
+    // Host laps do not add eval/synchronize calls. No lap spans a suspension.
+    private let measurePhases = ProcessInfo.processInfo.environment["AFM_PERF"] == "1"
+    private var phaseNanoseconds = [UInt64](repeating: 0, count: 5)
+    private var phaseStart: UInt64 = 0
+    private var reportedDiagnostics = false
+
+    fileprivate init(
+        model: Qwen4ExpModel, head: Qwen4ExpMTPHead, depth: Int,
+        verificationPolicy: MTPVerificationPolicy, draftDispatchStride: Int,
+        retainHeadAnchor: Bool, promptIds: [Int], maxTokens: Int, eosIds: Set<Int>,
+        temperature: Float, topP: Float, seed: UInt64?
+    ) {
         // Request-owned RNG: no global seeding or mutable sampler on a shared
         // generator. Nil preserves the fused greedy readout and its graph.
         let sampler: LogitSampler? = temperature > 0
@@ -5278,11 +5358,11 @@ public final class Qwen4ExpMTPGenerator {
         let mtpCache = head.newCache()
         let prompt = Self.tokens(promptIds)
         let initial = model.forwardStreamState(inputIDs: prompt, cache: targetCache)
-        var primary = targetTokens(
+        let primary = targetTokens(
             initial.hidden[0..., (initial.hidden.dim(1) - 1)..., 0...]
         ).item(Int.self)
-        var primaryStream = initial.stream[0..., (initial.stream.dim(1) - 1)..., 0...]
-        var primaryPosition = promptIds.count
+        let primaryStream = initial.stream[0..., (initial.stream.dim(1) - 1)..., 0...]
+        let primaryPosition = promptIds.count
 
         // Prime the head with true target streams for the shifted prompt pairs:
         // stream[p] + token[p+1] predicts token[p+2].
@@ -5296,237 +5376,294 @@ public final class Qwen4ExpMTPGenerator {
                 cache: mtpCache
             )
         }
-
-        var output: [Int] = []
-        var totalCycles = 0
-        var totalDrafted = 0
-        var totalAccepted = 0
-        var totalReplays = 0
-        var totalBackboneReplayFallbacks = 0
-        var totalRetainedAnchors = 0
-        var acceptedByDepth = [Int](repeating: 0, count: depth)
-        // Host-side laps do not add eval/synchronize calls. The decision lap
-        // includes outstanding GPU work, not just the tiny acceptance loop.
-        // Keep diagnostic timings separate from uninstrumented benchmarks.
-        let measurePhases = ProcessInfo.processInfo.environment["AFM_PERF"] == "1"
-        var phaseNanoseconds = [UInt64](repeating: 0, count: 5)
-        var phaseStart: UInt64 = 0
-        func startPhase() {
-            if measurePhases { phaseStart = DispatchTime.now().uptimeNanoseconds }
-        }
-        func endPhase(_ index: Int) {
-            if measurePhases {
-                phaseNanoseconds[index] += DispatchTime.now().uptimeNanoseconds - phaseStart
-            }
-        }
-        defer {
-            if measurePhases, totalCycles > 0 {
-                let labels = ["draft-build", "verify-build", "decision-wait", "commit-build", "history-build"]
-                let laps = zip(labels, phaseNanoseconds).map { label, nanos in
-                    String(format: "%@=%.3fms/cycle", label,
-                           Double(nanos) / 1_000_000 / Double(totalCycles))
-                }.joined(separator: " ")
-                FileHandle.standardError.write(Data("[MTP][QwenNext][host-phases] \(laps)\n".utf8))
-            }
-            if ProcessInfo.processInfo.environment["AFM_DEBUG"] == "1" {
-                let acceptance = totalDrafted > 0
-                    ? Double(totalAccepted) / Double(totalDrafted)
-                    : 0
-                let tokensPerCycle = totalCycles > 0
-                    ? Double(output.count) / Double(totalCycles)
-                    : 0
-                let depthCounts = acceptedByDepth.enumerated()
-                    .map { "d\($0.offset + 1)=\($0.element)" }
-                    .joined(separator: ",")
-                let message = String(
-                    format:
-                        "[MTP][QwenNext] %d tok in %d cycles — %.2f tok/cycle, accept %.1f%% (%d/%d), replays %d, backbone fallbacks %d, retained anchors %d, %@\n",
-                    output.count,
-                    totalCycles,
-                    tokensPerCycle,
-                    acceptance * 100,
-                    totalAccepted,
-                    totalDrafted,
-                    totalReplays,
-                    totalBackboneReplayFallbacks,
-                    totalRetainedAnchors,
-                    depthCounts
-                )
-                FileHandle.standardError.write(Data(message.utf8))
-            }
-        }
-        func emit(_ token: Int) -> Bool {
-            output.append(token)
-            if let onToken, !onToken(token) { return false }
-            return output.count < maxTokens && !eosIds.contains(token)
-        }
-
-        while true {
-            if !emit(primary) { break }
-            totalCycles += 1
-
-            startPhase()
-            let roundHeadOffset = mtpCache[0].offset
-            var draftTokens: [MLXArray] = []
-            draftTokens.reserveCapacity(depth)
-            var chainStream = primaryStream
-            var chainToken = Self.tokens([primary])
-            for index in 0 ..< depth {
-                let draftOutput = head(
-                    hiddenStream: chainStream,
-                    tokenEmbeddings: model.embedTokens(chainToken),
-                    tokenIDs: chainToken,
-                    positionIDs: Self.positions(
-                        (primaryPosition + index) ..< (primaryPosition + index + 1)),
-                    cache: mtpCache
-                )
-                let draft = model.projectLMHeadArgmax(draftOutput.hidden)
-                    .asType(.int32)
-                    .reshaped([1, 1])
-                draftTokens.append(draft)
-                chainStream = draftOutput.stream
-                chainToken = draft
-                // Scheduling-only experiment: overlap early head execution
-                // with construction of later draft graphs. The head disables
-                // PLE, so it has no deferred host-filled leaves to flush.
-                // Unlike mlx-serve's chunk-boundary dispatch (David Dalcu,
-                // MIT, src/generate.zig mtpChainDispatch), this optionally
-                // submits within a fixed chain to measure Swift host overlap.
-                // No host read, extra draft, or cache-history update is added.
-                if draftDispatchStride > 0, index + 1 < depth,
-                   (index + 1).isMultiple(of: draftDispatchStride)
-                {
-                    asyncEval(draft)
-                }
-            }
-            totalDrafted += draftTokens.count
-
-            let draftTokenIDs = concatenated(draftTokens, axis: 1)
-            // Dispatch the complete lazy draft chain without crossing the
-            // host boundary. The verifier consumes the same array and the
-            // cycle decision performs the only GPU-to-CPU materialization.
-            asyncEval(draftTokenIDs)
-            endPhase(0)
-            startPhase()
-            let verifyTokenIDs = concatenated(
-                [Self.tokens([primary]), draftTokenIDs], axis: 1)
-            let targetSnapshot = Qwen3MTPCacheSnapshot.capture(targetCache)
-            let verifiedStream: MLXArray
-            let targetTokenIDs: MLXArray
-            let usedSequentialVerifier = ProcessInfo.processInfo.environment[
-                "AFM_QWEN_VERIFY_SEQUENTIAL"
-            ] == "1"
-            if usedSequentialVerifier {
-                var streams: [MLXArray] = []
-                var sampledRows: [MLXArray] = []
-                let verifyInputs = [Self.tokens([primary])] + draftTokens
-                for token in verifyInputs {
-                    let state = model.forwardStreamState(
-                        inputIDs: token, cache: targetCache)
-                    streams.append(state.stream)
-                    sampledRows.append(targetTokens(state.hidden))
-                }
-                verifiedStream = concatenated(streams, axis: 1)
-                targetTokenIDs = concatenated(sampledRows, axis: 1)
-            } else {
-                let verified = model.forwardStreamState(
-                    inputIDs: verifyTokenIDs, cache: targetCache,
-                    verificationPolicy: verificationPolicy)
-                verifiedStream = verified.stream
-                targetTokenIDs = targetTokens(
-                    verified.hidden,
-                    policy: verificationPolicy)[0, 0...]
-            }
-            endPhase(1)
-            startPhase()
-            let decision = Qwen4ExpMTPCycleDecision.resolve(
-                targetTokenIDs: targetTokenIDs,
-                draftTokenIDs: draftTokenIDs)
-            endPhase(2)
-            startPhase()
-            for index in 0 ..< decision.acceptedDraftCount {
-                acceptedByDepth[index] += 1
-            }
-            totalAccepted += decision.acceptedDraftCount
-            let targetCacheCommitted = !usedSequentialVerifier
-                && model.finishMTPVerification(
-                    cache: targetCache,
-                    acceptedDrafts: decision.acceptedDraftCount,
-                    draftedTokens: decision.draftTokens.count)
-            endPhase(3)
-
-            for token in decision.draftTokens.prefix(decision.acceptedDraftCount) {
-                if !emit(token) { return output }
-            }
-
-            // The first row was built from primaryStream, not a predicted
-            // stream. The experimental path keeps it and repairs only the
-            // suffix. Never retain subsequent rows based on token equality:
-            // their predicted hidden streams can still be wrong.
-            startPhase()
-            let speculativeRows = mtpCache[0].offset - roundHeadOffset
-            let repair = Qwen4ExpMTPHeadRepairPlan(
-                drafted: draftTokens.count, accepted: decision.acceptedDraftCount,
-                retainAnchor: retainHeadAnchor
-                    && mtpCache.count == 1 && mtpCache[0] is Qwen4ExpAttentionCache
-                    && speculativeRows == draftTokens.count)
-            let trimRows = speculativeRows - repair.retainedRows
-            if trimRows > 0 { _ = mtpCache[0].trim(trimRows) }
-            totalRetainedAnchors += repair.retainedRows
-            let committedTokens = [primary]
-                + Array(decision.draftTokens.prefix(decision.acceptedDraftCount))
-            let committedTokenArray = Self.tokens(committedTokens)
-            if !repair.replayRows.isEmpty {
-                let repairStreams: MLXArray
-                if repair.retainedRows == 1 {
-                    repairStreams = verifiedStream[
-                        0..., 0 ..< decision.acceptedDraftCount, 0...]
-                } else if decision.acceptedDraftCount == 0 {
-                    repairStreams = primaryStream
-                } else {
-                    repairStreams = concatenated([
-                        primaryStream,
-                        verifiedStream[0..., 0 ..< decision.acceptedDraftCount, 0...],
-                    ], axis: 1)
-                }
-                let repairTokens = repair.retainedRows == 0 ? committedTokenArray
-                    : Self.tokens(Array(committedTokens.dropFirst(repair.retainedRows)))
-                _ = head(
-                    hiddenStream: repairStreams,
-                    tokenEmbeddings: model.embedTokens(repairTokens),
-                    tokenIDs: repairTokens,
-                    positionIDs: Self.positions(
-                        (primaryPosition + repair.retainedRows)
-                            ..< (primaryPosition + committedTokens.count)),
-                    cache: mtpCache
-                )
-            }
-            endPhase(4)
-
-            if decision.acceptedDraftCount != decision.draftTokens.count {
-                totalReplays += 1
-            }
-            if !targetCacheCommitted {
-                totalBackboneReplayFallbacks += 1
-                Qwen3MTPCacheSnapshot.restore(targetSnapshot, into: targetCache)
-                _ = model.forwardStreamState(
-                    inputIDs: committedTokenArray, cache: targetCache,
-                    verificationPolicy: verificationPolicy)
-                _ = model.finishMTPVerification(
-                    cache: targetCache,
-                    acceptedDrafts: max(0, committedTokens.count - 1),
-                    draftedTokens: max(0, committedTokens.count - 1))
-            }
-
-            primary = decision.nextPrimary
-            primaryStream = verifiedStream[
-                0..., decision.acceptedDraftCount ..< (decision.acceptedDraftCount + 1),
-                0...]
-            primaryPosition += decision.acceptedDraftCount + 1
-        }
-        return output
+        self.model = model
+        self.head = head
+        self.depth = depth
+        self.verificationPolicy = verificationPolicy
+        self.draftDispatchStride = draftDispatchStride
+        self.retainHeadAnchor = retainHeadAnchor
+        self.targetCache = targetCache
+        self.mtpCache = mtpCache
+        self.sampler = sampler
+        self.maxTokens = maxTokens
+        self.eosIds = eosIds
+        self.promptTokenCount = promptIds.count
+        self.primary = primary
+        self.primaryStream = primaryStream
+        self.primaryPosition = primaryPosition
+        self.acceptedByDepth = [Int](repeating: 0, count: depth)
     }
 
+    private static func tokens(_ ids: [Int]) -> MLXArray {
+        MLXArray(ids.map(Int32.init)).reshaped([1, ids.count])
+    }
+
+    private static func positions(_ range: Range<Int>) -> MLXArray {
+        MLXArray(range.map(Int32.init)).reshaped([1, range.count])
+    }
+
+    private func targetTokens(
+        _ hidden: MLXArray, policy: MTPVerificationPolicy? = nil
+    ) -> MLXArray {
+        guard let sampler else {
+            return model.projectLMHeadArgmax(hidden, verificationPolicy: policy)
+        }
+        return sampler.sample(logits: model.projectLMHead(hidden, verificationPolicy: policy))
+    }
+
+    /// Stop future work. The owner should then release this session. No global
+    /// stream synchronization or cache snapshot publication is performed here.
+    public func cancel() {
+        finished = true
+        pendingVerification = nil
+    }
+
+    public func nextToken() -> Int? {
+        guard !finished else { return nil }
+        if firstPrimaryPending {
+            firstPrimaryPending = false
+            return emit(primary)
+        }
+        if pendingVerification == nil {
+            pendingVerification = verifyCycle()
+            acceptedCursor = 0
+        }
+        let verification = pendingVerification!
+        if acceptedCursor < verification.decision.acceptedDraftCount {
+            let token = verification.decision.draftTokens[acceptedCursor]
+            acceptedCursor += 1
+            return emit(token)
+        }
+        repairAndAdvance(verification)
+        pendingVerification = nil
+        return emit(primary)
+    }
+
+    private func emit(_ token: Int) -> Int {
+        tokenCount += 1
+        if tokenCount >= maxTokens || eosIds.contains(token) { finished = true }
+        return token
+    }
+
+    private func startPhase() {
+        if measurePhases { phaseStart = DispatchTime.now().uptimeNanoseconds }
+    }
+
+    private func endPhase(_ index: Int) {
+        if measurePhases {
+            phaseNanoseconds[index] += DispatchTime.now().uptimeNanoseconds - phaseStart
+        }
+    }
+
+    private func verifyCycle() -> Verification {
+        totalCycles += 1
+
+        startPhase()
+        let roundHeadOffset = mtpCache[0].offset
+        var draftTokens: [MLXArray] = []
+        draftTokens.reserveCapacity(depth)
+        var chainStream = primaryStream
+        var chainToken = Self.tokens([primary])
+        for index in 0 ..< depth {
+            let draftOutput = head(
+                hiddenStream: chainStream,
+                tokenEmbeddings: model.embedTokens(chainToken),
+                tokenIDs: chainToken,
+                positionIDs: Self.positions(
+                    (primaryPosition + index) ..< (primaryPosition + index + 1)),
+                cache: mtpCache
+            )
+            let draft = model.projectLMHeadArgmax(draftOutput.hidden)
+                .asType(.int32)
+                .reshaped([1, 1])
+            draftTokens.append(draft)
+            chainStream = draftOutput.stream
+            chainToken = draft
+            // Scheduling-only experiment: overlap early head execution
+            // with construction of later draft graphs. The head disables
+            // PLE, so it has no deferred host-filled leaves to flush.
+            // Unlike mlx-serve's chunk-boundary dispatch (David Dalcu,
+            // MIT, src/generate.zig mtpChainDispatch), this optionally
+            // submits within a fixed chain to measure Swift host overlap.
+            // No host read, extra draft, or cache-history update is added.
+            if draftDispatchStride > 0, index + 1 < depth,
+               (index + 1).isMultiple(of: draftDispatchStride)
+            {
+                asyncEval(draft)
+            }
+        }
+        totalDrafted += draftTokens.count
+
+        let draftTokenIDs = concatenated(draftTokens, axis: 1)
+        // Dispatch the complete lazy draft chain without crossing the
+        // host boundary. The verifier consumes the same array and the
+        // cycle decision performs the only GPU-to-CPU materialization.
+        asyncEval(draftTokenIDs)
+        endPhase(0)
+        startPhase()
+        let verifyTokenIDs = concatenated(
+            [Self.tokens([primary]), draftTokenIDs], axis: 1)
+        let targetSnapshot = Qwen3MTPCacheSnapshot.capture(targetCache)
+        let verifiedStream: MLXArray
+        let targetTokenIDs: MLXArray
+        let usedSequentialVerifier = ProcessInfo.processInfo.environment[
+            "AFM_QWEN_VERIFY_SEQUENTIAL"
+        ] == "1"
+        if usedSequentialVerifier {
+            var streams: [MLXArray] = []
+            var sampledRows: [MLXArray] = []
+            let verifyInputs = [Self.tokens([primary])] + draftTokens
+            for token in verifyInputs {
+                let state = model.forwardStreamState(
+                    inputIDs: token, cache: targetCache)
+                streams.append(state.stream)
+                sampledRows.append(targetTokens(state.hidden))
+            }
+            verifiedStream = concatenated(streams, axis: 1)
+            targetTokenIDs = concatenated(sampledRows, axis: 1)
+        } else {
+            let verified = model.forwardStreamState(
+                inputIDs: verifyTokenIDs, cache: targetCache,
+                verificationPolicy: verificationPolicy)
+            verifiedStream = verified.stream
+            targetTokenIDs = targetTokens(
+                verified.hidden,
+                policy: verificationPolicy)[0, 0...]
+        }
+        endPhase(1)
+        startPhase()
+        let decision = Qwen4ExpMTPCycleDecision.resolve(
+            targetTokenIDs: targetTokenIDs,
+            draftTokenIDs: draftTokenIDs)
+        endPhase(2)
+        startPhase()
+        for index in 0 ..< decision.acceptedDraftCount {
+            acceptedByDepth[index] += 1
+        }
+        totalAccepted += decision.acceptedDraftCount
+        let targetCacheCommitted = !usedSequentialVerifier
+            && model.finishMTPVerification(
+                cache: targetCache,
+                acceptedDrafts: decision.acceptedDraftCount,
+                draftedTokens: decision.draftTokens.count)
+        endPhase(3)
+        return Verification(
+            headOffset: roundHeadOffset, decision: decision, verifiedStream: verifiedStream,
+            snapshot: targetSnapshot, targetCommitted: targetCacheCommitted)
+    }
+
+    private func repairAndAdvance(_ verification: Verification) {
+        let decision = verification.decision
+        let roundHeadOffset = verification.headOffset
+        let verifiedStream = verification.verifiedStream
+        let targetCacheCommitted = verification.targetCommitted
+        let targetSnapshot = verification.snapshot
+        // The first row was built from primaryStream, not a predicted
+        // stream. The experimental path keeps it and repairs only the
+        // suffix. Never retain subsequent rows based on token equality:
+        // their predicted hidden streams can still be wrong.
+        startPhase()
+        let speculativeRows = mtpCache[0].offset - roundHeadOffset
+        let repair = Qwen4ExpMTPHeadRepairPlan(
+            drafted: decision.draftTokens.count, accepted: decision.acceptedDraftCount,
+            retainAnchor: retainHeadAnchor
+                && mtpCache.count == 1 && mtpCache[0] is Qwen4ExpAttentionCache
+                && speculativeRows == decision.draftTokens.count)
+        let trimRows = speculativeRows - repair.retainedRows
+        if trimRows > 0 { _ = mtpCache[0].trim(trimRows) }
+        totalRetainedAnchors += repair.retainedRows
+        let committedTokens = [primary]
+            + Array(decision.draftTokens.prefix(decision.acceptedDraftCount))
+        let committedTokenArray = Self.tokens(committedTokens)
+        if !repair.replayRows.isEmpty {
+            let repairStreams: MLXArray
+            if repair.retainedRows == 1 {
+                repairStreams = verifiedStream[
+                    0..., 0 ..< decision.acceptedDraftCount, 0...]
+            } else if decision.acceptedDraftCount == 0 {
+                repairStreams = primaryStream
+            } else {
+                repairStreams = concatenated([
+                    primaryStream,
+                    verifiedStream[0..., 0 ..< decision.acceptedDraftCount, 0...],
+                ], axis: 1)
+            }
+            let repairTokens = repair.retainedRows == 0 ? committedTokenArray
+                : Self.tokens(Array(committedTokens.dropFirst(repair.retainedRows)))
+            _ = head(
+                hiddenStream: repairStreams,
+                tokenEmbeddings: model.embedTokens(repairTokens),
+                tokenIDs: repairTokens,
+                positionIDs: Self.positions(
+                    (primaryPosition + repair.retainedRows)
+                        ..< (primaryPosition + committedTokens.count)),
+                cache: mtpCache
+            )
+        }
+        endPhase(4)
+
+        if decision.acceptedDraftCount != decision.draftTokens.count {
+            totalReplays += 1
+        }
+        if !targetCacheCommitted {
+            totalBackboneReplayFallbacks += 1
+            Qwen3MTPCacheSnapshot.restore(targetSnapshot, into: targetCache)
+            _ = model.forwardStreamState(
+                inputIDs: committedTokenArray, cache: targetCache,
+                verificationPolicy: verificationPolicy)
+            _ = model.finishMTPVerification(
+                cache: targetCache,
+                acceptedDrafts: max(0, committedTokens.count - 1),
+                draftedTokens: max(0, committedTokens.count - 1))
+        }
+
+        primary = decision.nextPrimary
+        primaryStream = verifiedStream[
+            0..., decision.acceptedDraftCount ..< (decision.acceptedDraftCount + 1),
+            0...]
+        primaryPosition += decision.acceptedDraftCount + 1
+    }
+
+    fileprivate func reportDiagnostics() {
+        guard !reportedDiagnostics else { return }
+        reportedDiagnostics = true
+        if measurePhases, totalCycles > 0 {
+            let labels = ["draft-build", "verify-build", "decision-wait", "commit-build", "history-build"]
+            let laps = zip(labels, phaseNanoseconds).map { label, nanos in
+                String(format: "%@=%.3fms/cycle", label,
+                       Double(nanos) / 1_000_000 / Double(totalCycles))
+            }.joined(separator: " ")
+            FileHandle.standardError.write(Data("[MTP][QwenNext][host-phases] \(laps)\n".utf8))
+        }
+        if ProcessInfo.processInfo.environment["AFM_DEBUG"] == "1" {
+            let acceptance = totalDrafted > 0
+                ? Double(totalAccepted) / Double(totalDrafted)
+                : 0
+            let tokensPerCycle = totalCycles > 0
+                ? Double(tokenCount) / Double(totalCycles)
+                : 0
+            let depthCounts = acceptedByDepth.enumerated()
+                .map { "d\($0.offset + 1)=\($0.element)" }
+                .joined(separator: ",")
+            let message = String(
+                format:
+                    "[MTP][QwenNext] %d tok in %d cycles — %.2f tok/cycle, accept %.1f%% (%d/%d), replays %d, backbone fallbacks %d, retained anchors %d, %@\n",
+                tokenCount,
+                totalCycles,
+                tokensPerCycle,
+                acceptance * 100,
+                totalAccepted,
+                totalDrafted,
+                totalReplays,
+                totalBackboneReplayFallbacks,
+                totalRetainedAnchors,
+                depthCounts
+            )
+            FileHandle.standardError.write(Data(message.utf8))
+        }
+    }
+
+    deinit { reportDiagnostics() }
 }
 
 extension Qwen4ExpModel: LoRAModel {
