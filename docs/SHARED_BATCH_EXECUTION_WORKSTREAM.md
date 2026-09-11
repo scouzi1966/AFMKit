@@ -18,6 +18,26 @@ tradeoffs before promoting new defaults.
 6. Tune speculation and CPU/GPU overlap using measured useful work per round.
 7. Qualify adapters for other architectures while retaining existing fast paths.
 
+## Delivery status
+
+These are branch experiments, not production-default or release qualifications.
+
+| Plan item | Implemented / measured | Still required |
+|---|---|---|
+| Same-checkpoint baseline matrix | Six AFM/reference configurations and saved raw responses | Repeat after integration; wider concurrency curve |
+| Shared exact-prefix replay | Serial AR and scheduler boundary helpers; opt-in API checks | Broader quality, long-context and model-switch qualification |
+| Qwen MTP replay | Existing AR replay does not cover the speculative head | Complete target/head/history prompt-state contract |
+| Scheduler-owned Qwen MTP sessions | Not implemented in this increment | Bounded draft/verify/commit, request-owned RNG and cancellation |
+| Genuine GPU batches | Persistent equal-offset subgroups with row-removal tests | Arbitrary-position batches and multi-request verification |
+| Continuous admission | Opt-in independent/group ownership; burst and staggered measurements | Avoid fragmentation across arbitrary arrival/position patterns |
+| Prefill/decode interleaving | Soft uncached-token admission budget across whole prompts | Suspend/resume individual prefills at token-chunk boundaries |
+| Adaptive speculation | Existing fixed-depth Qwen path retained | Workload-aware depth and useful-token cost policy |
+| CPU/GPU overlap | Existing single-request overlap retained | Cross-slot scheduling after bounded sessions exist |
+| Optional immutable PLE row cache | Bounded cache, exact-bit tests, limited measured benefit | Repeats before any default proposal; not the main throughput lever |
+| Batch kernels and graph overhead | Existing fused kernels retained; independent-row QMM screened and rejected | Profile remaining batch hot paths |
+| Memory budgets and reclamation | Group ownership/filtering and row-cache budget tested; RSS recorded | Long-context concurrency soak and request-memory admission budgets |
+| Qualification and cross-model reuse | Qwen-only guards and focused tests; lifecycle API smoke | Semantic qualification, full matrix, then model-specific adapters |
+
 ## First implementation: serial replay boundaries
 
 `MLXReplayPrefill` provides bounded checkpoint planning and independent snapshot
@@ -339,6 +359,46 @@ initial work in both arms. The new lifecycle smoke passes 255/255 checks and
 57 focused Release tests pass. Records: `budgeted-group-staggered-*` and
 `budgeted-group-safety-*`. Default production behavior is unchanged.
 
+Reverse-order repeat after removing the projection experiment below, final
+artifact `fce3015516659fcafe0d9086e69df8c0517a21687ca11f4c4e18c49430973cb1`:
+
+| Token budget | First / repeat aggregate tok/s | Late median TTFT, seconds | Peak RSS GiB |
+|---|---:|---:|---:|
+| 1 | 72.95 / 77.90 | 6.42 / 5.64 | 67.60 |
+| 1024 | 77.36 / 86.94 | 6.23 / 5.30 | 67.57 |
+
+All eight initial requests were already streaming at late submission in each
+round this time. All seven late requests overlap that initial work. Completion,
+structural and cached-token totals remain unchanged. This repeat supports a
+roughly 12% repeat-throughput gain from budgeted admission; the much larger
+initial TTFT improvement does not reproduce. It does not establish arbitrary
+arrival-pattern or long-context performance. Records: `budgeted-group-repeat-*`.
+
+## Rejected independent-row QMM screen
+
+A bounded adapter reused the existing MTP q4 projection shader for 2–7
+independent one-token batch rows. This changed linear row layout only, not
+attention positions or cache representation. Numerical/row-isolation tests
+passed (62 tests passed, one optional probe skipped across the focused suite),
+as did 255/255 API lifecycle checks.
+
+Same binary `fb8d3d5ba4595ab537df6341835d40fc12f34bf2798ce71959109698092f9a61`,
+continuous groups and budget 1024 in both arms, same prefix/C15 workload:
+
+| Projection | First / repeat aggregate tok/s | Peak RSS GiB |
+|---|---:|---:|
+| Ordinary | 112.06 / 128.66 | 67.57 |
+| Adapted small-row QMM | 109.70 / 128.74 | 67.68 |
+
+Both arms completed 30 requests with 24 structural passes and identical cached
+token totals. Only 2/30 paired responses retained identical text. A 0.06%
+repeat difference, slower first round and changed wording do not justify an
+extra runtime switch. The adapter and its flag were removed; the existing MTP
+kernel is unchanged. The rejected patch and raw evidence remain untracked as
+`rejected-independent-qmm.patch`, `independent-qmm-screen-*`, and
+`independent-qmm-safety-*` in the artifact root. This negative result does not
+rule out other batch kernels or broader graph/scheduling improvements.
+
 ## Appendix: text-derived PLE reuse estimate
 
 An offline CPU-only study retokenized the 15 saved replay-enabled outputs
@@ -394,9 +454,9 @@ overlapped compilation and are exploratory only. All 180 responses completed;
 JSON structure checks were not universally successful and are not a semantic
 quality certification. Throughput counts actual emitted tokens, includes
 queue/prefill time and is not normalized for different response lengths.
-These results do not establish AFM concurrent parity: shared replay above
-qualifies only the one-client AR experiment. True batch execution and bounded
-speculative sessions remain the main implementation work.
+These results do not establish AFM concurrent parity. The subgroup and admission
+screens above improve AR throughput, but arbitrary-position batch execution and
+bounded speculative sessions remain major implementation work.
 
 ## Evidence policy
 
