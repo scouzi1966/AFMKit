@@ -715,8 +715,53 @@ different positions, cancellation and strict-policy fallback.
 
 Revision binary
 `86422ec3655d04b02aeb95c4eeee0d9055dd5e8b1887b38d724b2c83f14a19c0`;
-records `qwen-shared-grouping-safety-*`. The same-binary C15 A/B is next;
-no throughput gain is claimed yet.
+records `qwen-shared-grouping-safety-*`. The same-binary C15 A/B measured:
+
+| Shared verification | First / repeat aggregate tok/s | Peak process RSS GiB |
+|---|---:|---:|
+| Off | 60.08 / 88.26 | 69.58 |
+| On, queue-wide grouping | 58.69 / 87.11 | 69.69 |
+
+Coverage rose to 530 shared forwards / 1,377 request verification rows, with
+559 independently prepared cycles (about 71% of rows shared), but repeats
+were still **1.3% slower**. All 30 requests completed in each arm. Structural
+checks total 24/30 in each arm, but split 12/12 without sharing and 13/11 with
+sharing across first/repeat phases. Only 3/30 paired texts/token counts match.
+This is not a quality-equivalence claim and does not justify promotion.
+Records: `qwen-shared-grouping-{off,on}-*`; source checkpoint `dec387b1`.
+
+Source inspection identifies follow-up work, not a measured attribution:
+the small-row q4 projection, fused verification HC predicate and compiled
+verification tail currently require `B=1`. A multi-request forward therefore
+does not automatically retain the optimized single-request verifier graph.
+Wider row-safe kernels/graphs must be measured separately; removing cache
+position guards is not an acceptable shortcut.
+
+## Complete-boundary MTP prompt extension
+
+The model adapter can now opt into continuing a longer prompt from a complete
+saved prompt boundary. Exact replay remains the public API default. The
+scheduler's already opt-in Qwen replay cache requests the longest fully
+matching prefix; it never trims recurrent state or accepts an AR-only entry.
+All target/head caches, sparse fields, CPU n-gram history and the last target
+HC stream belong to the saved boundary.
+
+The target processes only new suffix tokens. The head resumes one token behind
+the target: its first new pair is the saved final target stream plus the first
+suffix token, followed by the verified suffix streams and succeeding tokens.
+There is exactly one request-local initial sample, after completing the suffix.
+An extended complete snapshot can be stored for a later turn. Byte/entry/token
+budgets and model-generator identity checks are unchanged.
+
+All 138 focused tests pass, including one-token/multi-token suffixes, sparse
+QSA, mapped PLE, sampled/greedy generation, interleaved independent restores,
+wrong prefixes, longest-boundary LRU behavior and exact replay after extension.
+The consumer Release build passes (119.87 seconds), and the live mixed API
+lifecycle checks pass 120/120. Binary
+`c59c112dd9c05815e9c81d5673435a518cc73014a5f5aa08e16899fdc1f17add`;
+records `qwen-prompt-prefix-safety-*`. A same-binary agentic chat-extension
+A/B is pending. No default change or
+throughput improvement is claimed for this new continuation path yet.
 
 ## Rejected independent-row QMM screen
 

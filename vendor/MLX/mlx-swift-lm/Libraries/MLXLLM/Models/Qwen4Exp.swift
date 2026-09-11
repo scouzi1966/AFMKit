@@ -5343,7 +5343,7 @@ struct Qwen4ExpMTPHeadRepairPlan: Equatable {
     }
 }
 
-/// Immutable, generator-scoped exact-prompt state. Not Sendable: capture and
+/// Immutable, generator-scoped complete-prompt state. Not Sendable: capture and
 /// restore on the serialized model executor. No sampled token or RNG is shared.
 public final class Qwen4ExpMTPPromptState {
     fileprivate enum Layer {
@@ -5464,13 +5464,16 @@ public final class Qwen4ExpMTPGenerator {
     public func makeSession(
         promptIds: [Int], maxTokens: Int, eosIds: Set<Int> = [],
         temperature: Float = 0, topP: Float = 1, seed: UInt64? = nil,
-        promptState: Qwen4ExpMTPPromptState? = nil, retainPromptState: Bool = false
+        promptState: Qwen4ExpMTPPromptState? = nil, retainPromptState: Bool = false,
+        allowPromptPrefixReplay: Bool = false
     ) -> Qwen4ExpMTPSession? {
         precondition(temperature.isFinite && temperature >= 0)
         precondition(topP.isFinite && (0...1).contains(topP))
         guard !promptIds.isEmpty, maxTokens > 0 else { return nil }
         if let promptState {
-            guard promptState.identity == replayIdentity, promptState.promptIds == promptIds
+            guard promptState.identity == replayIdentity,
+                  (promptState.promptIds == promptIds
+                    || (allowPromptPrefixReplay && promptIds.starts(with: promptState.promptIds)))
             else { return nil }
         }
         return Qwen4ExpMTPSession(
@@ -5615,8 +5618,28 @@ public final class Qwen4ExpMTPSession {
             precondition(promptState.target.count == targetCache.count && promptState.head.count == mtpCache.count)
             for (layer, cache) in zip(promptState.target, targetCache) { layer.restore(into: cache) }
             for (layer, cache) in zip(promptState.head, mtpCache) { layer.restore(into: cache) }
-            primaryHidden = promptState.hidden
-            primaryStream = promptState.stream
+            let prefixCount = promptState.promptIds.count
+            if prefixCount == promptIds.count {
+                primaryHidden = promptState.hidden
+                primaryStream = promptState.stream
+            } else {
+                let suffix = Self.tokens(Array(promptIds.dropFirst(prefixCount)))
+                let initial = model.forwardStreamState(inputIDs: suffix, cache: targetCache)
+                primaryHidden = initial.hidden[0..., (initial.hidden.dim(1) - 1)..., 0...]
+                primaryStream = initial.stream[0..., (initial.stream.dim(1) - 1)..., 0...]
+                // The saved head ends one prompt token behind the target.
+                // Its next input pairs the saved final target stream with the
+                // first suffix token. Subsequent pairs use verified suffix
+                // streams, never a sampled token or a predicted draft stream.
+                let headStreams = suffix.dim(1) == 1 ? promptState.stream : concatenated([
+                    promptState.stream,
+                    initial.stream[0..., ..<(initial.stream.dim(1) - 1), 0...],
+                ], axis: 1)
+                _ = head(hiddenStream: headStreams,
+                    tokenEmbeddings: model.embedTokens(suffix), tokenIDs: suffix,
+                    positionIDs: Self.positions(prefixCount ..< promptIds.count), cache: mtpCache)
+            }
+            // Exactly one request-local sample, even when a prefix was reused.
             primary = targetTokens(primaryHidden).item(Int.self)
         } else {
             let initial = model.forwardStreamState(inputIDs: Self.tokens(promptIds), cache: targetCache)
@@ -5635,7 +5658,7 @@ public final class Qwen4ExpMTPSession {
                     cache: mtpCache)
             }
         }
-        if retainPromptState && promptState == nil {
+        if retainPromptState && promptState?.promptIds.count != promptIds.count {
             capturedPromptState = Qwen4ExpMTPPromptState(
                 identity: replayIdentity, promptIds: promptIds, target: targetCache,
                 head: mtpCache, hidden: primaryHidden, stream: primaryStream)

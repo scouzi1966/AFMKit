@@ -26,8 +26,19 @@ final class ExactPromptReplayCache<Value> {
             && !prompt.isEmpty && prompt.count <= maximumPromptTokens
     }
 
-    func find(prompt: [Int]) -> Value? {
-        guard let index = entries.firstIndex(where: { $0.prompt == prompt }) else { return nil }
+    /// Prefix matching is opt-in: only an adapter that can continue its complete
+    /// saved state may request it. Pick the longest saved boundary, never trim
+    /// recurrence back from a longer or merely overlapping prompt.
+    func find(prompt: [Int], allowPrefix: Bool = false) -> Value? {
+        var match: Int?
+        for index in entries.indices {
+            let key = entries[index].prompt
+            let matches = allowPrefix ? prompt.starts(with: key) : prompt == key
+            if matches, match == nil || key.count > entries[match!].prompt.count {
+                match = index
+            }
+        }
+        guard let index = match else { return nil }
         let hit = entries.remove(at: index)
         entries.append(hit)
         return hit.value

@@ -1624,14 +1624,17 @@ actor BatchScheduler {
         let prefillStart = Date()
         let inputTokens = req.input.text.tokens.reshaped(-1).asArray(Int.self)
         // The common dispatcher owns caps, EOS suppression and cancellation.
-        // Exact speculative replay includes both target and head/history.
-        // It never accepts a target-only AR radix entry or partial prompt hit.
-        let replayState = qwenMTPReplayCache?.find(prompt: inputTokens)
+        // Speculative replay includes both target and head/history at the exact
+        // saved boundary. The model may continue a longer prompt from there;
+        // never substitute a target-only AR radix entry or trim recurrent state.
+        let replayState = qwenMTPReplayCache?.find(prompt: inputTokens, allowPrefix: true)
         guard let session = generator.makeSession(
             promptIds: inputTokens, maxTokens: Int.max, eosIds: [],
             temperature: req.parameters.temperature, topP: req.parameters.topP,
             seed: req.parameters.seed, promptState: replayState,
-            retainPromptState: replayState == nil && qwenMTPReplayCache?.canStore(prompt: inputTokens) == true)
+            retainPromptState: replayState?.promptIds.count != inputTokens.count
+                && qwenMTPReplayCache?.canStore(prompt: inputTokens) == true,
+            allowPromptPrefixReplay: true)
         else {
             failPendingRequest(req,
                 error: MLXServiceError.loadFailed("Unable to create Qwen MTP session"))

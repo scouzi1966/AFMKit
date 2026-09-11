@@ -184,6 +184,57 @@ final class QwenNextMTPPipelineTests: XCTestCase {
         try assertPromptReplay(model)
     }
 
+    private func assertPromptPrefixReplay(_ model: Qwen4ExpModel) throws {
+        let head = Qwen4ExpMTPHead(model.configuration)
+        eval(model, head)
+        for policy: MTPVerificationPolicy in [.strictSingletonEquivalent, .batched] {
+            let generator = Qwen4ExpMTPGenerator(model: model, head: head, depth: 3,
+                verificationPolicy: policy, draftDispatchStride: 1)
+            for prefix in [[1], [1, 2, 3, 4, 5, 6, 7, 8]] {
+                let origin = try XCTUnwrap(generator.makeSession(promptIds: prefix,
+                    maxTokens: 8, retainPromptState: true))
+                let state = try XCTUnwrap(origin.takePromptState())
+                // Mutating a live source after capture must not mutate replay.
+                while origin.nextToken() != nil {}
+                XCTAssertNil(generator.makeSession(promptIds: [9] + prefix, maxTokens: 8,
+                    promptState: state, allowPromptPrefixReplay: true))
+                XCTAssertNil(generator.makeSession(promptIds: Array(prefix.dropLast()), maxTokens: 8,
+                    promptState: state, allowPromptPrefixReplay: true))
+                for suffix in [[9], [9, 10, 11, 12, 13, 14, 15, 16, 17]] {
+                    let prompt = prefix + suffix
+                    for temperature: Float in [0, 0.6] {
+                        let expected = generator.generate(promptIds: prompt, maxTokens: 8,
+                            temperature: temperature, topP: 0.95, seed: 73)
+                        let replay = try XCTUnwrap(generator.makeSession(promptIds: prompt, maxTokens: 8,
+                            temperature: temperature, topP: 0.95, seed: 73,
+                            promptState: state, retainPromptState: true, allowPromptPrefixReplay: true))
+                        let extendedState = try XCTUnwrap(replay.takePromptState())
+                        XCTAssertEqual(extendedState.promptIds, prompt)
+                        let second = try XCTUnwrap(generator.makeSession(promptIds: prompt, maxTokens: 8,
+                            temperature: temperature, topP: 0.95, seed: 73,
+                            promptState: extendedState))
+                        var output: [Int] = []
+                        var exact: [Int] = []
+                        // Two independent request copies, at different rates.
+                        while let token = replay.nextToken() {
+                            output.append(token)
+                            if let token = second.nextToken() { exact.append(token) }
+                            if let token = second.nextToken() { exact.append(token) }
+                        }
+                        while let token = second.nextToken() { exact.append(token) }
+                        XCTAssertEqual(output, expected, "prefix=\(prefix.count) suffix=\(suffix.count)")
+                        XCTAssertEqual(exact, output)
+                    }
+                }
+            }
+        }
+    }
+
+    func testPromptPrefixReplayContinuesBothTargetAndHeadWithoutResampling() async throws {
+        let model = try await makeModel(indexerBudget: 4)
+        try assertPromptPrefixReplay(model)
+    }
+
     private func assertSessionInterleaving(
         _ model: Qwen4ExpModel, policy: MTPVerificationPolicy, temperature: Float,
         staged: Bool = false
@@ -1459,6 +1510,7 @@ final class QwenNextMTPPipelineTests: XCTestCase {
         try assertSessionInterleaving(model, policy: .batched, temperature: 0.6)
         try assertSessionInterleaving(model, policy: .batched, temperature: 0.6, staged: true)
         try assertPromptReplay(model)
+        try assertPromptPrefixReplay(model)
         try assertSharedVerificationRows(model)
         try assertSharedSessionVerification(model, temperature: 0.6)
         // Verify an early dispatch cannot observe an unfilled mapped PLE
