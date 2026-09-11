@@ -26,7 +26,7 @@ These are branch experiments, not production-default or release qualifications.
 |---|---|---|
 | Same-checkpoint baseline matrix | Six AFM/reference configurations and saved raw responses | Repeat after integration; wider concurrency curve |
 | Shared exact-prefix replay | Serial AR and scheduler boundary helpers; opt-in API checks | Broader quality, long-context and model-switch qualification |
-| Qwen MTP replay | Existing AR replay does not cover the speculative head | Complete target/head/history prompt-state contract |
+| Qwen MTP replay | Opt-in complete exact-prompt target/head/history snapshots; focused and lifecycle tests pass | Working-set/memory qualification, partial-prefix continuation and serial-lane reuse |
 | Scheduler-owned Qwen MTP sessions | Opt-in streaming scheduler integration; mixed MTP/AR lifecycle passes | Aggregate qualification and staged multi-request verification |
 | Genuine GPU batches | Persistent equal-offset subgroups with row-removal tests | Arbitrary-position batches and multi-request verification |
 | Continuous admission | Opt-in independent/group ownership; burst and staggered measurements | Avoid fragmentation across arbitrary arrival/position patterns |
@@ -444,8 +444,69 @@ prewarm is excluded. The first harness counted that prewarm and incorrectly
 flagged coverage after all assertions passed; the corrected rerun also passes.
 Artifacts: `qwen-scheduler-lifecycle-v{1,2}-*`.
 
-Same-binary C15 aggregate/memory comparison is running. This is a state-ownership
-and scheduling implementation, not yet a claim of higher speculative throughput.
+Same-binary C15 comparison completed (prefix enabled but no MTP replay):
+
+| Ownership | First / repeat aggregate tok/s | Peak RSS GiB |
+|---|---:|---:|
+| Prior serial MTP lane | 57.65 / 57.70 | 69.44 |
+| Scheduler-owned MTP sessions | 57.89 / 58.35 | 69.75 |
+
+All 30 response texts and output-token counts match exactly. Both complete all
+requests with 24 structural passes; cached tokens remain zero. Telemetry shows
+14 sessions admitted initially and the last joining before the cohort drains.
+The roughly 1% change does not establish a throughput improvement. This is a
+state-ownership prerequisite, not simultaneous multi-request verification.
+Records: `qwen-scheduler-{control,owned}-v1-*`.
+
+### Complete exact-prompt MTP replay (opt-in)
+
+The snapshot is defined inside the self-contained model layer. It contains
+target and MTP-head caches, last target hidden/HC stream, sparse-attention
+index/position/pooled banks, recurrent/PLE array slots and CPU n-gram history.
+Optional array positions are preserved explicitly; compacting absent slots
+would corrupt their meaning on restoration. Buffers are materialized into
+independent snapshot storage and copied back into fresh request-owned caches.
+Rollback/verification-window metadata is cleared at this pre-generation boundary.
+
+A generator-scoped UUID rejects another generator or model instance even if
+prompt IDs match. Exact token identity is required. Samplers, sampled primary
+tokens and RNG state are never cached: each request resamples its first token
+from the retained hidden state with its own settings. Capturing/taking a prompt
+snapshot does not create a second generation algorithm.
+
+`ExactPromptReplayCache<Value>` supplies model-agnostic bounded exact-key LRU
+storage. Access remains on the owning executor, without a new shared lock.
+Its budget covers estimated retained value bytes plus key storage, not allocator
+headers, transient copy buffers or active requests' private states. Oversized
+entries are rejected without evicting existing valid entries. Shutdown clears
+the cache; generator identity prevents stale cross-model reuse.
+
+`AFM_QWEN_MTP_REPLAY_MIB` is **0/unset by default**, capped at 4096 MiB. The
+prototype additionally limits storage to 16 entries and 4096 prompt tokens.
+It only activates with prefix caching and the opt-in Qwen streaming MTP
+scheduler. This does not accelerate the serial MTP lane, share incomplete
+radix prefixes, or qualify replay beyond 4K. Other model families are unchanged.
+
+131 focused Release tests pass, including mapped PLE and sparse-boundary
+replay, greedy/sampled policies, independent interleaved copies, one-token
+prompts, changed seeds, post-decode immutability, scope rejection and eviction.
+The 512 MiB live mixed MTP/AR test passes 120/120 checks, including exact full
+prompt cache-hit accounting after cancellation and on repeats.
+
+Initial 512 MiB C15 screen: repeat throughput **58.41 versus 58.71 tok/s** with
+replay disabled; all 30 texts/token counts match, and both retain 24 structural
+passes. The small budget gets one initial warmup reuse but zero repeat-phase
+hits as the working set cycles. This is not a replay speedup. Records:
+`qwen-replay-{on,off}-v1-*`, binary
+`1b04b0065a8fd3bb89ab62f8c68f72051035e81064d4ae4532e78bd3c478d98e`.
+An explicit larger-budget screen will quantify actual retained bytes and
+throughput before any default proposal.
+
+Build note: adding a provider source file exposed a stale consumer native build
+manifest. `Scripts/swiftpm-reliable.sh build -c release --product afm
+--disable-build-manifest-caching` replanned the source inventory while retaining
+compiled objects; the successful build took 70.61 seconds. Its source list was
+checked for the new cache file. No source checkout or compiled tree was deleted.
 
 ## Rejected independent-row QMM screen
 

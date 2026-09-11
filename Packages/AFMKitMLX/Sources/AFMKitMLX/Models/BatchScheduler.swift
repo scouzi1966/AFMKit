@@ -133,6 +133,7 @@ actor BatchScheduler {
     private let admissionWindowNanoseconds: UInt64
     private let glmMTPGenerator: GLM5NextMTPGenerator?
     private let qwenMTPGenerator: Qwen4ExpMTPGenerator?
+    private let qwenMTPReplayCache: ExactPromptReplayCache<Qwen4ExpMTPPromptState>?
     nonisolated let ownsQwenMTPSessions: Bool
     private let glmMTPPromptReplayCache: GLM5NextMTPPromptReplayCache?
     private let glmMTPReplayModelID: String
@@ -752,6 +753,10 @@ actor BatchScheduler {
             enabled: ProcessInfo.processInfo.environment["AFM_QWEN_MTP_SCHEDULER"] == "1")
         self.ownsQwenMTPSessions = ownsQwenMTP
         self.qwenMTPGenerator = ownsQwenMTP ? qwenMTPGenerator : nil
+        let replayMiB = min(4096, max(0,
+            Int(ProcessInfo.processInfo.environment["AFM_QWEN_MTP_REPLAY_MIB"] ?? "0") ?? 0))
+        self.qwenMTPReplayCache = ownsQwenMTP && enablePrefixCaching && replayMiB > 0
+            ? ExactPromptReplayCache(maximumBytes: replayMiB * 1024 * 1024) : nil
         self.glmMTPPromptReplayCache = glmMTPPromptReplayCache
         self.glmMTPReplayModelID = Self.glmMTPReplayModelID(
             serviceModelID: serviceModelID,
@@ -982,6 +987,7 @@ actor BatchScheduler {
         _inFlightCount.withLock { $0 = 0 }
         slots.removeAll()
         uniformDecodeGroups.removeAll()
+        qwenMTPReplayCache?.removeAll()
         groupedSlotIDs.removeAll()
         needsUniformDecodeGrouping = false
         batchCaches = []
@@ -1599,18 +1605,26 @@ actor BatchScheduler {
         let prefillStart = Date()
         let inputTokens = req.input.text.tokens.reshaped(-1).asArray(Int.self)
         // The common dispatcher owns caps, EOS suppression and cancellation.
-        // No target-only prefix reuse: Qwen replay must include the head/history.
+        // Exact speculative replay includes both target and head/history.
+        // It never accepts a target-only AR radix entry or partial prompt hit.
+        let replayState = qwenMTPReplayCache?.find(prompt: inputTokens)
         guard let session = generator.makeSession(
             promptIds: inputTokens, maxTokens: Int.max, eosIds: [],
             temperature: req.parameters.temperature, topP: req.parameters.topP,
-            seed: req.parameters.seed)
+            seed: req.parameters.seed, promptState: replayState,
+            retainPromptState: replayState == nil && qwenMTPReplayCache?.canStore(prompt: inputTokens) == true)
         else {
             failPendingRequest(req,
                 error: MLXServiceError.loadFailed("Unable to create Qwen MTP session"))
             return
         }
+        if let captured = session.takePromptState() {
+            qwenMTPReplayCache?.insert(prompt: captured.promptIds, value: captured,
+                valueBytes: captured.estimatedRetainedBytes)
+        }
         installSpeculativeSession(.qwen(session), request: req,
-            inputTokens: inputTokens, prefillStart: prefillStart, cachedTokens: 0)
+            inputTokens: inputTokens, prefillStart: prefillStart,
+            cachedTokens: replayState?.promptIds.count ?? 0)
     }
 
     private func installSpeculativeSession(
@@ -1702,10 +1716,16 @@ actor BatchScheduler {
             StatsAggregator.shared.cacheMiss()
         }
 
+        let replaySummary: String
+        if case .qwen = session, let replay = qwenMTPReplayCache {
+            replaySummary = " replay_entries=\(replay.count) replay_bytes=\(replay.retainedBytes)"
+        } else {
+            replaySummary = ""
+        }
         print(
             "[\(batchTs())] [\(session.label)-MTPScheduler] Prefilled speculative slot "
                 + "req=\(slot.requestId) cached=\(cachedTokens) "
-                + "time=\(String(format: "%.3f", prefillTime))s")
+                + "time=\(String(format: "%.3f", prefillTime))s" + replaySummary)
         slots.append(slot)
         if firstTokenFinished {
             finishSlot(at: slots.count - 1)

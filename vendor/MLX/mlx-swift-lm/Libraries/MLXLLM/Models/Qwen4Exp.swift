@@ -668,6 +668,23 @@ final class Qwen4ExpAttentionCache: KVCache, UniformBatchKVCache {
         set { precondition(newValue.isEmpty) }
     }
 
+    /// Prompt replay preserves optional-field positions, unlike the compact
+    /// public state representation. In particular, a pooled bank is not a
+    /// position-ID array when an earlier optional field is absent.
+    fileprivate var promptReplayArrays: [MLXArray?] {
+        get { [keys, values, indexKeys, indexPositionIDs, pooledIndexKeys] }
+        set {
+            precondition(newValue.count == 5)
+            keys = newValue[0]
+            values = newValue[1]
+            indexKeys = newValue[2]
+            indexPositionIDs = newValue[3]
+            pooledIndexKeys = newValue[4]
+            offset = keys?.dim(2) ?? 0
+            clearMTPVerification()
+        }
+    }
+
     var isTrimmable: Bool { true }
 
     @discardableResult
@@ -5204,11 +5221,89 @@ struct Qwen4ExpMTPHeadRepairPlan: Equatable {
     }
 }
 
+/// Immutable, generator-scoped exact-prompt state. Not Sendable: capture and
+/// restore on the serialized model executor. No sampled token or RNG is shared.
+public final class Qwen4ExpMTPPromptState {
+    fileprivate enum Layer {
+        case recurrent([MLXArray?], [Int64]?, Int)
+        case attention([MLXArray?])
+
+        var arrays: [MLXArray] {
+            switch self {
+            case .recurrent(let values, _, _): values.compactMap { $0 }
+            case .attention(let values): values.compactMap { $0 }
+            }
+        }
+
+        init?(_ cache: KVCache) {
+            if let cache = cache as? Qwen4ExpLayerCache {
+                // Preserve nil slot positions; ArraysCache.state compacts them.
+                self = .recurrent((0..<4).map { cache[$0].map { $0 * 1 } },
+                    cache.hostNGramHistory, cache.offset)
+            } else if let cache = cache as? Qwen4ExpAttentionCache {
+                self = .attention(cache.promptReplayArrays.map { $0.map { $0 * 1 } })
+            } else {
+                return nil
+            }
+        }
+
+        func restore(into cache: KVCache) {
+            switch self {
+            case .recurrent(let values, let history, let offset):
+                let cache = cache as! Qwen4ExpLayerCache
+                for i in values.indices { cache[i] = values[i].map { $0 * 1 } }
+                cache.hostNGramHistory = history
+                cache.offset = offset
+                cache.clearMTPRollback()
+            case .attention(let values):
+                let cache = cache as! Qwen4ExpAttentionCache
+                // A one-token prompt has not primed the head yet.
+                cache.promptReplayArrays = values.map { $0.map { $0 * 1 } }
+                cache.clearMTPVerification()
+            }
+        }
+    }
+
+    public let promptIds: [Int]
+    public let estimatedRetainedBytes: Int
+    fileprivate let identity: UUID
+    fileprivate let target: [Layer]
+    fileprivate let head: [Layer]
+    fileprivate let hidden: MLXArray
+    fileprivate let stream: MLXArray
+
+    fileprivate init?(
+        identity: UUID, promptIds: [Int], target: [KVCache], head: [KVCache],
+        hidden: MLXArray, stream: MLXArray
+    ) {
+        let targetLayers = target.compactMap(Layer.init)
+        let headLayers = head.compactMap(Layer.init)
+        guard targetLayers.count == target.count, headLayers.count == head.count else { return nil }
+        self.identity = identity
+        self.promptIds = promptIds
+        self.target = targetLayers
+        self.head = headLayers
+        self.hidden = hidden * 1
+        self.stream = stream * 1
+        let arrays = (targetLayers + headLayers).flatMap(\.arrays) + [self.hidden, self.stream]
+        eval(arrays)
+        let historyBytes = (targetLayers + headLayers).reduce(0) { size, layer in
+            if case .recurrent(_, let history, _) = layer {
+                return size + (history?.count ?? 0) * MemoryLayout<Int64>.stride
+            }
+            return size
+        }
+        estimatedRetainedBytes = arrays.reduce(0) { $0 + $1.nbytes }
+            + promptIds.count * MemoryLayout<Int>.stride + historyBytes
+    }
+}
+
 public final class Qwen4ExpMTPGenerator {
     private let model: Qwen4ExpModel
     private let head: Qwen4ExpMTPHead
     private let draftDispatchStride: Int
     private let retainHeadAnchor: Bool
+    private let replayIdentity = UUID()
     public let depth: Int
     public let verificationPolicy: MTPVerificationPolicy
 
@@ -5246,17 +5341,24 @@ public final class Qwen4ExpMTPGenerator {
     /// Sharing immutable model/head weights does not share caches or RNG state.
     public func makeSession(
         promptIds: [Int], maxTokens: Int, eosIds: Set<Int> = [],
-        temperature: Float = 0, topP: Float = 1, seed: UInt64? = nil
+        temperature: Float = 0, topP: Float = 1, seed: UInt64? = nil,
+        promptState: Qwen4ExpMTPPromptState? = nil, retainPromptState: Bool = false
     ) -> Qwen4ExpMTPSession? {
         precondition(temperature.isFinite && temperature >= 0)
         precondition(topP.isFinite && (0...1).contains(topP))
         guard !promptIds.isEmpty, maxTokens > 0 else { return nil }
+        if let promptState {
+            guard promptState.identity == replayIdentity, promptState.promptIds == promptIds
+            else { return nil }
+        }
         return Qwen4ExpMTPSession(
             model: model, head: head, depth: depth,
             verificationPolicy: verificationPolicy,
             draftDispatchStride: draftDispatchStride, retainHeadAnchor: retainHeadAnchor,
             promptIds: promptIds, maxTokens: maxTokens, eosIds: eosIds,
-            temperature: temperature, topP: topP, seed: seed)
+            temperature: temperature, topP: topP, seed: seed,
+            replayIdentity: replayIdentity, promptState: promptState,
+            retainPromptState: retainPromptState)
     }
 
     public func generate(
@@ -5322,6 +5424,13 @@ public final class Qwen4ExpMTPSession {
     private var pendingVerification: Verification?
     private var acceptedCursor = 0
     private var finished = false
+    private var capturedPromptState: Qwen4ExpMTPPromptState?
+
+    /// Transfer a pre-generation snapshot to the owner's bounded replay cache.
+    public func takePromptState() -> Qwen4ExpMTPPromptState? {
+        defer { capturedPromptState = nil }
+        return capturedPromptState
+    }
 
     private var totalCycles = 0
     private var totalDrafted = 0
@@ -5340,7 +5449,8 @@ public final class Qwen4ExpMTPSession {
         model: Qwen4ExpModel, head: Qwen4ExpMTPHead, depth: Int,
         verificationPolicy: MTPVerificationPolicy, draftDispatchStride: Int,
         retainHeadAnchor: Bool, promptIds: [Int], maxTokens: Int, eosIds: Set<Int>,
-        temperature: Float, topP: Float, seed: UInt64?
+        temperature: Float, topP: Float, seed: UInt64?, replayIdentity: UUID,
+        promptState: Qwen4ExpMTPPromptState?, retainPromptState: Bool
     ) {
         // Request-owned RNG: no global seeding or mutable sampler on a shared
         // generator. Nil preserves the fused greedy readout and its graph.
@@ -5356,25 +5466,38 @@ public final class Qwen4ExpMTPSession {
         }
         let targetCache = model.newCache(parameters: nil)
         let mtpCache = head.newCache()
-        let prompt = Self.tokens(promptIds)
-        let initial = model.forwardStreamState(inputIDs: prompt, cache: targetCache)
-        let primary = targetTokens(
-            initial.hidden[0..., (initial.hidden.dim(1) - 1)..., 0...]
-        ).item(Int.self)
-        let primaryStream = initial.stream[0..., (initial.stream.dim(1) - 1)..., 0...]
+        let primaryHidden: MLXArray
+        let primaryStream: MLXArray
+        let primary: Int
         let primaryPosition = promptIds.count
+        if let promptState {
+            precondition(promptState.target.count == targetCache.count && promptState.head.count == mtpCache.count)
+            for (layer, cache) in zip(promptState.target, targetCache) { layer.restore(into: cache) }
+            for (layer, cache) in zip(promptState.head, mtpCache) { layer.restore(into: cache) }
+            primaryHidden = promptState.hidden
+            primaryStream = promptState.stream
+            primary = targetTokens(primaryHidden).item(Int.self)
+        } else {
+            let initial = model.forwardStreamState(inputIDs: Self.tokens(promptIds), cache: targetCache)
+            primaryHidden = initial.hidden[0..., (initial.hidden.dim(1) - 1)..., 0...]
+            primaryStream = initial.stream[0..., (initial.stream.dim(1) - 1)..., 0...]
+            primary = targetTokens(primaryHidden).item(Int.self)
 
-        // Prime the head with true target streams for the shifted prompt pairs:
-        // stream[p] + token[p+1] predicts token[p+2].
-        if promptIds.count > 1 {
-            let historyCount = promptIds.count - 1
-            _ = head(
-                hiddenStream: initial.stream[0..., ..<historyCount, 0...],
-                tokenEmbeddings: model.embedTokens(Self.tokens(Array(promptIds.dropFirst()))),
-                tokenIDs: Self.tokens(Array(promptIds.dropFirst())),
-                positionIDs: Self.positions(1 ..< promptIds.count),
-                cache: mtpCache
-            )
+            // stream[p] + token[p+1] predicts token[p+2].
+            if promptIds.count > 1 {
+                let historyCount = promptIds.count - 1
+                _ = head(
+                    hiddenStream: initial.stream[0..., ..<historyCount, 0...],
+                    tokenEmbeddings: model.embedTokens(Self.tokens(Array(promptIds.dropFirst()))),
+                    tokenIDs: Self.tokens(Array(promptIds.dropFirst())),
+                    positionIDs: Self.positions(1 ..< promptIds.count),
+                    cache: mtpCache)
+            }
+        }
+        if retainPromptState && promptState == nil {
+            capturedPromptState = Qwen4ExpMTPPromptState(
+                identity: replayIdentity, promptIds: promptIds, target: targetCache,
+                head: mtpCache, hidden: primaryHidden, stream: primaryStream)
         }
         self.model = model
         self.head = head

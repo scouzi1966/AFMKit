@@ -7,6 +7,55 @@ import XCTest
 @testable import AFMKitMLX
 
 final class QwenNextMTPPipelineTests: XCTestCase {
+    private func assertPromptReplay(_ model: Qwen4ExpModel) throws {
+        let head = Qwen4ExpMTPHead(model.configuration)
+        eval(model, head)
+        for policy: MTPVerificationPolicy in [.strictSingletonEquivalent, .batched] {
+            let generator = Qwen4ExpMTPGenerator(model: model, head: head, depth: 3,
+                verificationPolicy: policy, draftDispatchStride: 1, retainHeadAnchor: true)
+            for prompt in [[1], [1, 2, 3, 4, 5, 6, 7, 8]] {
+                let original = try XCTUnwrap(generator.makeSession(promptIds: prompt,
+                    maxTokens: 12, retainPromptState: true))
+                let state = try XCTUnwrap(original.takePromptState())
+                XCTAssertNil(original.takePromptState())
+                XCTAssertGreaterThan(state.estimatedRetainedBytes, 0)
+                XCTAssertEqual(state.promptIds, prompt)
+                while original.nextToken() != nil {}
+                XCTAssertNil(generator.makeSession(promptIds: prompt + [9], maxTokens: 12, promptState: state))
+                let other = Qwen4ExpMTPGenerator(model: model, head: head, depth: 3)
+                XCTAssertNil(other.makeSession(promptIds: prompt, maxTokens: 12, promptState: state))
+                for temperature: Float in [0, 0.6] {
+                    let expected = [51, 91].map { seed in
+                        generator.generate(promptIds: prompt, maxTokens: 12,
+                            temperature: temperature, topP: 0.95, seed: UInt64(seed))
+                    }
+                    let sessions = try [51, 91].map { seed in
+                        try XCTUnwrap(generator.makeSession(promptIds: prompt, maxTokens: 12,
+                            temperature: temperature, topP: 0.95, seed: UInt64(seed), promptState: state))
+                    }
+                    var output = [[Int](), [Int]()]
+                    for _ in 0..<12 {
+                        for i in [0, 1, 1] {
+                            if let token = sessions[i].nextToken() { output[i].append(token) }
+                        }
+                    }
+                    XCTAssertEqual(output, expected)
+                    // Replay once more after both live copies changed and ended.
+                    let replay = try XCTUnwrap(generator.makeSession(promptIds: prompt, maxTokens: 12,
+                        temperature: temperature, topP: 0.95, seed: 51, promptState: state))
+                    var again: [Int] = []
+                    while let token = replay.nextToken() { again.append(token) }
+                    XCTAssertEqual(again, expected[0])
+                }
+            }
+        }
+    }
+
+    func testCompletePromptReplayPreservesHeadSamplerSparseStateAndIsolation() async throws {
+        let model = try await makeModel(indexerBudget: 4)
+        try assertPromptReplay(model)
+    }
+
     private func assertSessionInterleaving(
         _ model: Qwen4ExpModel, policy: MTPVerificationPolicy, temperature: Float
     ) throws {
@@ -1212,6 +1261,7 @@ final class QwenNextMTPPipelineTests: XCTestCase {
         try model.configureMappedNGramTable(url: url)
         eval(model)
         try assertSessionInterleaving(model, policy: .batched, temperature: 0.6)
+        try assertPromptReplay(model)
         // Verify an early dispatch cannot observe an unfilled mapped PLE
         // leaf, and that every acceptance boundary commits the same state.
         for stride in [1, 4, 8] {
