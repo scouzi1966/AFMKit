@@ -24,10 +24,10 @@ These are branch experiments, not production-default or release qualifications.
 
 | Plan item | Implemented / measured | Still required |
 |---|---|---|
-| Same-checkpoint baseline matrix | Six AFM/reference configurations and saved raw responses | Repeat after integration; wider concurrency curve |
+| Same-checkpoint baseline matrix | Six AFM/reference configurations and saved raw responses; integrated six-mode checkpoint repeated | Wider concurrency curve and workload coverage |
 | Shared exact-prefix replay | Serial AR and scheduler boundary helpers; opt-in API checks | Broader quality, long-context and model-switch qualification |
 | Qwen MTP replay | Opt-in complete exact-prompt target/head/history snapshots; focused and lifecycle tests pass | Working-set/memory qualification, partial-prefix continuation and serial-lane reuse |
-| Scheduler-owned Qwen MTP sessions | Opt-in streaming scheduler integration; mixed MTP/AR lifecycle passes | Aggregate qualification and staged multi-request verification |
+| Scheduler-owned Qwen MTP sessions | Opt-in streaming scheduler integration; mixed MTP/AR lifecycle and six-mode aggregate screen pass | Staged multi-request verification and wider qualification |
 | Genuine GPU batches | Persistent equal-offset subgroups with row-removal tests | Arbitrary-position batches and multi-request verification |
 | Continuous admission | Opt-in independent/group ownership; burst and staggered measurements | Avoid fragmentation across arbitrary arrival/position patterns |
 | Prefill/decode interleaving | Soft uncached-token admission budget across whole prompts | Suspend/resume individual prefills at token-chunk boundaries |
@@ -36,7 +36,7 @@ These are branch experiments, not production-default or release qualifications.
 | Optional immutable PLE row cache | Bounded cache, exact-bit tests, limited measured benefit | Repeats before any default proposal; not the main throughput lever |
 | Batch kernels and graph overhead | Existing fused kernels retained; independent-row QMM screened and rejected | Profile remaining batch hot paths |
 | Memory budgets and reclamation | Group ownership/filtering and row-cache budget tested; RSS recorded | Long-context concurrency soak and request-memory admission budgets |
-| Qualification and cross-model reuse | Qwen-only guards and focused tests; lifecycle API smoke | Semantic qualification, full matrix, then model-specific adapters |
+| Qualification and cross-model reuse | Qwen-only guards and focused tests; lifecycle API smoke and six-mode matrix | Semantic/long-context qualification, then model-specific adapters |
 
 ## First implementation: serial replay boundaries
 
@@ -501,6 +501,79 @@ hits as the working set cycles. This is not a replay speedup. Records:
 `1b04b0065a8fd3bb89ab62f8c68f72051035e81064d4ae4532e78bd3c478d98e`.
 An explicit larger-budget screen will quantify actual retained bytes and
 throughput before any default proposal.
+
+The larger-budget same-binary screen completed with a 4096 MiB cap:
+
+| Replay capacity | First / repeat aggregate tok/s | Repeat reused tokens | Peak process RSS GiB |
+|---|---:|---:|---:|
+| Disabled | 58.43 / 58.50 | 0 | 69.70 |
+| 4096 MiB | 59.72 / 87.23 | 17,127 | 69.63 |
+
+Repeat aggregate output throughput improves **49.1%**. All 30 texts and
+completion-token counts match exactly; both complete 30 responses with 24
+structural passes. The remaining six outputs truncate at the unchanged cap,
+not newly introduced replay failures. Representative diagnoses/fixes are
+coherent, but no broader semantic quality certification is implied.
+
+The cache accounts for **2,364,401,124 bytes (2.20 GiB)** across 16 entries,
+including startup prewarm and the 15 test prompts. This is estimated retained
+tensor/key storage, not a claim of zero added memory because process RSS stayed
+flat. RSS alone does not account for the full Metal/unified-memory allocation
+picture. A 512 MiB budget cannot retain this working set; using the larger cap
+is explicit, not a new default.
+
+Warm per-request prefill logs drop from roughly 0.96 s to 0.002 s and median
+client TTFT is 0.088 s. Lazy restoration work can move into the first decode
+cycle; the end-to-end aggregate measurement includes it and is the performance
+gate. This exact-repeat benefit does not establish shared partial-prefix
+acceleration for divergent agent histories or multi-request verification.
+
+Artifact binary `32aa87b91d08ba56470f35b7bd199af092f9069f158146537e7333fa32fdf4bf`;
+records `qwen-replay-budget-{off,on}-*`. Reverse-order confirmation reproduced
+**86.94 versus 58.24 tok/s** on repeats (+49.3%); first-phase rates were
+59.88 versus 58.27. All 30 texts/token counts again match across arms, with
+the same completion, structural-check and cache-hit totals. Records:
+`qwen-replay-repeat-{on,off}-*`.
+
+### Integrated six-mode checkpoint
+
+The final screen used source checkpoint `75d88a5a` and the same binary hash
+above, exact ddalcu checkpoint, 15 first requests plus 15 exact repeats per
+configuration, temperature 0 / top-p 1 and a 192-token output cap. First rounds
+follow an excluded warmup and are not completely cold. No competing build or
+GPU run was active.
+
+| MTP | Prefix cache | Clients | First aggregate tok/s | Repeat aggregate tok/s | JSON structure / completed | Peak process RSS GiB |
+|---|---|---:|---:|---:|---:|---:|
+| Off | On | 1 | 61.98 | 67.11 | 24 / 30 | 67.48 |
+| Off | On | 15 | 109.55 | 128.24 | 24 / 30 | 67.64 |
+| Off | Off | 15 | 71.47 | 71.83 | 26 / 30 | 67.69 |
+| On | On | 1 | 58.86 | 58.66 | 24 / 30 | 69.40 |
+| On | On | 15 | 59.93 | 87.13 | 24 / 30 | 69.54 |
+| On | Off | 15 | 58.69 | 58.24 | 24 / 30 | 69.73 |
+
+All **180/180 requests completed**; **146/180** passed the narrow JSON
+structure/identity checks. These are separate totals, not 100% behavioral
+qualification. Saved raw responses remain available for semantic review.
+Replay-disabled configurations report zero reused tokens. C15 MTP replay
+reports 1,144 / 17,127 cached tokens in the first / repeat phases; AR replay
+reports 15,479 / 17,112. Serial C1 MTP still reports zero: its generator path
+does not yet use the new scheduler-owned replay cache.
+
+Every row has the same explicit experimental flags, including compatible and
+continuous groups, yield interval 8, serial replay boundaries, the Qwen MTP
+scheduler, a 4096 MiB MTP replay cap, and the previously documented batched
+verification/fusion flags. Their model/path guards determine which apply.
+MTP-on rows use fixed depth 3. The immutable PLE row cache is disabled. These
+are **not production-default/no-flags measurements**. Full argument lists and
+the binary hash are saved beside each run.
+
+The new MTP repeat result reproduces the ~49% replay improvement, but remains
+below AR grouped throughput because target verification is not yet shared
+across requests. AR repeat throughput is still about 16% below the frozen
+152.71 tok/s reference row; no overall parity claim is justified. The MTP
+comparison also differs in replay memory policy and fixed versus adaptive
+draft depth. Raw records: `shared-batch-checkpoint-mtp*-prefix*-c*-afm-mtp-*/`.
 
 Build note: adding a provider source file exposed a stale consumer native build
 manifest. `Scripts/swiftpm-reliable.sh build -c release --product afm
