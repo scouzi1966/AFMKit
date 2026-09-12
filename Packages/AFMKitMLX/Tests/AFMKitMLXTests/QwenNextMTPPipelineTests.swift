@@ -500,6 +500,259 @@ final class QwenNextMTPPipelineTests: XCTestCase {
         }
     }
 
+    func testSchedulerReplayExecutorBoundsChunksAndInterleavesIndependentState() async throws {
+        let model = try await makeModel(indexerBudget: 4)
+        eval(model)
+        let prompt = (0..<289).map { $0 % 25 + 1 }
+        let parameters = GenerateParameters(prefillStepSize: 32)
+        let cache = model.newCache(parameters: parameters)
+        let active = model.newCache(parameters: parameters)
+        let expectedActive = model.newCache(parameters: parameters)
+        let radix = RadixTreeCache(modelID: "scheduler-bounded-replay", maxEntries: 8)
+        var chunks: [Range<Int>] = []
+        var checkpoints: [Int] = []
+        var outputs: [[Float]] = []
+        let output = try MLXReplayPrefill.prepare(
+            model: model, cache: cache, inputTokens: prompt, restoredPrefix: 0,
+            prefillStepSize: parameters.prefillStepSize,
+            checkpoint: { boundary, states, metadata in
+                checkpoints.append(boundary)
+                radix.insert(tokens: Array(prompt.prefix(boundary)),
+                    layerStates: states, layerMetaStates: metadata)
+            },
+            didCompleteChunk: { range in
+                chunks.append(range)
+                let token = chunks.count % 25 + 1
+                let next = model(LMInput.Text(tokens: MLXArray([token]).reshaped(1, 1)),
+                    cache: active, state: nil, hostTokenIDs: [token])
+                outputs.append(next.logits.asArray(Float.self))
+            })
+        let expected = output.logits.asArray(Float.self)
+        XCTAssertEqual(checkpoints, [256, 288])
+        XCTAssertEqual(chunks.flatMap { Array($0) }, Array(0..<288))
+        XCTAssertTrue(chunks.allSatisfy { !$0.isEmpty && $0.count <= 32 })
+        for index in chunks.indices {
+            let token = (index + 1) % 25 + 1
+            let next = model(LMInput.Text(tokens: MLXArray([token]).reshaped(1, 1)),
+                cache: expectedActive, state: nil, hostTokenIDs: [token])
+            XCTAssertEqual(outputs[index], next.logits.asArray(Float.self))
+        }
+        let match = radix.findExactBoundaryMatch(prompt)
+        XCTAssertEqual(match.prefixLen, 288)
+        let states = try XCTUnwrap(match.layerStates)
+        let metadata = try XCTUnwrap(match.layerMetaStates)
+        let frozen = states.map { $0.map { $0.asArray(Float.self) } }
+        var restored = model.newCache(parameters: parameters)
+        for i in restored.indices { restored[i].state = states[i]; restored[i].metaState = metadata[i] }
+        let warm = try MLXReplayPrefill.prepare(model: model, cache: restored,
+            inputTokens: prompt, restoredPrefix: match.prefixLen, prefillStepSize: 32,
+            didCompleteChunk: { _ in XCTFail("Exact final-token replay has no leading chunks") })
+        XCTAssertEqual(warm.logits.asArray(Float.self), expected)
+        XCTAssertEqual(states.map { $0.map { $0.asArray(Float.self) } }, frozen)
+    }
+
+    func testSchedulerReplayExecutorChecksCancellationBetweenChunks() async throws {
+        let model = try await makeModel()
+        eval(model)
+        for cancelAfter in [0, 1, 3] {
+            var chunks = 0
+            var checkpoints = 0
+            XCTAssertThrowsError(try MLXReplayPrefill.prepare(
+                model: model, cache: model.newCache(parameters: nil),
+                inputTokens: Array(1...8), restoredPrefix: 0, prefillStepSize: 2,
+                checkpoint: { _, _, _ in checkpoints += 1 },
+                checkCancellation: { if chunks == cancelAfter { throw CancellationError() } },
+                didCompleteChunk: { _ in chunks += 1 })) { error in
+                    XCTAssertTrue(error is CancellationError)
+                }
+            XCTAssertEqual(chunks, cancelAfter)
+            XCTAssertEqual(checkpoints, 0)
+        }
+    }
+
+    func testBatchedGDNCompileEligibilityPreservesSingletonAndVerificationGuards() {
+        for batch in [0, 1, 2, 3, 4, 8, 15, 32, 33] {
+            XCTAssertEqual(qwen4ExpShouldUseCompiledGDNDecode(compileEnabled: true,
+                batchSize: batch, sequenceLength: 1, hasVerificationPolicy: false), batch == 1)
+            XCTAssertEqual(qwen4ExpShouldUseCompiledGDNDecode(compileEnabled: true,
+                batchSize: batch, sequenceLength: 1, hasVerificationPolicy: false,
+                batchCompileEnabled: true), (1...32).contains(batch))
+            XCTAssertFalse(qwen4ExpShouldUseCompiledGDNDecode(compileEnabled: false,
+                batchSize: batch, sequenceLength: 1, hasVerificationPolicy: false,
+                batchCompileEnabled: true))
+            XCTAssertFalse(qwen4ExpShouldUseCompiledGDNDecode(compileEnabled: true,
+                batchSize: batch, sequenceLength: 2, hasVerificationPolicy: false,
+                batchCompileEnabled: true))
+            XCTAssertFalse(qwen4ExpShouldUseCompiledGDNDecode(compileEnabled: true,
+                batchSize: batch, sequenceLength: 1, hasVerificationPolicy: true,
+                batchCompileEnabled: true))
+        }
+    }
+
+    func testBatchedGDNPreworkPreservesEveryIndependentRowExactly() throws {
+        for dtype: DType in [.bfloat16, .float16] {
+            func values(_ shape: [Int], _ seed: Int) -> MLXArray {
+                MLXArray((0..<shape.reduce(1, *)).map { Float(($0 * 13 + seed) % 47 - 23) / 64 })
+                    .reshaped(shape).asType(dtype)
+            }
+            let weight = values([512, 4, 1], 9)
+            let aLog = values([2], 5), dtBias = values([2], 17)
+            for batch in [1, 2, 3, 4, 8, 15] {
+                for width in [1, 2, 4, 8] {
+                    let projected = values([batch, width, 512], 1)
+                    let prior = values([batch, 3, 512], 2)
+                    let a = values([batch, width, 2], 3), b = values([batch, width, 2], 4)
+                    func run(_ p: MLXArray, _ h: MLXArray, _ a: MLXArray, _ b: MLXArray,
+                             allowBatch: Bool) -> Qwen4ExpGatedDeltaPreworkOutput? {
+                        Qwen4ExpGatedDeltaPrework.call(projected: p, prior: h,
+                            convolutionWeight: weight, projectedA: a, projectedB: b,
+                            aLog: aLog, dtBias: dtBias, keyHeads: 1, valueHeads: 2,
+                            keyHeadDimension: 128, valueHeadDimension: 128,
+                            convolutionKernel: 4, allowBatch: allowBatch)
+                    }
+                    if batch > 1 { XCTAssertNil(run(projected, prior, a, b, allowBatch: false)) }
+                    let actual = try XCTUnwrap(run(projected, prior, a, b, allowBatch: true))
+                    func arrays(_ output: Qwen4ExpGatedDeltaPreworkOutput) -> [MLXArray] {
+                        [output.queries, output.keys, output.values, output.convolutionState,
+                         output.gate, output.beta]
+                    }
+                    let outputs = arrays(actual)
+                    eval(outputs)
+                    for row in (0..<batch).reversed() {
+                        let expected = try XCTUnwrap(run(projected[row..<(row + 1)],
+                            prior[row..<(row + 1)], a[row..<(row + 1)], b[row..<(row + 1)],
+                            allowBatch: false))
+                        for (got, want) in zip(outputs, arrays(expected)) {
+                            XCTAssertEqual(got[row..<(row + 1)].asArray(Float.self),
+                                want.asArray(Float.self), "dtype=\(dtype) B=\(batch) L=\(width) row=\(row)")
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    func testBatchedGDNDecodePreservesStateAfterRowReorderAndRemoval() async throws {
+        let configuration = try await makeModel().configuration
+        let layer = Qwen4ExpDecoderLayer(configuration, layerIndex: 0)
+        layer.update(parameters: layer.mapParameters { $0.asType(.bfloat16) })
+        eval(layer)
+        let originals = (0..<15).map { row -> ArraysCache in
+            let cache = ArraysCache(size: 2)
+            cache[0] = MLXArray.full([1, 3, 512], values: MLXArray(Float(row) / 128)).asType(.bfloat16)
+            cache[1] = MLXArray.full([1, 2, 128, 128], values: MLXArray(Float(row) / 256))
+            return cache
+        }
+        var active = Array(0..<15)
+        let batch = ArraysCache(size: 2)
+        for i in 0..<2 { batch[i] = concatenated(originals.map { $0[i]! }, axis: 0) }
+        for step in 0..<6 {
+            if step > 0 {
+                // Vary trace shape and row order without reusing stale caches.
+                let keep = Array(active.indices.reversed().prefix([15, 8, 4, 3, 2, 1][step]))
+                for i in 0..<2 { batch[i] = batch[i]![MLXArray(keep.map(Int32.init))] }
+                active = keep.map { active[$0] }
+            }
+            let inputs = active.map { row in
+                MLXArray((0..<128).map { Float(($0 + row * 7 + step * 3) % 37 - 18) / 64 })
+                    .reshaped(1, 1, 128).asType(.bfloat16)
+            }
+            let output = layer.gatedDeltaDecodeForTesting(concatenated(inputs, axis: 0), cache: batch)
+            eval(output, batch)
+            for (position, row) in active.enumerated() {
+                let expected = layer.gatedDeltaDecodeForTesting(inputs[position], cache: originals[row])
+                XCTAssertLessThan(abs(output[position..<(position + 1)] - expected).max().item(Float.self), 0.01)
+                for i in 0..<2 {
+                    XCTAssertLessThan(abs(batch[i]![position..<(position + 1)] - originals[row][i]!).max()
+                        .item(Float.self), 0.01, "state=\(i) step=\(step) row=\(row)")
+                }
+                XCTAssertEqual(originals[row][1]?.dtype, .float32)
+            }
+        }
+    }
+
+    func testMixedPositionDecodePreservesSparsePLEStateAndSupportsRowChurn() async throws {
+        MLXRandom.seed(271)
+        for dtype: DType in [.float32, .bfloat16] {
+            let model = try await makeModel(withPLE: true, indexerBudget: 4)
+            model.update(parameters: model.mapParameters { $0.dtype.isFloatingPoint ? $0.asType(dtype) : $0 })
+            eval(model)
+            let actual = (0..<15).map { _ in model.newCache(parameters: nil) }
+            let independent = (0..<15).map { _ in model.newCache(parameters: nil) }
+            for row in 0..<15 {
+                let prompt = (0..<(8 + row * 4)).map { ($0 + row) % 25 + 1 }
+                for caches in [actual[row], independent[row]] {
+                    eval(model(LMInput.Text(tokens: MLXArray(prompt)[.newAxis]),
+                        cache: caches, state: nil, hostTokenIDs: prompt).logits)
+                }
+            }
+            let snapshots = actual.map { $0.map { MLXReplayPrefill.snapshot($0.state) } }
+            eval(snapshots.flatMap { $0.flatMap { $0 } })
+            let frozen = snapshots.map { $0.map { $0.map { $0.asArray(Float.self) } } }
+            // Unknown/aliased/missing rows must fail before advancing any row.
+            XCTAssertNil(model.decodeRequestBatch(tokens: [2, 3], caches: [actual[0], actual[0]]))
+            XCTAssertNil(model.decodeRequestBatch(tokens: [2, 3], caches: [actual[0], []]))
+            XCTAssertEqual(actual.map { $0.map { $0.state.map { $0.asArray(Float.self) } } }, frozen)
+            for active in [Array(0..<15), [14, 2, 7, 0, 8, 3, 6, 11], [11, 2, 14, 7], [7, 11, 2], [2, 7]] {
+                let tokens = active.map { ($0 + active.count) % 25 + 1 }
+                var sameWidthOracles: [MLXArray] = []
+                if dtype == .bfloat16 {
+                    // BF16 MoE top-k can amplify a GEMV/GEMM rounding change.
+                    // Compare the adapter with the already-supported same-width
+                    // native batch, at each row's OWN current position/state.
+                    for (position, row) in active.enumerated() {
+                        let copies = (0..<active.count).map { _ -> [KVCache] in
+                            var copy = model.newCache(parameters: nil)
+                            for i in copy.indices {
+                                copy[i].state = MLXReplayPrefill.snapshot(actual[row][i].state)
+                                copy[i].metaState = actual[row][i].metaState
+                            }
+                            return copy
+                        }
+                        let group = try XCTUnwrap(UniformDecodeGroup(
+                            slotIDs: copies.map { _ in UUID() }, requestCaches: copies))
+                        let repeated = Array(repeating: tokens[position], count: active.count)
+                        let result = model(LMInput.Text(tokens: MLXArray(repeated).reshaped(-1, 1)),
+                            cache: group.caches, state: nil, hostTokenIDs: repeated)
+                        eval(result.logits)
+                        sameWidthOracles.append(result.logits[0])
+                    }
+                }
+                let output = try XCTUnwrap(model.decodeRequestBatch(tokens: tokens,
+                    caches: active.map { actual[$0] }))
+                eval(output.logits)
+                for (position, row) in active.enumerated() {
+                    let token = tokens[position]
+                    let expected = model(LMInput.Text(tokens: MLXArray([token]).reshaped(1, 1)),
+                        cache: independent[row], state: nil, hostTokenIDs: [token])
+                    let error = abs(output.logits[position] - expected.logits[0]).max().item(Float.self)
+                    if dtype == .float32 {
+                        XCTAssertLessThan(error, 0.003, "B=\(active.count) row=\(row)")
+                    } else {
+                        let batchError = abs(output.logits[position] - sameWidthOracles[position]).max().item(Float.self)
+                        print("[MixedPositionOracle] B=\(active.count) row=\(row) singleton_error=\(error) same_width_error=\(batchError)")
+                        XCTAssertEqual(output.logits[position].asArray(Float.self),
+                            sameWidthOracles[position].asArray(Float.self),
+                            "Same-width BF16 oracle: B=\(active.count) row=\(row)")
+                    }
+                    XCTAssertTrue(output.logits[position].asArray(Float.self).allSatisfy(\.isFinite))
+                    XCTAssertEqual(actual[row].map(\.offset), independent[row].map(\.offset))
+                }
+            }
+            XCTAssertEqual(snapshots.map { $0.map { $0.map { $0.asArray(Float.self) } } }, frozen)
+            // Return a surviving request to ordinary B=1 decode; no stale
+            // admission cache or batch-wide position must be restored.
+            let next = MLXArray([Int32(6)]).reshaped(1, 1)
+            let a = model(LMInput.Text(tokens: next), cache: actual[7], state: nil, hostTokenIDs: [6])
+            let b = model(LMInput.Text(tokens: next), cache: independent[7], state: nil, hostTokenIDs: [6])
+            if dtype == .float32 {
+                XCTAssertLessThan(abs(a.logits - b.logits).max().item(Float.self), 0.003)
+            } else {
+                XCTAssertTrue(a.logits.asArray(Float.self).allSatisfy(\.isFinite))
+            }
+        }
+    }
+
     func testHeadAnchorRepairPlanCoversEveryAcceptanceFrontier() {
         for depth in [1, 3, 4, 7] {
             for accepted in 0...depth {

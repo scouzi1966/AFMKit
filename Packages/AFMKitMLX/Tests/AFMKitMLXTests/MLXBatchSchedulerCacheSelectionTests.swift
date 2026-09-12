@@ -34,6 +34,21 @@ private class TestUniformDecodeCache: ArraysCache, UniformBatchKVCache {
 private final class OtherUniformDecodeCache: TestUniformDecodeCache {}
 
 final class MLXBatchSchedulerCacheSelectionTests: XCTestCase {
+    func testPrefillInterleaveRequiresQualifiedTextARAdapterAndExplicitOptIn() {
+        for enabled in [false, true] {
+            for continuous in [false, true] {
+                for mtp in [false, true] {
+                    XCTAssertEqual(BatchScheduler.supportsPrefillInterleave(
+                        modelType: Qwen4ExpModel.self, continuousGroups: continuous,
+                        ownsMTP: mtp, enabled: enabled), enabled && continuous && !mtp)
+                    XCTAssertFalse(BatchScheduler.supportsPrefillInterleave(
+                        modelType: Gemma4Model.self, continuousGroups: continuous,
+                        ownsMTP: mtp, enabled: enabled))
+                }
+            }
+        }
+    }
+
     func testContinuousAdmissionIsBoundedAndRespectsAvailableSlots() {
         XCTAssertEqual(BatchScheduler.continuousAdmissionLimit(
             maxConcurrent: 15, activeCount: 0, enabled: true), 15)

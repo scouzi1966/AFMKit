@@ -197,6 +197,15 @@ public protocol LanguageModel: Module {
     func sanitize(weights: [String: MLXArray]) -> [String: MLXArray]
 }
 
+/// Optional one-token batch adapter for independently positioned requests.
+/// The scheduler owns admission, stable row IDs, sampling and cancellation;
+/// the model owns all cache packing and position/history semantics. Returning
+/// nil MUST leave every input cache unchanged, allowing an independent fallback.
+/// Implementations must not retain request caches or modify retained snapshots.
+public protocol RequestOwnedDecodeBatchModel: LanguageModel {
+    func decodeRequestBatch(tokens: [Int], caches: [[KVCache]]) -> LMOutput?
+}
+
 /// Optional early filter for checkpoint tensors that a model will never consume.
 ///
 /// `loadWeights` applies this while visiting each safetensor shard, before the

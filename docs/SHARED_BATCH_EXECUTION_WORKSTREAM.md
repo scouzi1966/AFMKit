@@ -959,3 +959,82 @@ Concurrency enabled does not prove batched execution. MTP enabled does not
 prove every API feature is speculative-eligible. Truncated unconstrained JSON
 is not automatically an engine defect. No benchmark run overlapping a build
 qualifies as an uncontended reference baseline.
+
+## Bounded prefill and mixed-position execution (2026-09-12)
+
+Implementation following the September 11 chunk/batch investigation:
+
+- Concurrent recurrent-prefix replay now shares `MLXReplayPrefill` with the
+  serial path. Checkpoint spacing no longer overrides `prefillStepSize`.
+  The helper returns an owned prompt-minus-one snapshot, checks cancellation
+  between chunks, and refuses to cache unrepresented `LMOutput.State`.
+- `AFM_QWEN_BATCH_PREFILL_INTERLEAVE=1` enables same-owner decode ticks between
+  completed prefill chunks for opt-in continuous Qwen AR admission. No nested
+  admission, second GPU worker, or prefilling row in the decode set. Graph
+  reclamation and output accounting share the ordinary decode tick helper.
+  The current revision preserves initial cohort formation and leaves the
+  no-competing-request path unchanged. MTP and other architectures are excluded.
+- `AFM_QWEN_BATCH_GDN_PREWORK=1` enables genuinely request-indexed fused GDN
+  preparation (B<=32, sequence<=8). BF16/FP16 rounding is retained, as is FP32
+  recurrent state. `AFM_QWEN_COMPILE_BATCH_GDN_DECODE=1` additionally enables
+  model-owned, shape-specific compiled decode functions, separate from the
+  existing B=1 function. Both are opt-in.
+- `AFM_QWEN_BATCH_MIXED_POSITIONS=1` selects the model-owned
+  `RequestOwnedDecodeBatchModel` adapter under continuous Qwen AR admission.
+  Shared GDN/HC/MLP execution no longer requires equal request positions.
+  PLE histories, QSA selection and native attention remain per request in this
+  first stage; attention projections are not yet shared. No full-KV padding.
+  Validation must finish before any cache mutation; unsupported inputs fall
+  back to independent decode. Ordinary sampling/stops/logprobs remain owned by
+  the scheduler, not the model adapter.
+
+These controls are not promoted defaults. All source belongs to AFMKit and its
+self-contained MLX tree; the consumer does not patch a dependency checkout.
+The shared-math/row-owned-history and same-thread interleave designs are
+informed by David Dalcu's MIT-licensed `mlx-serve`, credited at implementation
+sites. This is a staged Swift adapter, not a claim of identical execution.
+
+### Initial interleave screen, before preserving initial cohort formation
+
+Same Release binary/checkpoint, C15, MTP off, prefix off, step1024, eight short
+agentic requests followed by seven ~5.3K-token requests. Each arm repeats all
+15 requests; output cap192, temperature0, top-p1, seed42. The row-cache is off.
+
+| Interleave | First / repeat aggregate tok/s | Repeat active-stream maximum-gap median | Repeat late TTFT median | Runtime / structural checks |
+|---|---:|---:|---:|---:|
+| Off | 19.22 / 29.95 | 5.20 s | 20.66 s | 30/30 / 16/30 |
+| On | 28.06 / 29.01 | 1.16 s | 24.13 s | 30/30 / 14/30 |
+
+The off arm's first long prefill took40.6s; do not attribute that first-round
+outlier to interleave or discard its record. Warm-repeat throughput declined
+3.1% while active-stream pauses improved4.5x and late TTFT worsened16.8%.
+This is not grounds for default promotion. Structural checks are not semantic
+judging; the two-pass difference remains unattributed. Raw records:
+`chunk-interleave-20260912-{off,on}*` in the external artifact root, with full
+requests, raw SSE, output, launch command, binary hash and memory samples.
+
+Initial chunk/interleave code passed141 focused tests; the fused/compiled
+batched GDN increment passed144 focused tests with both GDN switches enabled,
+including exact independent-row prework comparisons and stateful row churn.
+Subsequent mixed-position validation and end-to-end measurements are recorded
+below when complete; these initial counts do not certify later code.
+
+The complete implementation subsequently passed **145 focused tests** with
+both batch GDN controls enabled, and **24 focused/default-path tests** with
+those controls unset. Mixed-position tests cover 15/8/4/3/2 rows, different
+positions, PLE, sparse attention, removal/reordering, snapshot preservation,
+unsupported/aliased input rejection, and return to singleton decode. FP32
+is checked against independent requests; BF16 is checked for exact logits
+against the existing same-width native batch at each row's own state/position.
+Singleton BF16 logits are not claimed identical: an exploratory random MoE
+fixture showed differences up to0.24 while the same-width batch oracle was
+exact. A fixed seed now makes this regression test reproducible. This numeric
+test is not a real-checkpoint semantic quality certification.
+
+The tests also exposed an unsupported attention-projection fast path: compiled
+QK norm/RoPE could be selected for a head dimension other than256. The runtime
+now checks the fused kernel's B=1, BF16, head/rotary geometry before compiling;
+other shapes use the existing fallback rather than trapping. The production
+checkpoint's eligible path is unchanged. One initial test-only crash came from
+casting PLE integer hash parameters to float; the fixture now preserves integer
+types. Neither failure is concealed as a passing run in the retained logs.
