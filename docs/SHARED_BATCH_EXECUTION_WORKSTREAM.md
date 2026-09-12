@@ -1233,3 +1233,109 @@ attention/cache body and the MTP target verifier. Before promotion, qualify
 semantic/tool behavior, longer contexts and memory, wider concurrency, and
 the current reference. Keep PLE row cache and prefill interleaving off in
 throughput comparisons; neither is a demonstrated general throughput win.
+
+### Request-banked attention prototype (2026-09-12)
+
+Runtime checkpoint `2f62451e` adds `Qwen4ExpRequestAttentionBatch.swift` inside
+the self-contained MLX model layer. `AFM_QWEN_BATCH_BANKED_ATTENTION=1` is a
+new **off-by-default** experiment, requiring the existing shared-projection
+and request-owned mixed-position AR batch path. It is not an MTP verifier
+change, cross-model default, release qualification, or promotion request.
+
+The kernel reads up to four requests' separate K/V buffers in one dispatch.
+Only the small query rows, selected-block IDs and selector bounds are packed;
+full histories are neither padded nor copied into a common allocation. Each
+request retains its own KV length, strides, GQA mapping, QSA selection, tail
+tokens and cache identity. Cache updates occur once in the request adapter,
+before attention; the kernel itself does not mutate caches. Gates stay
+per-request and the output projection stays shared, isolating this experiment.
+
+Four banks use 26 Metal buffer arguments (K/shape/strides and V/strides for
+each bank, plus shared inputs/output), below the 31-buffer argument limit.
+Kernel/configuration caches depend on the bounded bank width and model
+geometry, not growing context lengths or request identifiers. Runtime shader
+metadata supplies strides: the adapter does not inspect lazy array strides on
+the CPU or retain request arrays in a static cache. The selector/reduction
+math follows the existing attributed QSA kernel, with the new multi-bank
+dispatch and dense-row adapter implemented in AFMKit.
+
+Guards require BF16, one query token, 256-wide heads and compatible GQA
+geometry. Masked/unsupported banks and singletons retain independent native
+execution; the fused-score QSA experiment is excluded before cache mutation.
+Integration tests cover mixed dense/sparse boundaries, row churn, reordered
+banks, immutable prefix snapshots and exact cache state/offset equality.
+Separate vectors include noncontiguous selected blocks, sparse tails and
+strided K/V elements. **155 focused Release tests pass**, plus **60 targeted
+reruns with new controls unset**, a final three-test permutation rerun, and
+**255/255 live cancellation/recovery/sampling/logprob/limit assertions**.
+
+Same-binary, same ddalcu checkpoint, M3 Ultra, C15, MTP off, temperature 0,
+top-p 1, seed 42, 192-token output budget. Both arms have shared projections,
+normalization, mixed-position batching and fused/compiled GDN enabled. PLE
+row cache and prefill interleaving are disabled. Only banked attention changes.
+These are explicit experimental controls, **not unset-environment results**.
+
+| Warm repeat aggregate output tok/s | Control | Banked | Change |
+|---|---:|---:|---:|
+| Prefix enabled | 162.25 | 170.14 | +4.9% |
+| Prefix enabled, reverse order | 160.57 | 171.10 | +6.6% |
+| Prefix disabled | 83.03 | 85.01 | +2.4% |
+| Longer staggered 8+7 arrivals, step 1024, prefix off | 39.98 | 41.06 | +2.7% |
+
+Completed-request rates improve (first prefix pair: 0.940 -> 1.026 requests/s),
+but **structural passes fall from 24/30 to 22/30 in all three pairs**.
+Consequently, structurally valid-task throughput is approximately flat in the
+first prefix pair (0.752 -> 0.752/s), and decreases without prefix
+(0.382 -> 0.367/s). Raw token gains are not sufficient to qualify useful-task
+gains. Prefix candidate `AGENT-13` omits `fix` and ends normally at 102 tokens:
+it is **not truncation**. Other capped failures and questionable streaming
+advice remain visible in the retained response records. No model-only root
+cause or semantic equivalence is claimed. None of 30 prefix paired texts
+match exactly; without prefix, only two of 30 match.
+
+The arithmetic boundary is concrete: the local native MLX dispatch selects
+`sdpa_vector_2pass` on this large GPU for dense histories >=1024 tokens,
+whereas this prototype applies the existing single-pass QSA reduction to
+dense banks too. Focused vectors match native dense attention exactly at
+37 tokens, but differ by up to 0.0009765625 at longer dense lengths; sparse
+vectors match exactly. This establishes a reduction-path difference, not
+that the observed task failures can be dismissed as harmless rounding.
+The next correctness-preserving experiment should bank native two-pass
+dense arithmetic (or retain native dense execution), while keeping sparse
+dispatch sharing. Do not promote this prototype just because raw tok/s rises.
+
+Longer staggered requests complete 30/30 in each arm, but structural passes
+fall **18/30 -> 16/30**. Repeat median active-stream maximum gaps are
+5.067 / 5.033 seconds, with late-request TTFT medians 20.025 / 19.981 seconds:
+no meaningful responsiveness improvement is demonstrated. Peak process RSS
+is 69.990 / 70.016 GiB (short screens: 67.70--67.81 GiB). This is not complete
+Metal accounting or a long-context memory-leak soak. The control's first phase
+includes a 34.878-second pause and 26.52 tok/s result; that outlier is retained,
+not used to claim a larger gain. Original 192-token results remain untouched.
+
+A separate **512-token, prefix-off** diagnostic passes all 30 structural
+checks in each arm. Its repeat rates are 84.63 / 84.52 tok/s (effectively
+unchanged), with completed-request rates 0.471 / 0.481 per second. These are
+different output budgets, not replacements for the capped throughput screen
+and not proof that the prefix-on missing-field response is fixed.
+
+The **512-token, prefix-on** diagnostic confirms the missing-field failure:
+control **30/30**, candidate **28/30** structural passes. `AGENT-13` still
+finishes normally at 102 tokens without `fix`. Repeat rates are 161.53 /
+168.30 tok/s; completed-request rates 0.917 / 0.997 per second. The artifact
+bundle retains these as diagnostics, not replacement throughput baselines.
+All **360 measured performance/diagnostic requests** across twelve arms
+complete, plus the separate 45-request lifecycle suite. All thirteen
+harness-owned servers exit cleanly. Full evidence and verified hashes remain
+external under `BANKED-ATTENTION-20260912.md` in the existing artifact root.
+
+Measured Release SHA-256:
+`70853786986f431012bc94749e0207b8e3ee9df034d11e14250e1e8eff9a245f`.
+The external `banked-attention-source-20260912.patch` records the exact source
+delta from `dcb9f796`. The consumer's cached build plan initially omitted the
+new source file; an explicit `--disable-build-manifest-caching` replan included
+it. A wrapper help invocation without the paired-workspace identity also
+invalidated local compiled products; the subsequent full consumer build
+took 272.14 seconds. Installed binaries, checkouts and source changes were
+not removed. Do not use wrapper help invocations as harmless inspection when
+they can change the build identity; no wrapper change is bundled in this PR.
