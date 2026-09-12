@@ -22,6 +22,9 @@ tradeoffs before promoting new defaults.
 
 These are branch experiments, not production-default or release qualifications.
 
+For the complete launch preset, prerequisites, activation checks and rollback,
+see [opting in to request-banked attention](QWEN_NEXT_BANKED_ATTENTION_OPT_IN.md).
+
 | Plan item | Implemented / measured | Still required |
 |---|---|---|
 | Same-checkpoint baseline matrix | Six AFM/reference configurations and saved raw responses; integrated six-mode checkpoint repeated | Wider concurrency curve and workload coverage |
