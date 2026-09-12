@@ -1426,3 +1426,148 @@ summaries and hash manifest are retained externally under
 `BANKED-NATIVE-2PASS-20260912.md`; previous reports remain unchanged.
 No release, install, main merge, dependency pin, or default promotion occurs.
 This improves AR batching; the MTP verifier remains the next separate hot path.
+
+### Rejected grid-z verifier request banks (2026-09-12)
+
+The shared target forward supplies `[B,T,K]` activations, but the existing
+small-row q4 verifier only accepted `B=1`. An experimental extension assigned
+2–4 requests to grid-z banks, keeping each request's reduction order and
+register footprint. It passed 144 exact comparisons to independent verifier
+calls (BF16/FP16, widths 2–7, group sizes 32/64/128, strided inputs), compiled
+model-switch tests and 84 focused tests; two optional probes were skipped in
+the focused run. Isolated projection timings were mixed.
+
+The live same-binary C15/prefix/MTP3 screen **did not establish a reproducible
+gain**. Both orders used binary
+`d907c73e67fc1066baa3706dbe017c9699aac9f9779d4155b0c1fec30eaf93e9`,
+the exact ddalcu checkpoint and frozen 192-token agentic workload above.
+
+| Order | Control first / repeat tok/s | Grid-z first / repeat tok/s | Repeat difference |
+|---|---:|---:|---:|
+| Control then candidate | 58.75 / 77.30 | 54.38 / 84.42 | +9.21% |
+| Candidate then control | 57.46 / 87.87 | 58.29 / 87.45 | -0.48% |
+
+All 120 measured requests completed. Structural results were 24/30 in both
+first-order arms, and 24/30 control versus 25/30 candidate in reverse order;
+only 6/30 and 3/30 response text/token-count pairs matched. There were no newly
+failing structural cases. This is not semantic qualification. First-order
+useful structural throughput fell 0.2918 -> 0.2627 tasks/s in the first pass
+and rose 0.3658 -> 0.4086 on repeat. Thus even the initially favorable result
+was not a universal improvement.
+
+The pre-change reference run measured 41.42 / 74.32 tok/s; it is retained as
+run-to-run variability evidence, **not** used as the gain denominator. No
+other benchmark GPU workload or compilation overlapped these runs. The cause
+of the variability was not isolated.
+
+The grid-z implementation is rejected, not promoted. Its source patch,
+microbenchmarks, raw SSE, model identity, memory samples and comparisons are
+preserved externally as `rejected-banked-qmm-20260912.patch` and
+`banked-qmm-20260912-*`. Subsequent experiments must be compared against a
+new same-binary control; these numbers cannot be reused as their baseline.
+
+### Rejected packed-row verifier projection (2026-09-12)
+
+A second design reused each loaded q4 weight across independent request rows
+inside the tile. Only the linear activation rows were packed; attention,
+recurrent state, acceptance decisions and cache ownership were not flattened.
+It first expanded the existing shader's literal row count while reducing the
+column tile to keep at most 28 accumulators. Numerical tests passed, but
+latency deteriorated sharply above seven rows: a vocabulary projection at
+B2/T4 took 8.879 ms versus 1.436 ms native, and B4/T7 took 256.884 ms versus
+2.126 ms. This prototype never reached the API benchmark.
+
+Streaming one activation vector at a time, predecoding weights into literal
+scalars and removing dynamic accumulator indexing substantially reduced that
+cliff while retaining exact independent-verifier results. For example, the
+B2/T4 vocabulary case fell to 1.170 ms versus 1.453 ms native. This supports
+further investigation of temporary-storage pressure but does **not** identify
+register spilling conclusively; no shader resource-counter capture was made.
+
+Larger tiles and small-output projections still lost, so the API candidate
+was bounded to at most 14 packed rows and at least 1024 output channels, with
+ordinary fallback elsewhere. It passed 88 exact eligible shape comparisons,
+56 oversized-shape declines, compiled model/shape switching and 84 focused
+tests (two optional probes skipped). The paired Release build took 96.67 s;
+binary SHA-256 was
+`393f3fc57355aba80d7dfcadce4e50916364a6a303cb3f0816048ef2e8a39c27`.
+
+The live C15/prefix/MTP3 result was consistently worse despite some faster
+isolated projections:
+
+| Order | Control first / repeat tok/s | Packed first / repeat tok/s | Repeat difference |
+|---|---:|---:|---:|
+| Control then candidate | 60.05 / 87.66 | 56.89 / 81.61 | -6.90% |
+| Candidate then control | 59.11 / 88.46 | 58.36 / 81.57 | -7.79% |
+
+All 120 measured requests completed. Structural totals were 25/30 control
+versus 24/30 candidate in the first pair, and 24/30 versus 25/30 in reverse.
+Only 6/30 and 4/30 response text/token-count pairs matched. Two first-pair
+cases newly failed because their JSON was truncated at the 192-token cap;
+this is not a broad semantic-quality verdict. Reverse-order repeat useful
+structural throughput also fell, from 0.4394 to 0.3866 tasks/s. Reverse peak
+RSS was 69.443 -> 69.854 GiB. Neither output length nor aggregate token totals
+justify calling this a gain.
+
+**Both new implementations and their experimental environment switch have
+been removed.** Runtime and projection tests are restored byte-for-byte to
+the verified `9f509497` checkpoint. The isolated designs remain recoverable
+only in external patches; no new opt-in is advertised for a slower path.
+Artifacts are `packed-qmm-20260912-*`, `packed-qmm-bounded-20260912-*`,
+`packed-qmm-v2-20260912-*`, `rejected-packed-qmm-v1-20260912.patch`,
+`packed-qmm-v2-unbounded-20260912.patch` and
+`packed-qmm-bounded-source-20260912.patch` in the existing evidence folder.
+The 512-token and live lifecycle follow-ups were not run for these rejected
+candidates. No current-reference parity, release, default change or installed
+binary update is claimed.
+
+### Diagnostic direction after rejecting both projection paths
+
+A separate control run enabled only the existing `AFM_PERF=1` and
+`AFM_DEBUG=1` diagnostics. All 30 measured requests completed; the server
+exited zero. The frozen runner then exited one while decoding an invalid
+UTF-8 sequence in its mixed-writer console log. Raw log bytes and response
+JSON remain unchanged. A separate byte-tolerant parser recovered 32 complete
+phase/counter pairs, excluded the server and client warmups, and retained the
+decoder failure explicitly. This is not a clean driver pass.
+
+For the 30 measured sessions, the counters record 3,163 accepted drafts out
+of 5,397 (58.6%), across 1,799 speculative cycles. Instrumented host-side
+durations, weighted by each session's cycle count, are:
+
+| Phase | Total seconds | Share of instrumented time |
+|---|---:|---:|
+| Draft construction | 5.187 | 20.1% |
+| Verification construction | 16.003 | 61.9% |
+| Decision wait | 3.414 | 13.2% |
+| Commit construction | 0.717 | 2.8% |
+| History construction | 0.531 | 2.1% |
+
+These are **not GPU kernel times or a complete wall-time breakdown**. Timed
+construction can include GPU waits; the five timers cover only 25.851 seconds
+versus 68.688 seconds of client workload time. The diagnostic log lacks the
+shutdown batch counters, so its grouping counts remain unknown rather than
+being reported as zero. In the separate uninstrumented reverse control,
+1,360 request rows used 520 shared forwards: just 2.62 rows per group at C15.
+
+The source narrows the next work beyond isolated QMM:
+
+```text
+Compatible sessions (same model, depth and position; at most four)
+  -> merge caches + snapshot + materialize draft IDs [outside verify timer]
+  -> shared target forward
+  -> separate per-request vocabulary projections    [inside verify timer]
+  -> request-local sampling, acceptance and rollback
+```
+
+Next, split the uninstrumented cache/snapshot/ID work from target-forward and
+head work using the existing opt-in profiler. Then evaluate shared vocabulary
+projection **without changing backbone arithmetic**; the isolated large-head
+results make this a specific candidate, not a promised end-to-end gain.
+Retain each request's sampler/key order, accepted frontier, cancellation and
+prefix-state ownership. Larger mixed-position verification is a separate
+cache/attention design: widening the group limit alone is not sufficient.
+
+Evidence: `qmm-profile-20260912.json`, `summarize_qmm_profile.py` and
+`packed-qmm-20260912-control-profile-*`. This iteration rejects regressions
+and sharpens the next measurement; it does **not** add an aggregate speedup.
