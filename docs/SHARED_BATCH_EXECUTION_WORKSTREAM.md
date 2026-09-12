@@ -28,13 +28,13 @@ These are branch experiments, not production-default or release qualifications.
 | Shared exact-prefix replay | Serial AR and scheduler boundary helpers; opt-in API checks | Broader quality, long-context and model-switch qualification |
 | Qwen MTP replay | Opt-in complete target/head/history snapshots, exact replay and prompt-prefix continuation; focused and lifecycle tests pass | Working-set/memory and continuation quality qualification, serial-lane reuse |
 | Scheduler-owned Qwen MTP sessions | Opt-in streaming scheduler integration, staged draft/verify operations; mixed MTP/AR lifecycle and six-mode aggregate screen pass | Wider qualification and adaptive speculation |
-| Genuine GPU batches | Persistent equal-offset AR subgroups and compatible multi-request MTP target verification; cancellation/row-isolation tests | Arbitrary-position batches and a material MTP sharing benefit |
+| Genuine GPU batches | Equal-offset AR subgroups, request-owned mixed-position AR adapter, and compatible multi-request MTP target verification; row-isolation tests | Shared attention projections and a material MTP sharing benefit |
 | Continuous admission | Opt-in independent/group ownership; burst and staggered measurements | Avoid fragmentation across arbitrary arrival/position patterns |
-| Prefill/decode interleaving | Soft uncached-token admission budget across whole prompts | Suspend/resume individual prefills at token-chunk boundaries |
+| Prefill/decode interleaving | Bounded shared replay executor; opt-in same-owner AR decode ticks between chunks, preserving initial cohort formation | Broader arrival/latency qualification; MTP prefill remains excluded |
 | Adaptive speculation | Existing fixed-depth Qwen path retained | Workload-aware depth and useful-token cost policy |
 | CPU/GPU overlap | Bounded cross-slot submission and draft-first experiments; no material throughput improvement yet | Profile remaining host/device gaps and amortize work with shared execution |
 | Optional immutable PLE row cache | Bounded cache, exact-bit tests, limited measured benefit | Repeats before any default proposal; not the main throughput lever |
-| Batch kernels and graph overhead | Existing fused kernels retained; independent-row QMM screened and rejected | Profile remaining batch hot paths |
+| Batch kernels and graph overhead | Opt-in batch-indexed fused GDN prework and shape-specific compiled decode; independent-row QMM screened and rejected | Shared attention projections and remaining batch hot paths |
 | Memory budgets and reclamation | Group ownership/filtering and row-cache budget tested; RSS recorded | Long-context concurrency soak and request-memory admission budgets |
 | Qualification and cross-model reuse | Qwen-only guards and focused tests; lifecycle API smoke and six-mode matrix | Semantic/long-context qualification, then model-specific adapters |
 
@@ -1038,3 +1038,89 @@ other shapes use the existing fallback rather than trapping. The production
 checkpoint's eligible path is unchanged. One initial test-only crash came from
 casting PLE integer hash parameters to float; the fixture now preserves integer
 types. Neither failure is concealed as a passing run in the retained logs.
+
+### Same-binary aggregate confirmation
+
+Runtime source `8ed86fea`, consumer `9acccfc`, Release SHA-256
+`343c25b6f21349dc282237e74c3dfb48d79d55526a9486ab292941299dce8c79`.
+Exact checkpoint:
+`/Volumes/edata2/models/ddalcu/Qwen3.8-Flash-Next-MLX-Serve-4bit`.
+M3 Ultra, C15, MTP off, temperature 0, top-p 1, seed 42, 192-token cap,
+step 8192. Fifteen synthetic agentic requests then identical repeats after
+one warmup. First-round prefix reuse is intentional, not a cold-cache claim.
+All GPU runs are sequential without concurrent builds.
+
+| Prefix | Candidate | First / repeat aggregate tok/s | Runtime | Structural |
+|---|---|---:|---:|---:|
+| On | Control | 94.38 / 120.04 | 30/30 | 24/30 |
+| On | Fused batch GDN only | 101.73 / 123.53 | 30/30 | 24/30 |
+| On | Fused + compiled batch GDN | 108.39 / 124.04 | 30/30 | 24/30 |
+| On | Mixed-position adapter only | 110.30 / 150.06 | 30/30 | 24/30 |
+| On | Mixed-position + fused/compiled GDN | 126.79 / 155.12 | 30/30 | 24/30 |
+| On | Combined, reverse-order repeat | 130.40 / 153.93 | 30/30 | 24/30 |
+| On | Control, reverse-order repeat | 105.03 / 120.66 | 30/30 | 24/30 |
+| Off | Control | 67.02 / 69.15 | 30/30 | 26/30 |
+| Off | Combined | 79.29 / 79.53 | 30/30 | 28/30 |
+
+The repeat gain is **29.2%**, confirmed at **27.6%** in reverse order; without
+prefix reuse it is **15.0%**. Mixed-position sharing is the main measured lever,
+not the immutable PLE row cache: its budget is zero in every arm. Interleaving
+is off in this table. These are tuned opt-in candidates, not a no-environment
+or production-default qualification. The relevant new controls are
+`AFM_QWEN_BATCH_MIXED_POSITIONS`, `AFM_QWEN_BATCH_GDN_PREWORK`, and
+`AFM_QWEN_COMPILE_BATCH_GDN_DECODE`; full common controls are retained in each
+external `launch.json`.
+
+The 152.71 prefix/C15 and 84.53 no-prefix/C15 reference values above are frozen
+September 10 observations, not a newly rerun or latest-reference comparison.
+The current candidate is in that performance range, but these screens alone
+do not establish complete parity. Prefix cached-token totals match in every
+arm (15,479 first / 17,112 repeat); no-prefix arms report zero. Peak process
+RSS is approximately 67.7–67.8 GiB. RSS is not complete Metal/unified-memory
+accounting or a long-run leak qualification.
+
+All 270 measured requests completed. Structural counts check JSON and required
+fields/identity, **not semantic correctness**. The control's prefix failures
+are truncated streaming-fix answers; combined AGENT-13 instead stops after
+omitting `fix`. Equal totals do not mean identical failures or quality. Some
+manually inspected streaming advice is ambiguous or would discard valid final
+content. Keep those failures visible and qualify broader quality before any
+promotion; do not attribute all wording changes to rounding without evidence.
+All 30 outputs match between the fused-only and fused-plus-compiled GDN arms;
+cross-adapter text identity is not claimed. Tokens/second uses actual emitted
+tokens and includes queue/prefill time; response lengths can differ.
+
+With all four new controls enabled, **255/255 live API lifecycle assertions**
+passed across 45 requests: prefix/C15, cancellation/recovery, non-greedy
+sampling, stops, limits, and logprobs. This complements the 145/24 focused
+test runs; it does not replace full semantic/tool/long-context qualification.
+No installed binary, default, consumer dependency pin, or main branch changed.
+Raw evidence: `batch-screen-20260912-*`,
+`batch-recommendations-safety-20260912-*` in the external artifact root.
+
+### Revised chunk/interleave confirmation
+
+The same final binary was then screened with mixed-position and fused/compiled
+GDN enabled in both arms. Prefix off, C15, step 1024, eight short requests then
+seven ~5.3K-token arrivals after all eight initial streams emit three chunks.
+All eight are still active at late submission in both phases of both arms.
+This workload is substantially more prefill-heavy than the agentic table above.
+
+| Interleave | First / repeat aggregate tok/s | Repeat active-stream maximum-gap median | Repeat late TTFT median | Peak RSS GiB | Runtime / structural |
+|---|---:|---:|---:|---:|---:|
+| Off | 38.04 / 38.32 | 5.430 s | 20.582 s | 69.87 | 30/30 / 18/30 |
+| On | 37.57 / 37.99 | 1.073 s | 21.853 s | 70.07 | 30/30 / 15/30 |
+
+Interleaving cuts measured stream pauses about **5.1x**, but does not improve
+aggregate throughput (-0.9% repeat) and increases late TTFT about **6.2%**.
+The three fewer structural passes remain unattributed; this is not a pure
+performance success. Keep the option off and do not trade away throughput,
+latency or quality without user agreement. The larger mixed-position gains
+above do not depend on this option. MTP-prefill interleaving is still excluded.
+
+Current raw records: `batch-chunk-20260912-combined-{off,on}*`.
+The consolidated external report is `BATCH-RECOMMENDATIONS-20260912.md`, with
+machine-readable `batch-recommendations-20260912-summary.json` and verified
+`BATCH-RECOMMENDATIONS-20260912-SHA256SUMS.txt`. It inventories scripts, raw
+requests/SSE, results, memory samples, exit records and focused test logs.
+No reports or archives enter the repository.
