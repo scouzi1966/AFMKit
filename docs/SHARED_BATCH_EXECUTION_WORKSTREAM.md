@@ -1199,6 +1199,12 @@ build took 94.86 seconds; **255/255 live lifecycle assertions** passed again.
 
 Warm-prefix same-binary control/candidate: **161.50 / 164.64 aggregate tok/s**,
 then **157.15 / 164.54** in reverse order. No-prefix: **82.12 / 84.72**.
+The final longer staggered comparison gives **38.96 / 40.50 tok/s** (+4.0%),
+with active-stream gap medians 5.043 / 5.035 seconds and late TTFT medians
+20.011 / 20.009 seconds. Both arms complete 30/30 requests and pass 18/30
+structural checks. Peak process RSS is 69.95 / 70.02 GiB for this workload,
+not complete Metal-memory accounting. All 300 requests across the ten final
+timing/diagnostic arms completed and all harness-owned servers exited cleanly.
 Both enabled and disabled short-workload outputs match their respective prior
 projection-only build in **30/30 responses** per arm, including no-prefix.
 The normalization increment alone has no independently established end-to-end
@@ -1214,7 +1220,7 @@ the original capped failures, not retroactive passes. Manual inspection still
 finds streaming advice that can wrongly discard content accompanying a finish
 reason. This is not broad semantic qualification or model-only attribution.
 
-Release SHA-256:
+Runtime checkpoint: `11421247`. Release SHA-256:
 `a4f74e9f31910e445b9d2a4d089f813005986d0c5b0c7e7dc09a6e98f43a2938`.
 Exact runtime/test delta from `7a0ced6b` is retained externally as
 `shared-attention-row-norm-source-20260912.patch`. Consolidated results, raw
