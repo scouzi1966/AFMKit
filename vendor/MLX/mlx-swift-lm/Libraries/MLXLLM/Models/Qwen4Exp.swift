@@ -1915,10 +1915,13 @@ private final class Qwen4ExpAttention: Module {
         let key: MLXArray
         let value: MLXArray
         let index: MLXArray
+        let normalizedQuery: MLXArray?
+        let normalizedKey: MLXArray?
 
         func row(_ index: Int) -> Self {
             let range = index..<(index + 1)
-            return Self(query: query[range], key: key[range], value: value[range], index: self.index[range])
+            return Self(query: query[range], key: key[range], value: value[range], index: self.index[range],
+                normalizedQuery: normalizedQuery?[range], normalizedKey: normalizedKey?[range])
         }
     }
 
@@ -2043,11 +2046,25 @@ private final class Qwen4ExpAttention: Module {
     /// fixed-size attention outputs. No request state is captured or retained.
     func callRequestBatch(_ x: MLXArray, caches: [KVCache], angles: [MLXArray]?) -> MLXArray {
         precondition(x.dim(0) == caches.count && x.dim(1) == 1)
+        let query = qwen4ExpVerificationLinear(qProj, x, verificationPolicy: nil, role: .attention)
+        let key = qwen4ExpVerificationLinear(kProj, x, verificationPolicy: nil, role: .attention)
+        var normalized: (q: MLXArray, k: MLXArray)?
+        if Qwen4ExpQKNormRoPEFusion.enabled, x.dtype == .bfloat16,
+           headDim == 256, [32, 64, 128].contains(rope.dimensions) {
+            let queryInput = MLX.split(query.reshaped(caches.count, 1, heads, headDim * 2),
+                parts: 2, axis: -1)[0]
+            let perRowAngles = angles ?? caches.map { rope.fusedAngleRows(offset: $0.offset, sequenceLength: 1) }
+            normalized = Qwen4ExpQKNormRoPEFusion.callIndependentRows(
+                q: queryInput, k: key.reshaped(caches.count, 1, kvHeads, headDim),
+                qWeight: qNorm.weight, kWeight: kNorm.weight,
+                angles: concatenated(perRowAngles, axis: 0), epsilon: qNorm.eps,
+                qHeads: heads, kvHeads: kvHeads, rotaryDimensions: rope.dimensions)
+        }
         let projections = ProjectionRows(
-            query: qwen4ExpVerificationLinear(qProj, x, verificationPolicy: nil, role: .attention),
-            key: qwen4ExpVerificationLinear(kProj, x, verificationPolicy: nil, role: .attention),
+            query: query, key: key,
             value: qwen4ExpVerificationLinear(vProj, x, verificationPolicy: nil, role: .attention),
-            index: qwen4ExpVerificationLinear(indexer.indexQKProj, x, verificationPolicy: nil, role: .indexer))
+            index: qwen4ExpVerificationLinear(indexer.indexQKProj, x, verificationPolicy: nil, role: .indexer),
+            normalizedQuery: normalized?.q, normalizedKey: normalized?.k)
         let attended = caches.indices.map { row in
             callAsFunction(x[row..<(row + 1)], mask: .none, positionIDs: nil, cache: caches[row],
                 fusedQKAngles: angles?[row], projected: projections.row(row), deferOutputProjection: true)
@@ -2106,7 +2123,13 @@ private final class Qwen4ExpAttention: Module {
             && b == 1 && l > 1 && l <= VerifyWidthLinear.maximumAcceleratedWidth
             && x.dtype == .bfloat16
             && headDim == 256 && [32, 64, 128].contains(rope.dimensions)
-        if projected == nil, Self.compileDecode,
+        if let projected, let normalizedQuery = projected.normalizedQuery, let normalizedKey = projected.normalizedKey {
+            q = normalizedQuery
+            k = normalizedKey
+            v = projected.value.reshaped(b, l, kvHeads, headDim).transposed(0, 2, 1, 3)
+            gate = MLX.split(projected.query.reshaped(b, l, heads, headDim * 2), parts: 2, axis: -1)[1]
+                .reshaped(b, l, -1)
+        } else if projected == nil, Self.compileDecode,
            b == 1 && x.dtype == .bfloat16 && headDim == 256
                && [32, 64, 128].contains(rope.dimensions),
            (verificationPolicy == nil && l == 1) || compiledBatchedProjection,

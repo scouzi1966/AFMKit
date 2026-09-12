@@ -28,13 +28,13 @@ These are branch experiments, not production-default or release qualifications.
 | Shared exact-prefix replay | Serial AR and scheduler boundary helpers; opt-in API checks | Broader quality, long-context and model-switch qualification |
 | Qwen MTP replay | Opt-in complete target/head/history snapshots, exact replay and prompt-prefix continuation; focused and lifecycle tests pass | Working-set/memory and continuation quality qualification, serial-lane reuse |
 | Scheduler-owned Qwen MTP sessions | Opt-in streaming scheduler integration, staged draft/verify operations; mixed MTP/AR lifecycle and six-mode aggregate screen pass | Wider qualification and adaptive speculation |
-| Genuine GPU batches | Equal-offset AR subgroups, request-owned mixed-position AR adapter, and compatible multi-request MTP target verification; row-isolation tests | Shared attention projections and a material MTP sharing benefit |
+| Genuine GPU batches | Equal-offset AR subgroups, request-owned mixed-position AR adapter, shared attention projections, and compatible multi-request MTP target verification; row-isolation tests | Broader attention quality qualification and a material MTP sharing benefit |
 | Continuous admission | Opt-in independent/group ownership; burst and staggered measurements | Avoid fragmentation across arbitrary arrival/position patterns |
 | Prefill/decode interleaving | Bounded shared replay executor; opt-in same-owner AR decode ticks between chunks, preserving initial cohort formation | Broader arrival/latency qualification; MTP prefill remains excluded |
 | Adaptive speculation | Existing fixed-depth Qwen path retained | Workload-aware depth and useful-token cost policy |
 | CPU/GPU overlap | Bounded cross-slot submission and draft-first experiments; no material throughput improvement yet | Profile remaining host/device gaps and amortize work with shared execution |
 | Optional immutable PLE row cache | Bounded cache, exact-bit tests, limited measured benefit | Repeats before any default proposal; not the main throughput lever |
-| Batch kernels and graph overhead | Opt-in batch-indexed fused GDN prework and shape-specific compiled decode; independent-row QMM screened and rejected | Shared attention projections and remaining batch hot paths |
+| Batch kernels and graph overhead | Opt-in batch-indexed fused GDN prework, shape-specific compiled decode and shared attention projections; independent-row QMM screened and rejected | Remaining per-request kernels and batch hot paths |
 | Memory budgets and reclamation | Group ownership/filtering and row-cache budget tested; RSS recorded | Long-context concurrency soak and request-memory admission budgets |
 | Qualification and cross-model reuse | Qwen-only guards and focused tests; lifecycle API smoke and six-mode matrix | Semantic/long-context qualification, then model-specific adapters |
 
@@ -1146,8 +1146,23 @@ Initial same-binary warm-prefix screens: **160.92 -> 166.22 aggregate tok/s**
 (+3.3%), confirmed in reverse order at **158.25 -> 162.50** (+2.7%). Both
 arms have 30 runtime completions and 24 structural passes. Zero of 30 paired
 texts/token counts match, so this is not semantic equivalence. Peak RSS is
-about 67.7 GiB. No-prefix and longer sparse-admission measurements are recorded
-in the external `shared-attention-20260912-*` run folders as they complete.
+about 67.7 GiB. No-prefix repeats improved **82.23 -> 84.39 tok/s** (+2.6%),
+but structural passes fell **28/30 -> 24/30**. All candidate failures ended
+at the 192-token cap; this does not establish their root cause or erase the
+fixed-cap regression. Larger-output diagnostics are a separate qualification.
+
+Longer staggered 8+7 arrivals (prefix off, step 1024) measured
+**38.86 -> 40.54 repeat aggregate tok/s** (+4.3%). Median active-stream maximum
+gap was 5.030 / 5.070 seconds and late TTFT 20.019 / 19.999 seconds. Runtime
+completions were 30/30 and structural passes 18/30 in both arms. The control's
+first phase was an outlier at 25.61 tok/s with a 34.983-second stream gap;
+it remains in the report and is not used as a claimed optimization gain.
+
+All 240 measured requests across eight arms completed. Output lengths differ:
+the first prefix comparison's repeat round increased 2,411 -> 2,590 output
+tokens while elapsed time increased 14.98 -> 15.58 seconds. Higher token
+throughput does not imply faster completed tasks. Raw requests and responses
+remain in the external `shared-attention-20260912-*` run folders.
 These are C15, MTP-off, tuned agentic screens, not a new default or latest
 reference parity qualification. Interleaving and the PLE row cache are off.
 
@@ -1155,3 +1170,60 @@ Measured Release SHA-256:
 `50d22558f2d237542fdf2b4da6e88f901049971128aad71a7e470b80d41491df`.
 The external `shared-attention-source-20260912.patch` records its exact source
 delta from `2c800d98`; `SHARED-ATTENTION-20260912.md` consolidates the results.
+
+### Shared independent normalization/rotary rows
+
+The same opt-in attention control also batches the stateless Q/K normalization
+and rotary operation. `callIndependentRows` reinterprets B one-token requests
+as B independent kernel rows, supplies each request's actual rotary angles,
+and restores the request/head axes afterward. It reuses the existing qualified
+Metal arithmetic, including its BF16 rounding boundaries. It does **not**
+reinterpret attention or recurrent histories as one sequence. Unsupported
+dtype/geometry or more than 32 rows falls back to the per-request path.
+
+```text
+batch hidden rows --> shared Q/K/V/index projections + Q/K norm/RoPE
+                       |               |                |
+                    request A       request B        request N
+                    own QSA/KV      own QSA/KV       own QSA/KV
+                    attention       attention        attention
+                       +---------------+----------------+
+                              shared output projection
+```
+
+**147 focused tests** passed, including exact BF16 normalized Q/K equality
+against independent calls at B=1/2/8/15/32 and strided gated-query inputs.
+The existing mixed-position attention/cache oracle still passes. **26 targeted
+default-path tests** passed with the new controls unset. The consumer Release
+build took 94.86 seconds; **255/255 live lifecycle assertions** passed again.
+
+Warm-prefix same-binary control/candidate: **161.50 / 164.64 aggregate tok/s**,
+then **157.15 / 164.54** in reverse order. No-prefix: **82.12 / 84.72**.
+Both enabled and disabled short-workload outputs match their respective prior
+projection-only build in **30/30 responses** per arm, including no-prefix.
+The normalization increment alone has no independently established end-to-end
+speedup; do not add its presumed savings to the projection result.
+
+Task throughput is also recorded: the first prefix comparison completes
+**1.005 / 0.954 requests/s**. Candidate responses are longer, so a higher
+token rate is not an unconditional completed-task benefit. At the 192-token
+cap, no-prefix structural passes remain **28/30 / 24/30**. A separate run
+with a 512-token budget passes **30/30 in both arms**; previously truncated
+candidate streaming answers finish at 219--223 tokens. The diagnostic retains
+the original capped failures, not retroactive passes. Manual inspection still
+finds streaming advice that can wrongly discard content accompanying a finish
+reason. This is not broad semantic qualification or model-only attribution.
+
+Release SHA-256:
+`a4f74e9f31910e445b9d2a4d089f813005986d0c5b0c7e7dc09a6e98f43a2938`.
+Exact runtime/test delta from `7a0ced6b` is retained externally as
+`shared-attention-row-norm-source-20260912.patch`. Consolidated results, raw
+requests, task rates and verified hashes are under
+`SHARED-ATTENTION-ROW-NORM-20260912.md` in the external artifact root.
+
+The additions are Qwen Next AR-only, not new generic model defaults or MTP
+speedups. The next substantial sharing work is the still-per-request
+attention/cache body and the MTP target verifier. Before promotion, qualify
+semantic/tool behavior, longer contexts and memory, wider concurrency, and
+the current reference. Keep PLE row cache and prefill interleaving off in
+throughput comparisons; neither is a demonstrated general throughput win.

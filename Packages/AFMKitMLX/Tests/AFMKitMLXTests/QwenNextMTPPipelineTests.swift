@@ -753,6 +753,37 @@ final class QwenNextMTPPipelineTests: XCTestCase {
         }
     }
 
+    func testSharedQKNormRoPERowsMatchIndependentRequestsExactly() throws {
+        MLXRandom.seed(489)
+        let heads = 8, kvHeads = 2, headDim = 256, rotary = 64
+        let qWeight = (MLXRandom.normal([headDim]) / 100).asType(.bfloat16)
+        let kWeight = (MLXRandom.normal([headDim]) / 100).asType(.bfloat16)
+        for count in [1, 2, 8, 15, 32] {
+            // Gated Q projections produce a strided split view in the real model.
+            let q = MLX.split(MLXRandom.normal([count, 1, heads, headDim * 2]).asType(.bfloat16),
+                parts: 2, axis: -1)[0]
+            let k = MLXRandom.normal([count, 1, kvHeads, headDim]).asType(.bfloat16)
+            let angles = cos(MLX.arange(count * rotary).asType(.float32) / 71).reshaped(count, rotary)
+            let actual = try XCTUnwrap(Qwen4ExpQKNormRoPEFusion.callIndependentRows(
+                q: q, k: k, qWeight: qWeight, kWeight: kWeight, angles: angles,
+                epsilon: 0.000001, qHeads: heads, kvHeads: kvHeads, rotaryDimensions: rotary))
+            let singles = try (0..<count).map { row in
+                try XCTUnwrap(Qwen4ExpQKNormRoPEFusion.call(
+                    q: q[row..<(row + 1)], k: k[row..<(row + 1)], qWeight: qWeight, kWeight: kWeight,
+                    angles: angles[row..<(row + 1)], epsilon: 0.000001,
+                    qHeads: heads, kvHeads: kvHeads, rotaryDimensions: rotary))
+            }
+            XCTAssertEqual(actual.q.shape, [count, heads, 1, headDim])
+            XCTAssertEqual(actual.k.shape, [count, kvHeads, 1, headDim])
+            XCTAssertEqual(actual.q.asArray(Float.self), concatenated(singles.map(\.q), axis: 0).asArray(Float.self))
+            XCTAssertEqual(actual.k.asArray(Float.self), concatenated(singles.map(\.k), axis: 0).asArray(Float.self))
+        }
+        let unsupported = MLXArray.zeros([33, 1, heads, headDim], dtype: .bfloat16)
+        XCTAssertNil(Qwen4ExpQKNormRoPEFusion.callIndependentRows(q: unsupported, k: unsupported,
+            qWeight: qWeight, kWeight: kWeight, angles: MLXArray.zeros([33, rotary]),
+            epsilon: 0.000001, qHeads: heads, kvHeads: heads, rotaryDimensions: rotary))
+    }
+
     func testSharedAttentionProjectionsPreserveMixedPositionCachesAndRowChurn() async throws {
         // Exercise production head geometry, both sides of the sparse budget,
         // and 4-bit projection weights. No singleton bit-equivalence claim:
