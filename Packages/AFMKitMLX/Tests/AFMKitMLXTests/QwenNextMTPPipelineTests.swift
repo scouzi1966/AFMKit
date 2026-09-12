@@ -753,6 +753,53 @@ final class QwenNextMTPPipelineTests: XCTestCase {
         }
     }
 
+    func testSharedAttentionProjectionsPreserveMixedPositionCachesAndRowChurn() async throws {
+        // Exercise production head geometry, both sides of the sparse budget,
+        // and 4-bit projection weights. No singleton bit-equivalence claim:
+        // GEMV/GEMM can round differently, but request state must remain local.
+        for dtype: DType in [.float32, .bfloat16] {
+            MLXRandom.seed(982)
+            let model = try await makeModel(attentionHeadDimension: 256, indexerBudget: 16)
+            let layer = Qwen4ExpDecoderLayer(model.configuration, layerIndex: 1)
+            layer.update(parameters: layer.mapParameters { $0.asType(dtype) })
+            if dtype == .bfloat16 { quantize(model: layer, groupSize: 32, bits: 4) }
+            eval(layer)
+            let actual = (0..<15).map { _ in model.newCache(parameters: nil)[1] }
+            let expected = (0..<15).map { _ in model.newCache(parameters: nil)[1] }
+            for row in actual.indices {
+                let input = MLXRandom.normal([1, 8 + row * 4, 128]).asType(dtype)
+                eval(layer.attentionPrefillForTesting(input, cache: actual[row]),
+                     layer.attentionPrefillForTesting(input, cache: expected[row]))
+            }
+            let snapshots = actual.map { MLXReplayPrefill.snapshot($0.state) }
+            eval(snapshots.flatMap { $0 })
+            let frozen = snapshots.map { $0.map { $0.asArray(Float.self) } }
+            for active in [Array(0..<15), [14, 2, 7, 0, 8, 3, 6, 11], [11, 2, 14, 7], [7, 11, 2], [2, 7], [7]] {
+                let input = MLXRandom.normal([active.count, 1, 128]).asType(dtype)
+                let a = layer.attentionRequestBatchForTesting(input,
+                    caches: active.map { actual[$0] }, shared: true)
+                let b = layer.attentionRequestBatchForTesting(input,
+                    caches: active.map { expected[$0] }, shared: false)
+                eval(a, b)
+                let error = abs(a - b).max().item(Float.self)
+                print("[SharedAttentionOracle] dtype=\(dtype) rows=\(active.count) max_error=\(error)")
+                XCTAssertLessThan(error, dtype == .float32 ? 0.0001 : 0.02)
+                XCTAssertTrue(a.asArray(Float.self).allSatisfy(\.isFinite))
+                for row in active {
+                    XCTAssertEqual(actual[row].offset, expected[row].offset)
+                    XCTAssertEqual(actual[row].metaState, expected[row].metaState)
+                    XCTAssertEqual(actual[row].state.count, expected[row].state.count)
+                    for (left, right) in zip(actual[row].state, expected[row].state) {
+                        XCTAssertEqual(left.shape, right.shape)
+                        XCTAssertLessThan(abs(left.asType(.float32) - right.asType(.float32)).max()
+                            .item(Float.self), dtype == .float32 ? 0.0001 : 0.02)
+                    }
+                }
+            }
+            XCTAssertEqual(snapshots.map { $0.map { $0.asArray(Float.self) } }, frozen)
+        }
+    }
+
     func testHeadAnchorRepairPlanCoversEveryAcceptanceFrontier() {
         for depth in [1, 3, 4, 7] {
             for accepted in 0...depth {

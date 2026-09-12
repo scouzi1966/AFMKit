@@ -1124,3 +1124,34 @@ machine-readable `batch-recommendations-20260912-summary.json` and verified
 `BATCH-RECOMMENDATIONS-20260912-SHA256SUMS.txt`. It inventories scripts, raw
 requests/SSE, results, memory samples, exit records and focused test logs.
 No reports or archives enter the repository.
+
+## Shared attention projection experiment (2026-09-12)
+
+`AFM_QWEN_BATCH_ATTENTION_PROJECTIONS=1` additionally shares Q/K/V, QSA-index
+and output projections inside the request-owned AR batch adapter. Native
+per-request QSA selection, rotary positions and KV updates remain explicit;
+only fixed-size attention outputs are concatenated, not padded full histories.
+Ordinary AR and MTP paths are unchanged. Source attribution names David Dalcu's
+MIT-licensed reference implementation. This flag is off by default.
+
+Release build passed in 96.33 seconds. The focused suite passed **146 tests**
+with the new flag enabled; **25 targeted/default-path tests** passed with the
+new controls unset. New numeric coverage uses head dimension 256, 4-bit
+weights, dense/sparse history boundaries and B=15/8/4/3/2/1 row churn. The
+largest BF16 output difference from independent attention was 0.001953125;
+positions, state geometry and saved snapshots passed their checks.
+Live C15/prefix safety passed **255/255 API assertions**.
+
+Initial same-binary warm-prefix screens: **160.92 -> 166.22 aggregate tok/s**
+(+3.3%), confirmed in reverse order at **158.25 -> 162.50** (+2.7%). Both
+arms have 30 runtime completions and 24 structural passes. Zero of 30 paired
+texts/token counts match, so this is not semantic equivalence. Peak RSS is
+about 67.7 GiB. No-prefix and longer sparse-admission measurements are recorded
+in the external `shared-attention-20260912-*` run folders as they complete.
+These are C15, MTP-off, tuned agentic screens, not a new default or latest
+reference parity qualification. Interleaving and the PLE row cache are off.
+
+Measured Release SHA-256:
+`50d22558f2d237542fdf2b4da6e88f901049971128aad71a7e470b80d41491df`.
+The external `shared-attention-source-20260912.patch` records its exact source
+delta from `2c800d98`; `SHARED-ATTENTION-20260912.md` consolidates the results.
