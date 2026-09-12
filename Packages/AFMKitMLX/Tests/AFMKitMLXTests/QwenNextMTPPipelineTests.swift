@@ -831,6 +831,45 @@ final class QwenNextMTPPipelineTests: XCTestCase {
         }
     }
 
+    func testBankedAttentionPreservesQSAStateAtDenseSparseBoundaryAndRowChurn() async throws {
+        MLXRandom.seed(1591)
+        let model = try await makeModel(attentionHeadDimension: 256)
+        let layer = Qwen4ExpDecoderLayer(model.configuration, layerIndex: 1)
+        layer.update(parameters: layer.mapParameters { $0.asType(.bfloat16) })
+        quantize(model: layer, groupSize: 32, bits: 4)
+        eval(layer)
+        let lengths = [31, 255, 2_047, 2_063, 2_103]
+        let actual = lengths.map { _ in model.newCache(parameters: nil)[1] }
+        let expected = lengths.map { _ in model.newCache(parameters: nil)[1] }
+        for row in lengths.indices {
+            let input = MLXRandom.normal([1, lengths[row], 128]).asType(.bfloat16)
+            eval(layer.attentionPrefillForTesting(input, cache: actual[row]),
+                 layer.attentionPrefillForTesting(input, cache: expected[row]))
+        }
+        let snapshots = actual.map { MLXReplayPrefill.snapshot($0.state) }
+        eval(snapshots.flatMap { $0 })
+        let frozen = snapshots.map { $0.map { $0.asArray(Float.self) } }
+        let full = Array(lengths.indices)
+        for active in [full, full, full, full, full, [4, 0, 3, 1], [3, 4], [4]] {
+            let input = MLXRandom.normal([active.count, 1, 128]).asType(.bfloat16)
+            let a = layer.attentionRequestBatchForTesting(input, caches: active.map { actual[$0] },
+                shared: true, banked: true)
+            let b = layer.attentionRequestBatchForTesting(input, caches: active.map { expected[$0] },
+                shared: true, banked: false)
+            eval(a, b)
+            let error = abs(a - b).max().item(Float.self)
+            print("[BankedCacheOracle] rows=\(active) max_error=\(error)")
+            XCTAssertLessThan(error, 0.005)
+            for row in active {
+                XCTAssertEqual(actual[row].offset, expected[row].offset)
+                XCTAssertEqual(actual[row].metaState, expected[row].metaState)
+                XCTAssertEqual(actual[row].state.map { $0.asArray(Float.self) },
+                               expected[row].state.map { $0.asArray(Float.self) })
+            }
+        }
+        XCTAssertEqual(snapshots.map { $0.map { $0.asArray(Float.self) } }, frozen)
+    }
+
     func testHeadAnchorRepairPlanCoversEveryAcceptanceFrontier() {
         for depth in [1, 3, 4, 7] {
             for accepted in 0...depth {

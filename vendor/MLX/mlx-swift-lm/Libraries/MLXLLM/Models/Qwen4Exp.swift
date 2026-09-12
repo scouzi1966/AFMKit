@@ -2044,7 +2044,10 @@ private final class Qwen4ExpAttention: Module {
     /// forwardMoeBatchedDecode / qsaMaskBatched. Unlike its padded mask path,
     /// retain AFM's native per-row QSA/KV execution and concatenate only the
     /// fixed-size attention outputs. No request state is captured or retained.
-    func callRequestBatch(_ x: MLXArray, caches: [KVCache], angles: [MLXArray]?) -> MLXArray {
+    func callRequestBatch(
+        _ x: MLXArray, caches: [KVCache], angles: [MLXArray]?,
+        banked: Bool = Qwen4ExpRequestAttentionBatch.enabled
+    ) -> MLXArray {
         precondition(x.dim(0) == caches.count && x.dim(1) == 1)
         let query = qwen4ExpVerificationLinear(qProj, x, verificationPolicy: nil, role: .attention)
         let key = qwen4ExpVerificationLinear(kProj, x, verificationPolicy: nil, role: .attention)
@@ -2065,6 +2068,49 @@ private final class Qwen4ExpAttention: Module {
             value: qwen4ExpVerificationLinear(vProj, x, verificationPolicy: nil, role: .attention),
             index: qwen4ExpVerificationLinear(indexer.indexQKProj, x, verificationPolicy: nil, role: .indexer),
             normalizedQuery: normalized?.q, normalizedKey: normalized?.k)
+        // Validate the alternate path before the first index/KV mutation.
+        // Fused score selection keeps its existing independent execution.
+        if banked, let normalized, !Qwen4ExpQSAFusedDecodeAttention.enabled,
+           caches.allSatisfy({ $0 is Qwen4ExpAttentionCache }) {
+            let rows: [Qwen4ExpRequestAttentionBatch.Row] = caches.indices.map { row in
+                let range = row..<(row + 1)
+                let positions = Qwen4ExpPerformanceControls.deferDenseQSAPositionHistory
+                    ? nil : MLXArray([Int32(caches[row].offset)]).reshaped(1, 1)
+                let selection = indexer(x[range], positionIDs: positions,
+                    cache: caches[row] as? Qwen4ExpAttentionCache, projectedQK: projections.index[range])
+                let value = projections.value[range].reshaped(1, 1, kvHeads, headDim).transposed(0, 2, 1, 3)
+                let cached = caches[row].update(keys: normalized.k[range], values: value)
+                let blocks: MLXArray?
+                let mask: MLXArray?
+                switch selection {
+                case .none:
+                    blocks = nil; mask = nil
+                case .some(.blocks(let selected)):
+                    blocks = selected; mask = nil
+                case .some(.mask(let selected)):
+                    blocks = nil; mask = selected
+                case .some(.decodeScores(let scores)):
+                    // Defensive equivalent of the existing score fallback;
+                    // the pre-mutation feature guard excludes this mode.
+                    let ids = MLX.arange(scores.dim(1), dtype: .int32)
+                    blocks = sorted(MLX.argPartition(-(scores - ids.asType(.float32) * 1e-7),
+                        kth: indexer.blockTopK - 1, axis: -1)[0..., ..<indexer.blockTopK]
+                        .asType(.int32), axis: -1).expandedDimensions(axis: 1)
+                    mask = nil
+                }
+                return .init(query: normalized.q[range], keys: cached.0, values: cached.1,
+                    selectedBlocks: blocks, mask: mask)
+            }
+            let outputs = Qwen4ExpRequestAttentionBatch.outputs(
+                rows, scale: scale, compressionRatio: indexer.compressRatio)
+            let gated = outputs.indices.map { row in
+                let gate = MLX.split(query[row..<(row + 1)].reshaped(1, 1, heads, headDim * 2),
+                    parts: 2, axis: -1)[1].reshaped(1, 1, -1)
+                return outputs[row].transposed(0, 2, 1, 3).reshaped(1, 1, -1) * sigmoid(gate)
+            }
+            return qwen4ExpVerificationLinear(oProj, concatenated(gated, axis: 0),
+                verificationPolicy: nil, role: .attention)
+        }
         let attended = caches.indices.map { row in
             callAsFunction(x[row..<(row + 1)], mask: .none, positionIDs: nil, cache: caches[row],
                 fusedQKAngles: angles?[row], projected: projections.row(row), deferOutputProjection: true)
@@ -4040,10 +4086,11 @@ final class Qwen4ExpDecoderLayer: Module {
     }
 
     func attentionRequestBatchForTesting(
-        _ input: MLXArray, caches: [KVCache], shared: Bool
+        _ input: MLXArray, caches: [KVCache], shared: Bool, banked: Bool? = nil
     ) -> MLXArray {
         precondition(!isLinear)
-        if shared { return selfAttention!.callRequestBatch(input, caches: caches, angles: nil) }
+        if shared { return selfAttention!.callRequestBatch(input, caches: caches, angles: nil,
+            banked: banked ?? Qwen4ExpRequestAttentionBatch.enabled) }
         return concatenated(caches.indices.map { row in
             selfAttention!(input[row..<(row + 1)], mask: .none, positionIDs: nil, cache: caches[row])
         }, axis: 0)
