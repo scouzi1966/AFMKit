@@ -60,9 +60,8 @@ enum Qwen4ExpRequestAttentionBatch {
         }
     }
 
-    private static let kernels = (1...maximumRows).map { width in
-        let banks = (0..<width).flatMap { ["keys_\($0)", "values_\($0)"] }
-        let selectBank = (0..<width).map { row in
+    static func bankSelection(width: Int) -> String {
+        (0..<width).map { row in
             """
             case \(row):
                 key_base = keys_\(row);
@@ -77,6 +76,11 @@ enum Qwen4ExpRequestAttentionBatch {
                 break;
             """
         }.joined(separator: "\n")
+    }
+
+    private static let kernels = (1...maximumRows).map { width in
+        let banks = (0..<width).flatMap { ["keys_\($0)", "values_\($0)"] }
+        let selectBank = bankSelection(width: width)
         return MLXFast.metalKernel(
             name: "qwen_request_banked_attention_256_b\(width)",
             inputNames: ["queries", "scale", "blocks", "bounds"] + banks,
@@ -196,6 +200,43 @@ enum Qwen4ExpRequestAttentionBatch {
                               && blocks.dim(2) <= row.keys.dim(2) / compressionRatio
                       } ?? true)
               }) else { return nil }
+
+        // Native dense attention changes reduction algorithms with cache
+        // length. Preserve that arithmetic instead of sending every row
+        // through the sparse one-pass kernel. Group by bounded partition
+        // count; never pad or concatenate the request-owned K/V histories.
+        let partitions = rows.map { row in
+            row.selectedBlocks == nil ? Qwen4ExpRequestDenseAttention.partitionCount(
+                length: row.keys.dim(2), queryHeads: heads, keyHeads: keyHeads) : 0
+        }
+        if partitions.contains(where: { $0 > 0 }) {
+            var outputs = Array<MLXArray?>(repeating: nil, count: rows.count)
+            for count in Set(partitions).sorted() {
+                let indices = rows.indices.filter { partitions[$0] == count }
+                let bank = indices.map { rows[$0] }
+                let output: MLXArray
+                if count == 0 {
+                    output = callOnePass(bank, scale: scale, compressionRatio: compressionRatio)
+                } else if Qwen4ExpRequestDenseAttention.hasPartitionOverride || heads / keyHeads > simdWidth {
+                    // Respect native tuning overrides and unsupported group
+                    // geometry without unbounded custom specializations.
+                    output = concatenated(bank.map {
+                        $0.independent(scale: scale, compressionRatio: compressionRatio)
+                    }, axis: 0)
+                } else {
+                    output = Qwen4ExpRequestDenseAttention.call(bank, scale: scale, partitions: count)
+                }
+                for (position, index) in indices.enumerated() {
+                    outputs[index] = output[position..<(position + 1)]
+                }
+            }
+            return concatenated(outputs.map { $0! }, axis: 0)
+        }
+        return callOnePass(rows, scale: scale, compressionRatio: compressionRatio)
+    }
+
+    private static func callOnePass(_ rows: [Row], scale: Float, compressionRatio: Int) -> MLXArray {
+        let heads = rows[0].query.dim(1), keyHeads = rows[0].keys.dim(1)
         var bounds: [Int32] = []
         var selected: [MLXArray] = []
         var blockOffset = 0

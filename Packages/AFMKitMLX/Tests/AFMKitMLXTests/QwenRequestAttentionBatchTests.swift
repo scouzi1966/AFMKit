@@ -41,10 +41,52 @@ final class QwenRequestAttentionBatchTests: XCTestCase {
                 let expected = row.independent(scale: scale, compressionRatio: 4)
                 let error = abs(actual[i..<(i + 1)] - expected).max().item(Float.self)
                 print("[BankedAttentionOracle] rows=\(order) row=\(i) max_error=\(error)")
-                XCTAssertLessThan(error, 0.005)
+                XCTAssertEqual(error, 0, "The bank must preserve native attention arithmetic")
             }
         }
         XCTAssertEqual(original.map { [$0.keys.asArray(Float.self), $0.values.asArray(Float.self)] }, frozen)
+    }
+
+    func testDensePartitionPolicyMatchesNativeThresholds() {
+        func partitions(_ length: Int, _ architecture: String, _ group: Int = 12) -> Int {
+            Qwen4ExpRequestDenseAttention.partitionCount(
+                length: length, queryHeads: group * 2, keyHeads: 2, architecture: architecture)
+        }
+        XCTAssertEqual(partitions(1_023, "applegpu_g16s"), 0)
+        XCTAssertEqual(partitions(1_024, "applegpu_g16s"), 64)
+        XCTAssertEqual(partitions(1_025, "applegpu_g16s"), 128)
+        XCTAssertEqual(partitions(8_193, "applegpu_g16s"), 256)
+        XCTAssertEqual(partitions(32_769, "applegpu_g16s"), 512)
+        XCTAssertEqual(partitions(65_537, "applegpu_g16s"), 1_024)
+        XCTAssertEqual(partitions(1_024, "applegpu_g16d"), 128)
+        XCTAssertEqual(partitions(16_384, "applegpu_g16d"), 512)
+        XCTAssertEqual(partitions(65_536, "applegpu_g16d"), 1_024)
+        XCTAssertEqual(partitions(8_193, "applegpu_g16d", 2), 256)
+        XCTAssertEqual(partitions(4_095, "applegpu_g16g"), 0)
+        XCTAssertEqual(partitions(4_096, "applegpu_g16g"), 64)
+        XCTAssertEqual(partitions(4_096, "applegpu_g16g", 2), 32)
+        XCTAssertEqual(partitions(4_096, "applegpu_g16g", 1), 0)
+    }
+
+    func testDenseNativeParityAcrossPartitionBoundaries() throws {
+        try MLXMetalLibrary.ensureAvailable(verbose: false)
+        MLXRandom.seed(617)
+        print("[BankedDenseDevice] \(GPU.deviceInfo().architecture)")
+        for lengths in [[1_023, 1_024, 1_025, 2_047], [4_095, 4_096, 8_192, 8_193]] {
+            let bank = lengths.map { length in
+                Row(query: MLXRandom.normal([1, 24, 1, 256]).asType(.bfloat16),
+                    keys: MLXRandom.normal([1, 2, length + 7, 256]).asType(.bfloat16)[0..., 0..., ..<length, 0...],
+                    values: MLXRandom.normal([1, 2, length + 11, 256]).asType(.bfloat16)[0..., 0..., ..<length, 0...],
+                    selectedBlocks: nil, mask: nil)
+            }
+            let output = try XCTUnwrap(Qwen4ExpRequestAttentionBatch.call(bank, scale: scale, compressionRatio: 4))
+            for (index, row) in bank.enumerated() {
+                let error = abs(output[index..<(index + 1)] - row.independent(scale: scale, compressionRatio: 4))
+                    .max().item(Float.self)
+                print("[BankedDenseOracle] length=\(lengths[index]) max_error=\(error)")
+                XCTAssertEqual(error, 0)
+            }
+        }
     }
 
     func testBankedAttentionHandlesStridedElementsAndReplacedRequestIdentity() throws {

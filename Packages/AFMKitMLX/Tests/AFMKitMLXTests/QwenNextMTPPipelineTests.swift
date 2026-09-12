@@ -859,7 +859,7 @@ final class QwenNextMTPPipelineTests: XCTestCase {
             eval(a, b)
             let error = abs(a - b).max().item(Float.self)
             print("[BankedCacheOracle] rows=\(active) max_error=\(error)")
-            XCTAssertLessThan(error, 0.005)
+            XCTAssertEqual(error, 0, "Banking must preserve native attention outputs")
             for row in active {
                 XCTAssertEqual(actual[row].offset, expected[row].offset)
                 XCTAssertEqual(actual[row].metaState, expected[row].metaState)
