@@ -1475,6 +1475,98 @@ final class QwenNextMTPPipelineTests: XCTestCase {
         }
     }
 
+    func testSharedVerificationDispatchPreservesSingletonAndStrictDefaults() {
+        for width in [2, 4, 7] {
+            XCTAssertEqual(qwen4ExpVerificationDispatchStride(
+                batchSize: 1, width: width, policy: .batched,
+                singletonStride: 8, sharedStride: 0), 8)
+            XCTAssertEqual(qwen4ExpVerificationDispatchStride(
+                batchSize: 2, width: width, policy: .batched,
+                singletonStride: 8, sharedStride: 0), 0)
+            XCTAssertEqual(qwen4ExpVerificationDispatchStride(
+                batchSize: 2, width: width, policy: .batched,
+                singletonStride: 0, sharedStride: 4), 4)
+            for policy: MTPVerificationPolicy? in [nil, .strictSingletonEquivalent] {
+                XCTAssertEqual(qwen4ExpVerificationDispatchStride(
+                    batchSize: 2, width: width, policy: policy,
+                    singletonStride: 8, sharedStride: 4), 0)
+            }
+        }
+        for (batch, width) in [(0, 4), (5, 4), (4, 7), (3, 8), (2, 1), (2, 9)] {
+            XCTAssertEqual(qwen4ExpVerificationDispatchStride(
+                batchSize: batch, width: width, policy: .batched,
+                singletonStride: 8, sharedStride: 4), 0)
+        }
+    }
+
+    func testCompiledSharedTailKeepsBatchedHCArithmeticAcrossModelsAndShapes() async throws {
+        for _ in 0..<2 {
+            let model = try await makeModel()
+            let layer = Qwen4ExpDecoderLayer(model.configuration, layerIndex: 1)
+            layer.update(parameters: layer.mapParameters { $0.asType(.bfloat16) })
+            quantize(model: layer, groupSize: 32, bits: 4)
+            eval(layer)
+            for (batch, width) in [(2, 2), (2, 4), (3, 4), (4, 4), (2, 7), (2, 8), (2, 2)] {
+                func values(_ columns: Int, _ divisor: Float) -> MLXArray {
+                    MLXArray((0..<(batch * width * columns)).map { Float(($0 % 29) - 14) / divisor })
+                        .reshaped(batch, width, columns).asType(.bfloat16)
+                }
+                let attended = values(128, 32), residual = values(512, 64)
+                let injection = values(4, 128)
+                let expected = layer.sharedVerificationTail(
+                    attended: attended, residual: residual, injection: injection, compiled: false)
+                let actual = layer.sharedVerificationTail(
+                    attended: attended, residual: residual, injection: injection, compiled: true)
+                eval(expected, actual)
+                XCTAssertTrue(expected.asArray(Float.self) == actual.asArray(Float.self),
+                              "Shared tail changed values at B=\(batch), T=\(width)")
+            }
+        }
+    }
+
+    func testProductionSharedTailArithmeticAndOwnerRelease() async throws {
+        guard ProcessInfo.processInfo.environment["AFM_VERIFY_SHARED_TAIL_PROBE"] == "1" else {
+            throw XCTSkip("Opt-in production-shape probe: initializes a 512-expert layer")
+        }
+        // Unlike the small fixture, ten routes per token cross the real
+        // sorted-expert dispatch thresholds at the checkpoint's dimensions.
+        // Synthetic weights are used: this is an arithmetic oracle, not a
+        // substitute for same-checkpoint response-quality qualification.
+        var config = try await makeModel().configuration
+        config.hiddenSize = 2560
+        config.moeIntermediateSize = 640
+        config.sharedExpertIntermediateSize = 640
+        config.numExperts = 512
+        config.numExpertsPerToken = 10
+        config.hcLowRank = 320
+        for _ in 0..<2 {
+            weak var released: Qwen4ExpDecoderLayer?
+            do {
+                let layer = Qwen4ExpDecoderLayer(config, layerIndex: 1)
+                released = layer
+                layer.update(parameters: layer.mapParameters { $0.asType(.bfloat16) })
+                quantize(model: layer, groupSize: 64, bits: 4)
+                eval(layer)
+                for (batch, width) in [(2, 4), (3, 4), (4, 4), (2, 7), (2, 8), (2, 4)] {
+                    func values(_ columns: Int, _ divisor: Float) -> MLXArray {
+                        MLXArray((0..<(batch * width * columns)).map { Float(($0 % 29) - 14) / divisor })
+                            .reshaped(batch, width, columns).asType(.bfloat16)
+                    }
+                    let attended = values(2560, 32), residual = values(10240, 64)
+                    let injection = values(4, 128)
+                    let expected = layer.sharedVerificationTail(
+                        attended: attended, residual: residual, injection: injection, compiled: false)
+                    let actual = layer.sharedVerificationTail(
+                        attended: attended, residual: residual, injection: injection, compiled: true)
+                    eval(expected, actual)
+                    XCTAssertTrue(expected.asArray(Float.self) == actual.asArray(Float.self),
+                                  "Production shared tail changed values at B=\(batch), T=\(width)")
+                }
+            }
+            XCTAssertNil(released, "Compiled shared graph must not retain the Swift layer owner")
+        }
+    }
+
     func testSortedVerifyExpertsRestoreTokenAndRouteOrder() {
         let layer = SwitchGLU(inputDims: 256, hiddenDims: 256, numExperts: 8)
         layer.update(parameters: layer.mapParameters { $0.asType(.bfloat16) })
@@ -1896,6 +1988,45 @@ final class QwenNextMTPPipelineTests: XCTestCase {
         try assertPromptPrefixReplay(model)
         try assertSharedVerificationRows(model)
         try assertSharedSessionVerification(model, temperature: 0.6)
+        // Shared dispatch must flush every request row's PLE leaf before the
+        // first GPU submission. Then restore different acceptance frontiers
+        // without changing another row's recurrent, QSA or n-gram state.
+        for batchSize in 2...4 {
+            for stride in [1, 4, 8] {
+                let baselineRows = (0..<batchSize).map { _ in model.newCache(parameters: nil) }
+                let ladderRows = (0..<batchSize).map { _ in model.newCache(parameters: nil) }
+                for row in 0..<batchSize {
+                    let prompt = MLXArray([Int32(1), 2, Int32(3 + row)]).reshaped(1, 3)
+                    eval(model.forwardStreamHidden(inputIDs: prompt, cache: baselineRows[row]).logits,
+                         model.forwardStreamHidden(inputIDs: prompt, cache: ladderRows[row]).logits)
+                }
+                let baseline = try XCTUnwrap(model.mergedMTPVerificationCaches(baselineRows))
+                let ladder = try XCTUnwrap(model.mergedMTPVerificationCaches(ladderRows))
+                let ids = MLXArray((0..<batchSize).flatMap { [Int32(4 + $0), 31, 6, 7] })
+                    .reshaped(batchSize, 4)
+                let expected = model.verificationStreamForTesting(
+                    inputIDs: ids, cache: baseline, ladderStride: 0)
+                let actual = model.verificationStreamForTesting(
+                    inputIDs: ids, cache: ladder, ladderStride: stride)
+                eval(expected, actual)
+                XCTAssertEqual(actual.asArray(Float.self), expected.asArray(Float.self))
+                for row in 0..<batchSize {
+                    model.adoptMTPVerificationRow(from: baseline, row: row, batchSize: batchSize,
+                                                 into: baselineRows[row])
+                    model.adoptMTPVerificationRow(from: ladder, row: row, batchSize: batchSize,
+                                                 into: ladderRows[row])
+                    for cache in [baselineRows[row], ladderRows[row]] {
+                        XCTAssertTrue(model.finishMTPVerification(
+                            cache: cache, acceptedDrafts: row, draftedTokens: 3))
+                    }
+                    let next = MLXArray([Int32(8 + row)]).reshaped(1, 1)
+                    let a = model.forwardStreamHidden(inputIDs: next, cache: baselineRows[row]).logits
+                    let b = model.forwardStreamHidden(inputIDs: next, cache: ladderRows[row]).logits
+                    eval(a, b)
+                    XCTAssertEqual(a.asArray(Float.self), b.asArray(Float.self))
+                }
+            }
+        }
         // Verify an early dispatch cannot observe an unfilled mapped PLE
         // leaf, and that every acceptance boundary commits the same state.
         for stride in [1, 4, 8] {

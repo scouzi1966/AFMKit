@@ -1571,3 +1571,121 @@ cache/attention design: widening the group limit alone is not sufficient.
 Evidence: `qmm-profile-20260912.json`, `summarize_qmm_profile.py` and
 `packed-qmm-20260912-control-profile-*`. This iteration rejects regressions
 and sharpens the next measurement; it does **not** add an aggregate speedup.
+
+### Shared verifier graph scheduling (2026-09-12)
+
+This follow-up measures the work outside the old `verify-build` timer, rather
+than retrying either rejected projection kernel. The existing `AFM_PERF=1`
+diagnostic now reports shared-group totals for cache merging, snapshots, input
+construction, host draft-ID reads, target forward, row adoption, output
+projection/sampling, and final submission. A group is charged once to its
+first member. No evaluation/synchronization is added for timing, and clocks
+and diagnostic output remain disabled when `AFM_PERF` is unset.
+
+One detailed diagnostic run covered 523 shared groups / 1,383 request rows.
+The shared host laps were 30.53 seconds in final `asyncEval` submission,
+19.82 seconds in target forward, 1.65 seconds reading draft IDs, 0.48 seconds
+adopting rows, and 0.19 seconds assembling caches. These are **host timings
+including existing waits**, not GPU kernel durations. In particular, a small
+cache-assembly host lap does not establish a small GPU copy cost. The detailed
+profiler run is not used as a throughput baseline.
+
+Two missing shared-batch paths were identified:
+
+- The verification submission ladder accepted only `B=1`, so a shared target
+  constructed its complete graph before the final submission. The new opt-in
+  extends the existing attributed submission/PLE-flush discipline to `B=2...4`,
+  with at most 16 request/token rows. Strict verification and ordinary AR
+  retain their paths. PLE leaves are filled before every submission.
+- The ordinary post-attention tail compiled only singleton verification.
+  A separate opt-in compiles the shared tail as a model-owned pure region.
+  It preserves `.batched` on the HC read and captures no request cache,
+  recurrent state, PLE leaf, sampler or acceptance frontier. It does not reuse
+  the differently configured HC read of the singleton verification helper.
+
+Both changes are **off by default**; neither changes depth, sampling defaults,
+prefix-cache ownership, maximum cohort size, or the AFMKit dependency pin.
+The tested binary is a paired-development Release build reporting `v0.9.20`,
+SHA-256 `87afdd39fdc5ea22eb4c3d91a20e68d9f8acb02aecf74b7890f5f2d93e713faf`.
+All timed arms use the same ddalcu checkpoint and frozen C15, prefix-on,
+depth-3 agentic-review workload, with temperature 0, top-p 1 and seed 42.
+
+Initial clean 192-token-budget screen (aggregate output tok/s):
+
+| Shared graph setting | First distinct requests | Repeated requests | JSON/identity checks |
+|---|---:|---:|---:|
+| Control | 59.52 | 88.90 | 25/30 |
+| Compiled tail only | 60.82 | 92.61 | 26/30 |
+| Submission every 8 layers only | 62.60 | 94.46 | 25/30 |
+| Both | 62.84 | 97.65 | 24/30 |
+
+The combined candidate reproduced at 98.25 versus 88.35 repeat tok/s in a
+candidate-first rerun (+11.20%; first phase +6.34%). However, at a 512-token
+budget its repeat gain was only 1.48% (88.38 versus 87.09), with 28/30 versus
+29/30 JSON/identity checks. The extra failure omitted `fix` and stopped
+normally, so it is **not truncation**. This omission also occurred in an
+unmodified control during the 192-token rerun; causation is not isolated.
+The longer-budget result does not justify recommending the combined preset.
+
+Submission alone at stride 8 reached 94.58 versus 87.09 repeat tok/s at the
+512-token budget (+8.60%), with the same 28/30 versus 29/30 check totals.
+On the 192-token screen, stride 4 reached 98.98 repeat tok/s, versus 91.97
+at stride 16. These are distinct workloads and must not be combined into
+one universal percentage. Response texts are not guaranteed identical across
+these concurrent batched-verification runs; the checks are not a semantic judge.
+
+The first attempted unprofiled control overlapped an unrelated workspace's
+build and is excluded, despite completing its requests. That build was not
+interrupted. Clean arms use a process-isolation guard, including checks during
+the workload, and retain raw requests/SSE, memory samples, versions and exits.
+A subsequent preflight-only attempt rejected an old zombie process; the guard
+now excludes zombies. No evidence was deleted or rewritten.
+
+#### Four-layer scheduling confirmation
+
+The scheduling-only candidate leaves the compiled shared tail disabled.
+Its 192-token candidate-first repeat measured 98.65 versus 90.23 aggregate
+repeat tok/s (+9.33%). The stricter paired 512-token confirmation measured:
+
+| Measurement | Control | Four-layer submission | Change |
+|---|---:|---:|---:|
+| First distinct requests, aggregate tok/s | 60.35 | 64.20 | +6.38% |
+| Repeated requests, aggregate tok/s | 90.08 | 98.31 | +9.14% |
+| Peak process RSS, GiB | 69.65 | 69.69 | +0.04 GiB |
+| JSON/identity checks | 29/30 | 29/30 | Same failure |
+| Paired response text and token count | — | 30/30 identical | Exact on this workload |
+
+Both arms produced the same normally stopped missing-field response for the
+same cold review task. No new structural failures appeared in this pair.
+The identical outputs strengthen the timing comparison; they do not establish
+universal greedy equivalence or full semantic qualification.
+
+The four-layer preset also passed **120/120 live API lifecycle assertions**
+across cancellation, subsequent requests and repeated prefixes. The workload
+mixes MTP/AR fallback, sampled decoding at temperature 0.6 / top-p 0.95,
+logprobs, stop handling, token limits, cache reuse and an early disconnect.
+The owned server exited 0 and shared-verification coverage was observed.
+
+The settings, full launch command, fallback boundaries and rollback instructions
+are in [the shared-verifier opt-in guide](QWEN_NEXT_SHARED_VERIFIER_OPT_IN.md).
+The relevant raw arms are `shared-ladder4-repeat-20260912-*`,
+`shared-ladder4-quality512-20260912-*` and `shared-ladder4-safety-20260912-*`,
+alongside the earlier graph screens in the external artifact root.
+
+The optional production-shape arithmetic probe also passed: 2,560 hidden
+channels, 640 expert channels, 512 experts, ten routes per token, Q4/group-64
+weights and BF16 activations. Compiled/uncompiled shared-tail outputs matched
+exactly for B2/T4, B3/T4, B4/T4, B2/T7 and B2/T8, then the first shape was
+revisited. Two independent layer owners were tested and released successfully.
+These synthetic-weight tests cover routing thresholds absent from the tiny
+fixture; they do not replace the actual-checkpoint quality observations.
+
+Final focused validation with both new runtime controls disabled executed
+84 tests: **82 passed, 2 optional probes skipped, 0 failed**. The production
+shared-tail probe above was run separately and passed. An earlier opt-in run
+passed 82 tests with one optional probe skipped, including shared sampling,
+cancellation, mapped PLE flushes and independent rollback frontiers.
+The audited timing inventory contains **15 clean arms / 450 completed requests**;
+diagnostic, excluded-overlap, warmup and lifecycle requests are not counted in
+that performance total. Full raw evidence and a curated hash manifest remain
+outside Git under the established benchmark root.

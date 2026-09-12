@@ -281,6 +281,19 @@ func qwen4ExpCanFuseVerificationHC(
         && input.dtype == .bfloat16
 }
 
+/// Scheduling-only selection. Preserve the existing singleton control and
+/// bound the separate shared experiment to the owner's 2...4 request rows.
+func qwen4ExpVerificationDispatchStride(
+    batchSize: Int, width: Int, policy: MTPVerificationPolicy?,
+    singletonStride: Int, sharedStride: Int
+) -> Int {
+    guard policy == .batched, width > 1,
+          width <= VerifyWidthLinear.maximumAcceleratedWidth else { return 0 }
+    if batchSize == 1 { return max(0, singletonStride) }
+    guard (2...4).contains(batchSize), batchSize * width <= 16 else { return 0 }
+    return max(0, sharedStride)
+}
+
 private final class Qwen4ExpGatedResidual: Module {
     // The reference uses its row-independent HC read at verify widths too.
     // Keep this an explicit A/B: fused reductions can change batched token
@@ -3935,6 +3948,8 @@ final class Qwen4ExpDecoderLayer: Module {
     private static let compileLayerTailDecode =
         ProcessInfo.processInfo.environment["AFM_QWEN_COMPILE_LAYER_TAIL"] != "0"
             && HardwareInfo.isModelOwnedCompiledDecodeSupported
+    private static let compileSharedVerificationTail =
+        ProcessInfo.processInfo.environment["AFM_QWEN_VERIFY_SHARED_COMPILED_TAIL"] == "1"
 
     let isLinear: Bool
     @ModuleInfo(key: "linear_attn") fileprivate var linearAttention: Qwen4ExpGatedDeltaNet?
@@ -4216,6 +4231,15 @@ final class Qwen4ExpDecoderLayer: Module {
                 attended: attended, residual: residual, injection: injection,
                 compiled: true)
         }
+        if Self.compileLayerTailDecode, Self.compileSharedVerificationTail,
+           verificationPolicy == .batched, input.dtype == .bfloat16,
+           (2...4).contains(input.dim(0)), input.dim(1) > 1,
+           input.dim(1) <= VerifyWidthLinear.maximumAcceleratedWidth,
+           input.dim(0) * input.dim(1) <= 16
+        {
+            return sharedVerificationTail(
+                attended: attended, residual: residual, injection: injection, compiled: true)
+        }
         return layerTail(
             attended: attended,
             residual: residual,
@@ -4251,6 +4275,28 @@ final class Qwen4ExpDecoderLayer: Module {
         }
         return compile(shapeless: false, body)
     }()
+
+    // Model-owned pure region: no cache, PLE leaf, sampler or request state
+    // enters this closure. In particular keep .batched on the HC read too;
+    // the older singleton batched tail intentionally uses a different read.
+    private lazy var compiledSharedVerificationTail: @Sendable ([MLXArray]) -> [MLXArray] = {
+        let body: ([MLXArray]) -> [MLXArray] = { [unowned self] arguments in
+            CompiledDecodeTrace.withActive {
+                [self.sharedVerificationTail(
+                    attended: arguments[0], residual: arguments[1], injection: arguments[2],
+                    compiled: false)]
+            }
+        }
+        return compile(shapeless: false, body)
+    }()
+
+    func sharedVerificationTail(
+        attended: MLXArray, residual: MLXArray, injection: MLXArray, compiled: Bool
+    ) -> MLXArray {
+        if compiled { return compiledSharedVerificationTail([attended, residual, injection])[0] }
+        return layerTail(attended: attended, residual: residual, injection: injection,
+                         verificationPolicy: .batched)
+    }
 
     /// Experimental batched verifier: retain row-independent HC kernels but
     /// schedule the sorted expert rows together. All inputs are functional;
@@ -4437,6 +4483,10 @@ final class Qwen4ExpDecoderLayer: Module {
 private final class Qwen4ExpModelInner: Module {
     private static let verificationAsyncLadderStride = max(0, Int(
         ProcessInfo.processInfo.environment["AFM_QWEN_VERIFY_ASYNC_LADDER"] ?? "0") ?? 0)
+    // Separate opt-in for shared request verification. Every submission uses
+    // the same deferred-PLE flush barrier as singleton verification below.
+    private static let sharedVerificationAsyncLadderStride = max(0, Int(
+        ProcessInfo.processInfo.environment["AFM_QWEN_VERIFY_SHARED_ASYNC_LADDER"] ?? "0") ?? 0)
     private static let deferVerificationHC =
         ProcessInfo.processInfo.environment["AFM_QWEN_VERIFY_DEFER_HC"] == "1"
     private static let deferInterLayerHyperConnectionWriteDecode =
@@ -4559,10 +4609,11 @@ private final class Qwen4ExpModelInner: Module {
         let useDecodeAsyncLadder = decodeAsyncLadderStride > 0
             && verificationPolicy == nil
             && hidden.dim(1) == 1
-        let verifyStride = verificationLadderOverride ?? Self.verificationAsyncLadderStride
-        let useVerifyAsyncLadder = verifyStride > 0 && verificationPolicy == .batched
-            && hidden.dim(0) == 1 && hidden.dim(1) > 1
-            && hidden.dim(1) <= VerifyWidthLinear.maximumAcceleratedWidth
+        let verifyStride = qwen4ExpVerificationDispatchStride(
+            batchSize: hidden.dim(0), width: hidden.dim(1), policy: verificationPolicy,
+            singletonStride: verificationLadderOverride ?? Self.verificationAsyncLadderStride,
+            sharedStride: verificationLadderOverride ?? Self.sharedVerificationAsyncLadderStride)
+        let useVerifyAsyncLadder = verifyStride > 0
         let profiler = Qwen4ExpForwardProfiler.make(sequenceLength: hidden.dim(1))
         let hostProfiler = Qwen4ExpHostProfiler.make(sequenceLength: hidden.dim(1))
         // Verification has a separate, off-by-default dispatch experiment.
@@ -5853,6 +5904,15 @@ public final class Qwen4ExpMTPSession {
     private let measurePhases = ProcessInfo.processInfo.environment["AFM_PERF"] == "1"
     private var phaseNanoseconds = [UInt64](repeating: 0, count: 5)
     private var phaseStart: UInt64 = 0
+    // A separate lap clock covers the entire shared verifier, including the
+    // host token materialization before the legacy verify-build lap. These
+    // are host durations, not GPU kernel timings; no eval is added for timing.
+    // Charge shared work once to the first member, never once per request row.
+    private var sharedPhaseNanoseconds = [UInt64](repeating: 0, count: 8)
+    private var sharedPhaseStart: UInt64 = 0
+    private var sharedMergeAttempts = 0
+    private var sharedGroups = 0
+    private var sharedRows = 0
     private var reportedDiagnostics = false
 
     fileprivate init(
@@ -6045,29 +6105,42 @@ public final class Qwen4ExpMTPSession {
                     && $0.head === first.head && $0.depth == first.depth
                     && $0.primaryPosition == first.primaryPosition
             }
-            guard group.count > 1,
-                  let cache = first.model.mergedMTPVerificationCaches(group.map(\.targetCache))
-            else { continue }
+            guard group.count > 1 else { continue }
+            first.startSharedPhase()
+            let mergedCache = first.model.mergedMTPVerificationCaches(group.map(\.targetCache))
+            first.endSharedPhase(0)
+            if first.measurePhases { first.sharedMergeAttempts += 1 }
+            guard let cache = mergedCache else { continue }
+            if first.measurePhases {
+                first.sharedGroups += 1
+                first.sharedRows += group.count
+            }
             let drafts = group.map { $0.preparedDraft! }
             let snapshots = group.map { Qwen3MTPCacheSnapshot.capture($0.targetCache) }
+            first.endSharedPhase(1)
             let inputs = zip(group, drafts).map { session, draft in
                 concatenated([tokens([session.primary]), draft.tokenIDs], axis: 1)
             }
+            first.endSharedPhase(2)
             let hostIDs = zip(group, drafts).flatMap { session, draft in
                 [session.primary] + draft.tokenIDs.asArray(Int32.self).map(Int.init)
             }
+            first.endSharedPhase(3)
             first.startPhase()
             let verified = first.model.forwardStreamState(
                 inputIDs: concatenated(inputs, axis: 0), cache: cache,
                 verificationPolicy: .batched, hostTokenIDs: hostIDs)
+            first.endSharedPhase(4)
             var sampled: [MLXArray] = []
             for (row, session) in group.enumerated() {
                 first.model.adoptMTPVerificationRow(
                     from: cache, row: row, batchSize: group.count, into: session.targetCache)
+                first.endSharedPhase(5)
                 // Keep request-local sampler order and the existing per-row
                 // output projection; only the target backbone is shared here.
                 let targetIDs = session.targetTokens(
                     verified.hidden[row..<(row + 1)], policy: .batched)[0, 0...]
+                first.endSharedPhase(6)
                 session.preparedDraft = nil
                 session.preparedVerification = PreparedVerification(
                     headOffset: drafts[row].headOffset, draftTokenIDs: drafts[row].tokenIDs,
@@ -6075,10 +6148,12 @@ public final class Qwen4ExpMTPSession {
                     snapshot: snapshots[row], usedSequentialVerifier: false)
                 sampled.append(targetIDs)
                 consumed.insert(ObjectIdentifier(session))
+                first.endSharedPhase(5)
             }
             // Shared host construction is charged once, to the first member.
             first.endPhase(1)
             asyncEval(sampled)
+            first.endSharedPhase(7)
             batchCount += 1
             rowCount += group.count
         }
@@ -6136,6 +6211,18 @@ public final class Qwen4ExpMTPSession {
 
     private func startPhase() {
         if measurePhases { phaseStart = DispatchTime.now().uptimeNanoseconds }
+    }
+
+    private func startSharedPhase() {
+        if measurePhases { sharedPhaseStart = DispatchTime.now().uptimeNanoseconds }
+    }
+
+    private func endSharedPhase(_ index: Int) {
+        if measurePhases {
+            let now = DispatchTime.now().uptimeNanoseconds
+            sharedPhaseNanoseconds[index] += now - sharedPhaseStart
+            sharedPhaseStart = now
+        }
     }
 
     private func endPhase(_ index: Int) {
@@ -6340,6 +6427,16 @@ public final class Qwen4ExpMTPSession {
     fileprivate func reportDiagnostics() {
         guard !reportedDiagnostics else { return }
         reportedDiagnostics = true
+        if measurePhases, sharedMergeAttempts > 0 {
+            let labels = ["merge", "snapshot", "inputs", "host-ids", "target-forward",
+                          "adopt-state", "head-sample", "submit"]
+            let laps = zip(labels, sharedPhaseNanoseconds).map { label, nanos in
+                "\(label)=\(nanos)ns"
+            }.joined(separator: " ")
+            let message = "[MTP][QwenNext][shared-host-phases] attempts=\(sharedMergeAttempts) "
+                + "groups=\(sharedGroups) rows=\(sharedRows) \(laps)\n"
+            FileHandle.standardError.write(Data(message.utf8))
+        }
         if measurePhases, totalCycles > 0 {
             let labels = ["draft-build", "verify-build", "decision-wait", "commit-build", "history-build"]
             let laps = zip(labels, phaseNanoseconds).map { label, nanos in
