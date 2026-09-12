@@ -37,7 +37,7 @@ see [opting in to request-banked attention](QWEN_NEXT_BANKED_ATTENTION_OPT_IN.md
 | Adaptive speculation | Existing fixed-depth Qwen path retained | Workload-aware depth and useful-token cost policy |
 | CPU/GPU overlap | Bounded cross-slot submission and draft-first experiments; no material throughput improvement yet | Profile remaining host/device gaps and amortize work with shared execution |
 | Optional immutable PLE row cache | Bounded cache, exact-bit tests, limited measured benefit | Repeats before any default proposal; not the main throughput lever |
-| Batch kernels and graph overhead | Opt-in batch-indexed fused GDN prework, shape-specific compiled decode and shared attention projections; independent-row QMM screened and rejected | Remaining per-request kernels and batch hot paths |
+| Batch kernels and graph overhead | Opt-in batch-indexed fused GDN prework, compiled decode, shared attention projections and native-arithmetic request-banked attention; independent-row QMM screened and rejected | Remaining per-request kernels and MTP batch hot paths |
 | Memory budgets and reclamation | Group ownership/filtering and row-cache budget tested; RSS recorded | Long-context concurrency soak and request-memory admission budgets |
 | Qualification and cross-model reuse | Qwen-only guards and focused tests; lifecycle API smoke and six-mode matrix | Semantic/long-context qualification, then model-specific adapters |
 
@@ -1342,3 +1342,87 @@ invalidated local compiled products; the subsequent full consumer build
 took 272.14 seconds. Installed binaries, checkouts and source changes were
 not removed. Do not use wrapper help invocations as harmless inspection when
 they can change the build identity; no wrapper change is bundled in this PR.
+
+### Native-arithmetic request banks (2026-09-12)
+
+Runtime checkpoint `05bfaefc` corrects the earlier bank's dense attention
+arithmetic. Native MLX dispatches two-pass dense attention at device-dependent
+length thresholds. Applying the sparse one-pass reduction to those dense rows
+changed values, despite their independent cache ownership being correct.
+
+`Qwen4ExpRequestDenseAttention.swift` ports the native two-pass reduction from
+the provider's MIT-licensed `ml-explore/mlx` `sdpa_vector.h`, credited in the
+source. It preserves the native partition policy, FP32 sums/maxima, **BF16
+partial outputs**, and second-pass reduction order. Merely using FP32 in both
+passes would not reproduce that intermediate rounding boundary.
+
+```text
+independent request rows (one owned K/V history each)
+  -> native algorithm / partition-count groups, at most four rows
+       -> short dense or sparse: existing one-pass bank
+       -> longer dense: banked partials -> native-order reduction
+  -> restore original request order -> shared output projection
+```
+
+Lengths and strides are read as GPU runtime metadata. No full-history padding,
+cross-request cache allocation, or CPU lazy-stride read is introduced. Custom
+specializations remain bounded by bank width, model geometry and native
+partition buckets. A positive `MLX_SDPA_BLOCKS` override or unsupported GQA
+threadgroup width retains native dense execution instead of expanding the
+custom family. Masked/unsupported banks and singleton adapter groups retain
+their existing fallbacks. The opt-in switch is unchanged and remains **off**.
+
+Same M3 Ultra 512 GiB, exact ddalcu checkpoint, C15, T=0/top-p=1/seed=42,
+MTP off, and matching launch preset. Only banking changes between arms.
+Main cases retain the 192-token cap; the 512-token row is a separate diagnostic.
+These are **repeat-phase aggregate output rates**, not per-request rates:
+
+| Case | Control tok/s | Banked tok/s | Change | Structural passes, control / banked | Identical text + token count |
+|---|---:|---:|---:|---:|---:|
+| Prefix on | 162.62 | 175.09 | +7.67% | 24/30 / 24/30 | 30/30 |
+| Prefix on, reverse arm order | 162.46 | 175.86 | +8.25% | 24/30 / 24/30 | 30/30 |
+| Prefix off | 82.84 | 87.09 | +5.13% | 24/30 / 24/30 | 30/30 |
+| Staggered 8+7, prefix off, chunk 1024 | 40.00 | 41.49 | +3.73% | 18/30 / 18/30 | 21/30 |
+| Prefix on, separate 512-token diagnostic | 158.62 | 169.84 | +7.07% | 30/30 / 30/30 | 30/30 |
+
+Unlike the previous prototype, useful structural-task throughput improves:
+prefix repeat 0.7534 -> 0.8112 tasks/s, no-prefix 0.3813 -> 0.4009,
+staggered 0.1477 -> 0.1527. These are **structural** successes, not a semantic
+correctness score. The shorter benchmark's six failures in each arm are
+identical capped/truncated responses. In the 512-token diagnostic the prior
+normally finished omission is absent: all response texts/counts match control.
+
+The staggered pair does not establish complete output equivalence. Inspection
+of its nine changed responses found altered wording; both arms also name
+irrelevant module files in some responses, and both can propose dropping
+final streaming content. The structural failures do not change between arms.
+The exact cause of the remaining text differences has not been isolated;
+native attention equality alone does not prove whole-scheduler equivalence.
+No broad semantic judge or latest external reference rerun is claimed.
+
+Short-case peak process RSS stays around 67.73–67.82 GiB; staggered is
+69.953 -> 69.957 GiB. Repeat median streaming gap is 5.052 -> 5.096 seconds,
+and late median TTFT 20.001 -> 20.014 seconds. Thus this is a throughput gain,
+not a solution to admission/prefill latency. The control's first long prefill
+took 61.463 seconds versus about 4.8 seconds subsequently; the first phase
+(20.40 tok/s) is retained but is **not** used to inflate the candidate gain.
+Its cause remains unisolated. RSS is not a full Metal-allocation/leak soak.
+
+All 300 measured/diagnostic requests and 45 separate lifecycle requests
+complete. Lifecycle assertions pass **255/255**, including cancellation,
+recovery, token caps, sampling, logprobs and stops. All 11 owned servers exit
+zero. The initial focused suite passes 157 tests; the strengthened geometry
+rerun passes 158, including GQA ratios 1/2/8/12 and strided inner elements.
+Default/unset reruns pass 63 tests; the explicit native partition override
+(`MLX_SDPA_BLOCKS=160`) passes six. These are overlapping reruns, not additional
+unique tests. Exact low-level outputs
+cover dense thresholds through 8193, sparse selections/tails, row reorder,
+cache state and immutable prefix snapshots.
+
+Release build: 104.33 seconds, binary SHA-256
+`e4607b07b05b359f73ff0c0f42cc082b60fb362685ca00ec06a775e70df35859`.
+The same binary is used in every arm. Source, raw SSE, timings, memory,
+summaries and hash manifest are retained externally under
+`BANKED-NATIVE-2PASS-20260912.md`; previous reports remain unchanged.
+No release, install, main merge, dependency pin, or default promotion occurs.
+This improves AR batching; the MTP verifier remains the next separate hot path.

@@ -1,16 +1,19 @@
 # Opt in to Qwen Next request-banked attention
 
 Experimental AFMKit PR [#123](https://github.com/scouzi1966/AFMKit/pull/123),
-runtime checkpoint `2f62451e`; instructions checked on 2026-09-12.
+runtime checkpoint `05bfaefc`; instructions checked on 2026-09-12.
 **Off by default. For controlled experiments, not a production recommendation.**
 
 This shares an attention GPU dispatch across independent requests without
 padding/copying their full KV histories. It does not enable MTP, change weight
-quantization, or enable the optional PLE row cache. The measured C15 raw-token
-gains were about 2.4–6.6%, but structural task completion regressed. In the
-512-token prefix-on diagnostic, control passed 30/30 and candidate 28/30:
-one response omitted a required field even when it stopped normally.
-See [implementation and qualification](SHARED_BATCH_EXECUTION_WORKSTREAM.md#request-banked-attention-prototype-2026-09-12).
+quantization, or enable the optional PLE row cache. The native-arithmetic revision
+measured C15 repeat gains of 7.7–8.3% with prefix caching and 5.1% without it,
+with all 30 response texts/token counts identical in each paired comparison.
+The 512-token prefix-on diagnostic passed 30/30 structural checks in both arms,
+also with identical responses. These are workload-specific results, not broad
+semantic-quality qualification or a new reference-engine parity claim.
+The earlier one-pass prototype (`2f62451e`) regressed quality; its evidence is
+retained in the [implementation history](SHARED_BATCH_EXECUTION_WORKSTREAM.md#request-banked-attention-prototype-2026-09-12).
 
 ## 1. Use the branch-built Release binary
 
@@ -24,7 +27,7 @@ shasum -a 256 /Volumes/edata2/dev/CODEX/maclocal-api-qwen-next-mtp-parity/.build
 ```
 
 Measured binary SHA-256:
-`70853786986f431012bc94749e0207b8e3ee9df034d11e14250e1e8eff9a245f`.
+`e4607b07b05b359f73ff0c0f42cc082b60fb362685ca00ec06a775e70df35859`.
 Use this binary to reproduce the recorded results; a rebuild may have a new
 hash and must be recorded as a new artifact.
 
@@ -148,8 +151,15 @@ used 15 concurrent agentic review tasks and their repeats, not 15 sequential cal
 - Dispatches contain at most four requests. Larger admitted groups are split
   into banks; singletons and unsupported/masked banks use the existing path.
   Fused-score selection also keeps its existing path. This fallback is intentional.
+- Dense banks preserve native one-pass/two-pass routing and partition counts.
+  Two-pass banks keep BF16 partial outputs and FP32 sums/maxima. Different
+  partition counts are dispatched separately; full K/V histories are never padded.
+  A positive `MLX_SDPA_BLOCKS` override retains native two-pass execution instead
+  of adding unbounded custom specializations. Leave it unset for the recorded preset.
 - Definitive kernel-level confirmation, if tracing separately, is a dispatch
-  whose name contains `qwen_request_banked_attention_256_b2`, `b3`, or `b4`.
+  whose name contains `qwen_request_banked_attention_256_b2`, `b3`, or `b4`
+  (one pass), or `qwen_request_banked_dense_2pass_1_b2`, `b3`, or `b4`
+  followed by `qwen_request_banked_dense_2pass_2` (dense two pass).
   Do not compare instrumented throughput to the uninstrumented results.
 
 For exact recorded prompts and environment cleanup, the existing external

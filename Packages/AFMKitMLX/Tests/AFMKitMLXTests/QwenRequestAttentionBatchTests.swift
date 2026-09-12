@@ -110,6 +110,28 @@ final class QwenRequestAttentionBatchTests: XCTestCase {
         XCTAssertEqual(before[1..<2].asArray(Float.self), restored.asArray(Float.self))
     }
 
+    func testTwoPassPreservesStridedElementsAcrossGroupedQueryGeometries() throws {
+        try MLXMetalLibrary.ensureAvailable(verbose: false)
+        MLXRandom.seed(619)
+        for group in [1, 2, 8, 12] {
+            let bank = [1_027, 1_297].map { length in
+                Row(query: MLXRandom.normal([1, group * 2, 1, 512]).asType(.bfloat16)[
+                        0..., 0..., 0..., .stride(by: 2)],
+                    keys: MLXRandom.normal([1, 2, length + 7, 512]).asType(.bfloat16)[
+                        0..., 0..., ..<length, .stride(by: 2)],
+                    values: MLXRandom.normal([1, 2, length + 11, 512]).asType(.bfloat16)[
+                        0..., 0..., ..<length, .stride(by: 2)],
+                    selectedBlocks: nil, mask: nil)
+            }
+            let output = try XCTUnwrap(Qwen4ExpRequestAttentionBatch.call(bank, scale: scale, compressionRatio: 4))
+            for (index, row) in bank.enumerated() {
+                XCTAssertEqual(output[index..<(index + 1)].asArray(Float.self),
+                               row.independent(scale: scale, compressionRatio: 4).asArray(Float.self),
+                               "GQA ratio \(group), strided Q/K/V elements")
+            }
+        }
+    }
+
     func testUnsupportedBanksFailClosedAndMasksUseNativeFallback() throws {
         let bank = try rows()
         XCTAssertNil(Qwen4ExpRequestAttentionBatch.call([], scale: scale, compressionRatio: 4))
