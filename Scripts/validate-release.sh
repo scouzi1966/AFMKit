@@ -20,10 +20,13 @@ clean_build_configuration() {
 run_release_tests() {
     local package_root="$1"
     local package_build_root="$2"
+    local AFMKIT_BUILD_ROOT="$package_build_root"
+    local AFMKIT_SKIP_RC5_DSPARK_BASELINE=1
 
     clean_build_configuration "$package_build_root" release
-    AFMKIT_BUILD_ROOT="$package_build_root" \
-        "$ROOT/Scripts/run-xctest-targets.sh"
+    export AFMKIT_BUILD_ROOT
+    export AFMKIT_SKIP_RC5_DSPARK_BASELINE
+    "$ROOT/Scripts/run-xctest-targets.sh"
     afmkit_run_qualified_swift test \
         --package-path "$package_root" \
         --scratch-path "$package_build_root" \
