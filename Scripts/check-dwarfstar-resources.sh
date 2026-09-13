@@ -13,6 +13,8 @@ SNAPSHOT_FILES=(
     ds4_gpu.h
     ds4_gpu_args.h
     ds4_gpu_mgpu.h
+    ds4_image.h
+    ds4_linux_memory.h
     ds4_kvstore.c
     ds4_kvstore.h
     ds4_layer_pack.c
