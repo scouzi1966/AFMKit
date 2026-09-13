@@ -132,12 +132,37 @@ actor BatchScheduler {
     private let cacheProfilePath: String?
     private let admissionWindowNanoseconds: UInt64
     private let glmMTPGenerator: GLM5NextMTPGenerator?
+    private let qwenMTPGenerator: Qwen4ExpMTPGenerator?
+    private let qwenMTPReplayCache: ExactPromptReplayCache<Qwen4ExpMTPPromptState>?
+    /// Bounded independent graph submission, not cross-request verification.
+    /// One preserves the existing submit/wait order and is the default.
+    private let qwenMTPSubmissionWindow: Int
+    private var qwenMTPPreparedCycles = 0
+    private let qwenMTPSharedVerification: Bool
+    private let qwenMTPIndependentAttention: Bool
+    private var qwenMTPSharedVerificationBatches = 0
+    private var qwenMTPSharedVerificationRows = 0
+    nonisolated let ownsQwenMTPSessions: Bool
     private let glmMTPPromptReplayCache: GLM5NextMTPPromptReplayCache?
     private let glmMTPReplayModelID: String
     /// Some models change attention behavior when a later, shorter sequence is
     /// left-padded into an active batch. Keep their decode cohorts fixed so
     /// staggered arrivals retain the same path as serial generation.
     private let requiresFixedDecodeCohorts: Bool
+    /// Experimental text-only Qwen adapter; no other architecture or default
+    /// execution path changes until its state contract is qualified.
+    private let enablesUniformDecodeGroups: Bool
+    private let enablesContinuousIndependentAdmission: Bool
+    private let enablesPrefillInterleave: Bool
+    private let enablesRequestOwnedDecodeBatch: Bool
+    private var requestOwnedBatchRowsSeen: Set<Int> = []
+    private let continuousPrefillTokenBudget: Int
+    private let continuousYieldInterval: Int
+    private var uniformDecodeGroups: [UniformDecodeGroup] = []
+    private var groupedSlotIDs: Set<UUID> = []
+    private var needsUniformDecodeGrouping = false
+    private var uniformGroupForwardCalls = 0
+    private var uniformGroupSlotSteps = 0
 
     /// EOS token IDs built once at init.
     private let eosTokenIds: Set<Int>
@@ -146,6 +171,36 @@ actor BatchScheduler {
     private let radixCache: RadixTreeCache?
 
     // MARK: - Slot State
+
+    /// Request-owned speculative state uses the same token dispatcher as AR.
+    /// Sessions are advanced only by this actor, never by concurrent GPU tasks.
+    private enum SpeculativeSession {
+        case glm(GLM5NextMTPSession)
+        case qwen(Qwen4ExpMTPSession)
+
+        func nextToken() -> Int? {
+            switch self {
+            case .glm(let session): session.nextToken()
+            case .qwen(let session): session.nextToken()
+            }
+        }
+
+        var periodicCaches: [KVCache] {
+            switch self {
+            case .glm(let session): session.targetCache
+            // Qwen materializes its bounded verification/repair work internally.
+            // Do not expose or publish incomplete target-only radix snapshots.
+            case .qwen: []
+            }
+        }
+
+        var label: String {
+            switch self {
+            case .glm: "GLM"
+            case .qwen: "Qwen"
+            }
+        }
+    }
 
     /// Per-request state for batched generation.
     /// Each slot holds its own sampler/processor (since each request can have
@@ -175,10 +230,13 @@ actor BatchScheduler {
         /// Snapshotted per-layer KV state from prefill (for prefix cache save).
         /// Stored as arrays rather than live KVCache references to avoid mutation
         /// by the decode loop (batchCaches shares objects in .unbatched mode).
-        let prefillCaches: [KVCache]
+        // Decode ownership moves to a persistent group after admission. The
+        // immutable prefillStates below remain available for radix insertion.
+        var prefillCaches: [KVCache]
         let prefillStates: [[MLXArray]]
         let prefillMetaStates: [[String]]
         var modelState: LMOutput.State?
+        var permitsUniformDecodeGroup = false
 
         // Per-sequence decode state
         var lastTokenId: Int
@@ -210,7 +268,7 @@ actor BatchScheduler {
         var stopBuffer = ""
         var insideThink = false
         var stoppedBySequence = false
-        let glmMTPSession: GLM5NextMTPSession?
+        let speculativeSession: SpeculativeSession?
 
         init(
             id: UUID,
@@ -242,7 +300,7 @@ actor BatchScheduler {
             computeLogprobs: Bool = false,
             topLogprobsCount: Int = 0,
             temperatureForLogprobs: Float = 1.0,
-            glmMTPSession: GLM5NextMTPSession? = nil
+            speculativeSession: SpeculativeSession? = nil
         ) {
             self.id = id
             self.requestId = requestId
@@ -280,7 +338,7 @@ actor BatchScheduler {
             self.computeLogprobs = computeLogprobs
             self.topLogprobsCount = topLogprobsCount
             self.temperatureForLogprobs = temperatureForLogprobs
-            self.glmMTPSession = glmMTPSession
+            self.speculativeSession = speculativeSession
         }
     }
 
@@ -298,6 +356,14 @@ actor BatchScheduler {
 
     /// Total tokens generated across all slots (for periodic cache clearing).
     private var totalTokensGenerated = 0
+    private var independentDecodeSteps = 0
+
+    nonisolated static func supportsPrefillInterleave(
+        modelType: any LanguageModel.Type, continuousGroups: Bool,
+        ownsMTP: Bool, enabled: Bool
+    ) -> Bool {
+        enabled && continuousGroups && !ownsMTP && modelType == Qwen4ExpModel.self
+    }
 
     /// Hybrid recurrent state cannot be trimmed to an arbitrary token offset.
     /// Capture it one token before the prompt boundary, then replay that token
@@ -338,15 +404,60 @@ actor BatchScheduler {
         hasMultimodalInput || Set(promptTokenCounts).count > 1
     }
 
-    nonisolated static func requiresFixedDecodeCohorts(for modelType: Any.Type) -> Bool {
+    nonisolated static func requiresFixedDecodeCohorts(
+        for modelType: Any.Type,
+        continuousUniformGroups: Bool = false
+    ) -> Bool {
+        // Only the text Qwen adapter has persistent independent group ownership.
+        // Other fixed-cohort models must retain their existing admission guard.
         modelType is any FixedDecodeCohortModel.Type
+            && !(continuousUniformGroups && modelType == Qwen4ExpModel.self)
+    }
+
+    nonisolated static func continuousAdmissionLimit(
+        maxConcurrent: Int, activeCount: Int, enabled: Bool,
+        tokenBudget: Int = 1
+    ) -> Int {
+        guard enabled, activeCount > 0 else { return maxConcurrent }
+        let capacity = max(0, maxConcurrent - activeCount)
+        return tokenBudget > 1 ? capacity : min(1, capacity)
+    }
+
+    /// Preserve FIFO order and admit at least the head request for progress.
+    /// This bounds estimated new-token work across prompts, not individual
+    /// forward chunks. One oversized head prompt can still exceed the budget.
+    nonisolated static func continuousAdmissionPrefixCount(
+        estimatedTokenCounts: [Int], tokenBudget: Int
+    ) -> Int {
+        var remaining = max(1, tokenBudget)
+        for (index, count) in estimatedTokenCounts.enumerated() {
+            let cost = max(1, count)
+            if cost > remaining { return max(1, index) }
+            remaining -= cost
+        }
+        return estimatedTokenCounts.count
+    }
+
+    /// Input preparation shares this actor. Shorter yield intervals improve
+    /// admission latency but can fragment compatible batches. Preserve the
+    /// existing schedule unless a controlled experiment requests otherwise.
+    nonisolated static func shouldYieldIndependentDecode(
+        stepCount: Int, continuousGroups: Bool, interval: Int = 64
+    ) -> Bool {
+        stepCount.isMultiple(of: continuousGroups ? min(64, max(1, interval)) : 64)
+    }
+
+    nonisolated static func supportsQwenMTPScheduler(
+        modelType: Any.Type, hasGenerator: Bool, enabled: Bool
+    ) -> Bool {
+        enabled && hasGenerator && modelType == Qwen4ExpModel.self
     }
 
     /// Copy cache tensors into independent MLX storage before retaining them
     /// beyond the current decode step. Views and already-contiguous arrays may
     /// otherwise alias mutable rotating-cache buffers.
     nonisolated static func snapshotCacheState(_ state: [MLXArray]) -> [MLXArray] {
-        state.map { $0 * 1 }
+        MLXReplayPrefill.snapshot(state)
     }
 
     /// Select bounded exact recurrent-state boundaries across a prefill. These
@@ -358,19 +469,9 @@ actor BatchScheduler {
         minimumStride: Int = 256,
         maximumCheckpoints: Int = 8
     ) -> [Int] {
-        guard finalBoundary > restoredPrefix,
-              minimumStride > 0,
-              maximumCheckpoints > 0
-        else { return [] }
-        let span = finalBoundary - restoredPrefix
-        let stride = max(minimumStride, (span + maximumCheckpoints - 1) / maximumCheckpoints)
-        var boundaries: [Int] = []
-        var boundary = restoredPrefix + stride
-        while boundary < finalBoundary && boundaries.count < maximumCheckpoints {
-            boundaries.append(boundary)
-            boundary += stride
-        }
-        return boundaries
+        MLXReplayPrefill.boundaries(
+            restoredPrefix: restoredPrefix, finalBoundary: finalBoundary,
+            minimumStride: minimumStride, maximumCheckpoints: maximumCheckpoints)
     }
 
     private func unsafeExactReplaySuffix() -> Int? {
@@ -506,6 +607,9 @@ actor BatchScheduler {
         let thinkEndTag: String?
         let continuation: AsyncThrowingStream<StreamChunk, Error>.Continuation
         let usesGLMMTP: Bool
+        let usesQwenMTP: Bool
+
+        var usesSpeculativeSession: Bool { usesGLMMTP || usesQwenMTP }
     }
 
     /// Thread-safe request queue — accessed without actor isolation.
@@ -651,6 +755,7 @@ actor BatchScheduler {
         cacheProfilePath: String? = nil,
         admissionWindowNanoseconds: UInt64 = BatchScheduler.defaultAdmissionWindowNanoseconds,
         glmMTPGenerator: GLM5NextMTPGenerator? = nil,
+        qwenMTPGenerator: Qwen4ExpMTPGenerator? = nil,
         glmMTPPromptReplayCache: GLM5NextMTPPromptReplayCache? = nil,
         serviceModelID: String? = nil
     ) {
@@ -662,12 +767,47 @@ actor BatchScheduler {
         self.cacheProfilePath = cacheProfilePath
         self.admissionWindowNanoseconds = admissionWindowNanoseconds
         self.glmMTPGenerator = glmMTPGenerator
+        let ownsQwenMTP = Self.supportsQwenMTPScheduler(
+            modelType: type(of: model), hasGenerator: qwenMTPGenerator != nil,
+            enabled: ProcessInfo.processInfo.environment["AFM_QWEN_MTP_SCHEDULER"] == "1")
+        self.ownsQwenMTPSessions = ownsQwenMTP
+        self.qwenMTPGenerator = ownsQwenMTP ? qwenMTPGenerator : nil
+        let sharedVerification = ownsQwenMTP
+            && ProcessInfo.processInfo.environment["AFM_QWEN_MTP_SHARED_VERIFY"] == "1"
+        self.qwenMTPSharedVerification = sharedVerification
+        self.qwenMTPIndependentAttention = sharedVerification
+            && ProcessInfo.processInfo.environment["AFM_QWEN_MTP_INDEPENDENT_ATTENTION"] == "1"
+        self.qwenMTPSubmissionWindow = ownsQwenMTP ? min(4, max(sharedVerification ? 2 : 1,
+            Int(ProcessInfo.processInfo.environment[
+                "AFM_QWEN_MTP_SUBMISSION_WINDOW"] ?? "1") ?? 1)) : 1
+        let replayMiB = min(4096, max(0,
+            Int(ProcessInfo.processInfo.environment["AFM_QWEN_MTP_REPLAY_MIB"] ?? "0") ?? 0))
+        self.qwenMTPReplayCache = ownsQwenMTP && enablePrefixCaching && replayMiB > 0
+            ? ExactPromptReplayCache(maximumBytes: replayMiB * 1024 * 1024) : nil
         self.glmMTPPromptReplayCache = glmMTPPromptReplayCache
         self.glmMTPReplayModelID = Self.glmMTPReplayModelID(
             serviceModelID: serviceModelID,
             configurationName: configuration.name)
+        let uniformGroups = model is Qwen4ExpModel
+            && ProcessInfo.processInfo.environment["AFM_QWEN_BATCH_COMPATIBLE_GROUPS"] == "1"
+        let continuousGroups = uniformGroups
+            && ProcessInfo.processInfo.environment["AFM_QWEN_BATCH_CONTINUOUS_GROUPS"] == "1"
+        self.enablesUniformDecodeGroups = uniformGroups
+        self.enablesRequestOwnedDecodeBatch = continuousGroups && !ownsQwenMTP
+            && ProcessInfo.processInfo.environment["AFM_QWEN_BATCH_MIXED_POSITIONS"] == "1"
+        self.enablesContinuousIndependentAdmission = continuousGroups || ownsQwenMTP
+        self.enablesPrefillInterleave = Self.supportsPrefillInterleave(
+            modelType: type(of: model), continuousGroups: continuousGroups,
+            ownsMTP: ownsQwenMTP,
+            enabled: ProcessInfo.processInfo.environment["AFM_QWEN_BATCH_PREFILL_INTERLEAVE"] == "1")
+        self.continuousPrefillTokenBudget = min(8192, max(1,
+            Int(ProcessInfo.processInfo.environment[
+                "AFM_QWEN_BATCH_PREFILL_TOKEN_BUDGET"] ?? "1024") ?? 1024))
+        self.continuousYieldInterval = min(64, max(1,
+            Int(ProcessInfo.processInfo.environment[
+                "AFM_QWEN_BATCH_YIELD_INTERVAL"] ?? "64") ?? 64))
         self.requiresFixedDecodeCohorts = Self.requiresFixedDecodeCohorts(
-            for: type(of: model))
+            for: type(of: model), continuousUniformGroups: continuousGroups || ownsQwenMTP)
 
         let debug = ProcessInfo.processInfo.environment["AFM_DEBUG"] == "1"
         self.radixCache = enablePrefixCaching
@@ -733,7 +873,8 @@ actor BatchScheduler {
         thinkStartTag: String? = nil,
         thinkEndTag: String? = nil,
         requestId: String = "",
-        usesGLMMTP: Bool = false
+        usesGLMMTP: Bool = false,
+        usesQwenMTP: Bool = false
     ) -> AsyncThrowingStream<StreamChunk, Error> {
         if _isShutdown.withLock({ $0 }) {
             return AsyncThrowingStream { $0.finish(throwing: MLXServiceError.serviceShuttingDown) }
@@ -763,7 +904,8 @@ actor BatchScheduler {
                 thinkStartTag: thinkStartTag,
                 thinkEndTag: thinkEndTag,
                 continuation: continuation,
-                usesGLMMTP: usesGLMMTP
+                usesGLMMTP: usesGLMMTP,
+                usesQwenMTP: usesQwenMTP
             ))
         }
 
@@ -797,7 +939,23 @@ actor BatchScheduler {
     /// splitting a large HTTP burst merely because its final connections were
     /// parsed a few milliseconds after its first connections.
     private func drainAdmissionBatch() async -> [PendingRequest] {
-        var requests = drainPendingQueue(limit: maxConcurrent)
+        let admissionLimit = Self.continuousAdmissionLimit(
+            maxConcurrent: maxConcurrent, activeCount: slots.count,
+            enabled: enablesContinuousIndependentAdmission,
+            tokenBudget: continuousPrefillTokenBudget)
+        var requests = drainPendingQueue(limit: admissionLimit)
+        if enablesContinuousIndependentAdmission, !slots.isEmpty, requests.count > 1 {
+            let admitted = Self.continuousAdmissionPrefixCount(
+                estimatedTokenCounts: requests.map(estimatedContinuousPrefillTokens),
+                tokenBudget: continuousPrefillTokenBudget)
+            let deferred = Array(requests.dropFirst(admitted))
+            requests = Array(requests.prefix(admitted))
+            if !deferred.isEmpty {
+                // Requests enqueued during cost estimation must remain behind
+                // the older work, without holding the queue lock for cache lookup.
+                _pendingQueue.withLock { $0.insert(contentsOf: deferred, at: 0) }
+            }
+        }
         guard slots.isEmpty,
               requests.count == 1,
               maxConcurrent > 1,
@@ -861,6 +1019,17 @@ actor BatchScheduler {
         // Reset in-flight counter
         _inFlightCount.withLock { $0 = 0 }
         slots.removeAll()
+        uniformDecodeGroups.removeAll()
+        if qwenMTPSubmissionWindow > 1 {
+            print("[BatchScheduler] Qwen MTP submitted cycles: \(qwenMTPPreparedCycles) | window=\(qwenMTPSubmissionWindow)")
+        }
+        if qwenMTPSharedVerification {
+            print("[BatchScheduler] Qwen MTP shared verification: batches=\(qwenMTPSharedVerificationBatches) | rows=\(qwenMTPSharedVerificationRows)")
+            print("[BatchScheduler] Qwen MTP independent attention: \(qwenMTPIndependentAttention)")
+        }
+        qwenMTPReplayCache?.removeAll()
+        groupedSlotIDs.removeAll()
+        needsUniformDecodeGrouping = false
         batchCaches = []
         batchState = nil
         cacheMode = .empty
@@ -952,23 +1121,36 @@ actor BatchScheduler {
                     }
                 }
 
+                if enablesContinuousIndependentAdmission, !slots.isEmpty, !accepted.isEmpty {
+                    print("[BatchScheduler] Continuous admission: active=\(slots.count) admitted=\(accepted.count)")
+                }
+
                 // An active independent cohort must never merge a later AR
                 // request into `batchCaches`; that transition is unsupported
                 // and traps. Keep every later admission request-owned as well.
                 if Self.shouldUseIndependentPrefill(
-                    cacheModeIsIndependent: cacheMode == .independent,
-                    acceptedContainsGLMMTP: accepted.contains(where: \.usesGLMMTP))
+                    cacheModeIsIndependent: cacheMode == .independent || ownsQwenMTPSessions,
+                    acceptedContainsGLMMTP: accepted.contains(where: \.usesSpeculativeSession))
                 {
                     switch cacheMode {
                     case .empty, .independent:
                         for req in accepted {
                             if req.usesGLMMTP {
                                 prefillGLMMTP(req)
+                            } else if req.usesQwenMTP {
+                                prefillQwenMTP(req)
                             } else {
                                 prefillOne(req, forceIndependentCaches: true)
                             }
                         }
-                        continue
+                        if enablesContinuousIndependentAdmission {
+                            // Rejoin decode after the budgeted incoming cohort,
+                            // rather than draining every queued prefill first.
+                            // This is not token-chunk prefill interleaving.
+                            accepted.removeAll()
+                        } else {
+                            continue
+                        }
                     case .unbatched, .batched:
                         // GLM speculative state is request-owned. Do not coerce
                         // it into an active dense AR cohort. Defer the entire
@@ -994,11 +1176,12 @@ actor BatchScheduler {
                         $0 is UniformBatchKVCache
                     }
                     if requiresUniformOffsets {
+                        let hadActiveDecodes = !slots.isEmpty
                         let hasMultimodalInput = accepted.contains {
                             $0.input.image != nil || $0.input.video != nil
                         }
                         let useIndependentCaches =
-                            Self.requiresIndependentUniformCacheCohort(
+                            enablesContinuousIndependentAdmission || Self.requiresIndependentUniformCacheCohort(
                                 promptTokenCounts: accepted.map {
                                     $0.input.text.tokens.size
                                 },
@@ -1006,7 +1189,8 @@ actor BatchScheduler {
                         for req in accepted {
                             prefillOne(
                                 req,
-                                forceIndependentCaches: useIndependentCaches)
+                                forceIndependentCaches: useIndependentCaches,
+                                allowDecodeInterleave: hadActiveDecodes)
                         }
                         continue
                     }
@@ -1040,7 +1224,7 @@ actor BatchScheduler {
                         prefillOne(req)
                     }
                 } else if let req = accepted.first {
-                    prefillOne(req)
+                    prefillOne(req, forceIndependentCaches: enablesContinuousIndependentAdmission)
                 }
             }
 
@@ -1052,20 +1236,13 @@ actor BatchScheduler {
             }
 
             if case .independent = cacheMode {
-                let activeCount = decodeIndependentSlots()
-                totalTokensGenerated += activeCount
-                if activeCount > 0,
-                   totalTokensGenerated % 1024 < activeCount
-                {
-                    Memory.clearCache()
-                }
-                if stepCount % 512 == 0 {
-                    eval(slots.flatMap { slot in
-                        slot.prefillCaches.flatMap { $0.innerState() }
-                    })
-                }
+                advanceIndependentDecode()
                 stepCount += 1
-                if stepCount % 64 == 0 {
+                if Self.shouldYieldIndependentDecode(
+                    stepCount: stepCount,
+                    continuousGroups: enablesContinuousIndependentAdmission,
+                    interval: continuousYieldInterval)
+                {
                     await Task.yield()
                 }
                 continue
@@ -1303,6 +1480,25 @@ actor BatchScheduler {
 
     // MARK: - Prefill
 
+    /// CPU-only estimate for the qualified text Qwen admission path. The normal
+    /// prefill still validates and restores the entry; this lookup cannot bypass
+    /// replay checks. Treat unknown state as a full miss. Costs are estimates:
+    /// a failed restore or an oversized FIFO head can exceed the soft budget.
+    private func estimatedContinuousPrefillTokens(_ req: PendingRequest) -> Int {
+        let count = req.input.text.tokens.size
+        guard let radix = radixCache, req.input.image == nil, req.input.video == nil,
+              !req.usesSpeculativeSession
+        else { return max(1, count) }
+        let ids = req.input.text.tokens.reshaped(-1).asArray(Int.self)
+        let match = radix.findExactBoundaryMatch(ids)
+        guard match.prefixLen > 0, match.layerStates != nil else { return max(1, count) }
+        let prefix = Self.effectiveCachedPrefixLength(
+            matchedPrefix: match.prefixLen, inputTokenCount: count,
+            hasRecurrentLayers: true, forcedSuffix: unsafeExactReplaySuffix(),
+            sourceTokenCount: match.sourceTokenCount)
+        return max(1, count - prefix)
+    }
+
     /// Returns the prefix length that can actually be restored after applying the
     /// same replay-safety rules used by `prefillOne`.
     static func effectiveCachedPrefixLength(
@@ -1424,22 +1620,65 @@ actor BatchScheduler {
             _ = replayCache.insert(capturedState, modelID: glmMTPReplayModelID)
         }
 
+        installSpeculativeSession(.glm(session), request: req,
+            inputTokens: inputTokens, prefillStart: prefillStart,
+            cachedTokens: replayState?.promptIds.count ?? 0)
+    }
+
+    private func prefillQwenMTP(_ req: PendingRequest) {
+        guard let generator = qwenMTPGenerator else {
+            failPendingRequest(req,
+                error: MLXServiceError.loadFailed("Qwen MTP generator is unavailable"))
+            return
+        }
+        let prefillStart = Date()
+        let inputTokens = req.input.text.tokens.reshaped(-1).asArray(Int.self)
+        // The common dispatcher owns caps, EOS suppression and cancellation.
+        // Speculative replay includes both target and head/history at the exact
+        // saved boundary. The model may continue a longer prompt from there;
+        // never substitute a target-only AR radix entry or trim recurrent state.
+        let replayState = qwenMTPReplayCache?.find(prompt: inputTokens, allowPrefix: true)
+        guard let session = generator.makeSession(
+            promptIds: inputTokens, maxTokens: Int.max, eosIds: [],
+            temperature: req.parameters.temperature, topP: req.parameters.topP,
+            seed: req.parameters.seed, promptState: replayState,
+            retainPromptState: replayState?.promptIds.count != inputTokens.count
+                && qwenMTPReplayCache?.canStore(prompt: inputTokens) == true,
+            allowPromptPrefixReplay: true)
+        else {
+            failPendingRequest(req,
+                error: MLXServiceError.loadFailed("Unable to create Qwen MTP session"))
+            return
+        }
+        if let captured = session.takePromptState() {
+            qwenMTPReplayCache?.insert(prompt: captured.promptIds, value: captured,
+                valueBytes: captured.estimatedRetainedBytes)
+        }
+        installSpeculativeSession(.qwen(session), request: req,
+            inputTokens: inputTokens, prefillStart: prefillStart,
+            cachedTokens: replayState?.promptIds.count ?? 0)
+    }
+
+    private func installSpeculativeSession(
+        _ session: SpeculativeSession, request req: PendingRequest,
+        inputTokens: [Int], prefillStart: Date, cachedTokens: Int
+    ) {
+
         if case .empty = cacheMode {
             cacheMode = .independent
         } else if case .independent = cacheMode {
             // Additional GLM and native-cache requests share the fair cohort.
         } else {
-            preconditionFailure("Cannot add GLM MTP state to a dense AR cohort")
+            preconditionFailure("Cannot add speculative state to a dense AR cohort")
         }
 
         guard let firstToken = session.nextToken() else {
             failPendingRequest(
                 req,
-                error: MLXServiceError.loadFailed("GLM MTP session produced no first token"))
+                error: MLXServiceError.loadFailed("\(session.label) MTP session produced no first token"))
             return
         }
         let tokenArray = MLXArray(Int32(firstToken))
-        let cachedTokens = replayState?.promptIds.count ?? 0
         let prefillTime = Date().timeIntervalSince(prefillStart)
 
         let slot = SlotState(
@@ -1452,7 +1691,7 @@ actor BatchScheduler {
             prefillTime: prefillTime,
             inputTokens: inputTokens,
             cachedTokens: cachedTokens,
-            prefillCaches: session.targetCache,
+            prefillCaches: session.periodicCaches,
             prefixCacheTokens: [],
             prefixCacheStates: [],
             prefixCacheMetaStates: [],
@@ -1489,7 +1728,7 @@ actor BatchScheduler {
             computeLogprobs: false,
             topLogprobsCount: 0,
             temperatureForLogprobs: req.parameters.temperature,
-            glmMTPSession: session)
+            speculativeSession: session)
 
         let firstTokenFinished = dispatchSampledToken(
             tokenArray,
@@ -1509,10 +1748,16 @@ actor BatchScheduler {
             StatsAggregator.shared.cacheMiss()
         }
 
+        let replaySummary: String
+        if case .qwen = session, let replay = qwenMTPReplayCache {
+            replaySummary = " replay_entries=\(replay.count) replay_bytes=\(replay.retainedBytes)"
+        } else {
+            replaySummary = ""
+        }
         print(
-            "[\(batchTs())] [GLM-MTPScheduler] Prefilled speculative slot "
+            "[\(batchTs())] [\(session.label)-MTPScheduler] Prefilled speculative slot "
                 + "req=\(slot.requestId) cached=\(cachedTokens) "
-                + "time=\(String(format: "%.3f", prefillTime))s")
+                + "time=\(String(format: "%.3f", prefillTime))s" + replaySummary)
         slots.append(slot)
         if firstTokenFinished {
             finishSlot(at: slots.count - 1)
@@ -1522,7 +1767,8 @@ actor BatchScheduler {
     /// Prefill a single request (B=1), then merge its cache into the batch.
     private func prefillOne(
         _ req: PendingRequest,
-        forceIndependentCaches: Bool = false
+        forceIndependentCaches: Bool = false,
+        allowDecodeInterleave: Bool = true
     ) {
         var cache = model.newCache(parameters: req.parameters)
         var generateInput = req.input
@@ -1632,63 +1878,57 @@ actor BatchScheduler {
             hasRecurrentLayers: Self.requiresReplayBoundarySnapshot(cache),
             isMultimodal: isMultimodal,
             inputTokenCount: inputTokens.count)
-        var prefixCacheTokens: [Int]? = nil
+        var prefixCacheTokens: [Int]? = shouldCaptureReplayBoundary ? [] : nil
         var prefixCacheStates: [[MLXArray]]? = nil
         var prefixCacheMetaStates: [[String]]? = nil
-        let suffixTokens = generateInput.text.tokens.reshaped(-1).asArray(Int.self)
         let result: LMOutput
-        if shouldCaptureReplayBoundary, let finalToken = suffixTokens.last {
-            var recurrentState: LMOutput.State? = nil
-            // `generateInput` was sliced at `cachedTokens` on restore, so this
-            // array contains only the uncached suffix before the final replay
-            // token. The consumed offsets below are relative to that suffix.
-            let uncachedLeadingTokens = Array(suffixTokens.dropLast())
+        // Preserve cold cohort formation and the no-competing-request path.
+        // Otherwise decoding the first newly admitted row while prefilling its
+        // peers unnecessarily destroys their equal-position batch eligibility.
+        let interleave = enablesPrefillInterleave && forceIndependentCaches && !isMultimodal
+            && allowDecodeInterleave && !slots.isEmpty && !inputTokens.isEmpty
+        if shouldCaptureReplayBoundary || interleave {
             let finalBoundary = inputTokens.count - 1
-            let checkpoints = Self.recurrentCheckpointBoundaries(
-                restoredPrefix: cachedTokens,
-                finalBoundary: finalBoundary
-            )
-            var consumed = 0
-            for boundary in checkpoints + [finalBoundary] {
-                let targetConsumed = boundary - cachedTokens
-                guard targetConsumed > consumed else { continue }
-                let chunk = Array(uncachedLeadingTokens[consumed..<targetConsumed])
-                recurrentState = model(
-                    LMInput.Text(tokens: MLXArray(chunk)[.newAxis]),
-                    cache: cache,
-                    state: recurrentState,
-                    hostTokenIDs: model.consumesHostTokenIDs ? chunk : nil
-                ).state
-                consumed = targetConsumed
-
-                if boundary < finalBoundary, let radix = radixCache {
-                    let states = cache.map { Self.snapshotCacheState($0.state) }
-                    MLX.eval(states.flatMap { $0 })
-                    radix.insert(
-                        tokens: Array(inputTokens.prefix(boundary)),
-                        layerStates: states,
-                        layerMetaStates: cache.map { $0.metaState }
-                    )
-                    DebugLogger.log(
-                        "[BatchScheduler] Recurrent prefix checkpoint: \(boundary) tokens")
+            let capture: ((Int, [[MLXArray]], [[String]]) -> Void)? = shouldCaptureReplayBoundary
+                ? { boundary, states, metadata in
+                    if boundary < finalBoundary {
+                        self.radixCache?.insert(tokens: Array(inputTokens.prefix(boundary)),
+                            layerStates: states, layerMetaStates: metadata)
+                    }
+                } : nil
+            // The prefilling request is reserved but is not in `slots` until
+            // its final logits and state are ready. This is one synchronous
+            // scheduler stack, not a second model owner or recursive admission.
+            // Same-thread chunk/decode hook design informed by David Dalcu's
+            // MIT-licensed mlx-serve (src/generate.zig, src/scheduler.zig).
+            let afterChunk: ((Range<Int>) -> Void)? = interleave ? { _ in
+                if self.cacheMode == .independent && !self.slots.isEmpty {
+                    self.advanceIndependentDecode()
                 }
+            } : nil
+            do {
+                let prepared = try MLXReplayPrefill.prepareWithSnapshot(
+                    model: model, cache: cache, inputTokens: inputTokens,
+                    restoredPrefix: cachedTokens, prefillStepSize: req.parameters.prefillStepSize,
+                    captureFinalSnapshot: shouldCaptureReplayBoundary, checkpoint: capture,
+                    checkCancellation: {
+                        if self.isCancellationRequested(req.id) || self._isShutdown.withLock({ $0 }) {
+                            throw CancellationError()
+                        }
+                    },
+                    didCompleteChunk: afterChunk)
+                result = prepared.output
+                if let snapshot = prepared.finalSnapshot {
+                    prefixCacheTokens = Array(inputTokens.prefix(snapshot.boundary))
+                    prefixCacheStates = snapshot.states
+                    prefixCacheMetaStates = snapshot.metadata
+                }
+                // Unknown extra continuation state cannot be stored in radix.
+                if result.state != nil { prefixCacheTokens = [] }
+            } catch {
+                failPendingRequest(req, error: error)
+                return
             }
-            let states = cache.map { layerCache in
-                // `contiguous` may return the original storage when the source
-                // is already contiguous. Rotating caches mutate that storage in
-                // place, so force an independent allocation for the retained
-                // prompt-minus-one snapshot.
-                Self.snapshotCacheState(layerCache.state)
-            }
-            MLX.eval(states.flatMap { $0 })
-            prefixCacheTokens = Array(inputTokens.dropLast())
-            prefixCacheStates = states
-            prefixCacheMetaStates = cache.map { $0.metaState }
-            result = model(
-                LMInput.Text(tokens: MLXArray([finalToken]).reshaped([1, 1])),
-                cache: cache,
-                state: recurrentState,
-                hostTokenIDs: model.consumesHostTokenIDs ? [finalToken] : nil)
         } else {
             do {
                 switch try model.prepare(
@@ -1852,7 +2092,10 @@ actor BatchScheduler {
         )
         print("[\(batchTs())] [ChunkStats] stage=preliminary | stream=true | cached_tokens=\(cachedTokens) | prompt_tokens=pending | completion_tokens=pending | prompt_time=pending | generate_time=pending")
 
+        slot.permitsUniformDecodeGroup = enablesUniformDecodeGroups
+            && forceIndependentCaches && !isMultimodal && result.state == nil
         slots.append(slot)
+        if slot.permitsUniformDecodeGroup { needsUniformDecodeGrouping = true }
         if firstTokenFinished {
             finishSlot(at: slots.count - 1)
             return
@@ -1861,6 +2104,44 @@ actor BatchScheduler {
     }
 
     // MARK: - Native-cache cohort decode
+
+    /// Keep graph reclamation and token accounting identical for outer-loop
+    /// ticks and ticks between prefill chunks. Otherwise long admissions can
+    /// bypass the safety intervals even though their output is being streamed.
+    private func advanceIndependentDecode() {
+        let activeCount = decodeIndependentSlots()
+        totalTokensGenerated += activeCount
+        if activeCount > 0, totalTokensGenerated % 1024 < activeCount {
+            Memory.clearCache()
+        }
+        if independentDecodeSteps % 512 == 0 {
+            eval(slots.flatMap { $0.prefillCaches.flatMap { $0.innerState() } }
+                + uniformDecodeGroups.flatMap { $0.caches.flatMap { $0.innerState() } })
+        }
+        independentDecodeSteps += 1
+    }
+
+    private func prepareUniformDecodeGroups() {
+        guard enablesUniformDecodeGroups, !enablesRequestOwnedDecodeBatch,
+              needsUniformDecodeGrouping else { return }
+        needsUniformDecodeGrouping = false
+        let candidates = slots.filter {
+            $0.permitsUniformDecodeGroup && !groupedSlotIDs.contains($0.id) && $0.modelState == nil
+                && $0.speculativeSession == nil && !$0.prefillCaches.isEmpty
+        }
+        for indices in UniformDecodeGroup.compatibleIndices(candidates.map(\.prefillCaches)) {
+            let members = indices.map { candidates[$0] }
+            guard let group = UniformDecodeGroup(
+                slotIDs: members.map(\.id), requestCaches: members.map(\.prefillCaches))
+            else { continue }
+            uniformDecodeGroups.append(group)
+            groupedSlotIDs.formUnion(group.slotIDs)
+            // Do not retain a second, obsolete set of live recurrent/KV caches.
+            // Prefix snapshots have separate ownership and are left untouched.
+            for member in members { member.prefillCaches.removeAll() }
+            print("[BatchScheduler] Compatible decode group: rows=\(group.slotIDs.count)")
+        }
+    }
 
     /// Advance every active request that owns a model-specific cache by one
     /// token. Graphs are built with each concrete cache intact, then submitted
@@ -1877,6 +2158,46 @@ actor BatchScheduler {
         }
         cancelledIndices.removeAll(keepingCapacity: true)
         guard !slots.isEmpty else { return 0 }
+        prepareUniformDecodeGroups()
+
+        var groupedLogits: [UUID: MLXArray] = [:]
+        if enablesRequestOwnedDecodeBatch, let adapter = model as? any RequestOwnedDecodeBatchModel {
+            let candidates = slots.filter {
+                $0.permitsUniformDecodeGroup && $0.modelState == nil && $0.speculativeSession == nil
+                    && !$0.prefillCaches.isEmpty
+            }
+            if candidates.count > 1, let output = adapter.decodeRequestBatch(
+                tokens: candidates.map(\.lastTokenId), caches: candidates.map(\.prefillCaches)) {
+                precondition(output.state == nil, "Request-owned decode adapter omitted model state")
+                for (row, member) in candidates.enumerated() {
+                    groupedLogits[member.id] = output.logits[row, -1, 0...]
+                }
+                uniformGroupForwardCalls += 1
+                uniformGroupSlotSteps += candidates.count
+                if requestOwnedBatchRowsSeen.insert(candidates.count).inserted {
+                    print("[BatchScheduler] Request-owned mixed-position decode: rows=\(candidates.count)")
+                }
+            }
+        }
+        if !uniformDecodeGroups.isEmpty {
+            let byID = Dictionary(uniqueKeysWithValues: slots.map { ($0.id, $0) })
+            for group in uniformDecodeGroups {
+                let members = group.slotIDs.map { byID[$0]! }
+                let tokens = stacked(members.map { $0.lastTokenArray.reshaped([]) })
+                    .reshaped(members.count, 1)
+                let output = model(
+                    LMInput.Text(tokens: tokens), cache: group.caches, state: nil,
+                    hostTokenIDs: model.consumesHostTokenIDs ? members.map(\.lastTokenId) : nil)
+                // The opt-in adapter is Qwen4ExpModel, whose text continuation
+                // state lives entirely in its model-owned concrete caches.
+                precondition(output.state == nil, "Uniform decode adapter omitted model state")
+                for (row, member) in members.enumerated() {
+                    groupedLogits[member.id] = output.logits[row, -1, 0...]
+                }
+                uniformGroupForwardCalls += 1
+                uniformGroupSlotSteps += members.count
+            }
+        }
 
         let activeSlotIDs = slots.map(\.id)
         var sampledTokens: [MLXArray] = []
@@ -1884,30 +2205,96 @@ actor BatchScheduler {
         sampledTokens.reserveCapacity(slots.count)
         sampledLogits.reserveCapacity(slots.count)
 
-        for slot in slots {
-            if let session = slot.glmMTPSession,
+        var sharedQwenTokens: [UUID: Int] = [:]
+        if qwenMTPSharedVerification {
+            let candidates = slots.compactMap { slot -> (slot: SlotState, session: Qwen4ExpMTPSession)? in
+                guard !isCancellationRequested(slot.id),
+                      case .qwen(let session) = slot.speculativeSession else { return nil }
+                return (slot, session)
+            }
+            for indices in Qwen4ExpMTPSession.compatibleVerificationGroups(
+                candidates.map(\.session), maximumRows: qwenMTPSubmissionWindow,
+                independentAttention: qwenMTPIndependentAttention)
+            {
+                let members = indices.map { candidates[$0] }.filter { !isCancellationRequested($0.slot.id) }
+                let sessions = members.map(\.session)
+                for session in sessions { session.prepareDraftTokens() }
+                let shared = Qwen4ExpMTPSession.prepareCompatibleVerificationBatches(
+                    sessions, independentAttention: qwenMTPIndependentAttention)
+                qwenMTPSharedVerificationBatches += shared.batches
+                qwenMTPSharedVerificationRows += shared.rows
+                for member in members {
+                    if member.session.prepareNextToken() { qwenMTPPreparedCycles += 1 }
+                    if let token = member.session.nextToken() { sharedQwenTokens[member.slot.id] = token }
+                }
+                // All decisions in this bounded group are consumed before
+                // submitting another group. Only token IDs are staged for the
+                // existing ordered output dispatcher; never reorder its slots.
+            }
+        }
+
+        for (slotIndex, slot) in slots.enumerated() {
+            if !qwenMTPSharedVerification, qwenMTPSubmissionWindow > 1,
+               slotIndex.isMultiple(of: qwenMTPSubmissionWindow)
+            {
+                // No suspension inside this bounded window. Request-owned
+                // verification/repair state is consumed below in slot order;
+                // AR and other model sessions retain their existing path.
+                let window = slotIndex..<min(slots.count, slotIndex + qwenMTPSubmissionWindow)
+                // Queue every head before every target in the window. Otherwise
+                // the next request's PLE host read waits behind the preceding
+                // target verifier and collapses the intended overlap.
+                for ahead in window {
+                    let candidate = slots[ahead]
+                    if !isCancellationRequested(candidate.id),
+                       case .qwen(let session) = candidate.speculativeSession
+                    {
+                        session.prepareDraftTokens()
+                    }
+                }
+                for ahead in window {
+                    let candidate = slots[ahead]
+                    if !isCancellationRequested(candidate.id),
+                       case .qwen(let session) = candidate.speculativeSession
+                    {
+                        if session.prepareNextToken() { qwenMTPPreparedCycles += 1 }
+                    }
+                }
+            }
+            if let token = sharedQwenTokens[slot.id] {
+                sampledTokens.append(MLXArray(Int32(token)))
+                sampledLogits.append(nil)
+            } else if qwenMTPSharedVerification, isCancellationRequested(slot.id),
+                      case .qwen = slot.speculativeSession {
+                // The dispatcher checks cancellation before consuming this
+                // placeholder; no token is emitted or counted for this row.
+                sampledTokens.append(MLXArray(Int32(0)))
+                sampledLogits.append(nil)
+            } else if let session = slot.speculativeSession,
                let token = session.nextToken()
             {
                 sampledTokens.append(MLXArray(Int32(token)))
                 sampledLogits.append(nil)
-            } else if slot.glmMTPSession == nil {
-                let input = LMInput.Text(tokens: slot.lastTokenArray.reshaped([1, 1]))
-                let output = model(
-                    input,
-                    cache: slot.prefillCaches,
-                    state: slot.modelState,
-                    hostTokenIDs: model.consumesHostTokenIDs
-                        ? [slot.lastTokenId]
-                        : nil)
-                slot.modelState = output.state
-
-                let logits = output.logits[0, -1, 0...]
+            } else if slot.speculativeSession == nil {
+                let logits: MLXArray
+                if let batched = groupedLogits[slot.id] {
+                    logits = batched
+                } else {
+                    let input = LMInput.Text(tokens: slot.lastTokenArray.reshaped([1, 1]))
+                    let output = model(
+                        input, cache: slot.prefillCaches, state: slot.modelState,
+                        hostTokenIDs: model.consumesHostTokenIDs ? [slot.lastTokenId] : nil)
+                    slot.modelState = output.state
+                    logits = output.logits[0, -1, 0...]
+                }
+                // Preserve per-request sampling order even when forwards are
+                // grouped; processors, grammar matchers and RNGs stay separate.
                 let processed = slot.processor?.process(logits: logits) ?? logits
                 let sampled = slot.sampler.sample(logits: processed)
                 sampledTokens.append(sampled)
                 sampledLogits.append(slot.computeLogprobs ? processed : nil)
             } else {
-                preconditionFailure("GLM MTP session ended without a token")
+                preconditionFailure("Speculative session ended without a token")
             }
         }
 
@@ -2347,7 +2734,7 @@ actor BatchScheduler {
         request.constraintRuntimeConfig?.matcherHandle?.release()
         request.continuation.finish(throwing: error)
         _inFlightCount.withLock { $0 = max(0, $0 - 1) }
-        StatsAggregator.shared.requestSucceeded(reason: "error")
+        StatsAggregator.shared.requestSucceeded(reason: error is CancellationError ? "abort" : "error")
         StatsAggregator.shared.requestCompleted()
     }
 
@@ -2463,8 +2850,22 @@ actor BatchScheduler {
         DebugLogger.log("[BatchScheduler] Finished slot req=\(slot.requestId) (\(slot.tokenCount) tok, \(String(format: "%.2f", elapsed))s, in-flight: \(_inFlightCount.withLock { $0 })/\(maxConcurrent))")
 
         // Remove from batch cache and state
+        if groupedSlotIDs.remove(slot.id) != nil {
+            for group in uniformDecodeGroups where group.slotIDs.contains(slot.id) {
+                group.remove(slot.id)
+            }
+            uniformDecodeGroups.removeAll { $0.slotIDs.isEmpty }
+        }
         let keepIndices = (0..<slots.count).filter { $0 != index }
         if keepIndices.isEmpty {
+            if uniformGroupForwardCalls > 0 {
+                print("[BatchScheduler] Compatible decode work: forwards=\(uniformGroupForwardCalls) slot_steps=\(uniformGroupSlotSteps)")
+            }
+            uniformGroupForwardCalls = 0
+            uniformGroupSlotSteps = 0
+            uniformDecodeGroups.removeAll()
+            groupedSlotIDs.removeAll()
+            needsUniformDecodeGrouping = false
             batchCaches = []
             batchState = nil
             cacheMode = .empty

@@ -44,10 +44,16 @@ private enum MTPGeneratorRuntime: @unchecked Sendable {
     case glm(GLM5NextMTPGenerator)
     case deepseek(DeepseekV4DSparkGenerator)
 
+    var supportsSampling: Bool {
+        if case .qwenNext = self { return true }
+        return false
+    }
+
     func generate(
         promptIds: [Int],
         maxTokens: Int,
         eosIds: Set<Int>,
+        parameters: GenerateParameters? = nil,
         onToken: ((Int) -> Bool)? = nil
     ) -> [Int] {
         switch self {
@@ -70,6 +76,9 @@ private enum MTPGeneratorRuntime: @unchecked Sendable {
                 promptIds: promptIds,
                 maxTokens: maxTokens,
                 eosIds: eosIds,
+                temperature: parameters?.temperature ?? 0,
+                topP: parameters?.topP ?? 1,
+                seed: parameters?.seed,
                 onToken: onToken
             )
         case .glm(let generator):
@@ -727,10 +736,11 @@ public final class MLXModelService:
         schedulerAvailable: Bool,
         mtpStreamEligible: Bool,
         schedulerCanPreserveLogprobVisibility: Bool,
-        schedulerOwnsGLMMTP: Bool = false
+        schedulerOwnsGLMMTP: Bool = false,
+        schedulerOwnsQwenMTP: Bool = false
     ) -> Bool {
         schedulerAvailable
-            && (!mtpStreamEligible || schedulerOwnsGLMMTP)
+            && (!mtpStreamEligible || schedulerOwnsGLMMTP || schedulerOwnsQwenMTP)
             && schedulerCanPreserveLogprobVisibility
     }
 
@@ -757,7 +767,25 @@ public final class MLXModelService:
         hasStopSequences: Bool,
         hasMedia: Bool
     ) -> Bool {
-        parameters.temperature == 0
+        isSpeculationEligible(
+            parameters: parameters, supportsSampling: false,
+            hasTools: hasTools, hasResponseFormat: hasResponseFormat,
+            wantsLogprobs: wantsLogprobs, hasStopSequences: hasStopSequences,
+            hasMedia: hasMedia)
+    }
+
+    static func isSpeculationEligible(
+        parameters: GenerateParameters,
+        supportsSampling: Bool,
+        hasTools: Bool,
+        hasResponseFormat: Bool,
+        wantsLogprobs: Bool,
+        hasStopSequences: Bool,
+        hasMedia: Bool
+    ) -> Bool {
+        parameters.temperature.isFinite && parameters.temperature >= 0
+            && (parameters.temperature == 0 || supportsSampling)
+            && parameters.topP.isFinite && (0...1).contains(parameters.topP)
             && parameters.repetitionPenalty == nil
             && parameters.presencePenalty == 0
             && parameters.topK == 0
@@ -2897,6 +2925,13 @@ public final class MLXModelService:
         }
         let prefixCaching = self.enablePrefixCaching
         let limit = self.maxConcurrent
+        let qwenMTPBinding: MTPGeneratorBinding? = withStateLock {
+            guard !modelSwitchInProgress,
+                  let binding = currentMTPBinding, binding.modelID == runtime.0,
+                  case .qwenNext = binding.generator
+            else { return nil }
+            return binding
+        }
         let glmMTPGenerator: GLM5NextMTPGenerator? = withStateLock {
             guard case .glm(let generator)? = currentMTPBinding?.generator else {
                 return nil
@@ -2918,7 +2953,15 @@ public final class MLXModelService:
                     + "exact-prompt speculative replay remains active")
         }
         let sched = await runtime.1.perform { context -> BatchScheduler in
-            BatchScheduler(
+            // Cross the executor boundary through the existing model-identity
+            // binding, not a new Sendable promise on the generator/session.
+            let qwenMTPGenerator: Qwen4ExpMTPGenerator?
+            if case .qwenNext(let generator)? = qwenMTPBinding?.generator {
+                qwenMTPGenerator = generator
+            } else {
+                qwenMTPGenerator = nil
+            }
+            return BatchScheduler(
                 model: context.model,
                 tokenizer: context.tokenizer,
                 processor: context.processor,
@@ -2927,6 +2970,7 @@ public final class MLXModelService:
                 enablePrefixCaching: schedulerPrefixCaching,
                 cacheProfilePath: self.cacheProfilePath,
                 glmMTPGenerator: glmMTPGenerator,
+                qwenMTPGenerator: qwenMTPGenerator,
                 glmMTPPromptReplayCache: glmMTPPromptReplayCache,
                 serviceModelID: runtime.0
             )
@@ -3024,6 +3068,13 @@ public final class MLXModelService:
         }
 
         let prefixCaching = self.enablePrefixCaching
+        let qwenMTPBinding: MTPGeneratorBinding? = withStateLock {
+            guard !modelSwitchInProgress,
+                  let binding = currentMTPBinding, binding.modelID == runtime.0,
+                  case .qwenNext = binding.generator
+            else { return nil }
+            return binding
+        }
         let glmMTPGenerator: GLM5NextMTPGenerator? = withStateLock {
             guard case .glm(let generator)? = currentMTPBinding?.generator else {
                 return nil
@@ -3037,7 +3088,13 @@ public final class MLXModelService:
             prefixCaching: prefixCaching,
             hasGLMMTPReplayCache: glmMTPPromptReplayCache != nil)
         let sched = await runtime.1.perform { context -> BatchScheduler in
-            BatchScheduler(
+            let qwenMTPGenerator: Qwen4ExpMTPGenerator?
+            if case .qwenNext(let generator)? = qwenMTPBinding?.generator {
+                qwenMTPGenerator = generator
+            } else {
+                qwenMTPGenerator = nil
+            }
+            return BatchScheduler(
                 model: context.model,
                 tokenizer: context.tokenizer,
                 processor: context.processor,
@@ -3046,6 +3103,7 @@ public final class MLXModelService:
                 enablePrefixCaching: schedulerPrefixCaching,
                 cacheProfilePath: self.cacheProfilePath,
                 glmMTPGenerator: glmMTPGenerator,
+                qwenMTPGenerator: qwenMTPGenerator,
                 glmMTPPromptReplayCache: glmMTPPromptReplayCache,
                 serviceModelID: runtime.0
             )
@@ -3281,11 +3339,18 @@ public final class MLXModelService:
             }
         }
 
-        // ---- MTP self-speculative fast path (greedy, text-only, no tools/grammar/logprobs) ----
-        // Eligible when an MTP head is installed and the request is plain greedy generation.
-        // Produces output identical to greedy AR (validated P2) but with fewer trunk forwards.
+        // Qwen Next additionally supports sampled targets; other generators
+        // retain their greedy-only eligibility. Unsupported processors and
+        // response contracts continue through ordinary generation unchanged.
         let mtpEligible = mtpBinding != nil
-            && greedySpeculationEligible
+            && Self.isSpeculationEligible(
+                parameters: baseParameters,
+                supportsSampling: mtpBinding?.generator.supportsSampling == true,
+                hasTools: !(tools?.isEmpty ?? true),
+                hasResponseFormat: responseFormat != nil,
+                wantsLogprobs: wantLogprobs,
+                hasStopSequences: !(stop?.isEmpty ?? true),
+                hasMedia: !resolvedMedia.mediaKinds.isEmpty)
         if mtpEligible {
             if let mtpResult = try await container.perform({ context -> (String, Int, Int)? in
                 guard let gen = mtpBinding?.generator else { return nil }
@@ -3301,7 +3366,9 @@ public final class MLXModelService:
                 guard !promptIds.isEmpty else { return nil }
                 let eos = context.resolvedEOSTokenIds
                 let t0 = Date.timeIntervalSinceReferenceDate
-                let outIds = gen.generate(promptIds: promptIds, maxTokens: effectiveMaxTokens, eosIds: eos)
+                let outIds = gen.generate(
+                    promptIds: promptIds, maxTokens: effectiveMaxTokens,
+                    eosIds: eos, parameters: baseParameters)
                 let gt = Date.timeIntervalSinceReferenceDate - t0
                 // strip a trailing EOS for the returned text
                 let textIds = (outIds.last.map { eos.contains($0) } ?? false) ? Array(outIds.dropLast()) : outIds
@@ -3816,11 +3883,20 @@ public final class MLXModelService:
                 fflush(stdout)
             }
             try Task.checkCancellation()
+            let capturesReplayBoundaries = self.shouldCaptureSerialReplayBoundaries(
+                model: context.model, input: input, cache: generationCache, parameters: params)
             let generationIterator = try TokenIterator(
                 input: generateInput,
                 model: context.model,
                 cache: generationCache,
-                parameters: params
+                parameters: params,
+                processorPrompt: capturesReplayBoundaries ? MLXArray(inputTokens) : nil,
+                preparedPrefill: capturesReplayBoundaries ? { cache in
+                    try MLXReplayPrefill.prepare(
+                        model: context.model, cache: cache, inputTokens: inputTokens,
+                        restoredPrefix: inputTokens.count - generateInput.text.tokens.size,
+                        radix: self.radixCache!, prefillStepSize: params.prefillStepSize)
+                } : nil
             )
             let (generationStream, generationTask) = MLXLMCommon.generateTask(
                 promptTokenCount: generateInput.text.tokens.size,
@@ -3910,6 +3986,7 @@ public final class MLXModelService:
             // Save prompt cache state into radix tree.
             // Skip save when RotatingKVCache has wrapped past maxCacheSize (#94).
             if useCache, let radix = self.radixCache, !inputTokens.isEmpty,
+               !capturesReplayBoundaries,
                !self.hasWrappedRotatingCache(generationCache) {
                 let promptLen = inputTokens.count
                 let tSave0 = Date.timeIntervalSinceReferenceDate
@@ -4220,8 +4297,8 @@ public final class MLXModelService:
         var params = baseParameters
 
         // Decide speculative eligibility before selecting the execution lane.
-        // Merely loading an MTP head must not serialize AR-only requests such
-        // as sampling, tools, stops, schemas, logprobs, or media.
+        // Merely loading an MTP head must not serialize unsupported requests
+        // (tools, stops, schemas, logprobs, media, or sampling on greedy-only heads).
         let specGreedyStream = Self.isGreedySpeculationEligible(
             parameters: baseParameters,
             hasTools: !(tools?.isEmpty ?? true),
@@ -4229,7 +4306,14 @@ public final class MLXModelService:
             wantsLogprobs: wantLogprobs,
             hasStopSequences: !(stop?.isEmpty ?? true),
             hasMedia: !resolvedMedia.mediaKinds.isEmpty)
-        let mtpStreamEligible = specGreedyStream && mtpBinding != nil
+        let mtpStreamEligible = mtpBinding != nil && Self.isSpeculationEligible(
+            parameters: baseParameters,
+            supportsSampling: mtpBinding?.generator.supportsSampling == true,
+            hasTools: !(tools?.isEmpty ?? true),
+            hasResponseFormat: responseFormat != nil,
+            wantsLogprobs: wantLogprobs,
+            hasStopSequences: !(stop?.isEmpty ?? true),
+            hasMedia: !resolvedMedia.mediaKinds.isEmpty)
 
         // Stop/tool transformation can suppress text after tokenization. Until
         // the concurrent path owns a joint text/logprob visibility buffer, use
@@ -4239,22 +4323,24 @@ public final class MLXModelService:
             || ((stop?.isEmpty ?? true) && (tools?.isEmpty ?? true))
 
         // --- Concurrent path: bypass container.perform lock, route through BatchScheduler ---
-        // Generic MTP remains serial because BatchScheduler is autoregressive-only.
-        // GLM is the staged exception: its request-owned session retains target
-        // and NextN rollback state while participating in the independent cohort.
+        // GLM and the opt-in Qwen adapter retain request-owned target/head state
+        // in the scheduler. Other MTP implementations keep the serial lane.
         let schedulerOwnsGLMMTP = mtpStreamEligible
             && currentModelArchitecture?.canonicalModelType == "glm5_next"
             && maxConcurrent > 1
         let requestScheduler = withStateLock {
             schedulerModelID == modelID ? self.scheduler : nil
         }
+        let schedulerOwnsQwenMTP = mtpStreamEligible && maxConcurrent > 1
+            && requestScheduler?.ownsQwenMTPSessions == true
         if let scheduler = requestScheduler,
            Self.shouldUseStreamingScheduler(
                 schedulerAvailable: true,
                 mtpStreamEligible: mtpStreamEligible,
                 schedulerCanPreserveLogprobVisibility:
                     schedulerLogprobsAreVisible,
-                schedulerOwnsGLMMTP: schedulerOwnsGLMMTP)
+                schedulerOwnsGLMMTP: schedulerOwnsGLMMTP,
+                schedulerOwnsQwenMTP: schedulerOwnsQwenMTP)
         {
             let pipelineStart = debugLogging ? Date() : Date.distantPast
 
@@ -4322,7 +4408,8 @@ public final class MLXModelService:
                     thinkStartTag: rawPrompt == nil ? self.thinkStartTag : nil,
                     thinkEndTag: rawPrompt == nil ? self.thinkEndTag : nil,
                     requestId: reqId,
-                    usesGLMMTP: schedulerOwnsGLMMTP
+                    usesGLMMTP: schedulerOwnsGLMMTP,
+                    usesQwenMTP: schedulerOwnsQwenMTP
                 )
             }
             let effectiveStream: AsyncThrowingStream<StreamChunk, Error>
@@ -4366,7 +4453,7 @@ public final class MLXModelService:
             return (modelID, operationOwningStream, preparedPromptTokens, toolTags?.0, toolTags?.1, self.thinkStartTag, self.thinkEndTag)
         }
 
-        // --- MTP / EAGLE3 speculative streaming fast path (serial, greedy, text-only) ---
+        // --- Speculative streaming (serial, text-only; Qwen Next also samples) ---
         // Same eligibility as the non-streaming fast paths, plus: no stop sequences (the
         // speculative generators don't implement stop — fall back to AR when stop is requested).
         // The generator's per-token `onToken` callback drives incremental detokenization, yielding
@@ -4490,7 +4577,8 @@ public final class MLXModelService:
                                                 : nil)
                                     } else {
                                         _ = gen.generate(promptIds: promptIds, maxTokens: maxTok,
-                                                         eosIds: eos, onToken: emit)
+                                                         eosIds: eos, parameters: baseParameters,
+                                                         onToken: emit)
                                     }
                                     return (allTokens.count, 0)
                                 }
@@ -4773,12 +4861,21 @@ public final class MLXModelService:
                             fflush(stdout)
                         }
                         let generationIterator: TokenIterator
+                        let capturesReplayBoundaries = self.shouldCaptureSerialReplayBoundaries(
+                            model: context.model, input: input, cache: generationCache, parameters: params)
                         do {
                             generationIterator = try TokenIterator(
                                 input: generateInput,
                                 model: context.model,
                                 cache: generationCache,
-                                parameters: params
+                                parameters: params,
+                                processorPrompt: capturesReplayBoundaries ? MLXArray(inputTokens) : nil,
+                                preparedPrefill: capturesReplayBoundaries ? { cache in
+                                    try MLXReplayPrefill.prepare(
+                                        model: context.model, cache: cache, inputTokens: inputTokens,
+                                        restoredPrefix: streamCachedTokens,
+                                        radix: self.radixCache!, prefillStepSize: params.prefillStepSize)
+                                } : nil
                             )
                         } catch {
                             if debugLogging {
@@ -4983,6 +5080,7 @@ public final class MLXModelService:
                         // Save prompt cache state into radix tree.
                         // Skip when RotatingKVCache has wrapped (#94).
                         if useCache, let radix = self.radixCache, !inputTokens.isEmpty, !Task.isCancelled,
+                           !capturesReplayBoundaries,
                            !self.hasWrappedRotatingCache(generationCache) {
                             let promptLen = inputTokens.count
                             let tSave0 = Date.timeIntervalSinceReferenceDate
@@ -8272,6 +8370,23 @@ public final class MLXModelService:
 
     private func supportsPhysicalTruncation(_ cache: KVCache) -> Bool {
         !(cache is RotatingKVCache)
+    }
+
+    /// Experimental shared replay capture. Kept opt-in until cold-prefill cost
+    /// and restore equivalence are qualified for each architecture.
+    private func shouldCaptureSerialReplayBoundaries(
+        model: any LanguageModel, input: LMInput, cache: [KVCache], parameters: GenerateParameters
+    ) -> Bool {
+        ProcessInfo.processInfo.environment["AFM_PREFIX_REPLAY_BOUNDARIES"] == "1"
+            // The helper is reusable, but bypassing model.prepare requires
+            // architecture qualification. Do not activate other adapters yet.
+            // The VL wrapper additionally creates positionDeltas in prepare,
+            // even for text input. Its continuation state needs a separate
+            // replay adapter; do not bypass that preparation here.
+            && model is Qwen4ExpModel
+            && radixCache != nil && !isMultimodalInput(input)
+            && parameters.kvBits == nil && input.text.tokens.size > 0
+            && MLXPrefixReplayPolicy.requiresExactBoundaryRestore(cache)
     }
 
     /// Check if any RotatingKVCache in the array has wrapped past maxCacheSize.

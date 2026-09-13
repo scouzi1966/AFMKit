@@ -148,6 +148,9 @@ The active Qwen3.8 Flash Next performance investigation, reproduced reference
 curve, kernel-source mapping, cache constraints, and remaining decode budget are
 documented in
 [`docs/QWEN38_FLASH_NEXT_PERFORMANCE.md`](docs/QWEN38_FLASH_NEXT_PERFORMANCE.md).
+The separate PR #123 request-banked attention experiment remains off by default;
+its launch preset, prerequisites, known quality regression and rollback are in
+[`docs/QWEN_NEXT_BANKED_ATTENTION_OPT_IN.md`](docs/QWEN_NEXT_BANKED_ATTENTION_OPT_IN.md).
 
 Release qualification creates one AFMKit tag only after all tests pass.
 SwiftPM release tags reject SemVer build metadata. Prerelease GitHub releases are

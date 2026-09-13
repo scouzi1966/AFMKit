@@ -268,7 +268,38 @@ private final class Qwen4ExpGatedNorm: Module {
     }
 }
 
+func qwen4ExpCanFuseVerificationHC(
+    _ input: MLXArray, policy: MTPVerificationPolicy?, enabled: Bool
+) -> Bool {
+    // HC acts independently on each [request, token] row. Its existing kernel
+    // and compound native chain both support up to 16 rows; do not abandon
+    // that graph solely because a bounded verifier has more than one request.
+    enabled && policy == .batched && input.ndim == 3
+        && (1...4).contains(input.dim(0)) && input.dim(1) > 1
+        && input.dim(1) <= VerifyWidthLinear.maximumAcceleratedWidth
+        && input.dim(0) * input.dim(1) <= 16
+        && input.dtype == .bfloat16
+}
+
+/// Scheduling-only selection. Preserve the existing singleton control and
+/// bound the separate shared experiment to the owner's 2...4 request rows.
+func qwen4ExpVerificationDispatchStride(
+    batchSize: Int, width: Int, policy: MTPVerificationPolicy?,
+    singletonStride: Int, sharedStride: Int
+) -> Int {
+    guard policy == .batched, width > 1,
+          width <= VerifyWidthLinear.maximumAcceleratedWidth else { return 0 }
+    if batchSize == 1 { return max(0, singletonStride) }
+    guard (2...4).contains(batchSize), batchSize * width <= 16 else { return 0 }
+    return max(0, sharedStride)
+}
+
 private final class Qwen4ExpGatedResidual: Module {
+    // The reference uses its row-independent HC read at verify widths too.
+    // Keep this an explicit A/B: fused reductions can change batched token
+    // trajectories even when they match the single-row kernel exactly.
+    private static let fusedVerificationEnabled =
+        ProcessInfo.processInfo.environment["AFM_QWEN_VERIFY_FUSED_HC"] == "1"
     private static let fusedFinalMixerEnabled =
         ProcessInfo.processInfo.environment["AFM_QWEN_FUSED_FINAL_MIXER"] == "1"
 
@@ -296,7 +327,12 @@ private final class Qwen4ExpGatedResidual: Module {
         _ input: MLXArray,
         verificationPolicy: MTPVerificationPolicy? = nil
     ) -> (MLXArray, MLXArray, MLXArray) {
-        if verificationPolicy == nil,
+        // The fused kernel treats every token row independently, using the
+        // same reductions as its M=1 AR invocation. Strict verification must
+        // not fall back to an older unfused HC implementation solely because
+        // several independent rows are presented in one window.
+        if verificationPolicy != .batched || qwen4ExpCanFuseVerificationHC(
+            input, policy: verificationPolicy, enabled: Self.fusedVerificationEnabled),
            let blockInjectWeight,
            let fused = Qwen4ExpHyperConnectionFusion.call(
                input: input,
@@ -311,17 +347,17 @@ private final class Qwen4ExpGatedResidual: Module {
             return (fused.mixed, input, fused.injection)
         }
         let normalized = hcNorm(input)
-        let down = VerifyWidthLinear.call(
+        let down = qwen4ExpVerificationLinear(
             inputMixWeightDown, normalized, verificationPolicy: verificationPolicy,
             role: .hyperConnection)
-        let weights = sigmoid(VerifyWidthLinear.call(
+        let weights = sigmoid(qwen4ExpVerificationLinear(
             inputMixWeightUp, silu(down / Float(hcCount)),
             verificationPolicy: verificationPolicy,
             role: .hyperConnection))
         let shape = Array(input.shape.dropLast())
         let mixed = (weights.reshaped(shape + [hcCount, hiddenSize])
             * normalized.reshaped(shape + [hcCount, hiddenSize])).mean(axis: -2)
-        let injection = 2 * sigmoid(VerifyWidthLinear.call(
+        let injection = 2 * sigmoid(qwen4ExpVerificationLinear(
             blockInjectWeight!, normalized, verificationPolicy: verificationPolicy,
             role: .hyperConnection) / Float(hcCount))
         return (mixed, input, injection)
@@ -331,9 +367,11 @@ private final class Qwen4ExpGatedResidual: Module {
         output: MLXArray,
         residual: MLXArray,
         weights: MLXArray,
-        verificationPolicy: MTPVerificationPolicy? = nil
+        verificationPolicy: MTPVerificationPolicy? = nil,
+        matchFusedInjection: Bool = false
     ) -> (MLXArray, MLXArray, MLXArray) {
-        if verificationPolicy == nil,
+        if verificationPolicy == nil || qwen4ExpCanFuseVerificationHC(
+            residual, policy: verificationPolicy, enabled: Self.fusedVerificationEnabled),
            let blockInjectWeight,
            let fused = Qwen4ExpHyperConnectionFusion.call(
                input: residual,
@@ -345,7 +383,8 @@ private final class Qwen4ExpGatedResidual: Module {
                hiddenSize: hiddenSize,
                epsilon: hcNorm.eps,
                pendingOutput: output,
-               pendingWeights: weights)
+               pendingWeights: weights,
+               matchFusedInjection: matchFusedInjection)
         {
             return (fused.mixed, fused.stream, fused.injection)
         }
@@ -358,8 +397,9 @@ private final class Qwen4ExpGatedResidual: Module {
         _ input: MLXArray,
         verificationPolicy: MTPVerificationPolicy? = nil
     ) -> MLXArray {
-        if Self.fusedFinalMixerEnabled,
-           verificationPolicy == nil,
+        if (Self.fusedFinalMixerEnabled && verificationPolicy == nil)
+            || qwen4ExpCanFuseVerificationHC(
+                input, policy: verificationPolicy, enabled: Self.fusedVerificationEnabled),
            blockInjectWeight == nil,
            let fused = Qwen4ExpHyperConnectionFusion.call(
                input: input,
@@ -374,10 +414,10 @@ private final class Qwen4ExpGatedResidual: Module {
             return fused.mixed
         }
         let normalized = hcNorm(input)
-        let down = VerifyWidthLinear.call(
+        let down = qwen4ExpVerificationLinear(
             inputMixWeightDown, normalized, verificationPolicy: verificationPolicy,
             role: .hyperConnection)
-        let weights = sigmoid(VerifyWidthLinear.call(
+        let weights = sigmoid(qwen4ExpVerificationLinear(
             inputMixWeightUp, silu(down / Float(hcCount)),
             verificationPolicy: verificationPolicy,
             role: .hyperConnection))
@@ -392,8 +432,9 @@ private final class Qwen4ExpGatedResidual: Module {
         weights: MLXArray,
         verificationPolicy: MTPVerificationPolicy? = nil
     ) -> MLXArray {
-        if Self.fusedFinalMixerEnabled,
-           verificationPolicy == nil,
+        if (Self.fusedFinalMixerEnabled && verificationPolicy == nil)
+            || qwen4ExpCanFuseVerificationHC(
+                residual, policy: verificationPolicy, enabled: Self.fusedVerificationEnabled),
            blockInjectWeight == nil,
            let fused = Qwen4ExpHyperConnectionFusion.call(
                input: residual,
@@ -566,7 +607,7 @@ final class Qwen4ExpAttentionCache: KVCache, UniformBatchKVCache {
             // threshold no position array is needed for ordinary text.
             let start = existing.dim(existing.ndim - 1)
             let generated = tiled(
-                MLXArray(Int32(start) ..< Int32(start + newKeys.dim(1)))[
+                MLX.arange(start, start + newKeys.dim(1), dtype: .int32)[
                     .newAxis, 0...],
                 repetitions: [newKeys.dim(0), 1])
             indexPositionIDs = concatenated(
@@ -582,7 +623,7 @@ final class Qwen4ExpAttentionCache: KVCache, UniformBatchKVCache {
         if let indexPositionIDs { return indexPositionIDs }
         let length = indexKeys?.dim(1) ?? 0
         let generated = tiled(
-            MLXArray(Int32(0) ..< Int32(length))[.newAxis, 0...],
+            MLX.arange(length, dtype: .int32)[.newAxis, 0...],
             repetitions: [batchSize, 1])
         indexPositionIDs = generated
         return generated
@@ -642,6 +683,23 @@ final class Qwen4ExpAttentionCache: KVCache, UniformBatchKVCache {
     var metaState: [String] {
         get { [] }
         set { precondition(newValue.isEmpty) }
+    }
+
+    /// Prompt replay preserves optional-field positions, unlike the compact
+    /// public state representation. In particular, a pooled bank is not a
+    /// position-ID array when an earlier optional field is absent.
+    fileprivate var promptReplayArrays: [MLXArray?] {
+        get { [keys, values, indexKeys, indexPositionIDs, pooledIndexKeys] }
+        set {
+            precondition(newValue.count == 5)
+            keys = newValue[0]
+            values = newValue[1]
+            indexKeys = newValue[2]
+            indexPositionIDs = newValue[3]
+            pooledIndexKeys = newValue[4]
+            offset = keys?.dim(2) ?? 0
+            clearMTPVerification()
+        }
     }
 
     var isTrimmable: Bool { true }
@@ -722,6 +780,15 @@ final class Qwen4ExpAttentionCache: KVCache, UniformBatchKVCache {
         state = state.map { $0[indexArray] }
         clearMTPVerification()
     }
+
+    /// Preserve sparse optional fields AND verification metadata when splitting
+    /// a genuine target batch. The ordinary compact state API is insufficient.
+    fileprivate func adoptVerificationRow(from batch: Qwen4ExpAttentionCache, row: Int) {
+        let range = row..<(row + 1)
+        promptReplayArrays = batch.promptReplayArrays.map { $0.map { $0[range] } }
+        mtpVerificationStartOffset = batch.mtpVerificationStartOffset
+        mtpVerificationWidth = batch.mtpVerificationWidth
+    }
 }
 
 /// Per-layer recurrent cache metadata used to commit a partially accepted
@@ -741,6 +808,9 @@ private final class Qwen4ExpLayerCache: ArraysCache, UniformBatchKVCache {
         let projectedA: MLXArray
         let projectedB: MLXArray
         let explicitGating: Bool
+        var gate: MLXArray? = nil
+        var beta: MLXArray? = nil
+        var recurrentHistory: MLXArray? = nil
     }
 
     struct PLERollback {
@@ -811,6 +881,37 @@ private final class Qwen4ExpLayerCache: ArraysCache, UniformBatchKVCache {
         hostNGramHistory = nil
         clearMTPRollback()
     }
+
+    fileprivate func adoptVerificationRow(from batch: Qwen4ExpLayerCache, row: Int, batchSize: Int) {
+        func slice(_ array: MLXArray) -> MLXArray { array[row..<(row + 1)] }
+        for index in 0..<4 { self[index] = batch[index].map(slice) }
+        offset = batch.offset
+        mtpVerificationWidth = batch.mtpVerificationWidth
+        if let history = batch.hostNGramHistory {
+            precondition(history.count.isMultiple(of: batchSize))
+            let width = history.count / batchSize
+            hostNGramHistory = Array(history[(row * width)..<((row + 1) * width)])
+        } else {
+            hostNGramHistory = nil
+        }
+        gatedDeltaRollback = batch.gatedDeltaRollback.map { value in
+            GatedDeltaRollback(
+                convolutionState: slice(value.convolutionState),
+                recurrentState: slice(value.recurrentState),
+                projectedQKV: slice(value.projectedQKV),
+                queries: slice(value.queries), keys: slice(value.keys), values: slice(value.values),
+                projectedA: slice(value.projectedA), projectedB: slice(value.projectedB),
+                explicitGating: value.explicitGating,
+                gate: value.gate.map(slice), beta: value.beta.map(slice),
+                // State history uses [time, batch, ...], unlike other fields.
+                recurrentHistory: value.recurrentHistory.map { $0[0..., row..<(row + 1)] })
+        }
+        pleRollback = batch.pleRollback.map { value in
+            PLERollback(convolutionState: slice(value.convolutionState),
+                tokenHistory: slice(value.tokenHistory),
+                convolutionInputs: slice(value.convolutionInputs), inputIDs: slice(value.inputIDs))
+        }
+    }
 }
 
 func qwen4ExpTargetVerifyAttention(
@@ -825,7 +926,7 @@ func qwen4ExpTargetVerifyAttention(
     let width = queries.dim(2)
     precondition(width > 1)
 
-    func rowMask(_ row: Int, visibleLength: Int)
+    func rowMask(_ row: Int, end: Int, visibleLength: Int)
         -> MLXFast.ScaledDotProductAttentionMaskMode
     {
         let array: MLXArray?
@@ -840,11 +941,11 @@ func qwen4ExpTargetVerifyAttention(
         guard let array else { return .none }
         switch array.ndim {
         case 4:
-            return .array(array[0..., 0..., row ..< (row + 1), ..<visibleLength])
+            return .array(array[0..., 0..., row ..< end, ..<visibleLength])
         case 3:
-            return .array(array[0..., row ..< (row + 1), ..<visibleLength])
+            return .array(array[0..., row ..< end, ..<visibleLength])
         case 2:
-            return .array(array[row ..< (row + 1), ..<visibleLength])
+            return .array(array[row ..< end, ..<visibleLength])
         default:
             return .array(array)
         }
@@ -857,15 +958,20 @@ func qwen4ExpTargetVerifyAttention(
     case .none, .causal:
         hasExplicitMask = false
     }
-    let chunkSize = hasExplicitMask ? 1 : max(1, min(2, requestedChunkSize))
+    // mlx-serve's MIT-licensed splitMaskedSdpa256 keeps qL * GQA <= 32
+    // to stay on MLX's vector kernel. Preserve each row's explicit mask;
+    // replacing it with a causal mask would silently discard QSA selection.
+    let gqa = max(1, queries.dim(1) / keys.dim(1))
+    let maskedLimit = max(1, 32 / gqa)
+    let chunkSize = max(1, min(2, requestedChunkSize, hasExplicitMask ? maskedLimit : 2))
     var outputs = [MLXArray]()
     var row = 0
     while row < width {
         let end = min(width, row + chunkSize)
         let visibleLength = prefixLength + end
-        let chunkMask: MLXFast.ScaledDotProductAttentionMaskMode = end - row > 1
-            ? .causal
-            : rowMask(row, visibleLength: visibleLength)
+        let chunkMask: MLXFast.ScaledDotProductAttentionMaskMode = hasExplicitMask
+            ? rowMask(row, end: end, visibleLength: visibleLength)
+            : (end - row > 1 ? .causal : .none)
         outputs.append(MLXFast.scaledDotProductAttention(
             queries: queries[0..., 0..., row ..< end, 0...],
             keys: keys[0..., 0..., ..<visibleLength, 0...],
@@ -1344,7 +1450,7 @@ final class Qwen4ExpQSAIndexer: Module {
         let body: ([MLXArray]) -> [MLXArray] = { [unowned self] arguments in
             CompiledDecodeTrace.withActive {
                 let hidden = arguments[0]
-                let qk = VerifyWidthLinear.call(
+                let qk = qwen4ExpVerificationLinear(
                     self.indexQKProj, hidden, verificationPolicy: nil,
                     role: .indexer)
                 let splitPoint = self.heads * self.headDim
@@ -1370,7 +1476,7 @@ final class Qwen4ExpQSAIndexer: Module {
         let body: ([MLXArray]) -> [MLXArray] = { [unowned self] arguments in
             CompiledDecodeTrace.withActive {
                 [self.prepareQueries(
-                    arguments[0], batch: arguments[0].dim(0), length: 1,
+                    arguments[0], batch: arguments[0].dim(0), length: arguments[0].dim(1),
                     positionIDs: arguments[1])]
             }
         }
@@ -1414,7 +1520,8 @@ final class Qwen4ExpQSAIndexer: Module {
         _ hidden: MLXArray,
         positionIDs providedPositionIDs: MLXArray?,
         cache: Qwen4ExpAttentionCache?,
-        verificationPolicy: MTPVerificationPolicy? = nil
+        verificationPolicy: MTPVerificationPolicy? = nil,
+        projectedQK: MLXArray? = nil
     ) -> Qwen4ExpQSASelection? {
         let (batch, length) = (hidden.dim(0), hidden.dim(1))
         let previousOffset = cache?.offset ?? 0
@@ -1432,12 +1539,21 @@ final class Qwen4ExpQSAIndexer: Module {
         }
         let queryRows: MLXArray
         let currentKeys: MLXArray
-        if Self.compileDecode, verificationPolicy == nil, length == 1 {
+        // Compile only fixed-width stateless work. Do not capture the growing
+        // pooled key bank or selection graph: that would create traces at each
+        // context length and retain request-sized graphs during long decode.
+        let compiledBatchedProjection = verificationPolicy == .batched
+            && batch == 1 && length > 1
+            && length <= VerifyWidthLinear.maximumAcceleratedWidth
+            && hidden.dtype == .bfloat16
+        if projectedQK == nil, Self.compileDecode,
+           (verificationPolicy == nil && length == 1) || compiledBatchedProjection
+        {
             let projected = compiledProjectionDecode([hidden])
             queryRows = projected[0]
             currentKeys = projected[1]
         } else {
-            let qk = VerifyWidthLinear.call(
+            let qk = projectedQK ?? qwen4ExpVerificationLinear(
                 indexQKProj, hidden, verificationPolicy: verificationPolicy,
                 role: .indexer)
             let splitPoint = heads * headDim
@@ -1479,8 +1595,7 @@ final class Qwen4ExpQSAIndexer: Module {
         if let eagerQueries {
             queries = eagerQueries
         } else if Self.compileDecode,
-                  verificationPolicy == nil,
-                  length == 1
+                  (verificationPolicy == nil && length == 1) || compiledBatchedProjection
         {
             queries = compiledQueryDecode([
                 queryRows, resolvedPositionIDs(),
@@ -1493,7 +1608,7 @@ final class Qwen4ExpQSAIndexer: Module {
         let allPositionIDs = updatedIndex?.positionIDs
             ?? cache?.ensureSequentialIndexPositionIDs(batchSize: batch)
             ?? tiled(
-                MLXArray(Int32(0) ..< Int32(totalLength))[.newAxis, 0...],
+                MLX.arange(totalLength, dtype: .int32)[.newAxis, 0...],
                 repetitions: [batch, 1])
 
         let completeBlocks = totalLength / compressRatio
@@ -1575,7 +1690,8 @@ final class Qwen4ExpQSAIndexer: Module {
             queries: queries,
             blockKeys: blockKeys,
             previousOffset: previousOffset,
-            totalLength: totalLength)
+            totalLength: totalLength,
+            allowRadixSelection: verificationPolicy == .batched)
 
         if Qwen4ExpQSAGather.shouldSelectBlocks(
             batch: batch,
@@ -1587,6 +1703,13 @@ final class Qwen4ExpQSAIndexer: Module {
             headDimension: headDim)
         {
             return .blocks(selectedBlocks)
+        }
+        if verificationPolicy == .batched,
+           let mask = Qwen4ExpQSAVerifyMask.call(
+            sortedBlocks: selectedBlocks, keyLength: totalLength,
+            compressionRatio: compressRatio)
+        {
+            return .mask(mask)
         }
         return .mask(Qwen4ExpQSAGather.maskFromBlocks(
             selectedBlocks,
@@ -1614,7 +1737,7 @@ final class Qwen4ExpQSAIndexer: Module {
     ) -> MLXArray {
         let visibleCount = previousOffset + 1
         let visibleBlocks = visibleCount / compressRatio
-        let tokenPositions = MLXArray(Int32(0) ..< Int32(totalLength))
+        let tokenPositions = MLX.arange(totalLength, dtype: .int32)
         if visibleBlocks <= blockTopK {
             return expandedDimensions(
                 tokenPositions .< visibleCount, axes: [0, 1, 2])
@@ -1665,7 +1788,7 @@ final class Qwen4ExpQSAIndexer: Module {
             queries: queries,
             blockKeys: blockKeys,
             previousOffset: previousOffset)
-        let blockIDs = MLXArray(Int32(0) ..< Int32(visibleBlocks))
+        let blockIDs = MLX.arange(visibleBlocks, dtype: .int32)
         let biasedScores = scores
             - blockIDs.asType(.float32) * Self.tieBreakScale
         let selected = MLX.argPartition(
@@ -1694,11 +1817,26 @@ final class Qwen4ExpQSAIndexer: Module {
         ).sum(axis: 1)
     }
 
+    func projectionForTesting(
+        _ input: MLXArray, positions: MLXArray, compiled: Bool
+    ) -> [MLXArray] {
+        if compiled {
+            let projected = compiledProjectionDecode([input])
+            return [compiledQueryDecode([projected[0], positions])[0], projected[1]]
+        }
+        let parts = MLX.split(indexQKProj(input), indices: [heads * headDim], axis: -1)
+        let keys = parts[1].reshaped(input.dim(0), input.dim(1), kvHeads, headDim)
+            .mean(axis: 2)
+        return [prepareQueries(parts[0], batch: input.dim(0), length: input.dim(1),
+                               positionIDs: positions), keys]
+    }
+
     private func selectBlocks(
         queries: MLXArray,
         blockKeys: MLXArray,
         previousOffset: Int,
-        totalLength: Int
+        totalLength: Int,
+        allowRadixSelection: Bool = false
     ) -> MLXArray {
         let batch = queries.dim(0)
         let length = queries.dim(2)
@@ -1706,12 +1844,17 @@ final class Qwen4ExpQSAIndexer: Module {
         let selectedCapacity = min(completeBlocks, blockTopK)
         let bytesPerRow = max(
             1,
-            heads * completeBlocks * Self.scoreBytes)
+            batch * heads * completeBlocks * Self.scoreBytes)
         let rowsPerChunk = max(
             Self.minimumScoreRows,
             min(length, Self.scoreSheetBudgetBytes / bytesPerRow))
         let keyBank = blockKeys.asType(.float32).swappedAxes(-1, -2)
-        let blockIDs = MLXArray(Int32(0) ..< Int32(completeBlocks))[
+        // Queries are [B,H,Q,D], while the bank is [B,D,K]. For B>1
+        // insert the head broadcast axis explicitly; otherwise matmul aligns
+        // the bank's batch dimension with H (or fails when B != H).
+        // Preserve the existing B=1 graph and its measured fast path.
+        let perHeadKeyBank = batch == 1 ? keyBank : expandedDimensions(keyBank, axis: 1)
+        let blockIDs = MLX.arange(completeBlocks, dtype: .int32)[
             .newAxis, .newAxis, 0...]
         let tieBreak = blockIDs.asType(.float32) * Self.tieBreakScale
         var chunks = [MLXArray]()
@@ -1720,9 +1863,8 @@ final class Qwen4ExpQSAIndexer: Module {
         for start in stride(from: 0, to: length, by: rowsPerChunk) {
             let end = min(length, start + rowsPerChunk)
             let rows = end - start
-            let absolutePositions = MLXArray(
-                Int32(previousOffset + start + 1)
-                    ..< Int32(previousOffset + end + 1))
+            let absolutePositions = MLX.arange(
+                previousOffset + start + 1, previousOffset + end + 1, dtype: .int32)
                 .reshaped(1, rows, 1)
             let visibleBlockCounts = absolutePositions.floorDivide(compressRatio)
             let visible = blockIDs .< visibleBlockCounts
@@ -1736,9 +1878,20 @@ final class Qwen4ExpQSAIndexer: Module {
                 let queryChunk = queries[0..., 0..., start ..< end, 0...]
                     .asType(.float32)
                 let rawScores = maximum(
-                    matmul(queryChunk, keyBank),
+                    matmul(queryChunk, perHeadKeyBank),
                     MLXArray(0)).sum(axis: 1)
                 let biasedScores = rawScores - tieBreak
+                if allowRadixSelection,
+                   let fused = Qwen4ExpQSAVerifyRadixSelection.call(
+                    scores: biasedScores,
+                    visibleBlockCounts: (start..<end).map {
+                        min(completeBlocks, (previousOffset + $0 + 1) / compressRatio)
+                    },
+                    topK: selectedCapacity)
+                {
+                    chunks.append(fused)
+                    continue
+                }
                 let maskedScores = MLX.where(
                     visible,
                     biasedScores,
@@ -1765,6 +1918,26 @@ final class Qwen4ExpQSAIndexer: Module {
 }
 
 private final class Qwen4ExpAttention: Module {
+    static let sharedRequestProjections =
+        ProcessInfo.processInfo.environment["AFM_QWEN_BATCH_ATTENTION_PROJECTIONS"] == "1"
+
+    /// Only stateless projection rows cross request boundaries. Cache updates,
+    /// rotary positions and sparse selection stay in the ordinary row body.
+    struct ProjectionRows {
+        let query: MLXArray
+        let key: MLXArray
+        let value: MLXArray
+        let index: MLXArray
+        let normalizedQuery: MLXArray?
+        let normalizedKey: MLXArray?
+
+        func row(_ index: Int) -> Self {
+            let range = index..<(index + 1)
+            return Self(query: query[range], key: key[range], value: value[range], index: self.index[range],
+                normalizedQuery: normalizedQuery?[range], normalizedKey: normalizedKey?[range])
+        }
+    }
+
     private static let compileDecode =
         ProcessInfo.processInfo.environment["AFM_QWEN_COMPILE_ATTN_DECODE"] != "0"
             && HardwareInfo.isModelOwnedCompiledDecodeSupported
@@ -1790,48 +1963,58 @@ private final class Qwen4ExpAttention: Module {
     {
         let body: ([MLXArray]) -> [MLXArray] = { [unowned self] arguments in
             CompiledDecodeTrace.withActive {
-                let x = arguments[0]
-                let angles = arguments[1]
-                let b = x.dim(0)
-                let l = x.dim(1)
-                let qProjection = VerifyWidthLinear.call(
-                    self.qProj, x, verificationPolicy: nil,
-                    role: .attention)
-                let kProjection = VerifyWidthLinear.call(
-                    self.kProj, x, verificationPolicy: nil,
-                    role: .attention)
-                let vProjection = VerifyWidthLinear.call(
-                    self.vProj, x, verificationPolicy: nil,
-                    role: .attention)
-                let qParts = MLX.split(
-                    qProjection.reshaped(b, l, self.heads, self.headDim * 2),
-                    parts: 2,
-                    axis: -1)
-                let qInput = qParts[0]
-                let gate = qParts[1].reshaped(b, l, -1)
-                let kInput = kProjection.reshaped(
-                    b, l, self.kvHeads, self.headDim)
-                let value = vProjection.reshaped(
-                    b, l, self.kvHeads, self.headDim)
-                    .transposed(0, 2, 1, 3)
-                let fusedQK = Qwen4ExpQKNormRoPEFusion.call(
-                    q: qInput,
-                    k: kInput,
-                    qWeight: self.qNorm.weight,
-                    kWeight: self.kNorm.weight,
-                    angles: angles,
-                    epsilon: self.qNorm.eps,
-                    qHeads: self.heads,
-                    kvHeads: self.kvHeads,
-                    rotaryDimensions: self.rope.dimensions)
-                precondition(
-                    fusedQK != nil,
-                    "compiled Qwen attention decode requires fused QK norm/RoPE")
-                return [fusedQK!.q, fusedQK!.k, value, gate]
+                self.projectionForCompilation(arguments)
             }
         }
         return compile(shapeless: false, body)
     }()
+
+    private func projectionForCompilation(_ arguments: [MLXArray]) -> [MLXArray] {
+        let x = arguments[0]
+        let angles = arguments[1]
+        let b = x.dim(0)
+        let l = x.dim(1)
+        let qProjection = qwen4ExpVerificationLinear(
+            self.qProj, x, verificationPolicy: nil,
+            role: .attention)
+        let kProjection = qwen4ExpVerificationLinear(
+            self.kProj, x, verificationPolicy: nil,
+            role: .attention)
+        let vProjection = qwen4ExpVerificationLinear(
+            self.vProj, x, verificationPolicy: nil,
+            role: .attention)
+        let qParts = MLX.split(
+            qProjection.reshaped(b, l, self.heads, self.headDim * 2),
+            parts: 2,
+            axis: -1)
+        let qInput = qParts[0]
+        let gate = qParts[1].reshaped(b, l, -1)
+        let kInput = kProjection.reshaped(
+            b, l, self.kvHeads, self.headDim)
+        let value = vProjection.reshaped(
+            b, l, self.kvHeads, self.headDim)
+            .transposed(0, 2, 1, 3)
+        let fusedQK = Qwen4ExpQKNormRoPEFusion.call(
+            q: qInput,
+            k: kInput,
+            qWeight: self.qNorm.weight,
+            kWeight: self.kNorm.weight,
+            angles: angles,
+            epsilon: self.qNorm.eps,
+            qHeads: self.heads,
+            kvHeads: self.kvHeads,
+            rotaryDimensions: self.rope.dimensions)
+        precondition(
+            fusedQK != nil,
+            "compiled Qwen attention decode requires fused QK norm/RoPE")
+        return [fusedQK!.q, fusedQK!.k, value, gate]
+    }
+
+    func projectionForTesting(_ input: MLXArray, offset: Int, compiled: Bool) -> [MLXArray] {
+        let angles = rope.fusedAngleRows(offset: offset, sequenceLength: input.dim(1))
+        return compiled ? compiledProjectionDecode([input, angles])
+            : projectionForCompilation([input, angles])
+    }
 
     private lazy var compiledOutputDecode:
         @Sendable ([MLXArray]) -> [MLXArray] =
@@ -1844,7 +2027,7 @@ private final class Qwen4ExpAttention: Module {
                     .transposed(0, 2, 1, 3)
                     .reshaped(outputHeads.dim(0), outputHeads.dim(2), -1)
                     * sigmoid(gate)
-                return [VerifyWidthLinear.call(
+                return [qwen4ExpVerificationLinear(
                     self.oProj, output, verificationPolicy: nil,
                     role: .attention)]
             }
@@ -1869,13 +2052,96 @@ private final class Qwen4ExpAttention: Module {
             base: config.ropeTheta, mropeSection: config.mropeSection)
     }
 
+    /// Shared projections followed by native request-owned attention. Informed
+    /// by David Dalcu's MIT-licensed mlx-serve, transformer.zig:
+    /// forwardMoeBatchedDecode / qsaMaskBatched. Unlike its padded mask path,
+    /// retain AFM's native per-row QSA/KV execution and concatenate only the
+    /// fixed-size attention outputs. No request state is captured or retained.
+    func callRequestBatch(
+        _ x: MLXArray, caches: [KVCache], angles: [MLXArray]?,
+        banked: Bool = Qwen4ExpRequestAttentionBatch.enabled
+    ) -> MLXArray {
+        precondition(x.dim(0) == caches.count && x.dim(1) == 1)
+        let query = qwen4ExpVerificationLinear(qProj, x, verificationPolicy: nil, role: .attention)
+        let key = qwen4ExpVerificationLinear(kProj, x, verificationPolicy: nil, role: .attention)
+        var normalized: (q: MLXArray, k: MLXArray)?
+        if Qwen4ExpQKNormRoPEFusion.enabled, x.dtype == .bfloat16,
+           headDim == 256, [32, 64, 128].contains(rope.dimensions) {
+            let queryInput = MLX.split(query.reshaped(caches.count, 1, heads, headDim * 2),
+                parts: 2, axis: -1)[0]
+            let perRowAngles = angles ?? caches.map { rope.fusedAngleRows(offset: $0.offset, sequenceLength: 1) }
+            normalized = Qwen4ExpQKNormRoPEFusion.callIndependentRows(
+                q: queryInput, k: key.reshaped(caches.count, 1, kvHeads, headDim),
+                qWeight: qNorm.weight, kWeight: kNorm.weight,
+                angles: concatenated(perRowAngles, axis: 0), epsilon: qNorm.eps,
+                qHeads: heads, kvHeads: kvHeads, rotaryDimensions: rope.dimensions)
+        }
+        let projections = ProjectionRows(
+            query: query, key: key,
+            value: qwen4ExpVerificationLinear(vProj, x, verificationPolicy: nil, role: .attention),
+            index: qwen4ExpVerificationLinear(indexer.indexQKProj, x, verificationPolicy: nil, role: .indexer),
+            normalizedQuery: normalized?.q, normalizedKey: normalized?.k)
+        // Validate the alternate path before the first index/KV mutation.
+        // Fused score selection keeps its existing independent execution.
+        if banked, let normalized, !Qwen4ExpQSAFusedDecodeAttention.enabled,
+           caches.allSatisfy({ $0 is Qwen4ExpAttentionCache }) {
+            let rows: [Qwen4ExpRequestAttentionBatch.Row] = caches.indices.map { row in
+                let range = row..<(row + 1)
+                let positions = Qwen4ExpPerformanceControls.deferDenseQSAPositionHistory
+                    ? nil : MLXArray([Int32(caches[row].offset)]).reshaped(1, 1)
+                let selection = indexer(x[range], positionIDs: positions,
+                    cache: caches[row] as? Qwen4ExpAttentionCache, projectedQK: projections.index[range])
+                let value = projections.value[range].reshaped(1, 1, kvHeads, headDim).transposed(0, 2, 1, 3)
+                let cached = caches[row].update(keys: normalized.k[range], values: value)
+                let blocks: MLXArray?
+                let mask: MLXArray?
+                switch selection {
+                case .none:
+                    blocks = nil; mask = nil
+                case .some(.blocks(let selected)):
+                    blocks = selected; mask = nil
+                case .some(.mask(let selected)):
+                    blocks = nil; mask = selected
+                case .some(.decodeScores(let scores)):
+                    // Defensive equivalent of the existing score fallback;
+                    // the pre-mutation feature guard excludes this mode.
+                    let ids = MLX.arange(scores.dim(1), dtype: .int32)
+                    blocks = sorted(MLX.argPartition(-(scores - ids.asType(.float32) * 1e-7),
+                        kth: indexer.blockTopK - 1, axis: -1)[0..., ..<indexer.blockTopK]
+                        .asType(.int32), axis: -1).expandedDimensions(axis: 1)
+                    mask = nil
+                }
+                return .init(query: normalized.q[range], keys: cached.0, values: cached.1,
+                    selectedBlocks: blocks, mask: mask)
+            }
+            let outputs = Qwen4ExpRequestAttentionBatch.outputs(
+                rows, scale: scale, compressionRatio: indexer.compressRatio)
+            let gated = outputs.indices.map { row in
+                let gate = MLX.split(query[row..<(row + 1)].reshaped(1, 1, heads, headDim * 2),
+                    parts: 2, axis: -1)[1].reshaped(1, 1, -1)
+                return outputs[row].transposed(0, 2, 1, 3).reshaped(1, 1, -1) * sigmoid(gate)
+            }
+            return qwen4ExpVerificationLinear(oProj, concatenated(gated, axis: 0),
+                verificationPolicy: nil, role: .attention)
+        }
+        let attended = caches.indices.map { row in
+            callAsFunction(x[row..<(row + 1)], mask: .none, positionIDs: nil, cache: caches[row],
+                fusedQKAngles: angles?[row], projected: projections.row(row), deferOutputProjection: true)
+        }
+        return qwen4ExpVerificationLinear(oProj, concatenated(attended, axis: 0),
+            verificationPolicy: nil, role: .attention)
+    }
+
+
     func callAsFunction(
         _ x: MLXArray,
         mask: MLXFast.ScaledDotProductAttentionMaskMode,
         positionIDs providedPositionIDs: MLXArray?,
         cache: KVCache?,
         verificationPolicy: MTPVerificationPolicy? = nil,
-        fusedQKAngles sharedFusedQKAngles: MLXArray? = nil
+        fusedQKAngles sharedFusedQKAngles: MLXArray? = nil,
+        projected: ProjectionRows? = nil,
+        deferOutputProjection: Bool = false
     ) -> MLXArray {
         let (b, l) = (x.dim(0), x.dim(1))
         let attentionProfiler = Qwen4ExpAttentionProfiler.make(sequenceLength: l)
@@ -1904,7 +2170,7 @@ private final class Qwen4ExpAttention: Module {
         let qsaSelection = indexer(
             x, positionIDs: qsaPositionIDs,
             cache: cache as? Qwen4ExpAttentionCache,
-            verificationPolicy: verificationPolicy)
+            verificationPolicy: verificationPolicy, projectedQK: projected?.index)
         attentionHostProfiler?.indexer()
         if let indexState = (cache as? Qwen4ExpAttentionCache)?.indexStateForProfiling {
             attentionProfiler?.lap(indexState, stage: "indexer")
@@ -1913,9 +2179,20 @@ private final class Qwen4ExpAttention: Module {
         let k: MLXArray
         let v: MLXArray
         let gate: MLXArray
-        if Self.compileDecode,
-           verificationPolicy == nil,
-           l == 1,
+        let compiledBatchedProjection = verificationPolicy == .batched
+            && b == 1 && l > 1 && l <= VerifyWidthLinear.maximumAcceleratedWidth
+            && x.dtype == .bfloat16
+            && headDim == 256 && [32, 64, 128].contains(rope.dimensions)
+        if let projected, let normalizedQuery = projected.normalizedQuery, let normalizedKey = projected.normalizedKey {
+            q = normalizedQuery
+            k = normalizedKey
+            v = projected.value.reshaped(b, l, kvHeads, headDim).transposed(0, 2, 1, 3)
+            gate = MLX.split(projected.query.reshaped(b, l, heads, headDim * 2), parts: 2, axis: -1)[1]
+                .reshaped(b, l, -1)
+        } else if projected == nil, Self.compileDecode,
+           b == 1 && x.dtype == .bfloat16 && headDim == 256
+               && [32, 64, 128].contains(rope.dimensions),
+           (verificationPolicy == nil && l == 1) || compiledBatchedProjection,
            let sharedFusedQKAngles
         {
             let projected = compiledProjectionDecode([x, sharedFusedQKAngles])
@@ -1924,13 +2201,13 @@ private final class Qwen4ExpAttention: Module {
             v = projected[2]
             gate = projected[3]
         } else {
-            let qProjection = VerifyWidthLinear.call(
+            let qProjection = projected?.query ?? qwen4ExpVerificationLinear(
                 qProj, x, verificationPolicy: verificationPolicy,
                 role: .attention)
-            let kProjection = VerifyWidthLinear.call(
+            let kProjection = projected?.key ?? qwen4ExpVerificationLinear(
                 kProj, x, verificationPolicy: verificationPolicy,
                 role: .attention)
-            let vProjection = VerifyWidthLinear.call(
+            let vProjection = projected?.value ?? qwen4ExpVerificationLinear(
                 vProj, x, verificationPolicy: verificationPolicy,
                 role: .attention)
             let qParts = MLX.split(
@@ -1943,7 +2220,10 @@ private final class Qwen4ExpAttention: Module {
             v = vProjection.reshaped(b, l, kvHeads, headDim)
                 .transposed(0, 2, 1, 3)
             attentionProfiler?.lap([qInput, gate, kInput, v], stage: "projections")
-            let fusedQK = verificationPolicy == nil
+            // This kernel normalizes and rotates each row independently with
+            // the same BF16 rounding as AR. Strict verification can therefore
+            // reuse it without selecting a width-dependent reduction.
+            let fusedQK = verificationPolicy != .batched
                 && Qwen4ExpQKNormRoPEFusion.enabled
                 ? Qwen4ExpQKNormRoPEFusion.call(
                     q: qInput,
@@ -1978,7 +2258,16 @@ private final class Qwen4ExpAttention: Module {
             effectiveMask = mask
         }
         let outputHeads: MLXArray
-        if verificationPolicy == .strictSingletonEquivalent, l > 1 {
+        // The reference groups masked verification by the SDPA vector limit
+        // (query rows * GQA <= 32). Let the existing explicit chunk-2 control
+        // test that scheduling in batched mode too; keep its default intact.
+        // Source: David Dalcu, mlx-serve, MIT, splitMaskedSdpa256.
+        let groupedBatchedVerification = verificationPolicy == .batched
+            && VerifyWidthLinear.exactAttentionEnabled
+            && VerifyWidthLinear.exactAttentionChunkSize == 2
+        if l > 1,
+           verificationPolicy == .strictSingletonEquivalent || groupedBatchedVerification
+        {
             let prefixLength = cache?.offset ?? 0
             let cached: (MLXArray, MLXArray)
             if let cache {
@@ -2028,7 +2317,7 @@ private final class Qwen4ExpAttention: Module {
                 outputHeads = decoded
             } else {
                 let visibleBlocks = scores.dim(1)
-                let blockIDs = MLXArray(Int32(0) ..< Int32(visibleBlocks))
+                let blockIDs = MLX.arange(visibleBlocks, dtype: .int32)
                 let biasedScores = scores
                     - blockIDs.asType(.float32) * 1e-7
                 let selectedBlocks = sorted(
@@ -2115,13 +2404,17 @@ private final class Qwen4ExpAttention: Module {
         attentionHostProfiler?.attention()
         attentionProfiler?.lap([outputHeads], stage: "cache-sdpa")
         let result: MLXArray
-        if Self.compileDecode, verificationPolicy == nil, l == 1 {
+        if deferOutputProjection {
+            result = outputHeads.transposed(0, 2, 1, 3).reshaped(b, l, -1) * sigmoid(gate)
+        } else if Self.compileDecode,
+           (verificationPolicy == nil && l == 1) || compiledBatchedProjection
+        {
             result = compiledOutputDecode([outputHeads, gate])[0]
         } else {
             var output = outputHeads
                 .transposed(0, 2, 1, 3).reshaped(b, l, -1)
             output = output * sigmoid(gate)
-            result = VerifyWidthLinear.call(
+            result = qwen4ExpVerificationLinear(
                 oProj, output, verificationPolicy: verificationPolicy,
                 role: .attention)
         }
@@ -2138,10 +2431,12 @@ func qwen4ExpShouldUseCompiledGDNDecode(
     compileEnabled: Bool,
     batchSize: Int,
     sequenceLength: Int,
-    hasVerificationPolicy: Bool
+    hasVerificationPolicy: Bool,
+    batchCompileEnabled: Bool = false
 ) -> Bool {
     compileEnabled
-        && batchSize == 1
+        && (batchSize == 1 || (batchCompileEnabled && batchSize > 1
+            && batchSize <= Qwen4ExpGatedDeltaPrework.maximumBatchSize))
         && sequenceLength == 1
         && !hasVerificationPolicy
 }
@@ -2187,9 +2482,13 @@ func qwen4ExpSupportsCompiledGDNPrework(
 }
 
 private final class Qwen4ExpGatedDeltaNet: Module {
+    let captureRecurrentStates: Bool
     private static let compileDecode =
         ProcessInfo.processInfo.environment["AFM_QWEN_COMPILE_GDN_DECODE"] != "0"
             && HardwareInfo.isModelOwnedCompiledDecodeSupported
+    private static let compileBatchDecode =
+        ProcessInfo.processInfo.environment["AFM_QWEN_COMPILE_BATCH_GDN_DECODE"] == "1"
+            && Qwen4ExpGatedDeltaPrework.batchEnabled
     private static let explicitGating =
         ProcessInfo.processInfo.environment["AFM_QWEN_EXPLICIT_GATING"] == "1"
     private static let verifyExplicitGating =
@@ -2222,7 +2521,12 @@ private final class Qwen4ExpGatedDeltaNet: Module {
     /// mutable states supplied as inputs and returned as outputs. Keeping the
     /// states explicit prevents a compiled closure from retaining request
     /// cache objects and leaves verification/rollback on the eager path.
-    private lazy var compiledDecode: @Sendable ([MLXArray]) -> [MLXArray] = {
+    private lazy var compiledDecode = makeCompiledDecode()
+    // Batch traces never reuse the singleton compiled-function identity. The
+    // bounded model-owned table retains functions, not request cache objects.
+    private var compiledBatchDecodes: [Int: @Sendable ([MLXArray]) -> [MLXArray]] = [:]
+
+    private func makeCompiledDecode() -> @Sendable ([MLXArray]) -> [MLXArray] {
         let body: ([MLXArray]) -> [MLXArray] = { [unowned self] arguments in
             CompiledDecodeTrace.withActive {
                 let x = arguments[0]
@@ -2230,13 +2534,13 @@ private final class Qwen4ExpGatedDeltaNet: Module {
                 let recurrentState = arguments[2]
                 let b = x.dim(0)
                 let l = x.dim(1)
-                let projected = VerifyWidthLinear.call(
+                let projected = qwen4ExpVerificationLinear(
                     self.inProjQKV, x, verificationPolicy: nil,
                     role: .gatedDelta)
-                let projectedA = VerifyWidthLinear.call(
+                let projectedA = qwen4ExpVerificationLinear(
                     self.inProjA, x, verificationPolicy: nil,
                     role: .gatedDelta)
-                let projectedB = VerifyWidthLinear.call(
+                let projectedB = qwen4ExpVerificationLinear(
                     self.inProjB, x, verificationPolicy: nil,
                     role: .gatedDelta)
                 let prework = Qwen4ExpGatedDeltaPrework.call(
@@ -2263,11 +2567,11 @@ private final class Qwen4ExpGatedDeltaNet: Module {
                     g: prepared.gate,
                     beta: prepared.beta,
                     state: recurrentState)
-                let z = VerifyWidthLinear.call(
+                let z = qwen4ExpVerificationLinear(
                     self.inProjZ, x, verificationPolicy: nil,
                     role: .gatedDelta)
                     .reshaped(b, l, self.valueHeads, self.valueHeadDim)
-                let output = VerifyWidthLinear.call(
+                let output = qwen4ExpVerificationLinear(
                     self.outProj,
                     self.norm(delta.0, gate: z).reshaped(b, l, self.valueDim),
                     verificationPolicy: nil,
@@ -2276,9 +2580,43 @@ private final class Qwen4ExpGatedDeltaNet: Module {
             }
         }
         return compile(shapeless: false, body)
-    }()
+    }
 
-    init(_ config: Qwen4ExpTextConfiguration) {
+    /// Functional verifier capture: the temporary cache exists only while
+    /// tracing. Request states and rollback intermediates cross the compiled
+    /// boundary explicitly, so no live request cache is retained by the model.
+    private lazy var compiledVerification = makeCompiledVerification(.strictSingletonEquivalent)
+    private lazy var compiledBatchedVerification = makeCompiledVerification(.batched)
+
+    private func makeCompiledVerification(
+        _ policy: MTPVerificationPolicy
+    ) -> @Sendable ([MLXArray]) -> [MLXArray] {
+        let body: ([MLXArray]) -> [MLXArray] = { [unowned self] arguments in
+            CompiledDecodeTrace.withActive {
+                let scratch = Qwen4ExpLayerCache()
+                scratch[0] = arguments[1]
+                scratch[1] = arguments[2]
+                let output = self.callSingle(
+                    arguments[0], cache: scratch,
+                    verificationPolicy: policy)
+                let rollback = scratch.gatedDeltaRollback!
+                var result = [output, scratch[0]!, scratch[1]!,
+                        rollback.projectedQKV, rollback.queries, rollback.keys,
+                        rollback.values, rollback.projectedA, rollback.projectedB]
+                // Fixed output slots keep the functional boundary independent
+                // of whether an optional snapshot was produced.
+                result.append(rollback.gate ?? MLXArray.zeros([0]))
+                result.append(rollback.beta ?? MLXArray.zeros([0]))
+                result.append(rollback.recurrentHistory ?? MLXArray.zeros([0]))
+                return result
+            }
+        }
+        return compile(shapeless: false, body)
+    }
+
+    init(_ config: Qwen4ExpTextConfiguration, captureRecurrentStates: Bool? = nil) {
+        self.captureRecurrentStates = captureRecurrentStates
+            ?? (ProcessInfo.processInfo.environment["AFM_QWEN_MTP_STATE_SNAPSHOTS"] == "1")
         keyHeads = config.linearNumKeyHeads
         valueHeads = config.linearNumValueHeads
         keyHeadDim = config.linearKeyHeadDim
@@ -2319,8 +2657,46 @@ private final class Qwen4ExpGatedDeltaNet: Module {
                 },
                 axis: 1)
         }
+        if Self.compileDecode,
+           let verificationPolicy,
+           x.dim(0) == 1, x.dim(1) > 1,
+           x.dim(1) <= VerifyWidthLinear.maximumAcceleratedWidth,
+           x.dtype == .bfloat16,
+           let layerCache = cache as? Qwen4ExpLayerCache,
+           supportsCompiledPrework(input: x)
+        {
+            let convolution = cache?[0] ?? MLXArray.zeros(
+                [1, convKernel - 1, keyDim * 2 + valueDim], dtype: x.dtype)
+            let recurrent = cache?[1] ?? MLXArray.zeros(
+                [1, valueHeads, valueHeadDim, keyHeadDim], dtype: .float32)
+            if recurrent.dtype == .float32 {
+                let function = verificationPolicy == .strictSingletonEquivalent
+                    ? compiledVerification : compiledBatchedVerification
+                let verified = function([x, convolution, recurrent])
+                layerCache[0] = verified[1]
+                layerCache[1] = verified[2]
+                layerCache.gatedDeltaRollback = .init(
+                    convolutionState: convolution, recurrentState: recurrent,
+                    projectedQKV: verified[3], queries: verified[4],
+                    keys: verified[5], values: verified[6],
+                    projectedA: verified[7], projectedB: verified[8],
+                    explicitGating: !Self.verifyDeltaSequential
+                        && (Self.explicitGating || Self.verifyExplicitGating))
+                if verified[9].size > 0 { layerCache.gatedDeltaRollback?.gate = verified[9] }
+                if verified[10].size > 0 { layerCache.gatedDeltaRollback?.beta = verified[10] }
+                if verified[11].size > 0 { layerCache.gatedDeltaRollback?.recurrentHistory = verified[11] }
+                return verified[0]
+            }
+        }
         return callSingle(
             x, cache: cache, verificationPolicy: verificationPolicy)
+    }
+
+    func uncompiledVerificationForTesting(
+        _ input: MLXArray, cache: Qwen4ExpLayerCache,
+        policy: MTPVerificationPolicy = .strictSingletonEquivalent
+    ) -> MLXArray {
+        callSingle(input, cache: cache, verificationPolicy: policy)
     }
 
     private func callSingle(
@@ -2329,34 +2705,43 @@ private final class Qwen4ExpGatedDeltaNet: Module {
         verificationPolicy: MTPVerificationPolicy?
     ) -> MLXArray {
         let (b, l) = (x.dim(0), x.dim(1))
-        // The compiled recurrent closure is traced for the single-request
-        // decode shape. Reusing that trace for a dense B>1 cohort currently
-        // terminates inside MLX before Swift can surface an error. Keep the
-        // proven compiled path for latency-sensitive B=1 decode and use the
-        // batch-safe eager GDN graph for concurrent cohorts.
+        // Keep the proven B=1 compiled-function identity unchanged. Opt-in
+        // batches have their own shape-specific traces and truly batch-indexed
+        // prework. Unknown shapes/verification still use the eager path.
         if qwen4ExpShouldUseCompiledGDNDecode(
             compileEnabled: Self.compileDecode,
             batchSize: b,
             sequenceLength: l,
-            hasVerificationPolicy: verificationPolicy != nil),
+            hasVerificationPolicy: verificationPolicy != nil,
+            batchCompileEnabled: Self.compileBatchDecode),
            supportsCompiledPrework(input: x)
         {
             let convolutionState = cache?[0] ?? MLXArray.zeros(
                 [b, convKernel - 1, keyDim * 2 + valueDim], dtype: x.dtype)
             let recurrentState = cache?[1] ?? MLXArray.zeros(
                 [b, valueHeads, valueHeadDim, keyHeadDim], dtype: .float32)
-            let decoded = compiledDecode([x, convolutionState, recurrentState])
+            let function: @Sendable ([MLXArray]) -> [MLXArray]
+            if b == 1 {
+                function = compiledDecode
+            } else if let existing = compiledBatchDecodes[b] {
+                function = existing
+            } else {
+                let created = makeCompiledDecode()
+                compiledBatchDecodes[b] = created
+                function = created
+            }
+            let decoded = function([x, convolutionState, recurrentState])
             cache?[0] = decoded[1]
             cache?[1] = decoded[2]
             return decoded[0]
         }
-        let projected = VerifyWidthLinear.call(
+        let projected = qwen4ExpVerificationLinear(
             inProjQKV, x, verificationPolicy: verificationPolicy,
             role: .gatedDelta)
-        let a = VerifyWidthLinear.call(
+        let a = qwen4ExpVerificationLinear(
             inProjA, x, verificationPolicy: verificationPolicy,
             role: .gatedDelta)
-        let rawB = VerifyWidthLinear.call(
+        let rawB = qwen4ExpVerificationLinear(
             inProjB, x, verificationPolicy: verificationPolicy,
             role: .gatedDelta)
         let initialConvolutionState = cache?[0] ?? MLXArray.zeros(
@@ -2440,6 +2825,7 @@ private final class Qwen4ExpGatedDeltaNet: Module {
             verificationPolicy != nil && l > 1
                 && Self.verifyExplicitGating
         )
+        let useSequentialDelta = verificationPolicy != nil && l > 1 && Self.verifyDeltaSequential
         if verificationPolicy != nil,
            l > 1,
            let layerCache = cache as? Qwen4ExpLayerCache
@@ -2453,13 +2839,21 @@ private final class Qwen4ExpGatedDeltaNet: Module {
                 values: v,
                 projectedA: a,
                 projectedB: rawB,
-                explicitGating: useExplicitGating)
+                explicitGating: useExplicitGating && !useSequentialDelta)
+            // Preserve the exact gates consumed by forward verification.
+            // Recomputing through gatedDeltaUpdate's fused-gating kernel does
+            // not preserve the prework kernel's model-dtype rounding points.
+            if let fusedPrework, !useSequentialDelta {
+                layerCache.gatedDeltaRollback?.gate = fusedPrework.gate
+                layerCache.gatedDeltaRollback?.beta = fusedPrework.beta
+            } else if useExplicitGating, !useSequentialDelta {
+                layerCache.gatedDeltaRollback?.gate = computeGFloat32(aLog, a, dtBias)
+                layerCache.gatedDeltaRollback?.beta = sigmoid(rawB)
+            }
         }
         let output: MLXArray
         let state: MLXArray
-        if verificationPolicy != nil,
-           l > 1,
-           Self.verifyDeltaSequential
+        if useSequentialDelta
         {
             var currentState = recurrentState
             var rows = [MLXArray]()
@@ -2478,6 +2872,21 @@ private final class Qwen4ExpGatedDeltaNet: Module {
             }
             output = concatenated(rows, axis: 1)
             state = currentState
+        } else if captureRecurrentStates,
+                  verificationPolicy != nil, b == 1, l > 1,
+                  l <= VerifyWidthLinear.maximumAcceleratedWidth,
+                  recurrentState.dtype == .float32,
+                  keyHeadDim.isMultiple(of: 32),
+                  (fusedPrework != nil || useExplicitGating),
+                  let layerCache = cache as? Qwen4ExpLayerCache
+        {
+            let captured = gatedDeltaKernelWithStateHistory(
+                q: q, k: k, v: v,
+                g: fusedPrework?.gate ?? computeGFloat32(aLog, a, dtBias),
+                beta: fusedPrework?.beta ?? sigmoid(rawB), state: recurrentState)
+            output = captured.output
+            state = captured.state
+            layerCache.gatedDeltaRollback?.recurrentHistory = captured.history
         } else if let fusedPrework {
             (output, state) = gatedDeltaKernel(
                 q: q, k: k, v: v,
@@ -2498,11 +2907,11 @@ private final class Qwen4ExpGatedDeltaNet: Module {
                 state: recurrentState, useKernel: true)
         }
         cache?[1] = state
-        let z = VerifyWidthLinear.call(
+        let z = qwen4ExpVerificationLinear(
             inProjZ, x, verificationPolicy: verificationPolicy,
             role: .gatedDelta)
             .reshaped(b, l, valueHeads, valueHeadDim)
-        return VerifyWidthLinear.call(
+        return qwen4ExpVerificationLinear(
             outProj,
             norm(output, gate: z).reshaped(b, l, valueDim),
             verificationPolicy: verificationPolicy,
@@ -2547,13 +2956,26 @@ private final class Qwen4ExpGatedDeltaNet: Module {
         ], axis: 1)
         let convolutionState = convolutionHistory[
             0..., (convolutionHistory.dim(1) - convKernel + 1)..., 0...]
+        if let history = rollback.recurrentHistory, keep <= history.dim(0) {
+            cache[0] = convolutionState
+            // Array-index take is a Gather, not a slice view: the next cache
+            // owns only one state, not the whole speculative history buffer.
+            cache[1] = take(history, MLXArray(Int32(keep - 1)), axis: 0)
+            cache.gatedDeltaRollback = nil
+            return
+        }
         let projectedA = rollback.projectedA[0..., ..<keep, 0...]
         let projectedB = rollback.projectedB[0..., ..<keep, 0...]
         let queries = rollback.queries[0..., ..<keep, 0..., 0...]
         let keys = rollback.keys[0..., ..<keep, 0..., 0...]
         let values = rollback.values[0..., ..<keep, 0..., 0...]
         let state: MLXArray
-        if rollback.explicitGating {
+        if let gate = rollback.gate, let beta = rollback.beta {
+            state = gatedDeltaKernel(
+                q: queries, k: keys, v: values,
+                g: gate[0..., ..<keep, 0...], beta: beta[0..., ..<keep, 0...],
+                state: rollback.recurrentState).1
+        } else if rollback.explicitGating {
             state = gatedDeltaKernel(
                 q: queries,
                 k: keys,
@@ -2613,17 +3035,19 @@ private final class Qwen4ExpMLP: Module, UnaryLayer {
         _ x: MLXArray,
         verificationPolicy: MTPVerificationPolicy?
     ) -> MLXArray {
-        let gate = VerifyWidthLinear.call(
+        let gate = qwen4ExpVerificationLinear(
             gateProj, x, verificationPolicy: verificationPolicy, role: .expert)
-        let up = VerifyWidthLinear.call(
+        let up = qwen4ExpVerificationLinear(
             upProj, x, verificationPolicy: verificationPolicy, role: .expert)
-        return VerifyWidthLinear.call(
+        return qwen4ExpVerificationLinear(
             downProj, silu(gate) * up,
             verificationPolicy: verificationPolicy, role: .expert)
     }
 }
 
 private final class Qwen4ExpSparseMoE: Module, UnaryLayer {
+    private static let fusedVerifyRouter =
+        ProcessInfo.processInfo.environment["AFM_QWEN_VERIFY_FUSED_ROUTER"] == "1"
     let topK: Int
     let normalize: Bool
     @ModuleInfo var gate: Linear
@@ -2653,11 +3077,16 @@ private final class Qwen4ExpSparseMoE: Module, UnaryLayer {
         _ x: MLXArray,
         verificationPolicy: MTPVerificationPolicy?
     ) -> MLXArray {
-        let logits = VerifyWidthLinear.call(
+        let logits = qwen4ExpVerificationLinear(
             gate, x, verificationPolicy: verificationPolicy, role: .expert)
-        let fusedRouting = normalize && verificationPolicy == nil
-            ? qwenFusedSoftmaxTopK(logits: logits, topK: topK)
-            : nil
+        let fusedRouting: (indices: MLXArray, scores: MLXArray)?
+        if normalize && verificationPolicy == nil {
+            fusedRouting = qwenFusedSoftmaxTopK(logits: logits, topK: topK)
+        } else if normalize && verificationPolicy == .batched && Self.fusedVerifyRouter {
+            fusedRouting = qwenFusedVerifySoftmaxTopK(logits: logits, topK: topK)
+        } else {
+            fusedRouting = nil
+        }
         let indices: MLXArray
         let scores: MLXArray
         if let fusedRouting {
@@ -2683,10 +3112,12 @@ private final class Qwen4ExpSparseMoE: Module, UnaryLayer {
         } else {
             let routedExperts = verificationPolicy == .strictSingletonEquivalent
                 ? switchMLP.targetVerifyPreservingSingletonRows(x, indices)
-                : switchMLP(x, indices)
+                : (verificationPolicy == .batched
+                    ? switchMLP.sortedVerificationRows(x, indices)
+                    : switchMLP(x, indices))
             routed = (routedExperts * scores[.ellipsis, .newAxis]).sum(axis: -2)
         }
-        let sharedGate = VerifyWidthLinear.call(
+        let sharedGate = qwen4ExpVerificationLinear(
             sharedExpertGate, x, verificationPolicy: verificationPolicy,
             role: .expert)
         let shared = sharedExpert(x, verificationPolicy: verificationPolicy)
@@ -2695,6 +3126,43 @@ private final class Qwen4ExpSparseMoE: Module, UnaryLayer {
 }
 
 // MARK: - PLE n-gram embedding
+
+/// Request-local graph-construction barrier. Adapted from David Dalcu's
+/// MIT-licensed mlx-serve `flushDeferredPle` (1ec580a8, transformer.zig).
+/// A leaf is privately allocated, then filled exactly once BEFORE any graph
+/// consuming it is dispatched. It is never shared across forwards or requests.
+/// This lets CPU graph construction overlap the already-dispatched MTP drafts.
+final class Qwen4ExpDeferredPLE {
+    private var fills: [() -> Void] = []
+
+    func embedding(shape: [Int], load: @escaping () -> MLXArray) -> MLXArray {
+        // Construct a realized leaf, not lazy zeros that an evaluator could
+        // overwrite. Keep it alive in both the downstream graph and the fill.
+        let count = shape.reduce(1, *)
+        let leaf = MLXArray(Data(count: count * 2), shape, dtype: .bfloat16)
+        fills.append {
+            let gathered = load()
+            precondition(gathered.shape == shape && gathered.dtype == .bfloat16)
+            let source = gathered.asData(access: .noCopy)
+            let destination = leaf.asData(access: .noCopy)
+            source.data.withUnsafeBytes { src in
+                destination.data.withUnsafeBytes { dst in
+                    // MLX owns this private mutable storage. No consumer has
+                    // been evaluated yet; do not use Data's copy-on-write API.
+                    UnsafeMutableRawPointer(mutating: dst.baseAddress!).copyMemory(
+                        from: src.baseAddress!, byteCount: count * 2)
+                }
+            }
+        }
+        return leaf
+    }
+
+    func flush() {
+        let pending = fills
+        fills.removeAll(keepingCapacity: true)
+        for fill in pending { fill() }
+    }
+}
 
 private let qwen4SplitMixGamma: UInt64 = 0x9E3779B97F4A7C15
 private let qwen4SplitMixM1: UInt64 = 0xBF58476D1CE4E5B9
@@ -2903,8 +3371,17 @@ private final class Qwen4ExpNGramEmbedding: Module {
     func callAsFunction(
         _ inputIDs: MLXArray,
         cache: ArraysCache?,
-        hostTokenIDs: [Int]? = nil
+        hostTokenIDs: [Int]? = nil,
+        deferredPLE: Qwen4ExpDeferredPLE? = nil
     ) -> MLXArray {
+        if mappedNGramTable != nil, let deferredPLE {
+            return deferredPLE.embedding(shape: [
+                inputIDs.dim(0), inputIDs.dim(1),
+                contextLength * headsPerNgram * mappedNGramTable!.dimensions,
+            ]) { [self] in
+                callAsFunction(inputIDs, cache: cache, hostTokenIDs: hostTokenIDs)
+            }
+        }
         let ids = inputIDs.asType(.int64)
         let previous = cache?[3] ?? MLXArray.full(
             [ids.dim(0), contextLength], values: MLXArray(eosTokenID), dtype: .int64)
@@ -3168,7 +3645,8 @@ private final class Qwen4ExpPLE: Module {
         inputIDs: MLXArray,
         cache: ArraysCache?,
         hostTokenIDs: [Int]? = nil,
-        verificationPolicy: MTPVerificationPolicy? = nil
+        verificationPolicy: MTPVerificationPolicy? = nil,
+        deferredPLE: Qwen4ExpDeferredPLE? = nil
     ) -> MLXArray {
         let profiler = Qwen4ExpPLEProfiler.make(sequenceLength: hidden.dim(1))
         let initialTokenHistory = cache?[3] ?? MLXArray.full(
@@ -3176,14 +3654,15 @@ private final class Qwen4ExpPLE: Module {
             values: MLXArray(pleEmbedding.eosTokenID),
             dtype: .int64)
         let embedding = pleEmbedding(
-            inputIDs, cache: cache, hostTokenIDs: hostTokenIDs)
+            inputIDs, cache: cache, hostTokenIDs: hostTokenIDs,
+            deferredPLE: deferredPLE)
         profiler?.lap(embedding, stage: .embedding)
         let shape = Array(hidden.shape.dropLast())
-        let keyProjection = VerifyWidthLinear.call(
+        let keyProjection = qwen4ExpVerificationLinear(
             keyProj, embedding, verificationPolicy: verificationPolicy,
             role: .positionalEmbedding)
         profiler?.lap(keyProjection, stage: .keyProjection)
-        let valueProjection = VerifyWidthLinear.call(
+        let valueProjection = qwen4ExpVerificationLinear(
             valueProj, embedding, verificationPolicy: verificationPolicy,
             role: .positionalEmbedding)
         profiler?.lap(valueProjection, stage: .valueProjection)
@@ -3371,9 +3850,10 @@ final class Qwen4ExpForwardProfiler {
 
 /// Opt-in profiler for Swift-side lazy-graph construction. Unlike
 /// ``Qwen4ExpForwardProfiler``, this never evaluates an array or synchronizes
-/// the GPU, so it isolates the host work performed before `asyncEval` walks
-/// and submits the graph. Totals are reported every 32 single-token forwards
-/// to keep diagnostic I/O out of the measured hot path.
+/// the GPU explicitly. It measures host construction and the time spent in
+/// `asyncEval` submission, which can itself wait inside the runtime. Totals
+/// are reported every 32 selected forwards (decode or verification), keeping
+/// diagnostic I/O infrequent; this is disabled in timed comparisons.
 final class Qwen4ExpHostProfiler {
     enum Block: Int, CaseIterable {
         case ple
@@ -3382,6 +3862,8 @@ final class Qwen4ExpHostProfiler {
         case attention
         case mlp
         case finalWrite
+        case submission
+        case pleFill
 
         var label: String {
             switch self {
@@ -3391,6 +3873,8 @@ final class Qwen4ExpHostProfiler {
             case .attention: "attn"
             case .mlp: "mlp"
             case .finalWrite: "finalWrite"
+            case .submission: "submission"
+            case .pleFill: "pleFill"
             }
         }
     }
@@ -3408,9 +3892,11 @@ final class Qwen4ExpHostProfiler {
         repeating: UInt64(0), count: Block.allCases.count)
 
     static func make(sequenceLength: Int) -> Qwen4ExpHostProfiler? {
-        guard sequenceLength == 1,
-              ProcessInfo.processInfo.environment["AFM_QWEN_PROFILE_HOST"] == "all"
-        else { return nil }
+        let mode = ProcessInfo.processInfo.environment["AFM_QWEN_PROFILE_HOST"]
+        let decode = sequenceLength == 1 && mode == "all"
+        let verify = sequenceLength > 1
+            && sequenceLength <= VerifyWidthLinear.maximumAcceleratedWidth && mode == "verify"
+        guard decode || verify else { return nil }
         return Qwen4ExpHostProfiler()
     }
 
@@ -3463,6 +3949,8 @@ final class Qwen4ExpDecoderLayer: Module {
     private static let compileLayerTailDecode =
         ProcessInfo.processInfo.environment["AFM_QWEN_COMPILE_LAYER_TAIL"] != "0"
             && HardwareInfo.isModelOwnedCompiledDecodeSupported
+    private static let compileSharedVerificationTail =
+        ProcessInfo.processInfo.environment["AFM_QWEN_VERIFY_SHARED_COMPILED_TAIL"] == "1"
 
     let isLinear: Bool
     @ModuleInfo(key: "linear_attn") fileprivate var linearAttention: Qwen4ExpGatedDeltaNet?
@@ -3521,14 +4009,31 @@ final class Qwen4ExpDecoderLayer: Module {
         return compile(shapeless: false, body)
     }()
 
+    private lazy var compiledDeferredBatchedVerificationTail:
+        @Sendable ([MLXArray]) -> [MLXArray] =
+    {
+        let body: ([MLXArray]) -> [MLXArray] = { [unowned self] arguments in
+            CompiledDecodeTrace.withActive {
+                let read = self.mlpHyperConnection.mixAfterInjection(
+                    output: arguments[0], residual: arguments[1], weights: arguments[2])
+                return [self.mlp(read.0, verificationPolicy: .batched), read.1, read.2]
+            }
+        }
+        return compile(shapeless: false, body)
+    }()
+
     init(
         _ config: Qwen4ExpTextConfiguration,
         layerIndex: Int,
         forceFullAttention: Bool = false,
-        disablePLE: Bool = false
+        disablePLE: Bool = false,
+        captureRecurrentStates: Bool? = nil
     ) {
         isLinear = !forceFullAttention && config.layerTypes[layerIndex] == "linear_attention"
-        if isLinear { _linearAttention.wrappedValue = Qwen4ExpGatedDeltaNet(config) }
+        if isLinear {
+            _linearAttention.wrappedValue = Qwen4ExpGatedDeltaNet(
+                config, captureRecurrentStates: captureRecurrentStates)
+        }
         else { _selfAttention.wrappedValue = Qwen4ExpAttention(config) }
         _mlp.wrappedValue = Qwen4ExpSparseMoE(config)
         if !disablePLE, let pleIndex = config.pleLayerIDs.firstIndex(of: layerIndex + 1) {
@@ -3565,6 +4070,74 @@ final class Qwen4ExpDecoderLayer: Module {
 
     var hostNGramMultipliers: [Int64]? { ple?.hostMultipliers }
 
+    func gatedDeltaCacheForTesting(width: Int) -> ArraysCache {
+        let cache = Qwen4ExpLayerCache()
+        cache.beginMTPVerification(width: width)
+        return cache
+    }
+
+    func gatedDeltaHistoryForTesting(_ cache: ArraysCache) -> MLXArray? {
+        (cache as? Qwen4ExpLayerCache)?.gatedDeltaRollback?.recurrentHistory
+    }
+
+    func gatedDeltaRollbackArraysForTesting(_ cache: ArraysCache) -> [MLXArray]? {
+        guard let rollback = (cache as? Qwen4ExpLayerCache)?.gatedDeltaRollback else {
+            return nil
+        }
+        return [rollback.queries, rollback.keys, rollback.values, rollback.projectedQKV]
+    }
+
+    func indexProjectionForTesting(
+        _ input: MLXArray, positions: MLXArray, compiled: Bool
+    ) -> [MLXArray] {
+        precondition(!isLinear)
+        return selfAttention!.indexer.projectionForTesting(input, positions: positions, compiled: compiled)
+    }
+
+    func attentionProjectionForTesting(
+        _ input: MLXArray, offset: Int, compiled: Bool
+    ) -> [MLXArray] {
+        precondition(!isLinear)
+        return selfAttention!.projectionForTesting(input, offset: offset, compiled: compiled)
+    }
+
+    func attentionRequestBatchForTesting(
+        _ input: MLXArray, caches: [KVCache], shared: Bool, banked: Bool? = nil
+    ) -> MLXArray {
+        precondition(!isLinear)
+        if shared { return selfAttention!.callRequestBatch(input, caches: caches, angles: nil,
+            banked: banked ?? Qwen4ExpRequestAttentionBatch.enabled) }
+        return concatenated(caches.indices.map { row in
+            selfAttention!(input[row..<(row + 1)], mask: .none, positionIDs: nil, cache: caches[row])
+        }, axis: 0)
+    }
+
+    func attentionPrefillForTesting(_ input: MLXArray, cache: KVCache) -> MLXArray {
+        precondition(!isLinear)
+        return selfAttention!(input, mask: .causal, positionIDs: nil, cache: cache)
+    }
+
+    func gatedDeltaVerificationForTesting(
+        _ input: MLXArray, cache: ArraysCache, compiled: Bool,
+        policy: MTPVerificationPolicy = .strictSingletonEquivalent
+    ) -> MLXArray {
+        precondition(isLinear)
+        let cache = cache as! Qwen4ExpLayerCache
+        return compiled
+            ? linearAttention!(input, cache: cache, verificationPolicy: policy)
+            : linearAttention!.uncompiledVerificationForTesting(input, cache: cache, policy: policy)
+    }
+
+    func gatedDeltaDecodeForTesting(_ input: MLXArray, cache: ArraysCache) -> MLXArray {
+        precondition(isLinear)
+        return linearAttention!(input, cache: cache, verificationPolicy: nil)
+    }
+
+    func rollbackGatedDeltaForTesting(_ cache: ArraysCache, keeping count: Int) {
+        linearAttention!.rollbackTargetVerification(
+            cache: cache as! Qwen4ExpLayerCache, keeping: count)
+    }
+
     func pleTraceForTesting(
         hidden: MLXArray,
         inputIDs: MLXArray
@@ -3585,7 +4158,11 @@ final class Qwen4ExpDecoderLayer: Module {
         cache: KVCache?,
         fusedQKAngles: MLXArray? = nil,
         verificationPolicy: MTPVerificationPolicy? = nil,
-        profiler: Qwen4ExpForwardProfiler? = nil
+        profiler: Qwen4ExpForwardProfiler? = nil,
+        hostProfiler: Qwen4ExpHostProfiler? = nil,
+        deferredPLE: Qwen4ExpDeferredPLE? = nil,
+        verificationAttentionRows: [KVCache]? = nil,
+        verificationAngles: [MLXArray]? = nil
     ) -> MLXArray {
         let arrayCache = cache as? ArraysCache
         var hidden = input
@@ -3593,24 +4170,39 @@ final class Qwen4ExpDecoderLayer: Module {
             hidden = hidden + ple(
                 hidden, inputIDs: inputIDs, cache: arrayCache,
                 hostTokenIDs: hostTokenIDs,
-                verificationPolicy: verificationPolicy)
+                verificationPolicy: verificationPolicy,
+                deferredPLE: deferredPLE)
             profiler?.lap(hidden, block: .ple)
         }
+        hostProfiler?.lap(.ple)
         var mixed: MLXArray
         var residual: MLXArray
         var injection: MLXArray
         (mixed, residual, injection) = attentionHyperConnection.mix(
             hidden, verificationPolicy: verificationPolicy)
         profiler?.lap(mixed, block: .hyperConnectionRead)
-        let attended = isLinear
-            ? linearAttention!(
+        hostProfiler?.lap(.hyperConnectionRead)
+        let attended: MLXArray
+        if let verificationAttentionRows {
+            precondition(!isLinear && verificationPolicy == .batched)
+            attended = concatenated(verificationAttentionRows.indices.map { row in
+                selfAttention!(mixed[row..<(row + 1)], mask: .causal, positionIDs: nil,
+                    cache: verificationAttentionRows[row], verificationPolicy: .batched,
+                    fusedQKAngles: verificationAngles?[row])
+            }, axis: 0)
+        } else if isLinear {
+            attended = linearAttention!(
                 mixed, cache: arrayCache,
                 verificationPolicy: verificationPolicy)
-            : selfAttention!(
+        } else {
+            attended = selfAttention!(
                 mixed, mask: attentionMask, positionIDs: positionIDs, cache: cache,
                 verificationPolicy: verificationPolicy,
                 fusedQKAngles: fusedQKAngles)
+        }
         profiler?.lap(attended, block: isLinear ? .gatedDelta : .attention)
+        hostProfiler?.lap(isLinear ? .gatedDelta : .attention)
+        defer { hostProfiler?.lap(.mlp) }
         if let profiler {
             let injected = attentionHyperConnection.inject(
                 attended, residual: residual, weights: injection)
@@ -3632,11 +4224,104 @@ final class Qwen4ExpDecoderLayer: Module {
         {
             return compiledLayerTailDecode([attended, residual, injection])[0]
         }
+        if Self.compileLayerTailDecode,
+           verificationPolicy == .strictSingletonEquivalent,
+           input.dtype == .bfloat16,
+           input.dim(0) == 1,
+           input.dim(1) > 1,
+           input.dim(1) <= VerifyWidthLinear.maximumAcceleratedWidth
+        {
+            return singletonCompiledVerificationTail(
+                attended: attended, residual: residual, injection: injection)
+        }
+        if Self.compileLayerTailDecode,
+           verificationPolicy == .batched,
+           input.dtype == .bfloat16, input.dim(0) == 1,
+           input.dim(1) > 1,
+           input.dim(1) <= VerifyWidthLinear.maximumAcceleratedWidth
+        {
+            return batchedVerificationTail(
+                attended: attended, residual: residual, injection: injection,
+                compiled: true)
+        }
+        if Self.compileLayerTailDecode, Self.compileSharedVerificationTail,
+           verificationPolicy == .batched, input.dtype == .bfloat16,
+           (2...4).contains(input.dim(0)), input.dim(1) > 1,
+           input.dim(1) <= VerifyWidthLinear.maximumAcceleratedWidth,
+           input.dim(0) * input.dim(1) <= 16
+        {
+            return sharedVerificationTail(
+                attended: attended, residual: residual, injection: injection, compiled: true)
+        }
         return layerTail(
             attended: attended,
             residual: residual,
             injection: injection,
             verificationPolicy: verificationPolicy)
+    }
+
+    /// Reuse the AR tail's model-owned graph and its exact M=1 kernel choices
+    /// for each speculative row. No request cache is captured here: attention
+    /// and recurrent-state verification/rollback remain outside this closure.
+    /// This avoids both repeated Swift graph construction and the older
+    /// unfused MoE/HC path, without switching to width-dependent batched GEMMs.
+    func singletonCompiledVerificationTail(
+        attended: MLXArray, residual: MLXArray, injection: MLXArray
+    ) -> MLXArray {
+        precondition(attended.dim(0) == 1 && attended.dim(1) > 0)
+        return concatenated((0 ..< attended.dim(1)).map { row in
+            compiledLayerTailDecode([
+                attended[0..., row ..< (row + 1), 0...],
+                residual[0..., row ..< (row + 1), 0...],
+                injection[0..., row ..< (row + 1), 0...],
+            ])[0]
+        }, axis: 1)
+    }
+
+    private lazy var compiledBatchedVerificationTail: @Sendable ([MLXArray]) -> [MLXArray] = {
+        let body: ([MLXArray]) -> [MLXArray] = { [unowned self] arguments in
+            CompiledDecodeTrace.withActive {
+                [self.batchedVerificationTail(
+                    attended: arguments[0], residual: arguments[1], injection: arguments[2],
+                    compiled: false)]
+            }
+        }
+        return compile(shapeless: false, body)
+    }()
+
+    // Model-owned pure region: no cache, PLE leaf, sampler or request state
+    // enters this closure. In particular keep .batched on the HC read too;
+    // the older singleton batched tail intentionally uses a different read.
+    private lazy var compiledSharedVerificationTail: @Sendable ([MLXArray]) -> [MLXArray] = {
+        let body: ([MLXArray]) -> [MLXArray] = { [unowned self] arguments in
+            CompiledDecodeTrace.withActive {
+                [self.sharedVerificationTail(
+                    attended: arguments[0], residual: arguments[1], injection: arguments[2],
+                    compiled: false)]
+            }
+        }
+        return compile(shapeless: false, body)
+    }()
+
+    func sharedVerificationTail(
+        attended: MLXArray, residual: MLXArray, injection: MLXArray, compiled: Bool
+    ) -> MLXArray {
+        if compiled { return compiledSharedVerificationTail([attended, residual, injection])[0] }
+        return layerTail(attended: attended, residual: residual, injection: injection,
+                         verificationPolicy: .batched)
+    }
+
+    /// Experimental batched verifier: retain row-independent HC kernels but
+    /// schedule the sorted expert rows together. All inputs are functional;
+    /// no KV, recurrent state, or request-owned arrays are captured.
+    func batchedVerificationTail(
+        attended: MLXArray, residual: MLXArray, injection: MLXArray, compiled: Bool
+    ) -> MLXArray {
+        if compiled { return compiledBatchedVerificationTail([attended, residual, injection])[0] }
+        let read = mlpHyperConnection.mixAfterInjection(
+            output: attended, residual: residual, weights: injection)
+        let output = mlp(read.0, verificationPolicy: .batched)
+        return mlpHyperConnection.inject(output, residual: read.1, weights: read.2)
     }
 
     private func layerTail(
@@ -3659,7 +4344,7 @@ final class Qwen4ExpDecoderLayer: Module {
             weights: injection)
     }
 
-    /// Decode-only scheduling variant that leaves the final MLP stream write
+    /// Scheduling variant that leaves the final MLP stream write
     /// pending. A following non-PLE layer consumes it in the fused attention
     /// hyper-connection read, removing one Metal dispatch at the layer boundary.
     func callDeferringFinalInjection(
@@ -3671,7 +4356,13 @@ final class Qwen4ExpDecoderLayer: Module {
         positionIDs: MLXArray?,
         cache: KVCache?,
         fusedQKAngles: MLXArray? = nil,
-        hostProfiler: Qwen4ExpHostProfiler? = nil
+        hostProfiler: Qwen4ExpHostProfiler? = nil,
+        verificationPolicy: MTPVerificationPolicy? = nil,
+        deferredPLE: Qwen4ExpDeferredPLE? = nil,
+        requestCaches: [KVCache]? = nil,
+        requestAngles: [MLXArray]? = nil,
+        verificationAttentionRows: [KVCache]? = nil,
+        verificationAngles: [MLXArray]? = nil
     ) -> (stream: MLXArray, pending: Qwen4ExpPendingHyperConnectionWrite) {
         let arrayCache = cache as? ArraysCache
         var hidden = input
@@ -3687,10 +4378,23 @@ final class Qwen4ExpDecoderLayer: Module {
             pending = nil
         }
         if let ple {
-            hidden = hidden + ple(
-                hidden, inputIDs: inputIDs, cache: arrayCache,
-                hostTokenIDs: hostTokenIDs,
-                verificationPolicy: nil)
+            if let requestCaches {
+                // Keep each PLE CPU mirror and rolling token/convolution history
+                // request-owned. Shared HC/GDN/MLP math follows this row-local
+                // lookup; no artificial padding or shared-history key is used.
+                let additions = requestCaches.indices.map { row in
+                    ple(hidden[row..<(row + 1)], inputIDs: inputIDs[row..<(row + 1)],
+                        cache: requestCaches[row] as? ArraysCache,
+                        hostTokenIDs: hostTokenIDs.map { [$0[row]] }, verificationPolicy: nil)
+                }
+                hidden = hidden + concatenated(additions, axis: 0)
+            } else {
+                hidden = hidden + ple(
+                    hidden, inputIDs: inputIDs, cache: arrayCache,
+                    hostTokenIDs: hostTokenIDs,
+                    verificationPolicy: verificationPolicy,
+                    deferredPLE: deferredPLE)
+            }
             hostProfiler?.lap(.ple)
         }
 
@@ -3700,23 +4404,65 @@ final class Qwen4ExpDecoderLayer: Module {
                 output: pending.output,
                 residual: pending.residual,
                 weights: pending.weights,
-                verificationPolicy: nil)
+                verificationPolicy: nil,
+                matchFusedInjection: verificationPolicy == .batched)
         } else {
             attentionRead = attentionHyperConnection.mix(
                 hidden, verificationPolicy: nil)
         }
         hostProfiler?.lap(.hyperConnectionRead)
 
-        let attended = isLinear
-            ? linearAttention!(attentionRead.0, cache: arrayCache, verificationPolicy: nil)
-            : selfAttention!(
-                attentionRead.0, mask: attentionMask, positionIDs: positionIDs,
-                cache: cache, verificationPolicy: nil,
-                fusedQKAngles: fusedQKAngles)
+        let attended: MLXArray
+        if let verificationAttentionRows {
+            precondition(!isLinear && verificationPolicy == .batched)
+            attended = concatenated(verificationAttentionRows.indices.map { row in
+                selfAttention!(attentionRead.0[row..<(row + 1)], mask: .causal, positionIDs: nil,
+                    cache: verificationAttentionRows[row], verificationPolicy: .batched,
+                    fusedQKAngles: verificationAngles?[row])
+            }, axis: 0)
+        } else if let requestCaches {
+            if isLinear {
+                let rows = requestCaches.map { $0 as! Qwen4ExpLayerCache }
+                let merged = Qwen4ExpLayerCache()
+                for state in 0..<2 {
+                    merged[state] = concatenated(rows.map { $0[state]! }, axis: 0)
+                }
+                attended = linearAttention!(attentionRead.0, cache: merged, verificationPolicy: nil)
+                for row in rows.indices {
+                    for state in 0..<2 { rows[row][state] = merged[state]![row..<(row + 1)] }
+                }
+            } else if Qwen4ExpAttention.sharedRequestProjections {
+                attended = selfAttention!.callRequestBatch(
+                    attentionRead.0, caches: requestCaches, angles: requestAngles)
+            } else {
+                // Deliberately retain each row's native QSA/attention path.
+                // No full-KV padding: memory remains proportional to actual
+                // histories, not B * longestHistory. Retain this measured
+                // control when the shared projection experiment is disabled.
+                attended = concatenated(requestCaches.indices.map { row in
+                    selfAttention!(attentionRead.0[row..<(row + 1)], mask: .none,
+                        positionIDs: nil, cache: requestCaches[row],
+                        fusedQKAngles: requestAngles?[row])
+                }, axis: 0)
+            }
+        } else {
+            attended = isLinear
+                ? linearAttention!(attentionRead.0, cache: arrayCache, verificationPolicy: verificationPolicy)
+                : selfAttention!(
+                    attentionRead.0, mask: attentionMask, positionIDs: positionIDs,
+                    cache: cache, verificationPolicy: verificationPolicy,
+                    fusedQKAngles: fusedQKAngles)
+        }
         hostProfiler?.lap(isLinear ? .gatedDelta : .attention)
         let compiledTail: [MLXArray]?
         if Self.compileLayerTailDecode, input.dim(1) == 1 {
             compiledTail = compiledDeferredLayerTailDecode([
+                attended, attentionRead.1, attentionRead.2,
+            ])
+        } else if Self.compileLayerTailDecode,
+                  qwen4ExpCanFuseVerificationHC(input, policy: verificationPolicy, enabled: true)
+        {
+            compiledTail = compiledDeferredBatchedVerificationTail([
                 attended, attentionRead.1, attentionRead.2,
             ])
         } else {
@@ -3733,7 +4479,7 @@ final class Qwen4ExpDecoderLayer: Module {
                 residual: attentionRead.1,
                 weights: attentionRead.2,
                 verificationPolicy: nil)
-            mlpOutput = mlp(mlpRead.0, verificationPolicy: nil)
+            mlpOutput = mlp(mlpRead.0, verificationPolicy: verificationPolicy)
         }
         hostProfiler?.lap(.hyperConnectionRead)
         hostProfiler?.lap(.mlp)
@@ -3757,6 +4503,14 @@ final class Qwen4ExpDecoderLayer: Module {
 }
 
 private final class Qwen4ExpModelInner: Module {
+    private static let verificationAsyncLadderStride = max(0, Int(
+        ProcessInfo.processInfo.environment["AFM_QWEN_VERIFY_ASYNC_LADDER"] ?? "0") ?? 0)
+    // Separate opt-in for shared request verification. Every submission uses
+    // the same deferred-PLE flush barrier as singleton verification below.
+    private static let sharedVerificationAsyncLadderStride = max(0, Int(
+        ProcessInfo.processInfo.environment["AFM_QWEN_VERIFY_SHARED_ASYNC_LADDER"] ?? "0") ?? 0)
+    private static let deferVerificationHC =
+        ProcessInfo.processInfo.environment["AFM_QWEN_VERIFY_DEFER_HC"] == "1"
     private static let deferInterLayerHyperConnectionWriteDecode =
         ProcessInfo.processInfo.environment["AFM_QWEN_DEFER_HC_WRITE"] != "0"
 
@@ -3843,7 +4597,9 @@ private final class Qwen4ExpModelInner: Module {
         cache: [KVCache]?,
         hostTokenIDs: [Int]? = nil,
         verificationPolicy: MTPVerificationPolicy? = nil,
-        combineWithFinalMixer: Bool = false
+        combineWithFinalMixer: Bool = false,
+        verificationLadderOverride: Int? = nil,
+        verificationAttentionRows: [[KVCache]]? = nil
     ) -> MLXArray {
         var hidden = MLX.tiled(
             inputEmbeddings ?? embedTokens(inputIDs),
@@ -3852,8 +4608,7 @@ private final class Qwen4ExpModelInner: Module {
         let attentionIndex = layers.firstIndex { !$0.isLinear }
         let mask = attentionIndex.map { createAttentionMask(h: hidden, cache: layerCaches[$0]) } ?? .none
         let sharedFusedQKAngles: MLXArray?
-        if verificationPolicy == nil,
-           Qwen4ExpQKNormRoPEFusion.shouldPrepareSharedAngles(
+        if Qwen4ExpQKNormRoPEFusion.shouldPrepareSharedAngles(
                batchSize: hidden.dim(0),
                sequenceLength: hidden.dim(1),
                dtype: hidden.dtype),
@@ -3869,15 +4624,39 @@ private final class Qwen4ExpModelInner: Module {
         } else {
             sharedFusedQKAngles = nil
         }
-        let deferInterLayerWrite = Self.deferInterLayerHyperConnectionWriteDecode
-            && verificationPolicy == nil
-            && hidden.dim(1) == 1
+        // Each request retains its real position and sparse index history.
+        // Reuse per-row angle tables across attention layers; no KV padding or
+        // offset normalization is allowed in this speculative adapter.
+        let verificationAngles: [MLXArray]? = verificationAttentionRows.flatMap { rows in
+            guard let attentionIndex,
+                  Qwen4ExpQKNormRoPEFusion.shouldPrepareSharedAngles(
+                    batchSize: 1, sequenceLength: hidden.dim(1), dtype: hidden.dtype)
+            else { return nil }
+            return rows.map { fusedQKRoPE.fusedAngleRows(
+                offset: $0[attentionIndex].offset, sequenceLength: hidden.dim(1)) }
+        }
+        let deferInterLayerWrite = (Self.deferInterLayerHyperConnectionWriteDecode
+            && verificationPolicy == nil && hidden.dim(1) == 1)
+            || qwen4ExpCanFuseVerificationHC(
+                hidden, policy: verificationPolicy, enabled: Self.deferVerificationHC)
         let decodeAsyncLadderStride = Self.decodeAsyncLadderStride
         let useDecodeAsyncLadder = decodeAsyncLadderStride > 0
             && verificationPolicy == nil
             && hidden.dim(1) == 1
+        let verifyStride = qwen4ExpVerificationDispatchStride(
+            batchSize: hidden.dim(0), width: hidden.dim(1), policy: verificationPolicy,
+            singletonStride: verificationLadderOverride ?? Self.verificationAsyncLadderStride,
+            sharedStride: verificationLadderOverride ?? Self.sharedVerificationAsyncLadderStride)
+        let useVerifyAsyncLadder = verifyStride > 0
         let profiler = Qwen4ExpForwardProfiler.make(sequenceLength: hidden.dim(1))
         let hostProfiler = Qwen4ExpHostProfiler.make(sequenceLength: hidden.dim(1))
+        // Verification has a separate, off-by-default dispatch experiment.
+        // Every boundary MUST flush private PLE leaves before evaluating any
+        // graph that can read them. Synchronizing profilers retain eager PLE.
+        let deferredPLE = verificationPolicy != nil && hidden.dim(1) > 1
+            && profiler == nil
+            && ProcessInfo.processInfo.environment["VMLX_DSV4_STAGE_PROFILE"] != "1"
+            ? Qwen4ExpDeferredPLE() : nil
         profiler?.start(hidden)
         var pending: Qwen4ExpPendingHyperConnectionWrite?
         for (index, layer) in layers.enumerated() {
@@ -3891,7 +4670,11 @@ private final class Qwen4ExpModelInner: Module {
                     positionIDs: positionIDs,
                     cache: layerCaches[index],
                     fusedQKAngles: sharedFusedQKAngles,
-                    hostProfiler: hostProfiler)
+                    hostProfiler: hostProfiler,
+                    verificationPolicy: verificationPolicy,
+                    deferredPLE: deferredPLE,
+                    verificationAttentionRows: layer.isLinear ? nil : verificationAttentionRows?.map { $0[index] },
+                    verificationAngles: verificationAngles)
                 hidden = result.stream
                 pending = result.pending
             } else {
@@ -3901,12 +4684,22 @@ private final class Qwen4ExpModelInner: Module {
                     attentionMask: mask, positionIDs: positionIDs, cache: layerCaches[index],
                     fusedQKAngles: sharedFusedQKAngles,
                     verificationPolicy: verificationPolicy,
-                    profiler: profiler)
+                    profiler: profiler,
+                    hostProfiler: hostProfiler,
+                    deferredPLE: deferredPLE,
+                    verificationAttentionRows: layer.isLinear ? nil : verificationAttentionRows?.map { $0[index] },
+                    verificationAngles: verificationAngles)
             }
-            if useDecodeAsyncLadder,
-               index + 1 < layers.count,
-               (index + 1).isMultiple(of: decodeAsyncLadderStride)
+            let dispatchDecode = useDecodeAsyncLadder
+                && (index + 1).isMultiple(of: decodeAsyncLadderStride)
+            let dispatchVerify = useVerifyAsyncLadder
+                && (index + 1).isMultiple(of: verifyStride)
+            if index + 1 < layers.count, dispatchDecode || dispatchVerify
             {
+                if dispatchVerify {
+                    deferredPLE?.flush()
+                    hostProfiler?.lap(.pleFill)
+                }
                 if let pending {
                     asyncEval([
                         pending.output,
@@ -3916,6 +4709,7 @@ private final class Qwen4ExpModelInner: Module {
                 } else {
                     asyncEval(hidden)
                 }
+                hostProfiler?.lap(.submission)
             }
         }
         if combineWithFinalMixer, let pending {
@@ -3937,7 +4731,72 @@ private final class Qwen4ExpModelInner: Module {
         }
         profiler?.report()
         hostProfiler?.report()
+        // Complete host history and leaf contents before returning any lazy
+        // graph to callers that may evaluate it or perform cache rollback.
+        deferredPLE?.flush()
         return hidden
+    }
+
+    /// Mixed-position AR adapter. Like mlx-serve's MIT-licensed
+    /// forwardMoeBatchedDecode, share fixed-size state/math while retaining each
+    /// request's attention history. Projection sharing is separately opt-in;
+    /// QSA selection stays per row. Speculative rollback is not supported here.
+    func forwardRequestBatch(tokens: [Int], caches: [[KVCache]]) -> MLXArray? {
+        guard tokens.count > 1, tokens.count <= Qwen4ExpGatedDeltaPrework.maximumBatchSize,
+              caches.count == tokens.count,
+              caches.allSatisfy({ $0.count == layers.count }) else { return nil }
+        // Complete all validation BEFORE mutating any row. An unsupported row
+        // returns nil for scheduler fallback, never a half-advanced batch.
+        for index in layers.indices {
+            if layers[index].isLinear {
+                let rows = caches.compactMap { $0[index] as? Qwen4ExpLayerCache }
+                guard rows.count == caches.count,
+                      Set(rows.map(ObjectIdentifier.init)).count == rows.count,
+                      rows.allSatisfy({ $0.mtpVerificationWidth == nil && $0[0] != nil && $0[1] != nil })
+                else { return nil }
+                for state in 0..<2 {
+                    let first = rows[0][state]!
+                    guard first.ndim > 0, first.dim(0) == 1,
+                          rows.allSatisfy({ $0[state]!.shape == first.shape && $0[state]!.dtype == first.dtype })
+                    else { return nil }
+                }
+            } else {
+                // A full-attention PLE layer needs its own combined cache
+                // contract; do not fabricate that state in this adapter.
+                guard layers[index].ple == nil else { return nil }
+                let rows = caches.compactMap { $0[index] as? Qwen4ExpAttentionCache }
+                guard rows.count == caches.count,
+                      Set(rows.map(ObjectIdentifier.init)).count == rows.count,
+                      rows.allSatisfy({ $0.mtpVerificationWidth == nil && $0.offset > 0 && !$0.state.isEmpty
+                          && $0.state.allSatisfy({ $0.ndim > 0 && $0.dim(0) == 1 }) })
+                else { return nil }
+            }
+        }
+        let ids = MLXArray(tokens).reshaped(tokens.count, 1)
+        var hidden = tiled(embedTokens(ids), repetitions: [1, 1, hyperConnectionMixer.hcCount])
+        let attentionIndex = layers.firstIndex { !$0.isLinear }
+        let sharedAngles = Qwen4ExpQKNormRoPEFusion.shouldPrepareSharedAngles(
+            batchSize: 1, sequenceLength: 1, dtype: hidden.dtype)
+        let angles = (sharedAngles ? attentionIndex : nil).map { index in
+            caches.map { fusedQKRoPE.fusedAngleRows(offset: $0[index].offset, sequenceLength: 1) }
+        }
+        var pending: Qwen4ExpPendingHyperConnectionWrite?
+        for (index, layer) in layers.enumerated() {
+            let result = layer.callDeferringFinalInjection(hidden, precedingPending: pending,
+                inputIDs: ids, hostTokenIDs: tokens, attentionMask: .none, positionIDs: nil,
+                cache: nil, requestCaches: caches.map { $0[index] }, requestAngles: angles)
+            hidden = result.stream
+            pending = result.pending
+            if Self.decodeAsyncLadderStride > 0, index + 1 < layers.count,
+               (index + 1).isMultiple(of: Self.decodeAsyncLadderStride) {
+                asyncEval(result.pending.output, result.pending.residual, result.pending.weights)
+            }
+        }
+        if let pending {
+            return hyperConnectionMixer.combineAfterInjection(output: pending.output,
+                residual: pending.residual, weights: pending.weights)
+        }
+        return hyperConnectionMixer.combine(hidden)
     }
 
     func layerStreams(
@@ -4114,7 +4973,7 @@ public final class Qwen4ExpMTPHead: Module {
     private let hcCount: Int
     private let indexerCompressRatio: Int
 
-    fileprivate init(_ config: Qwen4ExpTextConfiguration) {
+    init(_ config: Qwen4ExpTextConfiguration) {
         hiddenSize = config.hiddenSize
         hcCount = config.hcCount
         indexerCompressRatio = config.indexerCompressRatio
@@ -4292,7 +5151,7 @@ public final class Qwen4ExpMTPHead: Module {
     }
 }
 
-public final class Qwen4ExpModel: Module, LLMModel, KVCacheDimensionProvider {
+public final class Qwen4ExpModel: Module, LLMModel, KVCacheDimensionProvider, RequestOwnedDecodeBatchModel {
     /// Qwen Next's native predictor is precision-sensitive. Quantizing the
     /// raw sidecar below q8 materially reduces draft acceptance, so every
     /// public loading path uses this floor unless a higher precision is
@@ -4379,12 +5238,17 @@ public final class Qwen4ExpModel: Module, LLMModel, KVCacheDimensionProvider {
         model.embedTokens(inputIDs)
     }
 
+    public func decodeRequestBatch(tokens: [Int], caches: [[KVCache]]) -> LMOutput? {
+        guard let hidden = model.forwardRequestBatch(tokens: tokens, caches: caches) else { return nil }
+        return LMOutput(logits: projectLMHead(hidden))
+    }
+
     public func projectLMHead(
         _ hidden: MLXArray,
         verificationPolicy: MTPVerificationPolicy? = nil
     ) -> MLXArray {
         if let lmHead {
-            return VerifyWidthLinear.call(
+            return qwen4ExpVerificationLinear(
                 lmHead, hidden, verificationPolicy: verificationPolicy,
                 role: .lmHead)
         }
@@ -4419,7 +5283,8 @@ public final class Qwen4ExpModel: Module, LLMModel, KVCacheDimensionProvider {
         inputEmbeddings: MLXArray? = nil,
         positionIDs: MLXArray? = nil,
         cache: [KVCache]?,
-        verificationPolicy: MTPVerificationPolicy? = nil
+        verificationPolicy: MTPVerificationPolicy? = nil,
+        hostTokenIDs: [Int]? = nil
     ) -> (stream: MLXArray, hidden: MLXArray) {
         if verificationPolicy != nil, let cache {
             let width = inputIDs.dim(1)
@@ -4436,6 +5301,7 @@ public final class Qwen4ExpModel: Module, LLMModel, KVCacheDimensionProvider {
             inputEmbeddings: inputEmbeddings,
             positionIDs: positionIDs,
             cache: cache,
+            hostTokenIDs: hostTokenIDs,
             verificationPolicy: verificationPolicy
         )
         return (
@@ -4446,6 +5312,18 @@ public final class Qwen4ExpModel: Module, LLMModel, KVCacheDimensionProvider {
 
     func layerStreamsForTesting(inputIDs: MLXArray) -> [MLXArray] {
         model.layerStreams(inputIDs)
+    }
+
+    func verificationStreamForTesting(
+        inputIDs: MLXArray, cache: [KVCache], ladderStride: Int
+    ) -> MLXArray {
+        for entry in cache {
+            (entry as? Qwen4ExpLayerCache)?.beginMTPVerification(width: inputIDs.dim(1))
+            (entry as? Qwen4ExpAttentionCache)?.beginMTPVerification(width: inputIDs.dim(1))
+        }
+        return model.forwardStream(
+            inputIDs, cache: cache, verificationPolicy: .batched,
+            verificationLadderOverride: ladderStride)
     }
 
     func firstPLETraceForTesting(
@@ -4523,6 +5401,169 @@ public final class Qwen4ExpModel: Module, LLMModel, KVCacheDimensionProvider {
             positionIDs: positionIDs, cache: cache,
             hostTokenIDs: hostTokenIDs)
         return lmHead?(hidden) ?? model.embedTokens.asLinear(hidden)
+    }
+
+    /// Build shared fixed-size state with complete optional fields. The default
+    /// also merges equal-position attention; the independent adapter leaves
+    /// placeholders for private attention histories. Never pad or guess offsets.
+    func mergedMTPVerificationCaches(
+        _ rows: [[KVCache]], independentAttention: Bool = false
+    ) -> [KVCache]? {
+        guard (2...4).contains(rows.count),
+              rows.allSatisfy({ $0.count == model.layers.count }) else { return nil }
+        func merge(_ arrays: [[MLXArray?]]) -> [MLXArray?]? {
+            guard let first = arrays.first,
+                  arrays.allSatisfy({ $0.count == first.count }) else { return nil }
+            var result: [MLXArray?] = []
+            for index in first.indices {
+                guard let initial = first[index] else {
+                    guard arrays.allSatisfy({ $0[index] == nil }) else { return nil }
+                    result.append(nil)
+                    continue
+                }
+                guard initial.ndim > 0, initial.dim(0) == 1 else { return nil }
+                let values = arrays.compactMap { $0[index] }
+                guard values.count == rows.count,
+                      values.allSatisfy({ $0.shape == initial.shape && $0.dtype == initial.dtype })
+                else { return nil }
+                result.append(concatenated(values, axis: 0))
+            }
+            return result
+        }
+        var result: [KVCache] = []
+        for index in model.layers.indices {
+            if let first = rows[0][index] as? Qwen4ExpAttentionCache {
+                let caches = rows.compactMap { $0[index] as? Qwen4ExpAttentionCache }
+                guard Set(caches.map(ObjectIdentifier.init)).count == rows.count else { return nil }
+                if independentAttention {
+                    // This slot is a placeholder, never advanced by attention.
+                    // Private attention clones are prepared only after every
+                    // layer passed validation, then adopted after the forward.
+                    guard model.layers[index].ple == nil, caches.count == rows.count,
+                          caches.allSatisfy({ $0.mtpVerificationWidth == nil && $0.offset > 0
+                              && $0.indexerCompressRatio == first.indexerCompressRatio
+                              && $0.state.allSatisfy({ $0.ndim > 0 && $0.dim(0) == 1 }) })
+                    else { return nil }
+                    result.append(Qwen4ExpAttentionCache(indexerCompressRatio: first.indexerCompressRatio))
+                    continue
+                }
+                guard caches.count == rows.count,
+                      caches.allSatisfy({ $0.offset == first.offset
+                          && $0.indexerCompressRatio == first.indexerCompressRatio
+                          && $0.mtpVerificationWidth == nil }),
+                      let arrays = merge(caches.map(\.promptReplayArrays)) else { return nil }
+                let cache = Qwen4ExpAttentionCache(indexerCompressRatio: first.indexerCompressRatio)
+                cache.promptReplayArrays = arrays
+                result.append(cache)
+            } else if rows[0][index] is Qwen4ExpLayerCache {
+                let caches = rows.compactMap { $0[index] as? Qwen4ExpLayerCache }
+                guard caches.count == rows.count,
+                      Set(caches.map(ObjectIdentifier.init)).count == rows.count,
+                      caches.allSatisfy({ $0.mtpVerificationWidth == nil }),
+                      let arrays = merge(caches.map { cache in (0..<4).map { cache[$0] } })
+                else { return nil }
+                let cache = Qwen4ExpLayerCache()
+                for slot in 0..<4 { cache[slot] = arrays[slot] }
+                // Preserve every row's CPU mirror only when all are populated;
+                // otherwise the model rebuilds it from the authoritative tensor.
+                let histories = caches.compactMap(\.hostNGramHistory)
+                if histories.count == rows.count,
+                   histories.allSatisfy({ $0.count == histories[0].count }) {
+                    cache.hostNGramHistory = histories.flatMap { $0 }
+                }
+                result.append(cache)
+            } else {
+                return nil
+            }
+        }
+        return result
+    }
+
+    struct MTPVerificationBatch {
+        let caches: [KVCache]
+        let attentionRows: [[KVCache]]?
+    }
+
+    /// Share fixed-size recurrent/PLE state and backbone math, but keep full
+    /// attention/QSA histories request-owned. Clones retain lazy array values;
+    /// advancing or trimming one never advances an original or another row.
+    func makeMTPVerificationBatch(
+        _ rows: [[KVCache]], independentAttention: Bool
+    ) -> MTPVerificationBatch? {
+        guard let caches = mergedMTPVerificationCaches(rows, independentAttention: independentAttention)
+        else { return nil }
+        let attentionRows: [[KVCache]]? = independentAttention ? rows.map { row in
+            row.map { entry in
+                guard let attention = entry as? Qwen4ExpAttentionCache else { return entry }
+                let copy = Qwen4ExpAttentionCache(indexerCompressRatio: attention.indexerCompressRatio)
+                copy.promptReplayArrays = attention.promptReplayArrays
+                return copy
+            }
+        } : nil
+        return MTPVerificationBatch(caches: caches, attentionRows: attentionRows)
+    }
+
+    func forwardMTPVerificationBatch(
+        inputIDs: MLXArray, batch: MTPVerificationBatch, hostTokenIDs: [Int],
+        ladderStride: Int? = nil
+    ) -> (stream: MLXArray, hidden: MLXArray) {
+        precondition(inputIDs.ndim == 2 && hostTokenIDs.count == inputIDs.size)
+        if batch.attentionRows == nil, ladderStride == nil {
+            return forwardStreamState(inputIDs: inputIDs, cache: batch.caches,
+                verificationPolicy: .batched, hostTokenIDs: hostTokenIDs)
+        }
+        let width = inputIDs.dim(1)
+        for entry in batch.caches {
+            (entry as? Qwen4ExpLayerCache)?.beginMTPVerification(width: width)
+            if batch.attentionRows == nil {
+                (entry as? Qwen4ExpAttentionCache)?.beginMTPVerification(width: width)
+            }
+        }
+        for row in batch.attentionRows ?? [] {
+            for entry in row {
+                (entry as? Qwen4ExpAttentionCache)?.beginMTPVerification(width: width)
+            }
+        }
+        let stream = model.forwardStream(inputIDs, cache: batch.caches,
+            hostTokenIDs: hostTokenIDs, verificationPolicy: .batched,
+            verificationLadderOverride: ladderStride, verificationAttentionRows: batch.attentionRows)
+        return (stream, model.combineStream(stream, verificationPolicy: .batched))
+    }
+
+    func adoptMTPVerificationRow(
+        from batch: MTPVerificationBatch, row: Int, batchSize: Int, into cache: [KVCache]
+    ) {
+        precondition(batch.caches.count == cache.count && row >= 0 && row < batchSize)
+        guard batch.attentionRows != nil else {
+            adoptMTPVerificationRow(from: batch.caches, row: row, batchSize: batchSize, into: cache)
+            return
+        }
+        // Recurrent rows use the existing complete rollback-metadata split.
+        // Substitute only the selected private attention rows after that split.
+        for index in cache.indices {
+            if let source = batch.attentionRows?[row][index] as? Qwen4ExpAttentionCache,
+               let destination = cache[index] as? Qwen4ExpAttentionCache {
+                destination.adoptVerificationRow(from: source, row: 0)
+            } else {
+                adoptMTPVerificationRow(from: [batch.caches[index]], row: row,
+                    batchSize: batchSize, into: [cache[index]])
+            }
+        }
+    }
+
+    func adoptMTPVerificationRow(from batch: [KVCache], row: Int, batchSize: Int, into cache: [KVCache]) {
+        precondition(batch.count == cache.count && row >= 0 && row < batchSize)
+        for (source, destination) in zip(batch, cache) {
+            if let source = source as? Qwen4ExpAttentionCache,
+               let destination = destination as? Qwen4ExpAttentionCache {
+                destination.adoptVerificationRow(from: source, row: row)
+            } else if let source = source as? Qwen4ExpLayerCache,
+                      let destination = destination as? Qwen4ExpLayerCache {
+                destination.adoptVerificationRow(from: source, row: row, batchSize: batchSize)
+            } else {
+                preconditionFailure("Qwen verification row cache mismatch")
+            }
+        }
     }
 
     /// Commit the accepted prefix of an MTP target-verification window.
@@ -4674,11 +5715,22 @@ public final class Qwen4ExpModel: Module, LLMModel, KVCacheDimensionProvider {
     }
 }
 
-/// Greedy self-speculative decoding for Qwen3.8-Flash-Next's native MTP head.
+/// Self-speculative decoding for Qwen3.8-Flash-Next's native MTP head.
 /// Draft-head history is rebuilt from verifier streams after every round. The
 /// conformant verifier reproduces independent greedy decode. Ordinary batched
 /// target operators remain available as an explicitly approximate throughput
 /// experiment because their reduction schedule can change greedy decisions.
+///
+/// Sampling uses deterministic drafts (one-hot proposal q). Draw y from the
+/// user's filtered target p, accept when y == draft, otherwise emit y and stop
+/// the round. P(accept) = p[draft]; conditional rejection samples p with that
+/// token excluded, exactly the normalized max(p-q, 0) residual. This is the
+/// one-hot specialization of Leviathan et al. (arXiv:2211.17192), also used by
+/// David Dalcu's MIT-licensed mlx-serve (src/generate.zig, nextMtp / greedy
+/// draft proposals). No source is copied. Target rows and RNG stay on device;
+/// only the existing packed token-ID decision crosses the host boundary.
+/// Same-seed repeatability is scoped to a fixed verification width/policy,
+/// not token identity with AR, which consumes a different sequence of draws.
 struct Qwen4ExpMTPCycleDecision: Equatable {
     let targetTokens: [Int]
     let draftTokens: [Int]
@@ -4717,22 +5769,368 @@ struct Qwen4ExpMTPCycleDecision: Equatable {
     }
 }
 
+/// The first draft-head row uses a true backbone stream and the already
+/// verified primary token. Later rows use predicted streams, even when their
+/// token IDs are accepted. Retain only that anchor; repair the entire suffix.
+/// This changes head replay geometry, so it remains an opt-in experiment.
+struct Qwen4ExpMTPHeadRepairPlan: Equatable {
+    let retainedRows: Int
+    let trimRows: Int
+    let replayRows: Range<Int>
+
+    init(drafted: Int, accepted: Int, retainAnchor: Bool) {
+        precondition(drafted > 0 && accepted >= 0 && accepted <= drafted)
+        retainedRows = retainAnchor ? 1 : 0
+        trimRows = drafted - retainedRows
+        replayRows = retainedRows ..< (accepted + 1)
+    }
+}
+
+/// Immutable, generator-scoped complete-prompt state. Not Sendable: capture and
+/// restore on the serialized model executor. No sampled token or RNG is shared.
+public final class Qwen4ExpMTPPromptState {
+    fileprivate enum Layer {
+        case recurrent([MLXArray?], [Int64]?, Int)
+        case attention([MLXArray?])
+
+        var arrays: [MLXArray] {
+            switch self {
+            case .recurrent(let values, _, _): values.compactMap { $0 }
+            case .attention(let values): values.compactMap { $0 }
+            }
+        }
+
+        init?(_ cache: KVCache) {
+            if let cache = cache as? Qwen4ExpLayerCache {
+                // Preserve nil slot positions; ArraysCache.state compacts them.
+                self = .recurrent((0..<4).map { cache[$0].map { $0 * 1 } },
+                    cache.hostNGramHistory, cache.offset)
+            } else if let cache = cache as? Qwen4ExpAttentionCache {
+                self = .attention(cache.promptReplayArrays.map { $0.map { $0 * 1 } })
+            } else {
+                return nil
+            }
+        }
+
+        func restore(into cache: KVCache) {
+            switch self {
+            case .recurrent(let values, let history, let offset):
+                let cache = cache as! Qwen4ExpLayerCache
+                for i in values.indices { cache[i] = values[i].map { $0 * 1 } }
+                cache.hostNGramHistory = history
+                cache.offset = offset
+                cache.clearMTPRollback()
+            case .attention(let values):
+                let cache = cache as! Qwen4ExpAttentionCache
+                // A one-token prompt has not primed the head yet.
+                cache.promptReplayArrays = values.map { $0.map { $0 * 1 } }
+                cache.clearMTPVerification()
+            }
+        }
+    }
+
+    public let promptIds: [Int]
+    public let estimatedRetainedBytes: Int
+    fileprivate let identity: UUID
+    fileprivate let target: [Layer]
+    fileprivate let head: [Layer]
+    fileprivate let hidden: MLXArray
+    fileprivate let stream: MLXArray
+
+    fileprivate init?(
+        identity: UUID, promptIds: [Int], target: [KVCache], head: [KVCache],
+        hidden: MLXArray, stream: MLXArray
+    ) {
+        let targetLayers = target.compactMap(Layer.init)
+        let headLayers = head.compactMap(Layer.init)
+        guard targetLayers.count == target.count, headLayers.count == head.count else { return nil }
+        self.identity = identity
+        self.promptIds = promptIds
+        self.target = targetLayers
+        self.head = headLayers
+        self.hidden = hidden * 1
+        self.stream = stream * 1
+        let arrays = (targetLayers + headLayers).flatMap(\.arrays) + [self.hidden, self.stream]
+        eval(arrays)
+        let historyBytes = (targetLayers + headLayers).reduce(0) { size, layer in
+            if case .recurrent(_, let history, _) = layer {
+                return size + (history?.count ?? 0) * MemoryLayout<Int64>.stride
+            }
+            return size
+        }
+        estimatedRetainedBytes = arrays.reduce(0) { $0 + $1.nbytes }
+            + promptIds.count * MemoryLayout<Int>.stride + historyBytes
+    }
+}
+
 public final class Qwen4ExpMTPGenerator {
     private let model: Qwen4ExpModel
     private let head: Qwen4ExpMTPHead
+    private let draftDispatchStride: Int
+    private let retainHeadAnchor: Bool
+    private let replayIdentity = UUID()
     public let depth: Int
     public let verificationPolicy: MTPVerificationPolicy
 
-    public init(
+    public convenience init(
         model: Qwen4ExpModel,
         head: Qwen4ExpMTPHead,
         depth: Int = 3,
         verificationPolicy: MTPVerificationPolicy = .strictSingletonEquivalent
     ) {
+        self.init(
+            model: model, head: head, depth: depth,
+            verificationPolicy: verificationPolicy,
+            draftDispatchStride: Int(ProcessInfo.processInfo.environment[
+                "AFM_QWEN_MTP_DRAFT_ASYNC_LADDER"] ?? "0") ?? 0,
+            retainHeadAnchor: ProcessInfo.processInfo.environment[
+                "AFM_QWEN_MTP_RETAIN_ANCHOR"] == "1")
+    }
+
+    // Internal stride injection allows request-isolation/cancellation tests
+    // without mutating process-global environment settings.
+    init(
+        model: Qwen4ExpModel, head: Qwen4ExpMTPHead, depth: Int,
+        verificationPolicy: MTPVerificationPolicy, draftDispatchStride: Int,
+        retainHeadAnchor: Bool = false
+    ) {
         self.model = model
         self.head = head
         self.depth = max(1, depth)
         self.verificationPolicy = verificationPolicy
+        self.draftDispatchStride = max(0, draftDispatchStride)
+        self.retainHeadAnchor = retainHeadAnchor && verificationPolicy == .batched
+    }
+
+    /// Creates request-owned state for serialized, resumable speculative work.
+    /// Sharing immutable model/head weights does not share caches or RNG state.
+    public func makeSession(
+        promptIds: [Int], maxTokens: Int, eosIds: Set<Int> = [],
+        temperature: Float = 0, topP: Float = 1, seed: UInt64? = nil,
+        promptState: Qwen4ExpMTPPromptState? = nil, retainPromptState: Bool = false,
+        allowPromptPrefixReplay: Bool = false
+    ) -> Qwen4ExpMTPSession? {
+        precondition(temperature.isFinite && temperature >= 0)
+        precondition(topP.isFinite && (0...1).contains(topP))
+        guard !promptIds.isEmpty, maxTokens > 0 else { return nil }
+        if let promptState {
+            guard promptState.identity == replayIdentity,
+                  (promptState.promptIds == promptIds
+                    || (allowPromptPrefixReplay && promptIds.starts(with: promptState.promptIds)))
+            else { return nil }
+        }
+        return Qwen4ExpMTPSession(
+            model: model, head: head, depth: depth,
+            verificationPolicy: verificationPolicy,
+            draftDispatchStride: draftDispatchStride, retainHeadAnchor: retainHeadAnchor,
+            promptIds: promptIds, maxTokens: maxTokens, eosIds: eosIds,
+            temperature: temperature, topP: topP, seed: seed,
+            replayIdentity: replayIdentity, promptState: promptState,
+            retainPromptState: retainPromptState)
+    }
+
+    public func generate(
+        promptIds: [Int],
+        maxTokens: Int,
+        eosIds: Set<Int> = [],
+        temperature: Float = 0,
+        topP: Float = 1,
+        seed: UInt64? = nil,
+        onToken: ((Int) -> Bool)? = nil
+    ) -> [Int] {
+        guard let session = makeSession(
+            promptIds: promptIds, maxTokens: maxTokens, eosIds: eosIds,
+            temperature: temperature, topP: topP, seed: seed)
+        else { return [] }
+        defer { session.reportDiagnostics() }
+        var output: [Int] = []
+        while let token = session.nextToken() {
+            output.append(token)
+            if let onToken, !onToken(token) { break }
+        }
+        return output
+    }
+}
+
+/// A request-owned Qwen Next speculative state machine, not Sendable.
+///
+/// Call on one serialized model/GPU executor. Each nextToken call returns a
+/// buffered accepted token or performs at most one bounded draft/verify cycle.
+/// The already-known primary is returned before drafting. Head repair is
+/// deferred until accepted tokens have been consumed, preserving early-stop
+/// behavior without doing unnecessary repair after cancellation/EOS/length.
+/// The optional prepareNextToken hook submits independent verification work
+/// before its host decision is needed. This is not a multi-request GPU batch.
+/// Prefill is still one whole-prompt operation; exact replay snapshots are
+/// transferred separately through takePromptState.
+public final class Qwen4ExpMTPSession {
+    private struct PreparedDraft {
+        let headOffset: Int
+        let tokens: [MLXArray]
+        let tokenIDs: MLXArray
+    }
+
+    private struct PreparedVerification {
+        let headOffset: Int
+        let draftTokenIDs: MLXArray
+        let targetTokenIDs: MLXArray
+        let verifiedStream: MLXArray
+        let snapshot: [Qwen3MTPCacheSnapshot.Layer]
+        let usedSequentialVerifier: Bool
+    }
+
+    private struct Verification {
+        let headOffset: Int
+        let decision: Qwen4ExpMTPCycleDecision
+        let verifiedStream: MLXArray
+        let snapshot: [Qwen3MTPCacheSnapshot.Layer]
+        let targetCommitted: Bool
+    }
+
+    private let model: Qwen4ExpModel
+    private let head: Qwen4ExpMTPHead
+    private let targetCache: [KVCache]
+    private let mtpCache: [KVCache]
+    private let sampler: LogitSampler?
+    private let maxTokens: Int
+    private let eosIds: Set<Int>
+    private let depth: Int
+    private let verificationPolicy: MTPVerificationPolicy
+    private let draftDispatchStride: Int
+    private let retainHeadAnchor: Bool
+    public let promptTokenCount: Int
+    public private(set) var tokenCount = 0
+    public var verificationCycleCount: Int { totalCycles }
+
+    private var primary: Int
+    private var primaryStream: MLXArray
+    private var primaryPosition: Int
+    private var firstPrimaryPending = true
+    private var preparedDraft: PreparedDraft?
+    private var preparedVerification: PreparedVerification?
+    private var pendingVerification: Verification?
+    private var acceptedCursor = 0
+    private var finished = false
+    private var capturedPromptState: Qwen4ExpMTPPromptState?
+
+    /// Transfer a pre-generation snapshot to the owner's bounded replay cache.
+    public func takePromptState() -> Qwen4ExpMTPPromptState? {
+        defer { capturedPromptState = nil }
+        return capturedPromptState
+    }
+
+    private var totalCycles = 0
+    private var totalDrafted = 0
+    private var totalAccepted = 0
+    private var totalReplays = 0
+    private var totalBackboneReplayFallbacks = 0
+    private var totalRetainedAnchors = 0
+    private var acceptedByDepth: [Int]
+    // Host laps do not add eval/synchronize calls. No lap spans a suspension.
+    private let measurePhases = ProcessInfo.processInfo.environment["AFM_PERF"] == "1"
+    private var phaseNanoseconds = [UInt64](repeating: 0, count: 5)
+    private var phaseStart: UInt64 = 0
+    // A separate lap clock covers the entire shared verifier, including the
+    // host token materialization before the legacy verify-build lap. These
+    // are host durations, not GPU kernel timings; no eval is added for timing.
+    // Charge shared work once to the first member, never once per request row.
+    private var sharedPhaseNanoseconds = [UInt64](repeating: 0, count: 8)
+    private var sharedPhaseStart: UInt64 = 0
+    private var sharedMergeAttempts = 0
+    private var sharedGroups = 0
+    private var sharedRows = 0
+    private var reportedDiagnostics = false
+
+    fileprivate init(
+        model: Qwen4ExpModel, head: Qwen4ExpMTPHead, depth: Int,
+        verificationPolicy: MTPVerificationPolicy, draftDispatchStride: Int,
+        retainHeadAnchor: Bool, promptIds: [Int], maxTokens: Int, eosIds: Set<Int>,
+        temperature: Float, topP: Float, seed: UInt64?, replayIdentity: UUID,
+        promptState: Qwen4ExpMTPPromptState?, retainPromptState: Bool
+    ) {
+        // Request-owned RNG: no global seeding or mutable sampler on a shared
+        // generator. Nil preserves the fused greedy readout and its graph.
+        let sampler: LogitSampler? = temperature > 0
+            ? GenerateParameters(temperature: temperature, topP: topP, seed: seed).sampler()
+            : nil
+        func targetTokens(_ hidden: MLXArray, policy: MTPVerificationPolicy? = nil) -> MLXArray {
+            guard let sampler else {
+                return model.projectLMHeadArgmax(hidden, verificationPolicy: policy)
+            }
+            let logits = model.projectLMHead(hidden, verificationPolicy: policy)
+            return sampler.sample(logits: logits)
+        }
+        let targetCache = model.newCache(parameters: nil)
+        let mtpCache = head.newCache()
+        let primaryHidden: MLXArray
+        let primaryStream: MLXArray
+        let primary: Int
+        let primaryPosition = promptIds.count
+        if let promptState {
+            precondition(promptState.target.count == targetCache.count && promptState.head.count == mtpCache.count)
+            for (layer, cache) in zip(promptState.target, targetCache) { layer.restore(into: cache) }
+            for (layer, cache) in zip(promptState.head, mtpCache) { layer.restore(into: cache) }
+            let prefixCount = promptState.promptIds.count
+            if prefixCount == promptIds.count {
+                primaryHidden = promptState.hidden
+                primaryStream = promptState.stream
+            } else {
+                let suffix = Self.tokens(Array(promptIds.dropFirst(prefixCount)))
+                let initial = model.forwardStreamState(inputIDs: suffix, cache: targetCache)
+                primaryHidden = initial.hidden[0..., (initial.hidden.dim(1) - 1)..., 0...]
+                primaryStream = initial.stream[0..., (initial.stream.dim(1) - 1)..., 0...]
+                // The saved head ends one prompt token behind the target.
+                // Its next input pairs the saved final target stream with the
+                // first suffix token. Subsequent pairs use verified suffix
+                // streams, never a sampled token or a predicted draft stream.
+                let headStreams = suffix.dim(1) == 1 ? promptState.stream : concatenated([
+                    promptState.stream,
+                    initial.stream[0..., ..<(initial.stream.dim(1) - 1), 0...],
+                ], axis: 1)
+                _ = head(hiddenStream: headStreams,
+                    tokenEmbeddings: model.embedTokens(suffix), tokenIDs: suffix,
+                    positionIDs: Self.positions(prefixCount ..< promptIds.count), cache: mtpCache)
+            }
+            // Exactly one request-local sample, even when a prefix was reused.
+            primary = targetTokens(primaryHidden).item(Int.self)
+        } else {
+            let initial = model.forwardStreamState(inputIDs: Self.tokens(promptIds), cache: targetCache)
+            primaryHidden = initial.hidden[0..., (initial.hidden.dim(1) - 1)..., 0...]
+            primaryStream = initial.stream[0..., (initial.stream.dim(1) - 1)..., 0...]
+            primary = targetTokens(primaryHidden).item(Int.self)
+
+            // stream[p] + token[p+1] predicts token[p+2].
+            if promptIds.count > 1 {
+                let historyCount = promptIds.count - 1
+                _ = head(
+                    hiddenStream: initial.stream[0..., ..<historyCount, 0...],
+                    tokenEmbeddings: model.embedTokens(Self.tokens(Array(promptIds.dropFirst()))),
+                    tokenIDs: Self.tokens(Array(promptIds.dropFirst())),
+                    positionIDs: Self.positions(1 ..< promptIds.count),
+                    cache: mtpCache)
+            }
+        }
+        if retainPromptState && promptState?.promptIds.count != promptIds.count {
+            capturedPromptState = Qwen4ExpMTPPromptState(
+                identity: replayIdentity, promptIds: promptIds, target: targetCache,
+                head: mtpCache, hidden: primaryHidden, stream: primaryStream)
+        }
+        self.model = model
+        self.head = head
+        self.depth = depth
+        self.verificationPolicy = verificationPolicy
+        self.draftDispatchStride = draftDispatchStride
+        self.retainHeadAnchor = retainHeadAnchor
+        self.targetCache = targetCache
+        self.mtpCache = mtpCache
+        self.sampler = sampler
+        self.maxTokens = maxTokens
+        self.eosIds = eosIds
+        self.promptTokenCount = promptIds.count
+        self.primary = primary
+        self.primaryStream = primaryStream
+        self.primaryPosition = primaryPosition
+        self.acceptedByDepth = [Int](repeating: 0, count: depth)
     }
 
     private static func tokens(_ ids: [Int]) -> MLXArray {
@@ -4743,204 +6141,468 @@ public final class Qwen4ExpMTPGenerator {
         MLXArray(range.map(Int32.init)).reshaped([1, range.count])
     }
 
-    public func generate(
-        promptIds: [Int],
-        maxTokens: Int,
-        eosIds: Set<Int> = [],
-        onToken: ((Int) -> Bool)? = nil
-    ) -> [Int] {
-        guard !promptIds.isEmpty, maxTokens > 0 else { return [] }
-        let targetCache = model.newCache(parameters: nil)
-        let mtpCache = head.newCache()
-        let prompt = Self.tokens(promptIds)
-        let initial = model.forwardStreamState(inputIDs: prompt, cache: targetCache)
-        var primary = model.projectLMHeadArgmax(
-            initial.hidden[0..., (initial.hidden.dim(1) - 1)..., 0...]
-        ).item(Int.self)
-        var primaryStream = initial.stream[0..., (initial.stream.dim(1) - 1)..., 0...]
-        var primaryPosition = promptIds.count
-
-        // Prime the head with true target streams for the shifted prompt pairs:
-        // stream[p] + token[p+1] predicts token[p+2].
-        if promptIds.count > 1 {
-            let historyCount = promptIds.count - 1
-            _ = head(
-                hiddenStream: initial.stream[0..., ..<historyCount, 0...],
-                tokenEmbeddings: model.embedTokens(Self.tokens(Array(promptIds.dropFirst()))),
-                tokenIDs: Self.tokens(Array(promptIds.dropFirst())),
-                positionIDs: Self.positions(1 ..< promptIds.count),
-                cache: mtpCache
-            )
+    private func targetTokens(
+        _ hidden: MLXArray, policy: MTPVerificationPolicy? = nil
+    ) -> MLXArray {
+        guard let sampler else {
+            return model.projectLMHeadArgmax(hidden, verificationPolicy: policy)
         }
-
-        var output: [Int] = []
-        var totalCycles = 0
-        var totalDrafted = 0
-        var totalAccepted = 0
-        var totalReplays = 0
-        var totalBackboneReplayFallbacks = 0
-        var acceptedByDepth = [Int](repeating: 0, count: depth)
-        defer {
-            if ProcessInfo.processInfo.environment["AFM_DEBUG"] == "1" {
-                let acceptance = totalDrafted > 0
-                    ? Double(totalAccepted) / Double(totalDrafted)
-                    : 0
-                let tokensPerCycle = totalCycles > 0
-                    ? Double(output.count) / Double(totalCycles)
-                    : 0
-                let depthCounts = acceptedByDepth.enumerated()
-                    .map { "d\($0.offset + 1)=\($0.element)" }
-                    .joined(separator: ",")
-                let message = String(
-                    format:
-                        "[MTP][QwenNext] %d tok in %d cycles — %.2f tok/cycle, accept %.1f%% (%d/%d), replays %d, backbone fallbacks %d, %@\n",
-                    output.count,
-                    totalCycles,
-                    tokensPerCycle,
-                    acceptance * 100,
-                    totalAccepted,
-                    totalDrafted,
-                    totalReplays,
-                    totalBackboneReplayFallbacks,
-                    depthCounts
-                )
-                FileHandle.standardError.write(Data(message.utf8))
-            }
-        }
-        func emit(_ token: Int) -> Bool {
-            output.append(token)
-            if let onToken, !onToken(token) { return false }
-            return output.count < maxTokens && !eosIds.contains(token)
-        }
-
-        while true {
-            if !emit(primary) { break }
-            totalCycles += 1
-
-            let roundHeadOffset = mtpCache[0].offset
-            var draftTokens: [MLXArray] = []
-            draftTokens.reserveCapacity(depth)
-            var chainStream = primaryStream
-            var chainToken = Self.tokens([primary])
-            for index in 0 ..< depth {
-                let draftOutput = head(
-                    hiddenStream: chainStream,
-                    tokenEmbeddings: model.embedTokens(chainToken),
-                    tokenIDs: chainToken,
-                    positionIDs: Self.positions(
-                        (primaryPosition + index) ..< (primaryPosition + index + 1)),
-                    cache: mtpCache
-                )
-                let draft = model.projectLMHeadArgmax(draftOutput.hidden)
-                    .asType(.int32)
-                    .reshaped([1, 1])
-                draftTokens.append(draft)
-                chainStream = draftOutput.stream
-                chainToken = draft
-            }
-            totalDrafted += draftTokens.count
-
-            let draftTokenIDs = concatenated(draftTokens, axis: 1)
-            // Dispatch the complete lazy draft chain without crossing the
-            // host boundary. The verifier consumes the same array and the
-            // cycle decision performs the only GPU-to-CPU materialization.
-            asyncEval(draftTokenIDs)
-            let verifyTokenIDs = concatenated(
-                [Self.tokens([primary]), draftTokenIDs], axis: 1)
-            let targetSnapshot = Qwen3MTPCacheSnapshot.capture(targetCache)
-            let verifiedStream: MLXArray
-            let targetTokenIDs: MLXArray
-            let usedSequentialVerifier = ProcessInfo.processInfo.environment[
-                "AFM_QWEN_VERIFY_SEQUENTIAL"
-            ] == "1"
-            if usedSequentialVerifier {
-                var streams: [MLXArray] = []
-                var targetTokens: [MLXArray] = []
-                let verifyInputs = [Self.tokens([primary])] + draftTokens
-                for token in verifyInputs {
-                    let state = model.forwardStreamState(
-                        inputIDs: token, cache: targetCache)
-                    streams.append(state.stream)
-                    targetTokens.append(model.projectLMHeadArgmax(state.hidden))
-                }
-                verifiedStream = concatenated(streams, axis: 1)
-                targetTokenIDs = concatenated(targetTokens, axis: 1)
-            } else {
-                let verified = model.forwardStreamState(
-                    inputIDs: verifyTokenIDs, cache: targetCache,
-                    verificationPolicy: verificationPolicy)
-                verifiedStream = verified.stream
-                targetTokenIDs = model.projectLMHeadArgmax(
-                    verified.hidden,
-                    verificationPolicy: verificationPolicy)[0, 0...]
-            }
-            let decision = Qwen4ExpMTPCycleDecision.resolve(
-                targetTokenIDs: targetTokenIDs,
-                draftTokenIDs: draftTokenIDs)
-            for index in 0 ..< decision.acceptedDraftCount {
-                acceptedByDepth[index] += 1
-            }
-            totalAccepted += decision.acceptedDraftCount
-            let targetCacheCommitted = !usedSequentialVerifier
-                && model.finishMTPVerification(
-                    cache: targetCache,
-                    acceptedDrafts: decision.acceptedDraftCount,
-                    draftedTokens: decision.draftTokens.count)
-
-            for token in decision.draftTokens.prefix(decision.acceptedDraftCount) {
-                if !emit(token) { return output }
-            }
-
-            // Discard every speculative head row and rebuild only the committed
-            // shifted pairs from the target model's true residual streams.
-            let speculativeRows = mtpCache[0].offset - roundHeadOffset
-            if speculativeRows > 0 { _ = mtpCache[0].trim(speculativeRows) }
-            let committedTokens = [primary]
-                + Array(decision.draftTokens.prefix(decision.acceptedDraftCount))
-            let committedStreams: MLXArray
-            if decision.acceptedDraftCount == 0 {
-                committedStreams = primaryStream
-            } else {
-                committedStreams = concatenated([
-                    primaryStream,
-                    verifiedStream[
-                        0..., 0 ..< decision.acceptedDraftCount, 0...],
-                ], axis: 1)
-            }
-            let committedTokenArray = Self.tokens(committedTokens)
-            _ = head(
-                hiddenStream: committedStreams,
-                tokenEmbeddings: model.embedTokens(committedTokenArray),
-                tokenIDs: committedTokenArray,
-                positionIDs: Self.positions(
-                    primaryPosition ..< (primaryPosition + committedTokens.count)),
-                cache: mtpCache
-            )
-
-            if decision.acceptedDraftCount != decision.draftTokens.count {
-                totalReplays += 1
-            }
-            if !targetCacheCommitted {
-                totalBackboneReplayFallbacks += 1
-                Qwen3MTPCacheSnapshot.restore(targetSnapshot, into: targetCache)
-                _ = model.forwardStreamState(
-                    inputIDs: committedTokenArray, cache: targetCache,
-                    verificationPolicy: verificationPolicy)
-                _ = model.finishMTPVerification(
-                    cache: targetCache,
-                    acceptedDrafts: max(0, committedTokens.count - 1),
-                    draftedTokens: max(0, committedTokens.count - 1))
-            }
-
-            primary = decision.nextPrimary
-            primaryStream = verifiedStream[
-                0..., decision.acceptedDraftCount ..< (decision.acceptedDraftCount + 1),
-                0...]
-            primaryPosition += decision.acceptedDraftCount + 1
-        }
-        return output
+        return sampler.sample(logits: model.projectLMHead(hidden, verificationPolicy: policy))
     }
 
+    /// Stop future work. The owner should then release this session. No global
+    /// stream synchronization or cache snapshot publication is performed here.
+    public func cancel() {
+        finished = true
+        preparedDraft = nil
+        preparedVerification = nil
+        pendingVerification = nil
+    }
+
+    /// Submit this request's head chain before any target verifier in the
+    /// bounded owner window. The draft-only stage has no PLE host read. Once
+    /// all heads are submitted, prepareNextToken can reuse their token IDs on
+    /// the CPU rather than casting/reading IDs separately in every PLE layer.
+    @discardableResult
+    public func prepareDraftTokens() -> Bool {
+        guard !finished, !firstPrimaryPending, pendingVerification == nil,
+              preparedVerification == nil, preparedDraft == nil else { return false }
+        preparedDraft = prepareDraft()
+        return true
+    }
+
+    /// Stable first-seen grouping across the active queue, not just neighboring
+    /// slots. The owner processes and consumes one bounded group at a time.
+    /// Buffered tokens, repairs and strict-policy sessions remain singletons.
+    public static func compatibleVerificationGroups(
+        _ sessions: [Qwen4ExpMTPSession], maximumRows: Int = 4,
+        independentAttention: Bool = false
+    ) -> [[Int]] {
+        struct Key: Hashable {
+            let model: ObjectIdentifier
+            let head: ObjectIdentifier
+            let depth: Int
+            let position: Int
+        }
+        let limit = min(4, max(2, maximumRows))
+        var locations: [Key: Int] = [:]
+        var groups: [[Int]] = []
+        for (index, session) in sessions.enumerated() {
+            guard !session.finished, !session.firstPrimaryPending,
+                  session.pendingVerification == nil, session.preparedVerification == nil,
+                  session.verificationPolicy == .batched else {
+                groups.append([index])
+                continue
+            }
+            let key = Key(model: ObjectIdentifier(session.model), head: ObjectIdentifier(session.head),
+                depth: session.depth, position: independentAttention ? 0 : session.primaryPosition)
+            if let location = locations[key], groups[location].count < limit {
+                groups[location].append(index)
+            } else {
+                locations[key] = groups.count
+                groups.append([index])
+            }
+        }
+        return groups
+    }
+
+    /// Verify compatible request rows in a genuine [B, T] target forward.
+    /// The caller supplies one bounded window on the serialized model owner.
+    /// Only the explicit batched arithmetic policy is eligible; strict policy,
+    /// different models/depths and incomplete state fall back. Different positions
+    /// require the separate private-attention opt-in. Heads,
+    /// target sampling, acceptance, cache commit and repairs remain per request.
+    public static func prepareCompatibleVerificationBatches(
+        _ sessions: [Qwen4ExpMTPSession], independentAttention: Bool = false
+    ) -> (batches: Int, rows: Int) {
+        guard (2...4).contains(sessions.count),
+              Set(sessions.map(ObjectIdentifier.init)).count == sessions.count,
+              ProcessInfo.processInfo.environment["AFM_QWEN_VERIFY_SEQUENTIAL"] != "1"
+        else { return (0, 0) }
+        let eligible = sessions.filter {
+            !$0.finished && !$0.firstPrimaryPending && $0.pendingVerification == nil
+                && $0.preparedVerification == nil && $0.preparedDraft != nil
+                && $0.verificationPolicy == .batched
+        }
+        var consumed = Set<ObjectIdentifier>()
+        var batchCount = 0
+        var rowCount = 0
+        for first in eligible where !consumed.contains(ObjectIdentifier(first)) {
+            let group = eligible.filter {
+                !consumed.contains(ObjectIdentifier($0)) && $0.model === first.model
+                    && $0.head === first.head && $0.depth == first.depth
+                    && (independentAttention || $0.primaryPosition == first.primaryPosition)
+            }
+            guard group.count > 1 else { continue }
+            if independentAttention && group.count * (first.depth + 1) > 16 { continue }
+            first.startSharedPhase()
+            let mergedCache = first.model.makeMTPVerificationBatch(
+                group.map(\.targetCache), independentAttention: independentAttention)
+            first.endSharedPhase(0)
+            if first.measurePhases { first.sharedMergeAttempts += 1 }
+            guard let cache = mergedCache else { continue }
+            if first.measurePhases {
+                first.sharedGroups += 1
+                first.sharedRows += group.count
+            }
+            let drafts = group.map { $0.preparedDraft! }
+            let snapshots = group.map { Qwen3MTPCacheSnapshot.capture($0.targetCache) }
+            first.endSharedPhase(1)
+            let inputs = zip(group, drafts).map { session, draft in
+                concatenated([tokens([session.primary]), draft.tokenIDs], axis: 1)
+            }
+            first.endSharedPhase(2)
+            let hostIDs = zip(group, drafts).flatMap { session, draft in
+                [session.primary] + draft.tokenIDs.asArray(Int32.self).map(Int.init)
+            }
+            first.endSharedPhase(3)
+            first.startPhase()
+            let verified = first.model.forwardMTPVerificationBatch(
+                inputIDs: concatenated(inputs, axis: 0), batch: cache, hostTokenIDs: hostIDs)
+            first.endSharedPhase(4)
+            var sampled: [MLXArray] = []
+            for (row, session) in group.enumerated() {
+                first.model.adoptMTPVerificationRow(
+                    from: cache, row: row, batchSize: group.count, into: session.targetCache)
+                first.endSharedPhase(5)
+                // Keep request-local sampler order and the existing per-row
+                // output projection; only the target backbone is shared here.
+                let targetIDs = session.targetTokens(
+                    verified.hidden[row..<(row + 1)], policy: .batched)[0, 0...]
+                first.endSharedPhase(6)
+                session.preparedDraft = nil
+                session.preparedVerification = PreparedVerification(
+                    headOffset: drafts[row].headOffset, draftTokenIDs: drafts[row].tokenIDs,
+                    targetTokenIDs: targetIDs, verifiedStream: verified.stream[row..<(row + 1)],
+                    snapshot: snapshots[row], usedSequentialVerifier: false)
+                sampled.append(targetIDs)
+                consumed.insert(ObjectIdentifier(session))
+                first.endSharedPhase(5)
+            }
+            // Shared host construction is charged once, to the first member.
+            first.endPhase(1)
+            asyncEval(sampled)
+            first.endSharedPhase(7)
+            batchCount += 1
+            rowCount += group.count
+        }
+        return (batchCount, rowCount)
+    }
+
+    /// Submit at most one upcoming cycle without materializing its decision on
+    /// the host. The serialized owner must bound how many sessions it prepares
+    /// ahead: each retains its own speculative cache graph and rollback state.
+    /// Idempotent until nextToken consumes the work; never advances a buffered
+    /// token, performs a deferred repair, or drafts past a finished session.
+    /// In-flight GPU work cannot be cancelled, but no result is emitted after
+    /// cancel(). No actor/task transfer or cross-request cache sharing occurs.
+    @discardableResult
+    public func prepareNextToken() -> Bool {
+        guard !finished, !firstPrimaryPending, pendingVerification == nil,
+              preparedVerification == nil else { return false }
+        let prepared = prepareVerification()
+        // forwardStreamState has flushed every request-owned deferred PLE
+        // leaf before returning. Both target sampling and draft IDs are safe
+        // to submit now, without waiting for their CPU decision payload.
+        asyncEval(prepared.targetTokenIDs, prepared.draftTokenIDs)
+        preparedVerification = prepared
+        return true
+    }
+
+    public func nextToken() -> Int? {
+        guard !finished else { return nil }
+        if firstPrimaryPending {
+            firstPrimaryPending = false
+            return emit(primary)
+        }
+        if pendingVerification == nil {
+            let prepared = preparedVerification ?? prepareVerification()
+            preparedVerification = nil
+            pendingVerification = resolveVerification(prepared)
+            acceptedCursor = 0
+        }
+        let verification = pendingVerification!
+        if acceptedCursor < verification.decision.acceptedDraftCount {
+            let token = verification.decision.draftTokens[acceptedCursor]
+            acceptedCursor += 1
+            return emit(token)
+        }
+        repairAndAdvance(verification)
+        pendingVerification = nil
+        return emit(primary)
+    }
+
+    private func emit(_ token: Int) -> Int {
+        tokenCount += 1
+        if tokenCount >= maxTokens || eosIds.contains(token) { finished = true }
+        return token
+    }
+
+    private func startPhase() {
+        if measurePhases { phaseStart = DispatchTime.now().uptimeNanoseconds }
+    }
+
+    private func startSharedPhase() {
+        if measurePhases { sharedPhaseStart = DispatchTime.now().uptimeNanoseconds }
+    }
+
+    private func endSharedPhase(_ index: Int) {
+        if measurePhases {
+            let now = DispatchTime.now().uptimeNanoseconds
+            sharedPhaseNanoseconds[index] += now - sharedPhaseStart
+            sharedPhaseStart = now
+        }
+    }
+
+    private func endPhase(_ index: Int) {
+        if measurePhases {
+            phaseNanoseconds[index] += DispatchTime.now().uptimeNanoseconds - phaseStart
+        }
+    }
+
+    private func prepareDraft() -> PreparedDraft {
+        totalCycles += 1
+
+        startPhase()
+        let roundHeadOffset = mtpCache[0].offset
+        var draftTokens: [MLXArray] = []
+        draftTokens.reserveCapacity(depth)
+        var chainStream = primaryStream
+        var chainToken = Self.tokens([primary])
+        for index in 0 ..< depth {
+            let draftOutput = head(
+                hiddenStream: chainStream,
+                tokenEmbeddings: model.embedTokens(chainToken),
+                tokenIDs: chainToken,
+                positionIDs: Self.positions(
+                    (primaryPosition + index) ..< (primaryPosition + index + 1)),
+                cache: mtpCache
+            )
+            let draft = model.projectLMHeadArgmax(draftOutput.hidden)
+                .asType(.int32)
+                .reshaped([1, 1])
+            draftTokens.append(draft)
+            chainStream = draftOutput.stream
+            chainToken = draft
+            // Scheduling-only experiment: overlap early head execution
+            // with construction of later draft graphs. The head disables
+            // PLE, so it has no deferred host-filled leaves to flush.
+            // Unlike mlx-serve's chunk-boundary dispatch (David Dalcu,
+            // MIT, src/generate.zig mtpChainDispatch), this optionally
+            // submits within a fixed chain to measure Swift host overlap.
+            // No host read, extra draft, or cache-history update is added.
+            if draftDispatchStride > 0, index + 1 < depth,
+               (index + 1).isMultiple(of: draftDispatchStride)
+            {
+                asyncEval(draft)
+            }
+        }
+        totalDrafted += draftTokens.count
+
+        let draftTokenIDs = concatenated(draftTokens, axis: 1)
+        // Dispatch the complete lazy draft chain without crossing the host
+        // boundary here. A staged window reads these IDs once for CPU PLE;
+        // the ordinary path keeps its deferred token lookup schedule.
+        asyncEval(draftTokenIDs)
+        endPhase(0)
+        return PreparedDraft(headOffset: roundHeadOffset, tokens: draftTokens, tokenIDs: draftTokenIDs)
+    }
+
+    private func prepareVerification() -> PreparedVerification {
+        let staged = preparedDraft != nil
+        let draft = preparedDraft ?? prepareDraft()
+        preparedDraft = nil
+        startPhase()
+        let draftTokens = draft.tokens
+        let draftTokenIDs = draft.tokenIDs
+        // All head chains in a staged owner window were submitted before any
+        // target graph. Read the already-submitted int32 IDs without adding a
+        // per-layer int64 cast/read behind earlier target work on the stream.
+        // The ordinary single-request path preserves its deferred PLE overlap.
+        let hostTokenIDs = staged
+            ? [primary] + draftTokenIDs.asArray(Int32.self).map(Int.init) : nil
+        let verifyTokenIDs = concatenated(
+            [Self.tokens([primary]), draftTokenIDs], axis: 1)
+        let targetSnapshot = Qwen3MTPCacheSnapshot.capture(targetCache)
+        let verifiedStream: MLXArray
+        let targetTokenIDs: MLXArray
+        let usedSequentialVerifier = ProcessInfo.processInfo.environment[
+            "AFM_QWEN_VERIFY_SEQUENTIAL"
+        ] == "1"
+        if usedSequentialVerifier {
+            var streams: [MLXArray] = []
+            var sampledRows: [MLXArray] = []
+            let verifyInputs = [Self.tokens([primary])] + draftTokens
+            for (index, token) in verifyInputs.enumerated() {
+                let state = model.forwardStreamState(
+                    inputIDs: token, cache: targetCache,
+                    hostTokenIDs: hostTokenIDs.map { [$0[index]] })
+                streams.append(state.stream)
+                sampledRows.append(targetTokens(state.hidden))
+            }
+            verifiedStream = concatenated(streams, axis: 1)
+            targetTokenIDs = concatenated(sampledRows, axis: 1)
+        } else {
+            let verified = model.forwardStreamState(
+                inputIDs: verifyTokenIDs, cache: targetCache,
+                verificationPolicy: verificationPolicy, hostTokenIDs: hostTokenIDs)
+            verifiedStream = verified.stream
+            targetTokenIDs = targetTokens(
+                verified.hidden,
+                policy: verificationPolicy)[0, 0...]
+        }
+        endPhase(1)
+        return PreparedVerification(
+            headOffset: draft.headOffset, draftTokenIDs: draftTokenIDs,
+            targetTokenIDs: targetTokenIDs, verifiedStream: verifiedStream,
+            snapshot: targetSnapshot, usedSequentialVerifier: usedSequentialVerifier)
+    }
+
+    private func resolveVerification(_ prepared: PreparedVerification) -> Verification {
+        startPhase()
+        let decision = Qwen4ExpMTPCycleDecision.resolve(
+            targetTokenIDs: prepared.targetTokenIDs,
+            draftTokenIDs: prepared.draftTokenIDs)
+        endPhase(2)
+        startPhase()
+        for index in 0 ..< decision.acceptedDraftCount {
+            acceptedByDepth[index] += 1
+        }
+        totalAccepted += decision.acceptedDraftCount
+        let targetCacheCommitted = !prepared.usedSequentialVerifier
+            && model.finishMTPVerification(
+                cache: targetCache,
+                acceptedDrafts: decision.acceptedDraftCount,
+                draftedTokens: decision.draftTokens.count)
+        endPhase(3)
+        return Verification(
+            headOffset: prepared.headOffset, decision: decision,
+            verifiedStream: prepared.verifiedStream,
+            snapshot: prepared.snapshot, targetCommitted: targetCacheCommitted)
+    }
+
+    private func repairAndAdvance(_ verification: Verification) {
+        let decision = verification.decision
+        let roundHeadOffset = verification.headOffset
+        let verifiedStream = verification.verifiedStream
+        let targetCacheCommitted = verification.targetCommitted
+        let targetSnapshot = verification.snapshot
+        // The first row was built from primaryStream, not a predicted
+        // stream. The experimental path keeps it and repairs only the
+        // suffix. Never retain subsequent rows based on token equality:
+        // their predicted hidden streams can still be wrong.
+        startPhase()
+        let speculativeRows = mtpCache[0].offset - roundHeadOffset
+        let repair = Qwen4ExpMTPHeadRepairPlan(
+            drafted: decision.draftTokens.count, accepted: decision.acceptedDraftCount,
+            retainAnchor: retainHeadAnchor
+                && mtpCache.count == 1 && mtpCache[0] is Qwen4ExpAttentionCache
+                && speculativeRows == decision.draftTokens.count)
+        let trimRows = speculativeRows - repair.retainedRows
+        if trimRows > 0 { _ = mtpCache[0].trim(trimRows) }
+        totalRetainedAnchors += repair.retainedRows
+        let committedTokens = [primary]
+            + Array(decision.draftTokens.prefix(decision.acceptedDraftCount))
+        let committedTokenArray = Self.tokens(committedTokens)
+        if !repair.replayRows.isEmpty {
+            let repairStreams: MLXArray
+            if repair.retainedRows == 1 {
+                repairStreams = verifiedStream[
+                    0..., 0 ..< decision.acceptedDraftCount, 0...]
+            } else if decision.acceptedDraftCount == 0 {
+                repairStreams = primaryStream
+            } else {
+                repairStreams = concatenated([
+                    primaryStream,
+                    verifiedStream[0..., 0 ..< decision.acceptedDraftCount, 0...],
+                ], axis: 1)
+            }
+            let repairTokens = repair.retainedRows == 0 ? committedTokenArray
+                : Self.tokens(Array(committedTokens.dropFirst(repair.retainedRows)))
+            _ = head(
+                hiddenStream: repairStreams,
+                tokenEmbeddings: model.embedTokens(repairTokens),
+                tokenIDs: repairTokens,
+                positionIDs: Self.positions(
+                    (primaryPosition + repair.retainedRows)
+                        ..< (primaryPosition + committedTokens.count)),
+                cache: mtpCache
+            )
+        }
+        endPhase(4)
+
+        if decision.acceptedDraftCount != decision.draftTokens.count {
+            totalReplays += 1
+        }
+        if !targetCacheCommitted {
+            totalBackboneReplayFallbacks += 1
+            Qwen3MTPCacheSnapshot.restore(targetSnapshot, into: targetCache)
+            _ = model.forwardStreamState(
+                inputIDs: committedTokenArray, cache: targetCache,
+                verificationPolicy: verificationPolicy)
+            _ = model.finishMTPVerification(
+                cache: targetCache,
+                acceptedDrafts: max(0, committedTokens.count - 1),
+                draftedTokens: max(0, committedTokens.count - 1))
+        }
+
+        primary = decision.nextPrimary
+        primaryStream = verifiedStream[
+            0..., decision.acceptedDraftCount ..< (decision.acceptedDraftCount + 1),
+            0...]
+        primaryPosition += decision.acceptedDraftCount + 1
+    }
+
+    fileprivate func reportDiagnostics() {
+        guard !reportedDiagnostics else { return }
+        reportedDiagnostics = true
+        if measurePhases, sharedMergeAttempts > 0 {
+            let labels = ["merge", "snapshot", "inputs", "host-ids", "target-forward",
+                          "adopt-state", "head-sample", "submit"]
+            let laps = zip(labels, sharedPhaseNanoseconds).map { label, nanos in
+                "\(label)=\(nanos)ns"
+            }.joined(separator: " ")
+            let message = "[MTP][QwenNext][shared-host-phases] attempts=\(sharedMergeAttempts) "
+                + "groups=\(sharedGroups) rows=\(sharedRows) \(laps)\n"
+            FileHandle.standardError.write(Data(message.utf8))
+        }
+        if measurePhases, totalCycles > 0 {
+            let labels = ["draft-build", "verify-build", "decision-wait", "commit-build", "history-build"]
+            let laps = zip(labels, phaseNanoseconds).map { label, nanos in
+                String(format: "%@=%.3fms/cycle", label,
+                       Double(nanos) / 1_000_000 / Double(totalCycles))
+            }.joined(separator: " ")
+            FileHandle.standardError.write(Data("[MTP][QwenNext][host-phases] \(laps)\n".utf8))
+        }
+        if ProcessInfo.processInfo.environment["AFM_DEBUG"] == "1" {
+            let acceptance = totalDrafted > 0
+                ? Double(totalAccepted) / Double(totalDrafted)
+                : 0
+            let tokensPerCycle = totalCycles > 0
+                ? Double(tokenCount) / Double(totalCycles)
+                : 0
+            let depthCounts = acceptedByDepth.enumerated()
+                .map { "d\($0.offset + 1)=\($0.element)" }
+                .joined(separator: ",")
+            let message = String(
+                format:
+                    "[MTP][QwenNext] %d tok in %d cycles — %.2f tok/cycle, accept %.1f%% (%d/%d), replays %d, backbone fallbacks %d, retained anchors %d, %@\n",
+                tokenCount,
+                totalCycles,
+                tokensPerCycle,
+                acceptance * 100,
+                totalAccepted,
+                totalDrafted,
+                totalReplays,
+                totalBackboneReplayFallbacks,
+                totalRetainedAnchors,
+                depthCounts
+            )
+            FileHandle.standardError.write(Data(message.utf8))
+        }
+    }
+
+    deinit { reportDiagnostics() }
 }
 
 extension Qwen4ExpModel: LoRAModel {

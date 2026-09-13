@@ -10,6 +10,7 @@ repositories or submodules.
 | `mlx-swift/Source/Cmlx/mlx-c` | `ml-explore/mlx-c` | `0726ca922fc902c4c61ef9c27d94132be418e945` | `1692252c78e634a90ae09bd77a9f68929982b8a0` |
 | `mlx-swift` | `ml-explore/mlx-swift` | `0bb916c67f4b9e5c682cbe02a42c701c93ab5021` | `6000b7b26b70be2713c74e9ec2adeb89be07b9e5` |
 | `mlx-swift-lm` | `ml-explore/mlx-swift-lm` plus AFM model adaptations | — | `e0d7fa71bc5e422a416f191c297264f698391561` |
+| `mlx-swift-lm/Libraries/MLXLLM/Models/Qwen4ExpBatchedQuantizedProjection.swift` | `ddalcu/mlx-serve` plain-SIMD verify QMM, derived from MTPLX | `1ec580a8b7f5f051daef892310660bb62b2ece6c` | This AFMKit revision; experimental Qwen Next batched verification only |
 
 The AFM changes add DeepSeek V4 MXFP4/Q8 Metal primitives, their C and Swift
 bindings, AFM model architectures, parsing, generation behavior, and
@@ -22,3 +23,42 @@ the complete provider stack remains resolvable from one stable AFMKit tag.
 
 Do not edit the vendored sources without also updating the focused provider tests,
 the committed Metal library when kernel sources change, and this provenance table.
+
+The Qwen Next verification QMM is generated inline Metal source embedded in
+Swift, compiled on demand by `MLXFast.metalKernel`. It is not part of the
+prebuilt `default.metallib`; changing this Swift source requires rebuilding
+AFM and exercising its JIT specializations, not replacing the static library.
+Its source, tests, and `mlx-swift-lm/NOTICE-verify-qmm` plus both referenced
+licenses must be preserved together during upstream refreshes. It is disabled
+unless `AFM_QWEN_VERIFY_QMM=1` and batched verification are explicitly selected;
+strict verification, ordinary generation and other architectures retain their
+existing operators. See `docs/QWEN_NEXT_MTP_PARITY_PROGRESS.md` at repository root
+for qualification limits and performance evidence.
+
+The AFM-specific committed-anchor head-repair experiment also lives in the
+checked-in `Qwen4Exp.swift` adaptation. `AFM_QWEN_MTP_RETAIN_ANCHOR=1` only
+applies with batched verification; it does not change strict/default MTP.
+Preserve its cache-repair tests and
+`docs/QWEN_NEXT_COMMITTED_ANCHOR_EXPERIMENT.md` during upstream refreshes.
+
+`Qwen4ExpMappedNGramTable.swift` also contains an AFM CPU SIMD q4 unpacking
+experiment, off unless `AFM_QWEN_PLE_VECTOR_UNPACK=1`. Its byte-equality tests
+and `docs/QWEN_NEXT_PLE_VECTOR_UNPACK_EXPERIMENT.md` document the unchanged
+sidecar format, hash mapping and qualification limits.
+
+`MLXLMCommon/Evaluate.swift` carries an AFM optional prepared-prefill callback
+and complete-prompt processor seed. `MLXReplayPrefill` uses it to capture exact
+hybrid-state boundaries before decoding instead of trimming later recurrent
+state. Service integration is opt-in with `AFM_PREFIX_REPLAY_BOUNDARIES=1`;
+ordinary callers retain the existing initialization path. No Metal source or
+prebuilt metallib changes are involved. Preserve the shared replay tests when
+refreshing this vendored snapshot.
+
+`ImmutableRowCache.swift` is an AFM-owned bounded host row cache. The mapped
+Qwen PLE table can opt into it with `AFM_QWEN_PLE_ROW_CACHE_MIB` (default 0,
+maximum 64 MiB per opened table). It coalesces duplicate misses within gathers
+and retains exact decoded BF16 rows, without sharing request histories or
+changing n-gram hashing. Preserve `ImmutableRowCacheTests` during refreshes.
+`AFM_QWEN_PLE_ROW_CACHE_STATS=1` enables diagnostic counters; leave it unset in
+timed comparisons. This is an experimental supporting optimization, not the
+implementation of continuous batching or speculative sessions.

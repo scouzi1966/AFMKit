@@ -1,0 +1,28 @@
+Qwen4ExpBatchedQuantizedProjection.swift contains the 4-bit plain-SIMD
+verification matrix kernels adapted from mlx-serve src/transformer.zig
+at 1ec580a8b7f5f051daef892310660bb62b2ece6c.
+https://github.com/ddalcu/mlx-serve
+Copyright (c) 2026 David Dalcu. MIT License (LICENSE-mlx-serve).
+
+The underlying split-K and wide multi-simdgroup kernel designs/code derive
+from MTPLX mtplx/verify_kernels.py, under the Apache License, Version 2.0
+(LICENSE-APACHE-2.0). Their terms continue to apply to the derived portions.
+
+MTPLX
+Copyright 2026 Youssof Altoukhi
+https://github.com/youssofal/mtplx
+
+MTPLX is a native MTP speculative decoding project for Apple Silicon.
+Preferred attribution for public projects, products, benchmarks, articles,
+and research that use or build on MTPLX:
+
+  Powered by MTPLX by Youssof Altoukhi
+  https://github.com/youssofal/mtplx
+
+If MTPLX informs academic or technical writing, please cite the repository
+using the included CITATION.cff metadata.
+
+AFMKit modifications: Swift source generation and dispatch, restricted to
+Qwen Next's explicitly experimental batched verification; 4-bit affine only;
+bounded immutable kernel family, checked tensor geometry and local scalar
+arguments, independent numerical/fallback tests. No NAX kernel is included.
