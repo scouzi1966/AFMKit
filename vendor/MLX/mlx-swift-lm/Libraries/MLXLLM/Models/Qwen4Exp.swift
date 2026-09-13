@@ -268,21 +268,35 @@ private final class Qwen4ExpGatedNorm: Module {
     }
 }
 
+/// Larger request groups are explicitly requested by the scheduler; the
+/// existing 2...4-row geometry keeps its old token budget. The extension is
+/// deliberately limited to shallow (at most three-draft) verification.
+func qwen4ExpSupportsSharedVerificationGeometry(batchSize: Int, width: Int) -> Bool {
+    guard (2...8).contains(batchSize), width > 1,
+          width <= VerifyWidthLinear.maximumAcceleratedWidth else { return false }
+    return batchSize <= 4 ? batchSize * width <= 16 : width <= 4
+}
+
+func qwen4ExpUsesExtendedVerificationHC(_ input: MLXArray, policy: MTPVerificationPolicy?) -> Bool {
+    policy == .batched && input.ndim == 3 && input.dim(0) > 4
+        && qwen4ExpSupportsSharedVerificationGeometry(batchSize: input.dim(0), width: input.dim(1))
+}
+
 func qwen4ExpCanFuseVerificationHC(
     _ input: MLXArray, policy: MTPVerificationPolicy?, enabled: Bool
 ) -> Bool {
-    // HC acts independently on each [request, token] row. Its existing kernel
-    // and compound native chain both support up to 16 rows; do not abandon
-    // that graph solely because a bounded verifier has more than one request.
+    // Keep row-independent HC and its compound chain for explicitly expanded
+    // verifier groups too. AR, prefill and strict verification are unchanged.
     enabled && policy == .batched && input.ndim == 3
-        && (1...4).contains(input.dim(0)) && input.dim(1) > 1
+        && input.dim(1) > 1
         && input.dim(1) <= VerifyWidthLinear.maximumAcceleratedWidth
-        && input.dim(0) * input.dim(1) <= 16
+        && (input.dim(0) == 1 || qwen4ExpSupportsSharedVerificationGeometry(
+            batchSize: input.dim(0), width: input.dim(1)))
         && input.dtype == .bfloat16
 }
 
 /// Scheduling-only selection. Preserve the existing singleton control and
-/// bound the separate shared experiment to the owner's 2...4 request rows.
+/// bound the separate shared experiment to the owner's qualified geometry.
 func qwen4ExpVerificationDispatchStride(
     batchSize: Int, width: Int, policy: MTPVerificationPolicy?,
     singletonStride: Int, sharedStride: Int
@@ -290,7 +304,7 @@ func qwen4ExpVerificationDispatchStride(
     guard policy == .batched, width > 1,
           width <= VerifyWidthLinear.maximumAcceleratedWidth else { return 0 }
     if batchSize == 1 { return max(0, singletonStride) }
-    guard (2...4).contains(batchSize), batchSize * width <= 16 else { return 0 }
+    guard qwen4ExpSupportsSharedVerificationGeometry(batchSize: batchSize, width: width) else { return 0 }
     return max(0, sharedStride)
 }
 
@@ -342,7 +356,8 @@ private final class Qwen4ExpGatedResidual: Module {
                inject: blockInjectWeight,
                hcCount: hcCount,
                hiddenSize: hiddenSize,
-               epsilon: hcNorm.eps)
+               epsilon: hcNorm.eps,
+               allowExtendedRows: qwen4ExpUsesExtendedVerificationHC(input, policy: verificationPolicy))
         {
             return (fused.mixed, input, fused.injection)
         }
@@ -384,12 +399,13 @@ private final class Qwen4ExpGatedResidual: Module {
                epsilon: hcNorm.eps,
                pendingOutput: output,
                pendingWeights: weights,
-               matchFusedInjection: matchFusedInjection)
+               matchFusedInjection: matchFusedInjection,
+               allowExtendedRows: qwen4ExpUsesExtendedVerificationHC(residual, policy: verificationPolicy))
         {
             return (fused.mixed, fused.stream, fused.injection)
         }
         return mix(
-            inject(output, residual: residual, weights: weights),
+            inject(output, residual: residual, weights: weights, verificationPolicy: verificationPolicy),
             verificationPolicy: verificationPolicy)
     }
 
@@ -409,7 +425,8 @@ private final class Qwen4ExpGatedResidual: Module {
                inject: nil,
                hcCount: hcCount,
                hiddenSize: hiddenSize,
-               epsilon: hcNorm.eps)
+               epsilon: hcNorm.eps,
+               allowExtendedRows: qwen4ExpUsesExtendedVerificationHC(input, policy: verificationPolicy))
         {
             return fused.mixed
         }
@@ -446,22 +463,27 @@ private final class Qwen4ExpGatedResidual: Module {
                hiddenSize: hiddenSize,
                epsilon: hcNorm.eps,
                pendingOutput: output,
-               pendingWeights: weights)
+               pendingWeights: weights,
+               allowExtendedRows: qwen4ExpUsesExtendedVerificationHC(residual, policy: verificationPolicy))
         {
             return fused.mixed
         }
         return combine(
-            inject(output, residual: residual, weights: weights),
+            inject(output, residual: residual, weights: weights, verificationPolicy: verificationPolicy),
             verificationPolicy: verificationPolicy)
     }
 
-    func inject(_ output: MLXArray, residual: MLXArray, weights: MLXArray) -> MLXArray {
+    func inject(
+        _ output: MLXArray, residual: MLXArray, weights: MLXArray,
+        verificationPolicy: MTPVerificationPolicy? = nil
+    ) -> MLXArray {
         if let fused = Qwen4ExpHyperConnectionFusion.inject(
             output: output,
             residual: residual,
             weights: weights,
             hcCount: hcCount,
-            hiddenSize: hiddenSize)
+            hiddenSize: hiddenSize,
+            allowExtendedRows: qwen4ExpUsesExtendedVerificationHC(residual, policy: verificationPolicy))
         {
             return fused
         }
@@ -4205,7 +4227,7 @@ final class Qwen4ExpDecoderLayer: Module {
         defer { hostProfiler?.lap(.mlp) }
         if let profiler {
             let injected = attentionHyperConnection.inject(
-                attended, residual: residual, weights: injection)
+                attended, residual: residual, weights: injection, verificationPolicy: verificationPolicy)
             profiler.lap(injected, block: .hyperConnectionWrite)
             (mixed, residual, injection) = mlpHyperConnection.mix(
                 injected, verificationPolicy: verificationPolicy)
@@ -4213,7 +4235,7 @@ final class Qwen4ExpDecoderLayer: Module {
             let mlpOutput = mlp(mixed, verificationPolicy: verificationPolicy)
             profiler.lap(mlpOutput, block: .mlp)
             let output = mlpHyperConnection.inject(
-                mlpOutput, residual: residual, weights: injection)
+                mlpOutput, residual: residual, weights: injection, verificationPolicy: verificationPolicy)
             profiler.lap(output, block: .hyperConnectionWrite)
             profiler.endLayer(hasPLE: ple != nil, isLinear: isLinear)
             return output
@@ -4246,9 +4268,7 @@ final class Qwen4ExpDecoderLayer: Module {
         }
         if Self.compileLayerTailDecode, Self.compileSharedVerificationTail,
            verificationPolicy == .batched, input.dtype == .bfloat16,
-           (2...4).contains(input.dim(0)), input.dim(1) > 1,
-           input.dim(1) <= VerifyWidthLinear.maximumAcceleratedWidth,
-           input.dim(0) * input.dim(1) <= 16
+           qwen4ExpSupportsSharedVerificationGeometry(batchSize: input.dim(0), width: input.dim(1))
         {
             return sharedVerificationTail(
                 attended: attended, residual: residual, injection: injection, compiled: true)
@@ -4341,7 +4361,8 @@ final class Qwen4ExpDecoderLayer: Module {
         return mlpHyperConnection.inject(
             mlp(mixed, verificationPolicy: verificationPolicy),
             residual: residual,
-            weights: injection)
+            weights: injection,
+            verificationPolicy: verificationPolicy)
     }
 
     /// Scheduling variant that leaves the final MLP stream write
@@ -4374,7 +4395,8 @@ final class Qwen4ExpDecoderLayer: Module {
             hidden = attentionHyperConnection.inject(
                 preceding.output,
                 residual: preceding.residual,
-                weights: preceding.weights)
+                weights: preceding.weights,
+                verificationPolicy: verificationPolicy)
             pending = nil
         }
         if let ple {
@@ -4493,12 +4515,14 @@ final class Qwen4ExpDecoderLayer: Module {
     }
 
     func materializeFinalInjection(
-        _ pending: Qwen4ExpPendingHyperConnectionWrite
+        _ pending: Qwen4ExpPendingHyperConnectionWrite,
+        verificationPolicy: MTPVerificationPolicy? = nil
     ) -> MLXArray {
         mlpHyperConnection.inject(
             pending.output,
             residual: pending.residual,
-            weights: pending.weights)
+            weights: pending.weights,
+            verificationPolicy: verificationPolicy)
     }
 }
 
@@ -4721,7 +4745,7 @@ private final class Qwen4ExpModelInner: Module {
             hostProfiler?.lap(.finalWrite)
         } else {
             if let pending, let finalLayer = layers.last {
-                hidden = finalLayer.materializeFinalInjection(pending)
+                hidden = finalLayer.materializeFinalInjection(pending, verificationPolicy: verificationPolicy)
                 hostProfiler?.lap(.finalWrite)
             }
             if combineWithFinalMixer {
@@ -5278,6 +5302,18 @@ public final class Qwen4ExpModel: Module, LLMModel, KVCacheDimensionProvider, Re
             hidden, verificationPolicy: verificationPolicy), axis: -1)
     }
 
+    /// Experimental bounded vocabulary projection, with no request state.
+    /// Shared arithmetic can differ from singleton QMM. The caller retains
+    /// independent samplers and may use this only for explicit batched MTP.
+    func projectSharedVerificationVocabulary(_ hidden: MLXArray, greedy: Bool) -> MLXArray? {
+        let maximumTokenRows = 16
+        guard hidden.ndim == 3, (2...4).contains(hidden.dim(0)),
+              hidden.dim(1) > 1, hidden.dim(0) * hidden.dim(1) <= maximumTokenRows
+        else { return nil }
+        return greedy ? projectLMHeadArgmax(hidden, verificationPolicy: .batched)
+            : projectLMHead(hidden, verificationPolicy: .batched)
+    }
+
     public func forwardStreamState(
         inputIDs: MLXArray,
         inputEmbeddings: MLXArray? = nil,
@@ -5407,9 +5443,10 @@ public final class Qwen4ExpModel: Module, LLMModel, KVCacheDimensionProvider, Re
     /// also merges equal-position attention; the independent adapter leaves
     /// placeholders for private attention histories. Never pad or guess offsets.
     func mergedMTPVerificationCaches(
-        _ rows: [[KVCache]], independentAttention: Bool = false
+        _ rows: [[KVCache]], independentAttention: Bool = false, maximumRows: Int = 4
     ) -> [KVCache]? {
-        guard (2...4).contains(rows.count),
+        let limit = min(independentAttention ? 8 : 4, max(2, maximumRows))
+        guard (2...limit).contains(rows.count),
               rows.allSatisfy({ $0.count == model.layers.count }) else { return nil }
         func merge(_ arrays: [[MLXArray?]]) -> [MLXArray?]? {
             guard let first = arrays.first,
@@ -5488,9 +5525,10 @@ public final class Qwen4ExpModel: Module, LLMModel, KVCacheDimensionProvider, Re
     /// attention/QSA histories request-owned. Clones retain lazy array values;
     /// advancing or trimming one never advances an original or another row.
     func makeMTPVerificationBatch(
-        _ rows: [[KVCache]], independentAttention: Bool
+        _ rows: [[KVCache]], independentAttention: Bool, maximumRows: Int = 4
     ) -> MTPVerificationBatch? {
-        guard let caches = mergedMTPVerificationCaches(rows, independentAttention: independentAttention)
+        guard let caches = mergedMTPVerificationCaches(
+            rows, independentAttention: independentAttention, maximumRows: maximumRows)
         else { return nil }
         let attentionRows: [[KVCache]]? = independentAttention ? rows.map { row in
             row.map { entry in
@@ -6184,7 +6222,7 @@ public final class Qwen4ExpMTPSession {
             let depth: Int
             let position: Int
         }
-        let limit = min(4, max(2, maximumRows))
+        let maximumLimit = min(independentAttention ? 8 : 4, max(2, maximumRows))
         var locations: [Key: Int] = [:]
         var groups: [[Int]] = []
         for (index, session) in sessions.enumerated() {
@@ -6196,6 +6234,7 @@ public final class Qwen4ExpMTPSession {
             }
             let key = Key(model: ObjectIdentifier(session.model), head: ObjectIdentifier(session.head),
                 depth: session.depth, position: independentAttention ? 0 : session.primaryPosition)
+            let limit = session.depth <= 3 ? maximumLimit : min(4, maximumLimit)
             if let location = locations[key], groups[location].count < limit {
                 groups[location].append(index)
             } else {
@@ -6213,9 +6252,11 @@ public final class Qwen4ExpMTPSession {
     /// require the separate private-attention opt-in. Heads,
     /// target sampling, acceptance, cache commit and repairs remain per request.
     public static func prepareCompatibleVerificationBatches(
-        _ sessions: [Qwen4ExpMTPSession], independentAttention: Bool = false
+        _ sessions: [Qwen4ExpMTPSession], independentAttention: Bool = false,
+        sharedVocabularyProjection: Bool = false, maximumRows: Int = 4
     ) -> (batches: Int, rows: Int) {
-        guard (2...4).contains(sessions.count),
+        let limit = min(independentAttention ? 8 : 4, max(2, maximumRows))
+        guard (2...limit).contains(sessions.count),
               Set(sessions.map(ObjectIdentifier.init)).count == sessions.count,
               ProcessInfo.processInfo.environment["AFM_QWEN_VERIFY_SEQUENTIAL"] != "1"
         else { return (0, 0) }
@@ -6234,10 +6275,11 @@ public final class Qwen4ExpMTPSession {
                     && (independentAttention || $0.primaryPosition == first.primaryPosition)
             }
             guard group.count > 1 else { continue }
-            if independentAttention && group.count * (first.depth + 1) > 16 { continue }
+            if independentAttention && !qwen4ExpSupportsSharedVerificationGeometry(
+                batchSize: group.count, width: first.depth + 1) { continue }
             first.startSharedPhase()
             let mergedCache = first.model.makeMTPVerificationBatch(
-                group.map(\.targetCache), independentAttention: independentAttention)
+                group.map(\.targetCache), independentAttention: independentAttention, maximumRows: limit)
             first.endSharedPhase(0)
             if first.measurePhases { first.sharedMergeAttempts += 1 }
             guard let cache = mergedCache else { continue }
@@ -6261,14 +6303,25 @@ public final class Qwen4ExpMTPSession {
                 inputIDs: concatenated(inputs, axis: 0), batch: cache, hostTokenIDs: hostIDs)
             first.endSharedPhase(4)
             var sampled: [MLXArray] = []
+            let allGreedy = sharedVocabularyProjection && group.allSatisfy { $0.sampler == nil }
+            let vocabulary = sharedVocabularyProjection
+                ? first.model.projectSharedVerificationVocabulary(verified.hidden, greedy: allGreedy) : nil
             for (row, session) in group.enumerated() {
                 first.model.adoptMTPVerificationRow(
                     from: cache, row: row, batchSize: group.count, into: session.targetCache)
                 first.endSharedPhase(5)
-                // Keep request-local sampler order and the existing per-row
-                // output projection; only the target backbone is shared here.
-                let targetIDs = session.targetTokens(
-                    verified.hidden[row..<(row + 1)], policy: .batched)[0, 0...]
+                // Sharing the pure projection never shares a sampler or
+                // changes its call order. Mixed greedy/sampled groups retain
+                // one request-local decision per verification token.
+                let targetIDs: MLXArray
+                if let vocabulary {
+                    let values = vocabulary[row..<(row + 1)]
+                    targetIDs = allGreedy ? values[0, 0...]
+                        : (session.sampler?.sample(logits: values) ?? MLX.argMax(values, axis: -1))[0, 0...]
+                } else {
+                    targetIDs = session.targetTokens(
+                        verified.hidden[row..<(row + 1)], policy: .batched)[0, 0...]
+                }
                 first.endSharedPhase(6)
                 session.preparedDraft = nil
                 session.preparedVerification = PreparedVerification(

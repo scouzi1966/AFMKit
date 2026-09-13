@@ -1,6 +1,6 @@
 # Opt in to shared Qwen Next verification graph scheduling
 
-AFMKit PR [#123](https://github.com/scouzi1966/AFMKit/pull/123), September 12, 2026.
+AFMKit PR [#123](https://github.com/scouzi1966/AFMKit/pull/123), updated September 13, 2026.
 **Experimental, off by default. No production-default or release recommendation.**
 
 This is the concurrent **MTP** experiment, not the separate
@@ -24,7 +24,7 @@ MACLOCAL_AFMKIT_PATH=/Volumes/edata2/dev/CODEX/AFMKit-qwen-next-mtp-parity \
 shasum -a 256 /Volumes/edata2/dev/CODEX/maclocal-api-qwen-next-mtp-parity/.build/release/afm
 ```
 
-The measured Release binary reports `v0.9.20` and has SHA-256
+The original September 12 measured Release binary reports `v0.9.20` and has SHA-256
 `87afdd39fdc5ea22eb4c3d91a20e68d9f8acb02aecf74b7890f5f2d93e713faf`.
 A rebuild can have a different hash; record it rather than treating `--version`
 as proof of identical code. Nothing here installs AFM or changes an exact
@@ -131,3 +131,40 @@ did not establish substantial useful-task gains or semantic quality parity.
 The unsuccessful `AFM_QWEN_MTP_ATTENTION_PROJECTIONS` experiment was removed;
 do not include that setting. See the linked findings for measured binary
 identities, quality caveats, discarded variants and validation.
+
+## Follow-up: bounded larger groups and vocabulary sharing
+
+See [September 13 experiments, results and limitations](QWEN_NEXT_VERIFICATION_WIDTH_EXPERIMENTS.md).
+After rebuilding that source, two **independent** variations of the complete
+preset above are available. Keep all its other settings unchanged:
+
+| Experiment | Explicit changes to the full preset | Rollback |
+|---|---|---|
+| Larger groups | Add `AFM_QWEN_MTP_INDEPENDENT_ATTENTION=1`; replace `AFM_QWEN_MTP_SUBMISSION_WINDOW=4` with `AFM_QWEN_MTP_SUBMISSION_WINDOW=8`; leave `AFM_QWEN_MTP_SHARED_VOCAB` unset or `0` | Restore window `4` |
+| Shared vocabulary | Add `AFM_QWEN_MTP_INDEPENDENT_ATTENTION=1` and `AFM_QWEN_MTP_SHARED_VOCAB=1`; keep window `4` | Unset vocabulary control or set `0` |
+
+These are environment settings before the binary, **not CLI arguments or API
+kwargs**. Restart the owned server after changing them. Do not set them in a
+shell startup file or apply them globally. `--mtp-depth 3`, `--concurrent 15`,
+prefix caching, the exact checkpoint and the rest of the preset remain fixed.
+Combining the two variations has not been performance-qualified.
+
+The larger setting requires both shared verification and private attention;
+equal-position mode and non-shared submission retain their four-row cap.
+Five to eight requests may share at most four verification tokens each, with
+32 total token rows. Deeper draft sessions keep smaller groups. This does not
+increase the 15-request admission limit or permit concurrent GPU owners.
+The default API preparation bound remains four unless the owner explicitly
+passes a larger window. No behavior changes for an unconfigured user.
+
+Vocabulary sharing is off by default and bounded to four requests / 16 token
+rows. Larger groups fall back to per-request vocabulary projection. Unsupported
+shapes, strict verification and other model families keep existing paths.
+Sampled decisions and seeds remain request-owned even in mixed groups.
+
+Check shutdown output for the effective `window=8` and nonzero shared
+verification counters, alongside `Qwen MTP independent attention: true`.
+Vocabulary experiments additionally report `Qwen MTP shared vocabulary: true`;
+the flag alone is not proof that every group met the projection geometry.
+Do not enable profiling during timing arms. The latest measured binary identity
+is in the linked findings; `--version` alone does not identify an experimental build.

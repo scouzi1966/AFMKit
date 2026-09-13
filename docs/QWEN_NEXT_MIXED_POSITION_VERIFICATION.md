@@ -241,7 +241,7 @@ diagnostics from earlier experiments are not GPU kernel timings. No release,
 installation, consumer dependency bump or default promotion is part of this
 experiment.
 
-## Next isolated targets
+## Follow-up targets recorded on September 12
 
 - Measure a bounded shared vocabulary projection: the shared target backbone
   still calls `targetTokens` separately for each request. Any shared projection
@@ -254,4 +254,6 @@ experiment.
   or tile those bounded regions, then test mixed positions, rollback, memory,
   fairness and useful aggregate throughput before changing that limit.
 
-These are follow-up experiments, not implementations or promised speedups.
+Both were subsequently implemented and measured as separate opt-in experiments;
+see [the September 13 results and numerical-oracle findings](QWEN_NEXT_VERIFICATION_WIDTH_EXPERIMENTS.md).
+They do not change defaults or establish reference-engine parity.

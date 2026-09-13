@@ -569,7 +569,8 @@ enum Qwen4ExpHyperConnectionFusion {
         epsilon: Float,
         pendingOutput: MLXArray? = nil,
         pendingWeights: MLXArray? = nil,
-        matchFusedInjection: Bool = false
+        matchFusedInjection: Bool = false,
+        allowExtendedRows: Bool = false
     ) -> Qwen4ExpHyperConnectionFusionOutput? {
         guard enabled,
               Device.defaultDevice().deviceType == .gpu,
@@ -609,7 +610,7 @@ enum Qwen4ExpHyperConnectionFusion {
         let bits = quantizedDown.bits
         let groupSize = quantizedDown.groupSize
         let valuesPerWord = 32 / bits
-        guard rows > 0, rows <= maximumRows,
+        guard rows > 0, rows <= (allowExtendedRows ? 32 : maximumRows),
               rank.isMultiple(of: valuesPerWord),
               (hcCount * hiddenSize).isMultiple(of: groupSize),
               rank.isMultiple(of: groupSize),
@@ -744,7 +745,8 @@ enum Qwen4ExpHyperConnectionFusion {
         residual: MLXArray,
         weights: MLXArray,
         hcCount: Int,
-        hiddenSize: Int
+        hiddenSize: Int,
+        allowExtendedRows: Bool = false
     ) -> MLXArray? {
         guard enabled,
               Device.defaultDevice().deviceType == .gpu,
@@ -756,7 +758,7 @@ enum Qwen4ExpHyperConnectionFusion {
         else { return nil }
 
         let rows = residual.size / residual.dim(-1)
-        guard rows > 0, rows <= maximumRows,
+        guard rows > 0, rows <= (allowExtendedRows ? 32 : maximumRows),
               output.size == rows * hiddenSize,
               weights.size == rows * hcCount
         else { return nil }

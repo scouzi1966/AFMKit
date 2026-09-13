@@ -140,6 +140,7 @@ actor BatchScheduler {
     private var qwenMTPPreparedCycles = 0
     private let qwenMTPSharedVerification: Bool
     private let qwenMTPIndependentAttention: Bool
+    private let qwenMTPSharedVocabulary: Bool
     private var qwenMTPSharedVerificationBatches = 0
     private var qwenMTPSharedVerificationRows = 0
     nonisolated let ownsQwenMTPSessions: Bool
@@ -775,9 +776,12 @@ actor BatchScheduler {
         let sharedVerification = ownsQwenMTP
             && ProcessInfo.processInfo.environment["AFM_QWEN_MTP_SHARED_VERIFY"] == "1"
         self.qwenMTPSharedVerification = sharedVerification
-        self.qwenMTPIndependentAttention = sharedVerification
+        let independentAttention = sharedVerification
             && ProcessInfo.processInfo.environment["AFM_QWEN_MTP_INDEPENDENT_ATTENTION"] == "1"
-        self.qwenMTPSubmissionWindow = ownsQwenMTP ? min(4, max(sharedVerification ? 2 : 1,
+        self.qwenMTPIndependentAttention = independentAttention
+        self.qwenMTPSharedVocabulary = sharedVerification
+            && ProcessInfo.processInfo.environment["AFM_QWEN_MTP_SHARED_VOCAB"] == "1"
+        self.qwenMTPSubmissionWindow = ownsQwenMTP ? min(independentAttention ? 8 : 4, max(sharedVerification ? 2 : 1,
             Int(ProcessInfo.processInfo.environment[
                 "AFM_QWEN_MTP_SUBMISSION_WINDOW"] ?? "1") ?? 1)) : 1
         let replayMiB = min(4096, max(0,
@@ -1026,6 +1030,7 @@ actor BatchScheduler {
         if qwenMTPSharedVerification {
             print("[BatchScheduler] Qwen MTP shared verification: batches=\(qwenMTPSharedVerificationBatches) | rows=\(qwenMTPSharedVerificationRows)")
             print("[BatchScheduler] Qwen MTP independent attention: \(qwenMTPIndependentAttention)")
+            print("[BatchScheduler] Qwen MTP shared vocabulary: \(qwenMTPSharedVocabulary)")
         }
         qwenMTPReplayCache?.removeAll()
         groupedSlotIDs.removeAll()
@@ -2220,7 +2225,9 @@ actor BatchScheduler {
                 let sessions = members.map(\.session)
                 for session in sessions { session.prepareDraftTokens() }
                 let shared = Qwen4ExpMTPSession.prepareCompatibleVerificationBatches(
-                    sessions, independentAttention: qwenMTPIndependentAttention)
+                    sessions, independentAttention: qwenMTPIndependentAttention,
+                    sharedVocabularyProjection: qwenMTPSharedVocabulary,
+                    maximumRows: qwenMTPSubmissionWindow)
                 qwenMTPSharedVerificationBatches += shared.batches
                 qwenMTPSharedVerificationRows += shared.rows
                 for member in members {

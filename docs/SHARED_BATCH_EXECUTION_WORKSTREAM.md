@@ -1707,3 +1707,19 @@ variants and their new selector were removed rather than added to the preset.
 The mixed-position adapter remains off by default. See
 [the full findings and experiment disposition](QWEN_NEXT_MIXED_POSITION_VERIFICATION.md)
 for raw-data identities, arithmetic/rollback tests and lifecycle results.
+
+### Verification width and vocabulary follow-up, 2026-09-13
+
+Two opposite-order pairs tested bounded vocabulary sharing, and two more pairs
+tested a four-to-eight-request verification window while retaining HC fusion
+and shared graph submission. On the same C15/prefix-on/depth-3 agentic workload,
+the larger window improved repeat aggregate throughput by 4.02% and 8.73%, and
+structurally valid tasks/s by 7.52% and 6.41%. Candidate responses passed 60/60
+structural checks; control responses passed 58/60. Outputs mostly differed.
+Vocabulary sharing showed smaller token-rate gains with mixed useful-task
+results. Both remain opt-in; the two experiments were not combined.
+
+See [full measurements, numerical test limitations and opt-in disposition](QWEN_NEXT_VERIFICATION_WIDTH_EXPERIMENTS.md).
+In particular, quantized shared verification is not singleton-arithmetic
+equivalent, so cache/scheduling tests use exact equal-geometry oracles while
+independent Float32 and production-geometry HC checks remain separate.
