@@ -139,6 +139,7 @@ actor BatchScheduler {
     private let qwenMTPSubmissionWindow: Int
     private var qwenMTPPreparedCycles = 0
     private let qwenMTPSharedVerification: Bool
+    private let qwenMTPIndependentAttention: Bool
     private var qwenMTPSharedVerificationBatches = 0
     private var qwenMTPSharedVerificationRows = 0
     nonisolated let ownsQwenMTPSessions: Bool
@@ -774,6 +775,8 @@ actor BatchScheduler {
         let sharedVerification = ownsQwenMTP
             && ProcessInfo.processInfo.environment["AFM_QWEN_MTP_SHARED_VERIFY"] == "1"
         self.qwenMTPSharedVerification = sharedVerification
+        self.qwenMTPIndependentAttention = sharedVerification
+            && ProcessInfo.processInfo.environment["AFM_QWEN_MTP_INDEPENDENT_ATTENTION"] == "1"
         self.qwenMTPSubmissionWindow = ownsQwenMTP ? min(4, max(sharedVerification ? 2 : 1,
             Int(ProcessInfo.processInfo.environment[
                 "AFM_QWEN_MTP_SUBMISSION_WINDOW"] ?? "1") ?? 1)) : 1
@@ -1022,6 +1025,7 @@ actor BatchScheduler {
         }
         if qwenMTPSharedVerification {
             print("[BatchScheduler] Qwen MTP shared verification: batches=\(qwenMTPSharedVerificationBatches) | rows=\(qwenMTPSharedVerificationRows)")
+            print("[BatchScheduler] Qwen MTP independent attention: \(qwenMTPIndependentAttention)")
         }
         qwenMTPReplayCache?.removeAll()
         groupedSlotIDs.removeAll()
@@ -2209,12 +2213,14 @@ actor BatchScheduler {
                 return (slot, session)
             }
             for indices in Qwen4ExpMTPSession.compatibleVerificationGroups(
-                candidates.map(\.session), maximumRows: qwenMTPSubmissionWindow)
+                candidates.map(\.session), maximumRows: qwenMTPSubmissionWindow,
+                independentAttention: qwenMTPIndependentAttention)
             {
                 let members = indices.map { candidates[$0] }.filter { !isCancellationRequested($0.slot.id) }
                 let sessions = members.map(\.session)
                 for session in sessions { session.prepareDraftTokens() }
-                let shared = Qwen4ExpMTPSession.prepareCompatibleVerificationBatches(sessions)
+                let shared = Qwen4ExpMTPSession.prepareCompatibleVerificationBatches(
+                    sessions, independentAttention: qwenMTPIndependentAttention)
                 qwenMTPSharedVerificationBatches += shared.batches
                 qwenMTPSharedVerificationRows += shared.rows
                 for member in members {

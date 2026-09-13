@@ -1689,3 +1689,21 @@ The audited timing inventory contains **15 clean arms / 450 completed requests**
 diagnostic, excluded-overlap, warmup and lifecycle requests are not counted in
 that performance total. Full raw evidence and a curated hash manifest remain
 outside Git under the established benchmark root.
+
+### Mixed-position verification follow-up, 2026-09-12
+
+The next opt-in separates full-attention/QSA histories from shared fixed-size
+recurrent/PLE state, permitting different real positions in one bounded target
+verification group. Mean shared-group occupancy increased from about 2.61 to
+3.44 rows on the frozen C15, prefix-on, depth-3 coding-review workload. Repeat
+aggregate throughput improved by 2.83% and 8.21% in the initial opposite-order
+pairs, but repeat structurally valid tasks/s changed by −0.97% and +1.11%.
+Most response texts differed; these are not equal-output timing comparisons
+or a semantic quality qualification.
+
+Separate experiments sharing attention projections, with and without a
+model-owned compiled region, did not improve the same-binary controls. Those
+variants and their new selector were removed rather than added to the preset.
+The mixed-position adapter remains off by default. See
+[the full findings and experiment disposition](QWEN_NEXT_MIXED_POSITION_VERIFICATION.md)
+for raw-data identities, arithmetic/rollback tests and lifecycle results.

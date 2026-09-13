@@ -50,7 +50,59 @@ final class QwenNextMTPPipelineTests: XCTestCase {
         try await assertSharedVerificationRows(makeModel(indexerBudget: 4))
     }
 
-    private func assertSharedSessionVerification(_ model: Qwen4ExpModel, temperature: Float) throws {
+    private func assertMixedPositionVerificationRows(_ model: Qwen4ExpModel) throws {
+        eval(model)
+        // Cross dense/sparse QSA and incomplete pooled-block boundaries.
+        let lengths = [2, 7, 8, 17]
+        for stride in [0, 4] {
+            let original = lengths.map { _ in model.newCache(parameters: nil) }
+            let expected = lengths.map { _ in model.newCache(parameters: nil) }
+            for row in lengths.indices {
+                let ids = MLXArray((0..<lengths[row]).map { Int32(($0 + row) % 29 + 1) }).reshaped(1, -1)
+                eval(model.forwardStreamState(inputIDs: ids, cache: original[row]).hidden,
+                     model.forwardStreamState(inputIDs: ids, cache: expected[row]).hidden)
+            }
+            let frozen = original.map { $0.map { $0.state.map { $0.asArray(Float.self) } } }
+            let offsets = original.map { $0.map(\.offset) }
+            XCTAssertNil(model.makeMTPVerificationBatch(original, independentAttention: false))
+            XCTAssertNil(model.makeMTPVerificationBatch([original[0], original[0]], independentAttention: true))
+            XCTAssertNil(model.makeMTPVerificationBatch([original[0], []], independentAttention: true))
+            let batch = try XCTUnwrap(model.makeMTPVerificationBatch(original, independentAttention: true))
+            let tokens = lengths.indices.map { row in [Int32(18 + row), 23, 24, 25] }
+            let actual = model.forwardMTPVerificationBatch(
+                inputIDs: MLXArray(tokens.flatMap { $0 }).reshaped(4, 4), batch: batch,
+                hostTokenIDs: tokens.flatMap { $0 }.map(Int.init), ladderStride: stride)
+            eval(actual.hidden, actual.stream)
+            XCTAssertEqual(original.map { $0.map { $0.state.map { $0.asArray(Float.self) } } }, frozen)
+            XCTAssertEqual(original.map { $0.map(\.offset) }, offsets)
+            for row in lengths.indices {
+                let reference = model.forwardStreamState(inputIDs: MLXArray(tokens[row]).reshaped(1, 4),
+                    cache: expected[row], verificationPolicy: .batched, hostTokenIDs: tokens[row].map(Int.init))
+                XCTAssertLessThan(abs(actual.hidden[row..<(row + 1)] - reference.hidden).max().item(Float.self), 0.002)
+                model.adoptMTPVerificationRow(from: batch, row: row, batchSize: 4, into: original[row])
+            }
+            // Every possible accepted draft frontier, then independent decode.
+            for row in lengths.indices {
+                XCTAssertTrue(model.finishMTPVerification(cache: original[row], acceptedDrafts: row, draftedTokens: 3))
+                XCTAssertTrue(model.finishMTPVerification(cache: expected[row], acceptedDrafts: row, draftedTokens: 3))
+                for token in [26, 27] {
+                    let ids = MLXArray([Int32(token)]).reshaped(1, 1)
+                    let a = model.forwardStreamHidden(inputIDs: ids, cache: original[row]).logits
+                    let b = model.forwardStreamHidden(inputIDs: ids, cache: expected[row]).logits
+                    XCTAssertLessThan(abs(a - b).max().item(Float.self), 0.002)
+                }
+                XCTAssertEqual(original[row].map(\.offset), expected[row].map(\.offset))
+            }
+        }
+    }
+
+    func testMixedPositionVerificationPreservesPrivateCachesAndAllRollbackFrontiers() async throws {
+        try assertMixedPositionVerificationRows(await makeModel(indexerBudget: 4))
+    }
+
+    private func assertSharedSessionVerification(
+        _ model: Qwen4ExpModel, temperature: Float, independentAttention: Bool = false
+    ) throws {
         let head = Qwen4ExpMTPHead(model.configuration)
         eval(model, head)
         let generator = Qwen4ExpMTPGenerator(model: model, head: head, depth: 3,
@@ -69,15 +121,17 @@ final class QwenNextMTPPipelineTests: XCTestCase {
         var output = [[Int]](repeating: [], count: sessions.count)
         var batchedRows = 0
         for step in 0..<12 {
-            for indices in Qwen4ExpMTPSession.compatibleVerificationGroups(sessions) {
+            for indices in Qwen4ExpMTPSession.compatibleVerificationGroups(
+                sessions, independentAttention: independentAttention) {
                 let group = indices.map { sessions[$0] }
                 for session in group { session.prepareDraftTokens() }
-                let shared = Qwen4ExpMTPSession.prepareCompatibleVerificationBatches(group)
+                let shared = Qwen4ExpMTPSession.prepareCompatibleVerificationBatches(
+                    group, independentAttention: independentAttention)
                 batchedRows += shared.rows
                 // A row is cancelled after a confirmed shared graph was
                 // submitted, without preventing other rows from finishing.
                 if step == 1, indices.contains(1) {
-                    XCTAssertEqual(shared.rows, 3)
+                    XCTAssertEqual(shared.rows, independentAttention ? 4 : 3)
                     sessions[1].cancel()
                 }
                 for i in indices {
@@ -101,6 +155,10 @@ final class QwenNextMTPPipelineTests: XCTestCase {
         }
         XCTAssertEqual(Qwen4ExpMTPSession.prepareCompatibleVerificationBatches(strictSessions).rows, 0)
         XCTAssertEqual(Qwen4ExpMTPSession.compatibleVerificationGroups(strictSessions), [[0], [1]])
+        XCTAssertEqual(Qwen4ExpMTPSession.compatibleVerificationGroups(
+            strictSessions, independentAttention: true), [[0], [1]])
+        XCTAssertEqual(Qwen4ExpMTPSession.prepareCompatibleVerificationBatches(
+            strictSessions, independentAttention: true).rows, 0)
     }
 
     func testCompatibleVerificationGroupsFindNonadjacentRowsAndRespectBounds() async throws {
@@ -115,6 +173,8 @@ final class QwenNextMTPPipelineTests: XCTestCase {
         XCTAssertEqual(Qwen4ExpMTPSession.compatibleVerificationGroups(sessions),
                        [[0], [1], [2], [3], [4], [5]])
         for session in sessions { XCTAssertNotNil(session.nextToken()) }
+        XCTAssertEqual(Qwen4ExpMTPSession.compatibleVerificationGroups(
+            sessions, maximumRows: 4, independentAttention: true), [[0, 1, 2, 3], [4, 5]])
         XCTAssertEqual(Qwen4ExpMTPSession.compatibleVerificationGroups(sessions, maximumRows: 3),
                        [[0, 2, 4], [1, 3], [5]])
         XCTAssertEqual(Qwen4ExpMTPSession.compatibleVerificationGroups(sessions, maximumRows: 99),
@@ -132,6 +192,14 @@ final class QwenNextMTPPipelineTests: XCTestCase {
             try assertSharedSessionVerification(model, temperature: temperature)
         }
     }
+
+    func testMixedPositionSessionsPreserveSamplingCancellationAndStrictFallback() async throws {
+        let model = try await makeModel(indexerBudget: 4)
+        for temperature: Float in [0, 0.6] {
+            try assertSharedSessionVerification(model, temperature: temperature, independentAttention: true)
+        }
+    }
+
 
     private func assertPromptReplay(_ model: Qwen4ExpModel) throws {
         let head = Qwen4ExpMTPHead(model.configuration)
@@ -1988,6 +2056,8 @@ final class QwenNextMTPPipelineTests: XCTestCase {
         try assertPromptPrefixReplay(model)
         try assertSharedVerificationRows(model)
         try assertSharedSessionVerification(model, temperature: 0.6)
+        try assertMixedPositionVerificationRows(model)
+        try assertSharedSessionVerification(model, temperature: 0.6, independentAttention: true)
         // Shared dispatch must flush every request row's PLE leaf before the
         // first GPU submission. Then restore different acceptance frontiers
         // without changing another row's recurrent, QSA or n-gram state.

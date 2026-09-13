@@ -118,3 +118,16 @@ startup files or enable them globally.
 See [measurements, exclusions and limitations](SHARED_BATCH_EXECUTION_WORKSTREAM.md#shared-verifier-graph-scheduling-2026-09-12).
 These measurements do not establish reference-engine parity or justify
 promoting either experiment to a default.
+
+## Follow-up: mixed-position groups
+
+A separate [mixed-position verification experiment](QWEN_NEXT_MIXED_POSITION_VERIFICATION.md)
+adds `AFM_QWEN_MTP_INDEPENDENT_ATTENTION=1` to the complete preset above. It keeps
+request-owned attention histories at their real offsets while sharing the
+compatible backbone. Unset it (or set it to `0`) to restore equal-position
+grouping, without changing the existing scheduling preset. It is off by
+default and is not a new recommended preset: observed token-throughput gains
+did not establish substantial useful-task gains or semantic quality parity.
+The unsuccessful `AFM_QWEN_MTP_ATTENTION_PROJECTIONS` experiment was removed;
+do not include that setting. See the linked findings for measured binary
+identities, quality caveats, discarded variants and validation.
