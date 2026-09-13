@@ -2617,6 +2617,7 @@ public final class MLXModelService:
             // non-Sendable ModelContext never crosses the isolation boundary.
             try await loaded.perform { context in
                 let knownThinkPairs: [(start: String, end: String)] = [
+                    ("<|inner_prefix|>", "<|inner_suffix|>"),  // Apertus deliberation
                     ("<|channel>", "<channel|>"),  // Gemma 4 channel-based thinking
                     ("<think>", "</think>"),
                     ("<|think|>", "<|/think|>"),
@@ -2630,16 +2631,38 @@ public final class MLXModelService:
                     // (some tokenizers add BOS, so allow 1 or 2 with the token being the last)
                     return ids.count == 1 || (ids.count == 2 && tokenizer.decode(tokens: [ids.last!]) == s)
                 }
+                let hasGenericThinkTokenPair =
+                    context.tokenizer.convertTokenToId("<think>") != nil
+                    && context.tokenizer.convertTokenToId("</think>") != nil
                 for pair in knownThinkPairs {
-                    if isSingleToken(pair.start, context.tokenizer)
+                    let isPresent = isSingleToken(pair.start, context.tokenizer)
                         && isSingleToken(pair.end, context.tokenizer)
-                    {
+                    if isPresent {
                         self.thinkStartTag = pair.start
                         self.thinkEndTag = pair.end
                         if debugLogging {
                             print("[\(ts())] [Think] Detected think tags: \(pair.start) / \(pair.end)")
                         }
                         break
+                    }
+                }
+                // mlx-lm 0.31.x infers thinking from generic <think></think>
+                // vocabulary entries and therefore injects enable_thinking=true
+                // before rendering Apertus. The checkpoint also has native inner
+                // deliberation markers, which AFM prefers for extraction, but the
+                // default template value must match the reference runtime for
+                // output-parity comparisons. Explicit request/default overrides
+                // and --no-think continue to win later in prompt construction.
+                if modelArchitecture.canonicalModelType == "apertus",
+                    hasGenericThinkTokenPair
+                {
+                    var kwargs = self.defaultChatTemplateKwargs ?? [:]
+                    if kwargs["enable_thinking"] == nil {
+                        kwargs["enable_thinking"] = true
+                        self.defaultChatTemplateKwargs = kwargs
+                        if debugLogging {
+                            print("[\(ts())] [Think] Auto-enabled Apertus deliberation for mlx-lm template parity")
+                        }
                     }
                 }
                 // Gemma 4 channel-based thinking: auto-enable so the template
@@ -5833,6 +5856,14 @@ public final class MLXModelService:
     /// and <tool_call>{"name":"func","arguments":{...}}</tool_call> patterns.
     /// Returns extracted ToolCalls and remaining non-tool-call content.
     static func extractToolCallsFallback(from text: String, tools: [RequestTool]? = nil, allowMalformedRepair: Bool = false) -> ([ToolCall], String) {
+        if text.contains("<|tools_prefix|>") {
+            // Batch/raw-text generation must recognize the same complete native
+            // envelopes as serial streaming, preserving malformed or partial text.
+            let processor = ToolCallProcessor(format: .apertus)
+            let visible = (processor.processChunk(text) ?? "")
+                + (processor.finishPendingText() ?? "")
+            return (processor.toolCalls, visible)
+        }
         var toolCalls = [ToolCall]()
         var remaining = text
 
@@ -7573,7 +7604,8 @@ public final class MLXModelService:
         canonicalModelType: String?,
         forceDisableThinking: Bool
     ) -> (kwargs: [String: any Sendable], note: String?) {
-        guard canonicalModelType == "muse_glimmer"
+        guard canonicalModelType == "apertus"
+            || canonicalModelType == "muse_glimmer"
             || canonicalModelType == "glm5_next"
             || canonicalModelType == "glm5_next_text"
         else {
@@ -7586,6 +7618,22 @@ public final class MLXModelService:
         let effort = (normalized["reasoning_effort"] as? String)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
+
+        if canonicalModelType == "apertus" {
+            // Apertus has a binary deliberation switch, not graded effort.
+            // Reuse AFM's existing precedence: --no-think / explicit false wins.
+            if explicitNoThinking {
+                normalized["enable_thinking"] = false
+            } else if normalized["enable_thinking"] == nil, let effort {
+                if ["none", "off"].contains(effort) {
+                    normalized["enable_thinking"] = false
+                } else if ["minimal", "low", "medium", "high", "max"].contains(effort) {
+                    normalized["enable_thinking"] = true
+                }
+            }
+            normalized.removeValue(forKey: "reasoning_effort")
+            return (normalized, nil)
+        }
 
         if canonicalModelType == "glm5_next" || canonicalModelType == "glm5_next_text" {
             normalized.removeValue(forKey: "enable_thinking")
@@ -7644,6 +7692,9 @@ public final class MLXModelService:
         // (e.g. Qwen3.5). The OpenAI API allows multiple system messages, so
         // we consolidate them here for broader compatibility.
         var pendingSystemParts: [String] = []
+        let usesApertusTemplate = withStateLock {
+            currentModelArchitecture?.canonicalModelType == "apertus"
+        }
         func flushSystemParts() {
             guard !pendingSystemParts.isEmpty else { return }
             hasSystemMessage = true
@@ -7673,10 +7724,19 @@ public final class MLXModelService:
                            let parsed = try? JSONSerialization.jsonObject(with: data) {
                             argsValue = parsed
                         }
-                        structuredCalls.append([
-                            "function": ["name": tc.function.name, "arguments": argsValue]
-                        ])
-                        textParts.append("<tool_call>\n{\"name\": \"\(tc.function.name)\", \"arguments\": \(tc.function.arguments)}\n</tool_call>")
+                        if usesApertusTemplate {
+                            // Apertus renders OpenAI call history with string arguments
+                            // and an explicit type. Do not duplicate it as generic XML.
+                            structuredCalls.append([
+                                "type": "function",
+                                "function": ["name": tc.function.name, "arguments": tc.function.arguments]
+                            ])
+                        } else {
+                            structuredCalls.append([
+                                "function": ["name": tc.function.name, "arguments": argsValue]
+                            ])
+                            textParts.append("<tool_call>\n{\"name\": \"\(tc.function.name)\", \"arguments\": \(tc.function.arguments)}\n</tool_call>")
+                        }
                     }
                     var msg = Chat.Message(
                         role: .assistant,
@@ -7714,7 +7774,17 @@ public final class MLXModelService:
                 }
                 // Text fallback for templates that only read content
                 let toolContent: String
-                if let name = resolvedName {
+                if usesApertusTemplate {
+                    // Apertus inserts each result directly into its native JSON
+                    // array. Preserve JSON values; quote ordinary text so neither
+                    // XML nor unescaped output can corrupt the next model turn.
+                    if let data = text.data(using: .utf8),
+                       (try? JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed])) != nil {
+                        toolContent = text
+                    } else {
+                        toolContent = String(decoding: try JSONEncoder().encode(text), as: UTF8.self)
+                    }
+                } else if let name = resolvedName {
                     toolContent = "<tool_response>\n{\"name\": \"\(name)\", \"content\": \(text)}\n</tool_response>"
                 } else {
                     toolContent = text
@@ -8342,12 +8412,26 @@ public final class MLXModelService:
     }
 
     private func normalizedTopP(_ value: Double?) -> Float {
-        guard let value else { return 1.0 }  // MLX library default
+        guard let value else {
+            // Swiss AI recommends top_p=0.9 for Apertus. Request and server
+            // CLI overrides have already replaced nil by this point.
+            if withStateLock { currentModelArchitecture?.canonicalModelType } == "apertus" {
+                return 0.9
+            }
+            return 1.0  // MLX library default
+        }
         return Float(min(max(value, 0.0), 1.0))
     }
 
     private func normalizedTemperature(_ value: Double?) -> Float {
-        guard let value else { return 0.6 }  // MLX library default
+        guard let value else {
+            // Swiss AI recommends temperature=0.8 for Apertus. Request and
+            // server CLI overrides have already replaced nil by this point.
+            if withStateLock { currentModelArchitecture?.canonicalModelType } == "apertus" {
+                return 0.8
+            }
+            return 0.6  // MLX library default
+        }
         return Float(min(max(value, 0.0), 1.0))
     }
 

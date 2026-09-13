@@ -433,14 +433,16 @@ private struct LLMUserInputProcessor: UserInputProcessor {
     let tokenizer: Tokenizer
     let configuration: ModelConfiguration
     let messageGenerator: MessageGenerator
+    let isApertus: Bool
 
     internal init(
         tokenizer: any Tokenizer, configuration: ModelConfiguration,
-        messageGenerator: MessageGenerator
+        messageGenerator: MessageGenerator, isApertus: Bool = false
     ) {
         self.tokenizer = tokenizer
         self.configuration = configuration
         self.messageGenerator = messageGenerator
+        self.isApertus = isApertus
     }
 
     func prepare(input: UserInput) throws -> LMInput {
@@ -460,7 +462,8 @@ private struct LLMUserInputProcessor: UserInputProcessor {
             let promptTokens = try tokenizer.applyChatTemplate(
                 messages: messages, chatTemplate: chatTemplateArg, addGenerationPrompt: true,
                 truncation: false, maxLength: nil,
-                tools: input.tools, additionalContext: input.additionalContext)
+                tools: isApertus ? ApertusChatSupport.tools(input.tools) : input.tools,
+                additionalContext: input.additionalContext)
 
             return LMInput(tokens: MLXArray(promptTokens))
         } catch TokenizerError.missingChatTemplate {
@@ -601,7 +604,7 @@ public final class LLMModelFactory: ModelFactory {
 
         let processor = LLMUserInputProcessor(
             tokenizer: tokenizer, configuration: mutableConfiguration,
-            messageGenerator: messageGenerator)
+            messageGenerator: messageGenerator, isApertus: baseConfig.modelType == "apertus")
 
         return .init(
             configuration: mutableConfiguration, model: model, processor: processor,

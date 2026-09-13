@@ -722,6 +722,19 @@ final class AFMMLXProviderTests: XCTestCase {
         XCTAssertEqual(result.content, "ok")
     }
 
+    func testApertusDescriptorAdvertisesNativeReasoningWithoutVision() throws {
+        let root = try makeModelCache(
+            config: ["model_type": "apertus", "max_position_embeddings": 65_536],
+            tokenizer: ["chat_template": "<|inner_prefix|><|inner_suffix|>{% if tools %}{% endif %}"])
+        defer { try? FileManager.default.removeItem(at: root) }
+        let descriptor = AFMMLXModelDescriptor.describe(
+            modelID: "test/model", resolver: MLXCacheResolver(cacheRoot: root))
+        XCTAssertTrue(descriptor.capabilities.contains(.reasoning))
+        XCTAssertTrue(descriptor.capabilities.contains(.toolCalling))
+        XCTAssertFalse(descriptor.capabilities.contains(.vision))
+        XCTAssertFalse(descriptor.capabilities.contains(.speculativeDecoding))
+    }
+
     func testDescriptorInfersCapabilitiesFromModelAssets() throws {
         let root = try makeModelCache(
             config: [

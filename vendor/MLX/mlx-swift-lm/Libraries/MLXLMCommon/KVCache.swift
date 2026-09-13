@@ -1736,6 +1736,27 @@ public func quantizedScaledDotProductAttention(
         mode: mode
     )
 
+    // Match Python's finfo(scores.dtype).min, not the smallest positive value.
+    // Keep the sentinel finite and in the score dtype (also for fully masked rows).
+    let minimumScore: Float
+    switch scores.dtype {
+    case .float16: minimumScore = -Float(Float16.greatestFiniteMagnitude)
+    case .bfloat16: minimumScore = -Float(bitPattern: 0x7f7f0000)
+    default: minimumScore = -Float.greatestFiniteMagnitude
+    }
+    let maskedScore = MLXArray(minimumScore).asType(scores.dtype)
+
+    func groupedMask(_ array: MLXArray) -> MLXArray {
+        guard nRepeats > 1, array.ndim == 3 || array.ndim == 4 else { return array }
+        if array.dim(-3) == nQHeads {
+            // Preserve individual query-head masks when splitting heads into groups.
+            return array.reshaped(Array(array.shape.dropLast(3))
+                + [nKVHeads, nRepeats, array.dim(-2), array.dim(-1)])
+        }
+        // Shared-head masks broadcast over repeats; rank-5 masks are already grouped.
+        return expandedDimensions(array, axis: -3)
+    }
+
     // Apply mask
     switch mask {
     case .causal:
@@ -1744,11 +1765,12 @@ public func quantizedScaledDotProductAttention(
         let kIndices = MLXArray(0 ..< kL)
         let causalMask = greaterEqual(
             expandedDimensions(qIndices, axis: -1), expandedDimensions(kIndices, axis: -2))
-        scores = MLX.where(causalMask, scores, MLXArray(Float.leastNormalMagnitude))
+        scores = MLX.where(causalMask, scores, maskedScore)
 
     case .array(let maskArray):
+        let maskArray = groupedMask(maskArray)
         if maskArray.dtype == .bool {
-            scores = MLX.where(maskArray, scores, MLXArray(Float.leastNormalMagnitude))
+            scores = MLX.where(maskArray, scores, maskedScore)
         } else {
             scores = scores + maskArray
         }
@@ -1756,8 +1778,9 @@ public func quantizedScaledDotProductAttention(
     case .arrays(let maskArrays):
         // Handle multiple mask arrays - just use the first one for simplicity
         if let maskArray = maskArrays.first {
+            let maskArray = groupedMask(maskArray)
             if maskArray.dtype == .bool {
-                scores = MLX.where(maskArray, scores, MLXArray(Float.leastNormalMagnitude))
+                scores = MLX.where(maskArray, scores, maskedScore)
             } else {
                 scores = scores + maskArray
             }
@@ -1767,7 +1790,8 @@ public func quantizedScaledDotProductAttention(
         break
     }
 
-    let attentionWeights = softmax(scores, axis: -1)
+    // Match mlx-lm/models/base.py: stable accumulation for reduced-precision scores.
+    let attentionWeights = softmax(scores, axis: -1, precise: true)
 
     // Compute output using quantized matmul
     var output = quantizedMM(
