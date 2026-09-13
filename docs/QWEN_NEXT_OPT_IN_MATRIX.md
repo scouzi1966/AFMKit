@@ -1,12 +1,12 @@
 # Qwen Next opt-in activation and experiment matrix
 
-Last source audit: **2026-09-13**, AFMKit runtime `4d2cf327`, paired consumer
+Last source audit: **2026-09-13**, AFMKit runtime `bfcb6b5b`, paired consumer
 `9acccfc`. Workstream: [PR #123](https://github.com/scouzi1966/AFMKit/pull/123).
 This is the central index of settings and combinations for the Qwen Next
 optimization project. Update it with every new experiment, removal or result.
 Historical reports remain the evidence; this index does not rewrite them.
 
-Inventory audit: **43 named Qwen controls, 42 wired and one removed**. This
+Inventory audit: **45 named Qwen controls, 44 wired and one removed**. This
 covers every Qwen control named in the preceding `QWEN_NEXT_*` reports and
 shared-batch workstream, plus the existing deferred-token-resolution control.
 The generic replay/profiling/SDPA controls and CLI settings are listed separately.
@@ -60,6 +60,8 @@ Corrected shared-work experiment runtime SHA-256 (`4d2cf327`):
 `a78772f6c111715d68d9f428926d6ea035e1e9c16d0ccd9db5ada54a99d6c664`.
 The initial shared-work binary `e4d914ee…` exposed an int64 state-update crash;
 its failed arm remains separate evidence, not a passing qualification.
+The cohort-work binary (`bfcb6b5b`) has SHA-256
+`0c63e09ab41c6a11b251f54a3a1fa9fd9659b48411e84aa15b4ebb566954c360`.
 The binary reports development `v0.9.20`; the version string does not establish
 source identity. The path is mutable: hash it again after any rebuild.
 Earlier reports' hashes identify earlier binaries, not what currently occupies
@@ -118,6 +120,8 @@ those particular experiments. They do not sanitize every possible variable.
   AFM_QWEN_MTP_SHARED_HEAD=0 \
   AFM_QWEN_MTP_ADAPTIVE_DEPTH=0 \
   AFM_QWEN_MTP_PERSISTENT_STATE_MIB=0 \
+  AFM_QWEN_MTP_COHORT_DEPTH=0 \
+  AFM_QWEN_MTP_STATE_REMAP=0 \
   AFM_QWEN_MTP_RETAIN_ANCHOR=0 \
   AFM_QWEN_PLE_ROW_CACHE_MIB=0 \
   AFM_QWEN_PLE_VECTOR_UNPACK=0 \
@@ -185,7 +189,7 @@ assignments. These options are not API kwargs or installed-release defaults.
 | M19 | 1 | 1 | 1024 | All three; separate combination, not summed individual gains |
 | M20 | 0 | 0 | 2048 | Larger state-bank budget only; separate screen |
 
-Head + adaptive without state, head + state without adaptive, and adaptive +
+Head + adaptive without state, head + 1024-MiB state without adaptive, and adaptive +
 state without head are **not measured**. Neither is the all-three combination
 at 2048 MiB. They must not inherit M16's gain or M19's qualification by addition.
 
@@ -194,6 +198,31 @@ Implementation and qualification are documented in
 sampled throughput and prefix-off combinations need their own evidence.
 Actual group width and state-reuse counters matter;
 enabled flags alone do not prove an active optimization.
+
+### Recipes M21–M24: cohort epochs and membership remapping
+
+Start from **M16**, the complete W8-L2 recipe with shared head `1`, old adaptive
+depth `0`, vocabulary `0`, and replace the three assignments below. These are
+not stand-alone commands. `COHORT_DEPTH` takes precedence over `ADAPTIVE_DEPTH`
+if both are set, but measured recipes explicitly keep the latter off.
+
+| ID | `AFM_QWEN_MTP_COHORT_DEPTH` | `AFM_QWEN_MTP_PERSISTENT_STATE_MIB` | `AFM_QWEN_MTP_STATE_REMAP` |
+|---|---:|---:|---:|
+| M16 control | 0 | 0 | 0 |
+| M21 | 1 | 0 | 0 |
+| M22 | 0 | 2048 | 0 |
+| M23 | 0 | 2048 | 1 |
+| M24 | 1 | 2048 | 1 |
+
+M21 selects depths 1–3 in shared epochs, not independently per request. M23/24
+can reuse certified state rows across changed membership while keeping attention
+private. They still perform bank reconstruction, not zero-copy in-place storage.
+All remain opt-in. Other budgets, old adaptive + remapping, cohort + old bank
+without remapping, and prefix-off/sample-throughput variants remain unmeasured.
+See [implementation and results](QWEN_NEXT_COHORT_WORK_EXPERIMENTS.md).
+New evidence is frozen in `COHORT-WORK-20260913-SHA256SUMS.txt` under the same
+external root: **442 verified entries**, SHA-256
+`3e4309702d7804e88b727fe0dabb724fa08ab60dc6de9b6bf02f9e60393d1c3c`.
 
 ### Request controls are separate
 
@@ -273,6 +302,10 @@ used the later ladder-4 settings. Older exact flags remain in their manifests.
 | M18 | W8-L2 + 1024-MiB persistent state only | Corrected live screen: 30/30 requests, 29/30 structural; 114.91 repeat tok/s versus control 115.45, only three reused rows. No demonstrated cache speedup. [Evidence](QWEN_NEXT_SHARED_SPECULATIVE_WORK.md). |
 | M19 | W8-L2 + all three | Live screen: 30/30 requests and structural checks; 111.83 repeat tok/s, −3.14% versus control. Reuse 60 / refresh 4; functional, not a speed recommendation. [Evidence](QWEN_NEXT_SHARED_SPECULATIVE_WORK.md). |
 | M20 | W8-L2 + 2048-MiB persistent state only | **Measured, no speed win**: 112.98 repeat tok/s, −2.15%; 195 reused / 5 refreshed rows. 30/30 runtime, 29/30 structural. [Evidence](QWEN_NEXT_SHARED_SPECULATIVE_WORK.md). |
+| M21 | M16 + cohort depth | **Small repeated gain**: repeat 133.46–133.84 tok/s, +2.45/+2.98% over matched M16 controls; valid tasks/s +0.25/+3.79%. Shared widths 5.31/5.42, candidate and controls each 59/60 structural. Still opt-in. [Evidence](QWEN_NEXT_COHORT_WORK_EXPERIMENTS.md). |
+| M22 | M16 + old persistent bank, 2048 MiB | **No speed recommendation**: repeat 124.75 tok/s, −4.51% over control-a. 174 reused rows; 30/30 structural. |
+| M23 | M22 + membership remapping | **Functional, no material gain over no bank**: repeat 130.75 tok/s; +4.81% versus old bank, only +0.08% versus M16. 238 reused rows, 27 membership hits, 30/30 structural. |
+| M24 | M23 + cohort depth | Fully instrumented repeat 133.98 tok/s, +3.38% versus M16 but only +0.39% versus M21. 30/30 structural, 458 reused rows. Extra memory not yet justified by a repeatable additive gain. One earlier run excluded for missing shutdown counters. |
 
 ## Six-mode coverage ledger
 
@@ -358,6 +391,8 @@ to finish; those pages can still be reclaimed. Do not imply it pins the model.
 | `AFM_QWEN_MTP_SHARED_VOCAB` | Off | `1` + shared owner; eligible 2–4 requests, at most 16 request/token rows; otherwise independent projection |
 | `AFM_QWEN_MTP_SHARED_HEAD` | Off | `1` + shared owner and batched policy; 2–8 compatible heads, private attention; repair width at most 4; retained anchor uses fallback |
 | `AFM_QWEN_MTP_ADAPTIVE_DEPTH` | Off | `1` + owner and batched policy; request-local 1…min(requested depth, 8), not automatic MTP-off |
+| `AFM_QWEN_MTP_COHORT_DEPTH` | Off | `1` + shared verifier and batched policy; common depth by active-width band, 32 measured owner steps per epoch; takes precedence over request-local adaptive depth |
+| `AFM_QWEN_MTP_STATE_REMAP` | Off | `1` + positive persistent-state budget; reuse certified UUID/revision rows across group ordering/membership changes; attention remains private |
 | `AFM_QWEN_MTP_PERSISTENT_STATE_MIB` | 0 / off | Integer clamped 0–2048; independent-attention shared verifier; up to four revision-guarded fixed-state banks; not attention/prefix/answer caching |
 | `AFM_QWEN_MTP_RETAIN_ANCHOR` | Off | `1` + batched policy and qualified trimmable head state; strict mode ignores it |
 
