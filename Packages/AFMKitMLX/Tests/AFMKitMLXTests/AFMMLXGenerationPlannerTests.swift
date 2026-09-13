@@ -21,6 +21,24 @@ final class AFMMLXGenerationPlannerTests: XCTestCase {
             2_048)
     }
 
+    func testPrefillPolicyUsesApertusReferenceStep() {
+        XCTAssertEqual(
+            AFMMLXPrefillPolicy.resolve(
+                configuredStepSize: AFMMLXPrefillPolicy.defaultStepSize,
+                isExplicit: false,
+                canonicalModelType: "apertus"),
+            2_048)
+    }
+
+    func testPrefillPolicyPreservesExplicitApertusOverride() {
+        XCTAssertEqual(
+            AFMMLXPrefillPolicy.resolve(
+                configuredStepSize: 512,
+                isExplicit: true,
+                canonicalModelType: "apertus"),
+            512)
+    }
+
     func testPrefillPolicyPreservesLegacyModelDefault() {
         XCTAssertEqual(
             AFMMLXPrefillPolicy.resolve(

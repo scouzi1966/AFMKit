@@ -129,3 +129,31 @@ The six-bit KV4 run also exposed expensive consumer response-tail sanitization
 after generation. That separate, model-independent latency fix is tracked in
 [maclocal-api PR #300](https://github.com/scouzi1966/maclocal-api/pull/300).
 It does not change model outputs or resolve KV4 degeneration.
+
+## Four-bit reference parity addendum (2026-09-12)
+
+The remaining four-bit RAG divergence was traced to two execution-boundary
+differences rather than the model weights:
+
+1. The Swift scalar-power kernel rounded a subset of canonical Llama 3 RoPE
+   frequencies one BF16 ULP differently from Python MLX. Apertus amplified that
+   prefix difference through its quantized projections.
+2. Swift's generic prefill helper passed the complete remaining suffix to the
+   token iterator when it fit in one chunk. Python `generate_step` always
+   reserves one prompt token for its decode-shaped final step.
+
+Apertus now uses the Python-reference frequency rounding for the canonical
+2509 128-dimensional RoPE configuration and implements the reference
+“reserve one final token” prefill shape locally, without changing unrelated
+architectures. It also defaults deliberation on when the checkpoint contains
+the generic think-token pair, matching `mlx-lm` 0.31.x's tokenizer-wrapper
+inference, and applies Swiss AI's recommended `temperature=0.8` / `top_p=0.9`
+when no explicit override is supplied.
+
+Validation against `mlx-lm 0.31.3` / MLX `0.32.2` used the exact local
+`mlx-community/Apertus-8B-Instruct-2509-4bit` checkpoint, a 1,255-token RAG
+prompt, and greedy decoding. The corrected Swift runtime produced the identical
+token sequence for 128, 512, and 2,048 completion tokens. A controlled prefix
+forward also matched every layer and logit before Python's final BF16 logprob
+reporting rounding. `ApertusPrefillTests` and the updated prefill-policy tests
+cover the execution-boundary behavior.

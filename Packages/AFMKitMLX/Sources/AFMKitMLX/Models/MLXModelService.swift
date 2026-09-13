@@ -2631,16 +2631,38 @@ public final class MLXModelService:
                     // (some tokenizers add BOS, so allow 1 or 2 with the token being the last)
                     return ids.count == 1 || (ids.count == 2 && tokenizer.decode(tokens: [ids.last!]) == s)
                 }
+                let hasGenericThinkTokenPair =
+                    context.tokenizer.convertTokenToId("<think>") != nil
+                    && context.tokenizer.convertTokenToId("</think>") != nil
                 for pair in knownThinkPairs {
-                    if isSingleToken(pair.start, context.tokenizer)
+                    let isPresent = isSingleToken(pair.start, context.tokenizer)
                         && isSingleToken(pair.end, context.tokenizer)
-                    {
+                    if isPresent {
                         self.thinkStartTag = pair.start
                         self.thinkEndTag = pair.end
                         if debugLogging {
                             print("[\(ts())] [Think] Detected think tags: \(pair.start) / \(pair.end)")
                         }
                         break
+                    }
+                }
+                // mlx-lm 0.31.x infers thinking from generic <think></think>
+                // vocabulary entries and therefore injects enable_thinking=true
+                // before rendering Apertus. The checkpoint also has native inner
+                // deliberation markers, which AFM prefers for extraction, but the
+                // default template value must match the reference runtime for
+                // output-parity comparisons. Explicit request/default overrides
+                // and --no-think continue to win later in prompt construction.
+                if modelArchitecture.canonicalModelType == "apertus",
+                    hasGenericThinkTokenPair
+                {
+                    var kwargs = self.defaultChatTemplateKwargs ?? [:]
+                    if kwargs["enable_thinking"] == nil {
+                        kwargs["enable_thinking"] = true
+                        self.defaultChatTemplateKwargs = kwargs
+                        if debugLogging {
+                            print("[\(ts())] [Think] Auto-enabled Apertus deliberation for mlx-lm template parity")
+                        }
                     }
                 }
                 // Gemma 4 channel-based thinking: auto-enable so the template
@@ -8390,12 +8412,26 @@ public final class MLXModelService:
     }
 
     private func normalizedTopP(_ value: Double?) -> Float {
-        guard let value else { return 1.0 }  // MLX library default
+        guard let value else {
+            // Swiss AI recommends top_p=0.9 for Apertus. Request and server
+            // CLI overrides have already replaced nil by this point.
+            if withStateLock { currentModelArchitecture?.canonicalModelType } == "apertus" {
+                return 0.9
+            }
+            return 1.0  // MLX library default
+        }
         return Float(min(max(value, 0.0), 1.0))
     }
 
     private func normalizedTemperature(_ value: Double?) -> Float {
-        guard let value else { return 0.6 }  // MLX library default
+        guard let value else {
+            // Swiss AI recommends temperature=0.8 for Apertus. Request and
+            // server CLI overrides have already replaced nil by this point.
+            if withStateLock { currentModelArchitecture?.canonicalModelType } == "apertus" {
+                return 0.8
+            }
+            return 0.6  // MLX library default
+        }
         return Float(min(max(value, 0.0), 1.0))
     }
 

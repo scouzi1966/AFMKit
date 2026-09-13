@@ -155,6 +155,15 @@ class ApertusXIELU: Module, UnaryLayer {
 }
 
 private class DynamicNTKScalingRoPE: Module {
+    /// Bit-for-bit frequency table produced by mlx-lm 0.31.3 / MLX 0.32.2
+    /// for the Apertus 2509 128-dimensional Llama 3 RoPE configuration.
+    /// The Swift-built scalar-power kernel differs by one BF16 ULP on a subset
+    /// of entries; that tiny prefix difference is amplified by the 4-bit
+    /// decoder enough to change long RAG outputs.
+    private static let mlxLMApertus2509Frequencies: [Float] = [
+        1, 1.29006684, 1.66427243, 2.14702272, 2.76980281, 3.57323074, 4.60970592, 5.94682884, 7.67180681, 9.89714432, 12.7679768, 16.4715443, 21.2493916, 27.4131355, 35.3647766, 45.622921, 58.8566208, 75.9289703, 97.9534531, 126.366501, 163.021225, 210.308273, 271.311737, 380.528992, 668.436768, 1198.21399, 2214.35767, 4297.49219, 9103.02051, 12907.5557, 16651.6094, 21481.6875, 27712.8125, 35751.3828, 46121.6719, 59500.0391, 76759.0312, 99024.2734, 127747.922, 164803.375, 212607.344, 274277.688, 353836.562, 456472.781, 588880.438, 759695.062, 980057.438, 1264339.5, 1631082.5, 2104205.5, 2714565.75, 3501971.25, 4517777, 5828234, 7518811, 9699769, 12513350, 16143058, 20825622, 26866446, 34659512, 44713084, 57682868, 74414752
+    ]
+
     let dims: Int
     let maxPositionEmbeddings: Int
     let traditional: Bool
@@ -221,6 +230,16 @@ private class DynamicNTKScalingRoPE: Module {
         let smoothFreqs = frequencies / ((1 - smoothFactors) / factor + smoothFactors)
 
         freqs = MLX.where(isMediumFreq, smoothFreqs, frequencies)
+
+        // Align the canonical Apertus 2509 checkpoint with mlx-lm's reference
+        // frequency rounding. Non-matching architectures and RoPE settings use
+        // the general computation above.
+        if dims == 128, base == 12_000_000, ropeType == "llama3",
+            factor == 8, lowFreqFactor == 1, highFreqFactor == 4,
+            oldContextLen == 8192
+        {
+            freqs = MLXArray(Self.mlxLMApertus2509Frequencies)
+        }
         self.base = nil
     }
 
@@ -450,6 +469,35 @@ public class ApertusModel: Module, LLMModel, KVCacheDimensionProvider {
         } else {
             return model.embedTokens.asLinear(out)
         }
+    }
+
+    /// Match mlx-lm's prompt execution shape for Apertus.
+    ///
+    /// The generic Swift prefill helper feeds the entire remaining suffix to
+    /// ``TokenIterator`` when it fits in one step. Python ``generate_step``
+    /// always reserves one token for its decode-shaped final step. Apertus
+    /// 4-bit is sensitive to this kernel-shape difference, so keep the
+    /// reference boundary without changing unrelated architectures.
+    public func prepare(
+        _ input: LMInput,
+        cache: [KVCache],
+        windowSize: Int?
+    ) throws -> PrepareResult {
+        let prefillStepSize = windowSize ?? 2_048
+        var remaining = input.text
+
+        while remaining.tokens.size > 1 {
+            let width = min(prefillStepSize, remaining.tokens.size - 1)
+            _ = self(
+                remaining[.newAxis, ..<width],
+                cache: cache.isEmpty ? nil : cache,
+                state: nil
+            )
+            eval(cache)
+            remaining = remaining[width...]
+        }
+
+        return .tokens(remaining)
     }
 
     public func sanitize(weights: [String: MLXArray]) -> [String: MLXArray] {
