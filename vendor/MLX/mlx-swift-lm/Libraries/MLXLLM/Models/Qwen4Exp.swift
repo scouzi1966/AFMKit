@@ -4184,7 +4184,8 @@ final class Qwen4ExpDecoderLayer: Module {
         hostProfiler: Qwen4ExpHostProfiler? = nil,
         deferredPLE: Qwen4ExpDeferredPLE? = nil,
         verificationAttentionRows: [KVCache]? = nil,
-        verificationAngles: [MLXArray]? = nil
+        verificationAngles: [MLXArray]? = nil,
+        headAttentionRows: [KVCache]? = nil
     ) -> MLXArray {
         let arrayCache = cache as? ArraysCache
         var hidden = input
@@ -4205,7 +4206,17 @@ final class Qwen4ExpDecoderLayer: Module {
         profiler?.lap(mixed, block: .hyperConnectionRead)
         hostProfiler?.lap(.hyperConnectionRead)
         let attended: MLXArray
-        if let verificationAttentionRows {
+        if let headAttentionRows {
+            // Shared head HC/MoE, private QSA histories and real RoPE positions.
+            // Unlike the target verifier, keep ordinary head arithmetic here.
+            precondition(!isLinear && ple == nil && verificationPolicy == nil)
+            attended = concatenated(headAttentionRows.indices.map { row in
+                selfAttention!(mixed[row..<(row + 1)],
+                    mask: input.dim(1) == 1 ? .none : .causal,
+                    positionIDs: positionIDs.map { $0[row..<(row + 1)] },
+                    cache: headAttentionRows[row])
+            }, axis: 0)
+        } else if let verificationAttentionRows {
             precondition(!isLinear && verificationPolicy == .batched)
             attended = concatenated(verificationAttentionRows.indices.map { row in
                 selfAttention!(mixed[row..<(row + 1)], mask: .causal, positionIDs: nil,
@@ -5033,6 +5044,31 @@ public final class Qwen4ExpMTPHead: Module {
         positionIDs: MLXArray,
         cache: [KVCache]
     ) -> Output {
+        forward(hiddenStream: hiddenStream, tokenEmbeddings: tokenEmbeddings,
+            tokenIDs: tokenIDs, positionIDs: positionIDs, cache: cache)
+    }
+
+    /// Share pure head transforms without padding or merging attention caches.
+    /// Each cache is updated exactly once; positions are explicit per request.
+    func forwardRequestBatch(
+        hiddenStream: MLXArray, tokenEmbeddings: MLXArray,
+        tokenIDs: MLXArray, positionIDs: MLXArray, caches: [[KVCache]]
+    ) -> Output? {
+        guard (2...8).contains(caches.count), tokenIDs.ndim == 2,
+              (1...4).contains(tokenIDs.dim(1)), tokenIDs.dim(0) == caches.count,
+              hiddenStream.dim(0) == caches.count, positionIDs.shape == tokenIDs.shape,
+              caches.allSatisfy({ $0.count == 1 && $0[0] is Qwen4ExpAttentionCache }),
+              Set(caches.map { ObjectIdentifier($0[0] as! Qwen4ExpAttentionCache) }).count == caches.count else { return nil }
+        return forward(hiddenStream: hiddenStream, tokenEmbeddings: tokenEmbeddings,
+            tokenIDs: tokenIDs, positionIDs: positionIDs, cache: caches[0],
+            requestCaches: caches.map { $0[0] })
+    }
+
+    private func forward(
+        hiddenStream: MLXArray, tokenEmbeddings: MLXArray,
+        tokenIDs: MLXArray, positionIDs: MLXArray, cache: [KVCache],
+        requestCaches: [KVCache]? = nil
+    ) -> Output {
         let shape = Array(hiddenStream.shape.dropLast())
         let normalizedEmbedding = preFcNormEmbedding(tokenEmbeddings)
         let normalizedHidden = preFcNormHidden(hiddenStream)
@@ -5048,7 +5084,7 @@ public final class Qwen4ExpMTPHead: Module {
             inputIDs: tokenIDs,
             attentionMask: mask,
             positionIDs: positionIDs,
-            cache: cache[0]
+            cache: cache[0], headAttentionRows: requestCaches
         )
         return Output(
             stream: stream,
@@ -5443,12 +5479,13 @@ public final class Qwen4ExpModel: Module, LLMModel, KVCacheDimensionProvider, Re
     /// also merges equal-position attention; the independent adapter leaves
     /// placeholders for private attention histories. Never pad or guess offsets.
     func mergedMTPVerificationCaches(
-        _ rows: [[KVCache]], independentAttention: Bool = false, maximumRows: Int = 4
+        _ rows: [[KVCache]], independentAttention: Bool = false, maximumRows: Int = 4,
+        fixedState: [MLXArray?]? = nil
     ) -> [KVCache]? {
         let limit = min(independentAttention ? 8 : 4, max(2, maximumRows))
         guard (2...limit).contains(rows.count),
               rows.allSatisfy({ $0.count == model.layers.count }) else { return nil }
-        func merge(_ arrays: [[MLXArray?]]) -> [MLXArray?]? {
+        func merge(_ arrays: [[MLXArray?]], preferred: [MLXArray?]? = nil) -> [MLXArray?]? {
             guard let first = arrays.first,
                   arrays.allSatisfy({ $0.count == first.count }) else { return nil }
             var result: [MLXArray?] = []
@@ -5463,7 +5500,13 @@ public final class Qwen4ExpModel: Module, LLMModel, KVCacheDimensionProvider, Re
                 guard values.count == rows.count,
                       values.allSatisfy({ $0.shape == initial.shape && $0.dtype == initial.dtype })
                 else { return nil }
-                result.append(concatenated(values, axis: 0))
+                if let preferred, preferred.count == first.count,
+                   let value = preferred[index], value.dtype == initial.dtype,
+                   value.shape == [rows.count] + Array(initial.shape.dropFirst()) {
+                    result.append(value)
+                } else {
+                    result.append(concatenated(values, axis: 0))
+                }
             }
             return result
         }
@@ -5497,7 +5540,9 @@ public final class Qwen4ExpModel: Module, LLMModel, KVCacheDimensionProvider, Re
                 guard caches.count == rows.count,
                       Set(caches.map(ObjectIdentifier.init)).count == rows.count,
                       caches.allSatisfy({ $0.mtpVerificationWidth == nil }),
-                      let arrays = merge(caches.map { cache in (0..<4).map { cache[$0] } })
+                      let arrays = merge(caches.map { cache in (0..<4).map { cache[$0] } },
+                        preferred: fixedState.flatMap { $0.count == model.layers.count * 4
+                            ? Array($0[(index * 4)..<(index * 4 + 4)]) : nil })
                 else { return nil }
                 let cache = Qwen4ExpLayerCache()
                 for slot in 0..<4 { cache[slot] = arrays[slot] }
@@ -5525,10 +5570,12 @@ public final class Qwen4ExpModel: Module, LLMModel, KVCacheDimensionProvider, Re
     /// attention/QSA histories request-owned. Clones retain lazy array values;
     /// advancing or trimming one never advances an original or another row.
     func makeMTPVerificationBatch(
-        _ rows: [[KVCache]], independentAttention: Bool, maximumRows: Int = 4
+        _ rows: [[KVCache]], independentAttention: Bool, maximumRows: Int = 4,
+        fixedState: [MLXArray?]? = nil
     ) -> MTPVerificationBatch? {
         guard let caches = mergedMTPVerificationCaches(
-            rows, independentAttention: independentAttention, maximumRows: maximumRows)
+            rows, independentAttention: independentAttention, maximumRows: maximumRows,
+            fixedState: fixedState)
         else { return nil }
         let attentionRows: [[KVCache]]? = independentAttention ? rows.map { row in
             row.map { entry in
@@ -5946,7 +5993,7 @@ public final class Qwen4ExpMTPGenerator {
         promptIds: [Int], maxTokens: Int, eosIds: Set<Int> = [],
         temperature: Float = 0, topP: Float = 1, seed: UInt64? = nil,
         promptState: Qwen4ExpMTPPromptState? = nil, retainPromptState: Bool = false,
-        allowPromptPrefixReplay: Bool = false
+        allowPromptPrefixReplay: Bool = false, adaptiveDepth: Bool = false
     ) -> Qwen4ExpMTPSession? {
         precondition(temperature.isFinite && temperature >= 0)
         precondition(topP.isFinite && (0...1).contains(topP))
@@ -5964,7 +6011,7 @@ public final class Qwen4ExpMTPGenerator {
             promptIds: promptIds, maxTokens: maxTokens, eosIds: eosIds,
             temperature: temperature, topP: topP, seed: seed,
             replayIdentity: replayIdentity, promptState: promptState,
-            retainPromptState: retainPromptState)
+            retainPromptState: retainPromptState, adaptiveDepth: adaptiveDepth)
     }
 
     public func generate(
@@ -6037,6 +6084,12 @@ public final class Qwen4ExpMTPSession {
     private let draftDispatchStride: Int
     private let retainHeadAnchor: Bool
     public let promptTokenCount: Int
+    public let stateIdentity = UUID()
+    private var stateRevision = 0
+    private var sharedFinalStateReusable = false
+    private var depthController: AdaptiveSpeculationController?
+    private var cycleStart: UInt64 = 0
+    public var activeDraftDepth: Int { preparedDraft?.tokens.count ?? depthController?.selectedDepth ?? depth }
     public private(set) var tokenCount = 0
     public var verificationCycleCount: Int { totalCycles }
 
@@ -6044,6 +6097,7 @@ public final class Qwen4ExpMTPSession {
     private var primaryStream: MLXArray
     private var primaryPosition: Int
     private var firstPrimaryPending = true
+    private var repairedPrimaryPending = false
     private var preparedDraft: PreparedDraft?
     private var preparedVerification: PreparedVerification?
     private var pendingVerification: Verification?
@@ -6084,7 +6138,7 @@ public final class Qwen4ExpMTPSession {
         verificationPolicy: MTPVerificationPolicy, draftDispatchStride: Int,
         retainHeadAnchor: Bool, promptIds: [Int], maxTokens: Int, eosIds: Set<Int>,
         temperature: Float, topP: Float, seed: UInt64?, replayIdentity: UUID,
-        promptState: Qwen4ExpMTPPromptState?, retainPromptState: Bool
+        promptState: Qwen4ExpMTPPromptState?, retainPromptState: Bool, adaptiveDepth: Bool
     ) {
         // Request-owned RNG: no global seeding or mutable sampler on a shared
         // generator. Nil preserves the fused greedy readout and its graph.
@@ -6156,6 +6210,8 @@ public final class Qwen4ExpMTPSession {
         self.model = model
         self.head = head
         self.depth = depth
+        self.depthController = adaptiveDepth && verificationPolicy == .batched
+            ? AdaptiveSpeculationController(maximumDepth: depth) : nil
         self.verificationPolicy = verificationPolicy
         self.draftDispatchStride = draftDispatchStride
         self.retainHeadAnchor = retainHeadAnchor
@@ -6203,10 +6259,108 @@ public final class Qwen4ExpMTPSession {
     /// the CPU rather than casting/reading IDs separately in every PLE layer.
     @discardableResult
     public func prepareDraftTokens() -> Bool {
-        guard !finished, !firstPrimaryPending, pendingVerification == nil,
+        guard !finished, !firstPrimaryPending, !repairedPrimaryPending, pendingVerification == nil,
               preparedVerification == nil, preparedDraft == nil else { return false }
         preparedDraft = prepareDraft()
         return true
+    }
+
+    /// Draft one compatible owner group in [request, token] head passes.
+    /// Proposals remain greedy; target sampling and RNGs are never touched.
+    /// The caller subsequently invokes prepareDraftTokens for fallback rows.
+    public static func prepareCompatibleDraftBatch(_ sessions: [Qwen4ExpMTPSession]) -> Int {
+        guard (2...8).contains(sessions.count),
+              Set(sessions.map(ObjectIdentifier.init)).count == sessions.count,
+              let first = sessions.first,
+              sessions.allSatisfy({ session in
+                  !session.finished && !session.firstPrimaryPending && !session.repairedPrimaryPending
+                      && session.pendingVerification == nil && session.preparedDraft == nil
+                      && session.preparedVerification == nil && session.verificationPolicy == .batched
+                      && session.model === first.model && session.head === first.head
+                      && session.activeDraftDepth == first.activeDraftDepth
+                      && session.mtpCache.count == 1 && session.mtpCache[0] is Qwen4ExpAttentionCache
+              }) else { return 0 }
+        let depth = first.activeDraftDepth
+        let offsets = sessions.map { $0.mtpCache[0].offset }
+        var stream = concatenated(sessions.map(\.primaryStream), axis: 0)
+        var token = MLXArray(sessions.map { Int32($0.primary) }).reshaped(sessions.count, 1)
+        var drafts: [MLXArray] = []
+        for session in sessions {
+            session.totalCycles += 1
+            if session.depthController != nil { session.cycleStart = DispatchTime.now().uptimeNanoseconds }
+        }
+        for index in 0..<depth {
+            let positions = MLXArray(sessions.map { Int32($0.primaryPosition + index) }).reshaped(sessions.count, 1)
+            // All eligibility is established before any cache is advanced.
+            let output = first.head.forwardRequestBatch(hiddenStream: stream,
+                tokenEmbeddings: first.model.embedTokens(token), tokenIDs: token,
+                positionIDs: positions, caches: sessions.map(\.mtpCache))!
+            token = first.model.projectLMHeadArgmax(output.hidden).asType(.int32).reshaped(sessions.count, 1)
+            stream = output.stream
+            drafts.append(token)
+            if first.draftDispatchStride > 0, index + 1 < depth,
+               (index + 1).isMultiple(of: first.draftDispatchStride) { asyncEval(token) }
+        }
+        let ids = concatenated(drafts, axis: 1)
+        asyncEval(ids)
+        for (row, session) in sessions.enumerated() {
+            session.preparedDraft = PreparedDraft(headOffset: offsets[row],
+                tokens: drafts.map { $0[row..<(row + 1)] }, tokenIDs: ids[row..<(row + 1)])
+            session.totalDrafted += depth
+        }
+        return sessions.count
+    }
+
+    /// Repair only rows whose accepted output has already been consumed.
+    /// Group by actual repair width; never pad histories or repair cancelled
+    /// requests. The nextToken call still emits exactly one primary per row.
+    public static func prepareCompatibleHeadRepairs(
+        _ sessions: [Qwen4ExpMTPSession], maximumRows: Int = 8
+    ) -> (batches: Int, rows: Int) {
+        guard Set(sessions.map(ObjectIdentifier.init)).count == sessions.count else { return (0, 0) }
+        var eligible = sessions.filter { session in
+            !session.finished && !session.repairedPrimaryPending && !session.retainHeadAnchor
+                && session.verificationPolicy == .batched && session.mtpCache.count == 1
+                && session.mtpCache[0] is Qwen4ExpAttentionCache
+                && session.pendingVerification.map { session.acceptedCursor == $0.decision.acceptedDraftCount } == true
+        }
+        var batches = 0
+        var rows = 0
+        while let first = eligible.first {
+            let width = first.pendingVerification!.decision.acceptedDraftCount + 1
+            let group = Array(eligible.filter { $0.head === first.head && $0.model === first.model
+                && $0.pendingVerification!.decision.acceptedDraftCount + 1 == width }.prefix(min(8, max(2, maximumRows))))
+            let ids = Set(group.map(ObjectIdentifier.init))
+            eligible.removeAll { ids.contains(ObjectIdentifier($0)) }
+            guard group.count > 1, width <= 4 else { continue }
+            let verifications = group.map { $0.pendingVerification! }
+            let inputs = zip(group, verifications).map { session, verification in
+                tokens([session.primary] + Array(verification.decision.draftTokens.prefix(width - 1)))
+            }
+            let streams = zip(group, verifications).map { session, verification in
+                width == 1 ? session.primaryStream : concatenated([
+                    session.primaryStream, verification.verifiedStream[0..., 0..<(width - 1), 0...]], axis: 1)
+            }
+            let positions = group.map { Self.positions($0.primaryPosition..<($0.primaryPosition + width)) }
+            for (session, verification) in zip(group, verifications) {
+                let trim = session.mtpCache[0].offset - verification.headOffset
+                precondition(trim >= 0)
+                if trim > 0 { _ = session.mtpCache[0].trim(trim) }
+            }
+            let input = concatenated(inputs, axis: 0)
+            let output = first.head.forwardRequestBatch(hiddenStream: concatenated(streams, axis: 0),
+                tokenEmbeddings: first.model.embedTokens(input), tokenIDs: input,
+                positionIDs: concatenated(positions, axis: 0), caches: group.map(\.mtpCache))
+            precondition(output != nil)
+            for (session, verification) in zip(group, verifications) {
+                session.repairAndAdvance(verification, headAlreadyRepaired: true)
+                session.pendingVerification = nil
+                session.repairedPrimaryPending = true
+            }
+            batches += 1
+            rows += group.count
+        }
+        return (batches, rows)
     }
 
     /// Stable first-seen grouping across the active queue, not just neighboring
@@ -6226,15 +6380,15 @@ public final class Qwen4ExpMTPSession {
         var locations: [Key: Int] = [:]
         var groups: [[Int]] = []
         for (index, session) in sessions.enumerated() {
-            guard !session.finished, !session.firstPrimaryPending,
+            guard !session.finished, !session.firstPrimaryPending, !session.repairedPrimaryPending,
                   session.pendingVerification == nil, session.preparedVerification == nil,
                   session.verificationPolicy == .batched else {
                 groups.append([index])
                 continue
             }
             let key = Key(model: ObjectIdentifier(session.model), head: ObjectIdentifier(session.head),
-                depth: session.depth, position: independentAttention ? 0 : session.primaryPosition)
-            let limit = session.depth <= 3 ? maximumLimit : min(4, maximumLimit)
+                depth: session.activeDraftDepth, position: independentAttention ? 0 : session.primaryPosition)
+            let limit = session.activeDraftDepth <= 3 ? maximumLimit : min(4, maximumLimit)
             if let location = locations[key], groups[location].count < limit {
                 groups[location].append(index)
             } else {
@@ -6253,7 +6407,8 @@ public final class Qwen4ExpMTPSession {
     /// target sampling, acceptance, cache commit and repairs remain per request.
     public static func prepareCompatibleVerificationBatches(
         _ sessions: [Qwen4ExpMTPSession], independentAttention: Bool = false,
-        sharedVocabularyProjection: Bool = false, maximumRows: Int = 4
+        sharedVocabularyProjection: Bool = false, maximumRows: Int = 4,
+        persistentState: SpeculativeRowStateCache? = nil
     ) -> (batches: Int, rows: Int) {
         let limit = min(independentAttention ? 8 : 4, max(2, maximumRows))
         guard (2...limit).contains(sessions.count),
@@ -6261,7 +6416,7 @@ public final class Qwen4ExpMTPSession {
               ProcessInfo.processInfo.environment["AFM_QWEN_VERIFY_SEQUENTIAL"] != "1"
         else { return (0, 0) }
         let eligible = sessions.filter {
-            !$0.finished && !$0.firstPrimaryPending && $0.pendingVerification == nil
+            !$0.finished && !$0.firstPrimaryPending && !$0.repairedPrimaryPending && $0.pendingVerification == nil
                 && $0.preparedVerification == nil && $0.preparedDraft != nil
                 && $0.verificationPolicy == .batched
         }
@@ -6271,15 +6426,21 @@ public final class Qwen4ExpMTPSession {
         for first in eligible where !consumed.contains(ObjectIdentifier(first)) {
             let group = eligible.filter {
                 !consumed.contains(ObjectIdentifier($0)) && $0.model === first.model
-                    && $0.head === first.head && $0.depth == first.depth
+                    && $0.head === first.head && $0.activeDraftDepth == first.activeDraftDepth
                     && (independentAttention || $0.primaryPosition == first.primaryPosition)
             }
             guard group.count > 1 else { continue }
             if independentAttention && !qwen4ExpSupportsSharedVerificationGeometry(
-                batchSize: group.count, width: first.depth + 1) { continue }
+                batchSize: group.count, width: first.activeDraftDepth + 1) { continue }
             first.startSharedPhase()
+            let fixedState = independentAttention ? persistentState?.restore(
+                rowIDs: group.map(\.stateIdentity), revisions: group.map(\.stateRevision),
+                reusable: group.map(\.sharedFinalStateReusable), rows: group.map {
+                    fixedStateArrays($0.targetCache)
+                }) : nil
             let mergedCache = first.model.makeMTPVerificationBatch(
-                group.map(\.targetCache), independentAttention: independentAttention, maximumRows: limit)
+                group.map(\.targetCache), independentAttention: independentAttention, maximumRows: limit,
+                fixedState: fixedState)
             first.endSharedPhase(0)
             if first.measurePhases { first.sharedMergeAttempts += 1 }
             guard let cache = mergedCache else { continue }
@@ -6309,6 +6470,8 @@ public final class Qwen4ExpMTPSession {
             for (row, session) in group.enumerated() {
                 first.model.adoptMTPVerificationRow(
                     from: cache, row: row, batchSize: group.count, into: session.targetCache)
+                session.stateRevision += 1
+                session.sharedFinalStateReusable = false
                 first.endSharedPhase(5)
                 // Sharing the pure projection never shares a sampler or
                 // changes its call order. Mixed greedy/sampled groups retain
@@ -6335,11 +6498,22 @@ public final class Qwen4ExpMTPSession {
             // Shared host construction is charged once, to the first member.
             first.endPhase(1)
             asyncEval(sampled)
+            if independentAttention {
+                persistentState?.store(rowIDs: group.map(\.stateIdentity),
+                    revisions: group.map(\.stateRevision), arrays: fixedStateArrays(cache.caches))
+            }
             first.endSharedPhase(7)
             batchCount += 1
             rowCount += group.count
         }
         return (batchCount, rowCount)
+    }
+
+    private static func fixedStateArrays(_ caches: [KVCache]) -> [MLXArray?] {
+        caches.flatMap { entry -> [MLXArray?] in
+            guard let recurrent = entry as? Qwen4ExpLayerCache else { return [nil, nil, nil, nil] }
+            return (0..<4).map { recurrent[$0] }
+        }
     }
 
     /// Submit at most one upcoming cycle without materializing its decision on
@@ -6351,7 +6525,7 @@ public final class Qwen4ExpMTPSession {
     /// cancel(). No actor/task transfer or cross-request cache sharing occurs.
     @discardableResult
     public func prepareNextToken() -> Bool {
-        guard !finished, !firstPrimaryPending, pendingVerification == nil,
+        guard !finished, !firstPrimaryPending, !repairedPrimaryPending, pendingVerification == nil,
               preparedVerification == nil else { return false }
         let prepared = prepareVerification()
         // forwardStreamState has flushed every request-owned deferred PLE
@@ -6366,6 +6540,10 @@ public final class Qwen4ExpMTPSession {
         guard !finished else { return nil }
         if firstPrimaryPending {
             firstPrimaryPending = false
+            return emit(primary)
+        }
+        if repairedPrimaryPending {
+            repairedPrimaryPending = false
             return emit(primary)
         }
         if pendingVerification == nil {
@@ -6383,6 +6561,19 @@ public final class Qwen4ExpMTPSession {
         repairAndAdvance(verification)
         pendingVerification = nil
         return emit(primary)
+    }
+
+    /// Materialize a staged decision without emitting or repairing. An owner
+    /// may resolve a bounded group before batching zero-acceptance repairs.
+    /// No extra sample is drawn; cancellation drops prepared work untouched.
+    @discardableResult
+    public func resolvePreparedVerification() -> Bool {
+        guard !finished, !firstPrimaryPending, !repairedPrimaryPending,
+              pendingVerification == nil, let prepared = preparedVerification else { return false }
+        preparedVerification = nil
+        pendingVerification = resolveVerification(prepared)
+        acceptedCursor = 0
+        return true
     }
 
     private func emit(_ token: Int) -> Int {
@@ -6415,6 +6606,8 @@ public final class Qwen4ExpMTPSession {
 
     private func prepareDraft() -> PreparedDraft {
         totalCycles += 1
+        if depthController != nil { cycleStart = DispatchTime.now().uptimeNanoseconds }
+        let depth = activeDraftDepth
 
         startPhase()
         let roundHeadOffset = mtpCache[0].offset
@@ -6477,6 +6670,8 @@ public final class Qwen4ExpMTPSession {
         let verifyTokenIDs = concatenated(
             [Self.tokens([primary]), draftTokenIDs], axis: 1)
         let targetSnapshot = Qwen3MTPCacheSnapshot.capture(targetCache)
+        stateRevision += 1
+        sharedFinalStateReusable = false
         let verifiedStream: MLXArray
         let targetTokenIDs: MLXArray
         let usedSequentialVerifier = ProcessInfo.processInfo.environment[
@@ -6527,6 +6722,13 @@ public final class Qwen4ExpMTPSession {
                 cache: targetCache,
                 acceptedDrafts: decision.acceptedDraftCount,
                 draftedTokens: decision.draftTokens.count)
+        sharedFinalStateReusable = targetCacheCommitted
+            && decision.acceptedDraftCount == decision.draftTokens.count
+        if depthController != nil {
+            depthController?.observe(drafted: decision.draftTokens.count,
+                accepted: decision.acceptedDraftCount,
+                elapsedSeconds: Double(DispatchTime.now().uptimeNanoseconds - cycleStart) / 1e9)
+        }
         endPhase(3)
         return Verification(
             headOffset: prepared.headOffset, decision: decision,
@@ -6534,60 +6736,64 @@ public final class Qwen4ExpMTPSession {
             snapshot: prepared.snapshot, targetCommitted: targetCacheCommitted)
     }
 
-    private func repairAndAdvance(_ verification: Verification) {
+    private func repairAndAdvance(_ verification: Verification, headAlreadyRepaired: Bool = false) {
         let decision = verification.decision
         let roundHeadOffset = verification.headOffset
         let verifiedStream = verification.verifiedStream
         let targetCacheCommitted = verification.targetCommitted
         let targetSnapshot = verification.snapshot
+        let committedTokens = [primary]
+            + Array(decision.draftTokens.prefix(decision.acceptedDraftCount))
+        let committedTokenArray = Self.tokens(committedTokens)
         // The first row was built from primaryStream, not a predicted
         // stream. The experimental path keeps it and repairs only the
         // suffix. Never retain subsequent rows based on token equality:
         // their predicted hidden streams can still be wrong.
-        startPhase()
-        let speculativeRows = mtpCache[0].offset - roundHeadOffset
-        let repair = Qwen4ExpMTPHeadRepairPlan(
-            drafted: decision.draftTokens.count, accepted: decision.acceptedDraftCount,
-            retainAnchor: retainHeadAnchor
-                && mtpCache.count == 1 && mtpCache[0] is Qwen4ExpAttentionCache
-                && speculativeRows == decision.draftTokens.count)
-        let trimRows = speculativeRows - repair.retainedRows
-        if trimRows > 0 { _ = mtpCache[0].trim(trimRows) }
-        totalRetainedAnchors += repair.retainedRows
-        let committedTokens = [primary]
-            + Array(decision.draftTokens.prefix(decision.acceptedDraftCount))
-        let committedTokenArray = Self.tokens(committedTokens)
-        if !repair.replayRows.isEmpty {
-            let repairStreams: MLXArray
-            if repair.retainedRows == 1 {
-                repairStreams = verifiedStream[
-                    0..., 0 ..< decision.acceptedDraftCount, 0...]
-            } else if decision.acceptedDraftCount == 0 {
-                repairStreams = primaryStream
-            } else {
-                repairStreams = concatenated([
-                    primaryStream,
-                    verifiedStream[0..., 0 ..< decision.acceptedDraftCount, 0...],
-                ], axis: 1)
+        if !headAlreadyRepaired {
+            startPhase()
+            let speculativeRows = mtpCache[0].offset - roundHeadOffset
+            let repair = Qwen4ExpMTPHeadRepairPlan(
+                drafted: decision.draftTokens.count, accepted: decision.acceptedDraftCount,
+                retainAnchor: retainHeadAnchor
+                    && mtpCache.count == 1 && mtpCache[0] is Qwen4ExpAttentionCache
+                    && speculativeRows == decision.draftTokens.count)
+            let trimRows = speculativeRows - repair.retainedRows
+            if trimRows > 0 { _ = mtpCache[0].trim(trimRows) }
+            totalRetainedAnchors += repair.retainedRows
+            if !repair.replayRows.isEmpty {
+                let repairStreams: MLXArray
+                if repair.retainedRows == 1 {
+                    repairStreams = verifiedStream[
+                        0..., 0 ..< decision.acceptedDraftCount, 0...]
+                } else if decision.acceptedDraftCount == 0 {
+                    repairStreams = primaryStream
+                } else {
+                    repairStreams = concatenated([
+                        primaryStream,
+                        verifiedStream[0..., 0 ..< decision.acceptedDraftCount, 0...],
+                    ], axis: 1)
+                }
+                let repairTokens = repair.retainedRows == 0 ? committedTokenArray
+                    : Self.tokens(Array(committedTokens.dropFirst(repair.retainedRows)))
+                _ = head(
+                    hiddenStream: repairStreams,
+                    tokenEmbeddings: model.embedTokens(repairTokens),
+                    tokenIDs: repairTokens,
+                    positionIDs: Self.positions(
+                        (primaryPosition + repair.retainedRows)
+                            ..< (primaryPosition + committedTokens.count)),
+                    cache: mtpCache
+                )
             }
-            let repairTokens = repair.retainedRows == 0 ? committedTokenArray
-                : Self.tokens(Array(committedTokens.dropFirst(repair.retainedRows)))
-            _ = head(
-                hiddenStream: repairStreams,
-                tokenEmbeddings: model.embedTokens(repairTokens),
-                tokenIDs: repairTokens,
-                positionIDs: Self.positions(
-                    (primaryPosition + repair.retainedRows)
-                        ..< (primaryPosition + committedTokens.count)),
-                cache: mtpCache
-            )
+            endPhase(4)
         }
-        endPhase(4)
 
         if decision.acceptedDraftCount != decision.draftTokens.count {
             totalReplays += 1
         }
         if !targetCacheCommitted {
+            stateRevision += 1
+            sharedFinalStateReusable = false
             totalBackboneReplayFallbacks += 1
             Qwen3MTPCacheSnapshot.restore(targetSnapshot, into: targetCache)
             _ = model.forwardStreamState(

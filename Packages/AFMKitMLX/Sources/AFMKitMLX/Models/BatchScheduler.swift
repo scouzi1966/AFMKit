@@ -141,6 +141,12 @@ actor BatchScheduler {
     private let qwenMTPSharedVerification: Bool
     private let qwenMTPIndependentAttention: Bool
     private let qwenMTPSharedVocabulary: Bool
+    private let qwenMTPSharedHead: Bool
+    private let qwenMTPAdaptiveDepth: Bool
+    private let qwenMTPPersistentState: SpeculativeRowStateCache?
+    private var qwenMTPSharedDraftRows = 0
+    private var qwenMTPSharedRepairRows = 0
+    private var qwenMTPDepthCycles: [Int: Int] = [:]
     private var qwenMTPSharedVerificationBatches = 0
     private var qwenMTPSharedVerificationRows = 0
     nonisolated let ownsQwenMTPSessions: Bool
@@ -781,6 +787,14 @@ actor BatchScheduler {
         self.qwenMTPIndependentAttention = independentAttention
         self.qwenMTPSharedVocabulary = sharedVerification
             && ProcessInfo.processInfo.environment["AFM_QWEN_MTP_SHARED_VOCAB"] == "1"
+        self.qwenMTPSharedHead = sharedVerification
+            && ProcessInfo.processInfo.environment["AFM_QWEN_MTP_SHARED_HEAD"] == "1"
+        self.qwenMTPAdaptiveDepth = ownsQwenMTP
+            && ProcessInfo.processInfo.environment["AFM_QWEN_MTP_ADAPTIVE_DEPTH"] == "1"
+        let stateMiB = min(2048, max(0, Int(ProcessInfo.processInfo.environment[
+            "AFM_QWEN_MTP_PERSISTENT_STATE_MIB"] ?? "0") ?? 0))
+        self.qwenMTPPersistentState = independentAttention && stateMiB > 0
+            ? SpeculativeRowStateCache(maximumBytes: stateMiB * 1024 * 1024) : nil
         self.qwenMTPSubmissionWindow = ownsQwenMTP ? min(independentAttention ? 8 : 4, max(sharedVerification ? 2 : 1,
             Int(ProcessInfo.processInfo.environment[
                 "AFM_QWEN_MTP_SUBMISSION_WINDOW"] ?? "1") ?? 1)) : 1
@@ -1031,8 +1045,18 @@ actor BatchScheduler {
             print("[BatchScheduler] Qwen MTP shared verification: batches=\(qwenMTPSharedVerificationBatches) | rows=\(qwenMTPSharedVerificationRows)")
             print("[BatchScheduler] Qwen MTP independent attention: \(qwenMTPIndependentAttention)")
             print("[BatchScheduler] Qwen MTP shared vocabulary: \(qwenMTPSharedVocabulary)")
+            print("[BatchScheduler] Qwen MTP shared head: \(qwenMTPSharedHead) | draft rows=\(qwenMTPSharedDraftRows) | repair rows=\(qwenMTPSharedRepairRows)")
+            print("[BatchScheduler] Qwen MTP adaptive depth: \(qwenMTPAdaptiveDepth)")
+            if qwenMTPAdaptiveDepth {
+                let histogram = qwenMTPDepthCycles.keys.sorted().map { "\($0):\(qwenMTPDepthCycles[$0]!)" }.joined(separator: ",")
+                print("[BatchScheduler] Qwen MTP depth cycles: \(histogram)")
+            }
+            if let state = qwenMTPPersistentState {
+                print("[BatchScheduler] Qwen MTP persistent state: reused rows=\(state.reusedRows) | refreshed rows=\(state.refreshedRows) | retained bytes=\(state.retainedBytes)")
+            }
         }
         qwenMTPReplayCache?.removeAll()
+        qwenMTPPersistentState?.prune(activeRows: [])
         groupedSlotIDs.removeAll()
         needsUniformDecodeGrouping = false
         batchCaches = []
@@ -1649,7 +1673,7 @@ actor BatchScheduler {
             seed: req.parameters.seed, promptState: replayState,
             retainPromptState: replayState?.promptIds.count != inputTokens.count
                 && qwenMTPReplayCache?.canStore(prompt: inputTokens) == true,
-            allowPromptPrefixReplay: true)
+            allowPromptPrefixReplay: true, adaptiveDepth: qwenMTPAdaptiveDepth)
         else {
             failPendingRequest(req,
                 error: MLXServiceError.loadFailed("Unable to create Qwen MTP session"))
@@ -2217,19 +2241,42 @@ actor BatchScheduler {
                       case .qwen(let session) = slot.speculativeSession else { return nil }
                 return (slot, session)
             }
+            qwenMTPPersistentState?.prune(activeRows: Set(candidates.map { $0.session.stateIdentity }))
+            if qwenMTPSharedHead {
+                let repaired = Qwen4ExpMTPSession.prepareCompatibleHeadRepairs(
+                    candidates.map(\.session), maximumRows: qwenMTPSubmissionWindow)
+                qwenMTPSharedRepairRows += repaired.rows
+            }
             for indices in Qwen4ExpMTPSession.compatibleVerificationGroups(
                 candidates.map(\.session), maximumRows: qwenMTPSubmissionWindow,
                 independentAttention: qwenMTPIndependentAttention)
             {
                 let members = indices.map { candidates[$0] }.filter { !isCancellationRequested($0.slot.id) }
                 let sessions = members.map(\.session)
+                let cyclesBefore = qwenMTPAdaptiveDepth ? sessions.map(\.verificationCycleCount) : []
+                if qwenMTPSharedHead {
+                    qwenMTPSharedDraftRows += Qwen4ExpMTPSession.prepareCompatibleDraftBatch(sessions)
+                }
                 for session in sessions { session.prepareDraftTokens() }
+                if qwenMTPAdaptiveDepth {
+                    for (i, session) in sessions.enumerated() where session.verificationCycleCount > cyclesBefore[i] {
+                        qwenMTPDepthCycles[session.activeDraftDepth, default: 0] += 1
+                    }
+                }
                 let shared = Qwen4ExpMTPSession.prepareCompatibleVerificationBatches(
                     sessions, independentAttention: qwenMTPIndependentAttention,
                     sharedVocabularyProjection: qwenMTPSharedVocabulary,
-                    maximumRows: qwenMTPSubmissionWindow)
+                    maximumRows: qwenMTPSubmissionWindow, persistentState: qwenMTPPersistentState)
                 qwenMTPSharedVerificationBatches += shared.batches
                 qwenMTPSharedVerificationRows += shared.rows
+                if qwenMTPSharedHead {
+                    for session in sessions {
+                        if session.prepareNextToken() { qwenMTPPreparedCycles += 1 }
+                        session.resolvePreparedVerification()
+                    }
+                    qwenMTPSharedRepairRows += Qwen4ExpMTPSession.prepareCompatibleHeadRepairs(
+                        sessions, maximumRows: qwenMTPSubmissionWindow).rows
+                }
                 for member in members {
                     if member.session.prepareNextToken() { qwenMTPPreparedCycles += 1 }
                     if let token = member.session.nextToken() { sharedQwenTokens[member.slot.id] = token }
@@ -2927,6 +2974,10 @@ actor BatchScheduler {
             DebugLogger.log("[BatchScheduler] finishSlot timing: total=\(String(format: "%.1f", totalTime))ms cache_save=\(String(format: "%.1f", cacheTime))ms")
         }
         slots.remove(at: index)
+        qwenMTPPersistentState?.prune(activeRows: Set(slots.compactMap { slot in
+            guard case .qwen(let session) = slot.speculativeSession else { return nil }
+            return session.stateIdentity
+        }))
     }
 
     /// Materialize and publish one sampled token. Keeping this in one place

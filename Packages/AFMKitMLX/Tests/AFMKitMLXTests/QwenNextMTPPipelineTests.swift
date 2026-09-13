@@ -181,7 +181,8 @@ final class QwenNextMTPPipelineTests: XCTestCase {
 
     private func assertSharedSessionVerification(
         _ model: Qwen4ExpModel, temperature: Float, independentAttention: Bool = false,
-        sharedVocabulary: Bool = false, mixedSampling: Bool = false, expanded: Bool = false
+        sharedVocabulary: Bool = false, mixedSampling: Bool = false, expanded: Bool = false,
+        sharedHead: Bool = false
     ) throws {
         let head = Qwen4ExpMTPHead(model.configuration)
         eval(model, head)
@@ -203,15 +204,28 @@ final class QwenNextMTPPipelineTests: XCTestCase {
         XCTAssertEqual(Qwen4ExpMTPSession.prepareCompatibleVerificationBatches([sessions[0], sessions[0]]).rows, 0)
         var output = [[Int]](repeating: [], count: sessions.count)
         var batchedRows = 0
+        var draftRows = 0
+        var repairRows = 0
         for step in 0..<12 {
+            if sharedHead {
+                repairRows += Qwen4ExpMTPSession.prepareCompatibleHeadRepairs(sessions, maximumRows: maximumRows).rows
+            }
             for indices in Qwen4ExpMTPSession.compatibleVerificationGroups(
                 sessions, maximumRows: maximumRows, independentAttention: independentAttention) {
                 let group = indices.map { sessions[$0] }
+                if sharedHead { draftRows += Qwen4ExpMTPSession.prepareCompatibleDraftBatch(group) }
                 for session in group { session.prepareDraftTokens() }
                 let shared = Qwen4ExpMTPSession.prepareCompatibleVerificationBatches(
                     group, independentAttention: independentAttention,
                     sharedVocabularyProjection: sharedVocabulary, maximumRows: maximumRows)
                 batchedRows += shared.rows
+                if sharedHead {
+                    for session in group {
+                        session.prepareNextToken()
+                        session.resolvePreparedVerification()
+                    }
+                    repairRows += Qwen4ExpMTPSession.prepareCompatibleHeadRepairs(group, maximumRows: maximumRows).rows
+                }
                 // A row is cancelled after a confirmed shared graph was
                 // submitted, without preventing other rows from finishing.
                 if step == 1, indices.contains(1) {
@@ -224,6 +238,10 @@ final class QwenNextMTPPipelineTests: XCTestCase {
             }
         }
         XCTAssertGreaterThan(batchedRows, 0)
+        if sharedHead {
+            XCTAssertGreaterThan(draftRows, 0)
+            XCTAssertGreaterThan(repairRows, 0)
+        }
         for i in sessions.indices {
             XCTAssertEqual(output[i], i == 1 ? Array(expected[i].prefix(1)) : expected[i])
             XCTAssertNil(sessions[i].nextToken())
@@ -280,6 +298,102 @@ final class QwenNextMTPPipelineTests: XCTestCase {
                 independentAttention: true, sharedVocabulary: true,
                 mixedSampling: temperature > 0, expanded: true)
         }
+    }
+
+    func testSharedHeadPreservesGreedySampledCancellationAndPrivatePositions() async throws {
+        let model = try await makeModel(indexerBudget: 4)
+        for temperature: Float in [0, 0.6] {
+            try assertSharedSessionVerification(model, temperature: temperature,
+                independentAttention: true, mixedSampling: temperature > 0,
+                expanded: true, sharedHead: true)
+        }
+    }
+
+    func testPersistentBatchMatchesRebuiltNonzeroStateAfterPartialRejection() async throws {
+        let model = try await makeModel(indexerBudget: 4)
+        eval(model)
+        let caches = (0..<3).map { _ in model.newCache(parameters: nil) }
+        for row in caches.indices {
+            let prompt = MLXArray(Array(1...(row * 3 + 4))).reshaped(1, -1)
+            eval(model.forwardStreamState(inputIDs: prompt, cache: caches[row]).hidden)
+        }
+        func fixed(_ cache: [KVCache]) -> [MLXArray?] {
+            cache.flatMap { entry -> [MLXArray?] in
+                guard let recurrent = entry as? ArraysCache else { return [nil, nil, nil, nil] }
+                return (0..<4).map { recurrent[$0] }
+            }
+        }
+        let first = try XCTUnwrap(model.makeMTPVerificationBatch(caches, independentAttention: true))
+        let ids = [9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
+        eval(model.forwardMTPVerificationBatch(inputIDs: MLXArray(ids).reshaped(3, 4),
+            batch: first, hostTokenIDs: ids).hidden)
+        let state = SpeculativeRowStateCache(maximumBytes: 64 * 1024 * 1024)
+        let identities = [UUID(), UUID(), UUID()]
+        state.store(rowIDs: identities, revisions: [1, 1, 1], arrays: fixed(first.caches))
+        for row in caches.indices {
+            model.adoptMTPVerificationRow(from: first, row: row, batchSize: 3, into: caches[row])
+            XCTAssertTrue(model.finishMTPVerification(cache: caches[row],
+                acceptedDrafts: [3, 0, 1][row], draftedTokens: 3))
+        }
+        let restored = try XCTUnwrap(state.restore(rowIDs: identities, revisions: [1, 1, 1],
+            reusable: [true, false, false], rows: caches.map(fixed)))
+        XCTAssertEqual(state.reusedRows, 1)
+        XCTAssertEqual(state.refreshedRows, 2)
+        let saved = caches.map { $0.map { $0.state.map { $0.asArray(Float.self) } } }
+        XCTAssertTrue(restored.compactMap { $0 }.contains { abs($0).max().item(Float.self) > 0 })
+        let reused = try XCTUnwrap(model.makeMTPVerificationBatch(caches,
+            independentAttention: true, fixedState: restored))
+        let rebuilt = try XCTUnwrap(model.makeMTPVerificationBatch(caches, independentAttention: true))
+        let nextIDs = [21, 22, 23, 24, 25, 26]
+        let input = MLXArray(nextIDs).reshaped(3, 2)
+        let a = model.forwardMTPVerificationBatch(inputIDs: input, batch: reused, hostTokenIDs: nextIDs)
+        let b = model.forwardMTPVerificationBatch(inputIDs: input, batch: rebuilt, hostTokenIDs: nextIDs)
+        XCTAssertEqual(a.hidden.asArray(Float.self), b.hidden.asArray(Float.self))
+        XCTAssertEqual(a.stream.asArray(Float.self), b.stream.asArray(Float.self))
+        XCTAssertEqual(caches.map { $0.map { $0.state.map { $0.asArray(Float.self) } } }, saved)
+    }
+
+    func testPersistentStateAndAdaptiveDepthWithSharedHeadUseRealCacheReuse() async throws {
+        let model = try await makeModel(indexerBudget: 4)
+        let head = Qwen4ExpMTPHead(model.configuration)
+        // Deterministic full acceptance exercises actual unchanged-row reuse;
+        // the separate ordinary-weight tests cover rejection and mixed outputs.
+        model.update(parameters: model.mapParameters { MLXArray.zeros($0.shape, dtype: $0.dtype) })
+        head.update(parameters: head.mapParameters { MLXArray.zeros($0.shape, dtype: $0.dtype) })
+        eval(model, head)
+        let generator = Qwen4ExpMTPGenerator(model: model, head: head, depth: 3,
+            verificationPolicy: .batched, draftDispatchStride: 1)
+        let sessions = try (0..<4).map { row in
+            try XCTUnwrap(generator.makeSession(promptIds: Array(repeating: row + 1, count: row + 3),
+                maxTokens: 32, adaptiveDepth: true))
+        }
+        let state = SpeculativeRowStateCache(maximumBytes: 64 * 1024 * 1024)
+        var counts = [Int](repeating: 0, count: sessions.count)
+        for _ in 0..<32 {
+            _ = Qwen4ExpMTPSession.prepareCompatibleHeadRepairs(sessions)
+            for indices in Qwen4ExpMTPSession.compatibleVerificationGroups(sessions, independentAttention: true) {
+                let group = indices.map { sessions[$0] }
+                _ = Qwen4ExpMTPSession.prepareCompatibleDraftBatch(group)
+                for session in group { session.prepareDraftTokens() }
+                _ = Qwen4ExpMTPSession.prepareCompatibleVerificationBatches(group,
+                    independentAttention: true, persistentState: state)
+                for session in group {
+                    session.prepareNextToken()
+                    session.resolvePreparedVerification()
+                }
+                _ = Qwen4ExpMTPSession.prepareCompatibleHeadRepairs(group)
+                for i in indices {
+                    XCTAssertEqual(sessions[i].nextToken(), 0)
+                    counts[i] += 1
+                    XCTAssertTrue((1...3).contains(sessions[i].activeDraftDepth))
+                }
+            }
+        }
+        XCTAssertEqual(counts, [32, 32, 32, 32])
+        XCTAssertGreaterThan(state.reusedRows, 0)
+        XCTAssertTrue(sessions.allSatisfy { $0.nextToken() == nil })
+        state.prune(activeRows: [])
+        XCTAssertEqual(state.retainedBytes, 0)
     }
 
     func testExpandedSharedGroupsKeepSamplingCancellationAndDefaultBounds() async throws {
