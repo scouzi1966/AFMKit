@@ -11,19 +11,32 @@ public final class SpeculativeRowStateCache {
         let revisions: [Int]
         let arrays: [MLXArray?]
         let bytes: Int
+        var liveRows: Set<UUID>
     }
     private static let maximumEntries = 4
     private let maximumBytes: Int
+    private let remapMembership: Bool
     private var entries: [[UUID]: Entry] = [:]
     private var order: [[UUID]] = []
     public private(set) var retainedBytes = 0
     public private(set) var reusedRows = 0
     public private(set) var refreshedRows = 0
+    public private(set) var membershipHits = 0
+    public private(set) var remappedRows = 0
+    public private(set) var peakRetainedBytes = 0
 
-    public init(maximumBytes: Int) { self.maximumBytes = max(0, maximumBytes) }
+    public init(maximumBytes: Int, remapMembership: Bool = false) {
+        self.maximumBytes = max(0, maximumBytes)
+        self.remapMembership = remapMembership
+    }
 
     public func prune(activeRows: Set<UUID>) {
-        for key in order where !key.allSatisfy(activeRows.contains) { remove(key) }
+        for key in order {
+            if remapMembership {
+                entries[key]?.liveRows.formIntersection(activeRows)
+                if entries[key]?.liveRows.isEmpty == true { remove(key) }
+            } else if !key.allSatisfy(activeRows.contains) { remove(key) }
+        }
     }
 
     private func remove(_ key: [UUID]) {
@@ -34,34 +47,54 @@ public final class SpeculativeRowStateCache {
     public func restore(
         rowIDs: [UUID], revisions: [Int], reusable: [Bool], rows: [[MLXArray?]]
     ) -> [MLXArray?]? {
-        guard let entry = entries[rowIDs], rowIDs.count == rows.count,
-              revisions.count == rows.count, reusable.count == rows.count,
-              rows.allSatisfy({ $0.count == entry.arrays.count }) else { return nil }
-        let unchanged = rows.indices.filter { reusable[$0] && revisions[$0] == entry.revisions[$0] }
-        guard !unchanged.isEmpty else { return nil }
-        let changed = rows.indices.filter { !reusable[$0] || revisions[$0] != entry.revisions[$0] }
-        // Validate every array before constructing updates; nil is meaningful.
-        for column in entry.arrays.indices {
-            guard let base = entry.arrays[column] else {
-                guard rows.allSatisfy({ $0[column] == nil }) else { return nil }
-                continue
+        guard (2...8).contains(rows.count), Set(rowIDs).count == rowIDs.count,
+              rowIDs.count == rows.count, revisions.count == rows.count,
+              reusable.count == rows.count else { return nil }
+        func matchingRows(_ key: [UUID], _ entry: Entry) -> [Int: Int] {
+            var matches: [Int: Int] = [:]
+            for row in rows.indices where reusable[row] && entry.liveRows.contains(rowIDs[row]) {
+                if let saved = key.firstIndex(of: rowIDs[row]), revisions[row] == entry.revisions[saved] {
+                    matches[row] = saved
+                }
             }
-            guard base.ndim > 0, base.dim(0) == rows.count,
-                  rows.allSatisfy({ row in
-                      guard let value = row[column] else { return false }
-                      return value.shape == [1] + Array(base.shape.dropFirst()) && value.dtype == base.dtype
-                  }) else { return nil }
+            return matches
         }
+        // Reuse one immutable bank. Prefer the newest compatible bank with
+        // the most certified rows. Missing/rejected/new rows remain owned by
+        // their requests; never join histories or infer identity by position.
+        let keys = remapMembership ? order.reversed().map { $0 } : [rowIDs]
+        var selected: ([UUID], Entry, [Int: Int])?
+        for key in keys {
+            guard let candidate = entries[key],
+                  rows.allSatisfy({ $0.count == candidate.arrays.count }) else { continue }
+            let matches = matchingRows(key, candidate)
+            guard !matches.isEmpty, matches.count > (selected?.2.count ?? 0) else { continue }
+            let valid = candidate.arrays.indices.allSatisfy { column in
+                guard let base = candidate.arrays[column] else {
+                    return rows.allSatisfy { $0[column] == nil }
+                }
+                return base.ndim > 0 && base.dim(0) == key.count && rows.allSatisfy { row in
+                    guard let value = row[column] else { return false }
+                    return value.shape == [1] + Array(base.shape.dropFirst()) && value.dtype == base.dtype
+                }
+            }
+            if valid { selected = (key, candidate, matches) }
+        }
+        guard let (key, entry, matches) = selected else { return nil }
+        let unchanged = Array(matches.keys)
+        guard !unchanged.isEmpty else { return nil }
+        let changed = rows.indices.filter { matches[$0] == nil }
+        let sameLayout = key.count == rows.count && matches.allSatisfy { $0.key == $0.value }
         let result = entry.arrays.indices.map { column -> MLXArray? in
             guard let base = entry.arrays[column] else { return nil }
-            guard !changed.isEmpty else { return base }
+            if sameLayout && changed.isEmpty { return base }
             // GPU scatter cannot update 64-bit integer payloads. Token-history
             // columns are small; reconstruct those with supported slice/copy
             // operations while retaining scatter for the large recurrent bank.
-            if base.dtype == .int64 || base.dtype == .uint64 {
-                let unchangedRows = Set(unchanged)
+            if !sameLayout || base.dtype == .int64 || base.dtype == .uint64 {
                 return concatenated(rows.indices.map { row in
-                    unchangedRows.contains(row) ? base[row..<(row + 1)] : rows[row][column]!
+                    if let saved = matches[row] { return base[saved..<(saved + 1)] }
+                    return rows[row][column]!
                 }, axis: 0)
             }
             // Slice makes a distinct MLXArray handle. The scatter is functional;
@@ -72,8 +105,10 @@ public final class SpeculativeRowStateCache {
         }
         reusedRows += unchanged.count
         refreshedRows += changed.count
-        order.removeAll { $0 == rowIDs }
-        order.append(rowIDs)
+        if key != rowIDs { membershipHits += 1 }
+        remappedRows += matches.filter { $0.key != $0.value }.count
+        order.removeAll { $0 == key }
+        order.append(key)
         return result
     }
 
@@ -90,8 +125,10 @@ public final class SpeculativeRowStateCache {
         while let first = order.first,
               entries.count >= Self.maximumEntries || bytes > maximumBytes - retainedBytes { remove(first) }
         // Distinct array handles retain immutable values, not mutable cache slots.
-        entries[rowIDs] = Entry(revisions: revisions, arrays: arrays.map { $0.map { $0[0...] } }, bytes: bytes)
+        entries[rowIDs] = Entry(revisions: revisions, arrays: arrays.map { $0.map { $0[0...] } },
+            bytes: bytes, liveRows: Set(rowIDs))
         order.append(rowIDs)
         retainedBytes += bytes
+        peakRetainedBytes = max(peakRetainedBytes, retainedBytes)
     }
 }

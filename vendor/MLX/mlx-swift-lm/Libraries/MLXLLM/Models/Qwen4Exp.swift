@@ -6089,7 +6089,18 @@ public final class Qwen4ExpMTPSession {
     private var sharedFinalStateReusable = false
     private var depthController: AdaptiveSpeculationController?
     private var cycleStart: UInt64 = 0
-    public var activeDraftDepth: Int { preparedDraft?.tokens.count ?? depthController?.selectedDepth ?? depth }
+    private var cohortDepth: Int?
+    public var activeDraftDepth: Int { preparedDraft?.tokens.count ?? cohortDepth ?? depthController?.selectedDepth ?? depth }
+
+    /// Change work only at an idle cycle boundary. Never resize a staged draft,
+    /// acceptance decision, pending repair or strict-policy request.
+    @discardableResult
+    public func selectCohortDepth(_ proposed: Int) -> Bool {
+        guard !finished, verificationPolicy == .batched,
+              preparedDraft == nil, preparedVerification == nil, pendingVerification == nil else { return false }
+        cohortDepth = min(depth, max(1, proposed))
+        return true
+    }
     public private(set) var tokenCount = 0
     public var verificationCycleCount: Int { totalCycles }
 
