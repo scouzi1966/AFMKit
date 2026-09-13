@@ -1,12 +1,12 @@
 # Qwen Next opt-in activation and experiment matrix
 
-Last source audit: **2026-09-13**, AFMKit runtime `a1255dc6`, paired consumer
+Last source audit: **2026-09-13**, AFMKit runtime `4d2cf327`, paired consumer
 `9acccfc`. Workstream: [PR #123](https://github.com/scouzi1966/AFMKit/pull/123).
 This is the central index of settings and combinations for the Qwen Next
 optimization project. Update it with every new experiment, removal or result.
 Historical reports remain the evidence; this index does not rewrite them.
 
-Inventory audit: **40 named Qwen controls, 39 wired and one removed**. This
+Inventory audit: **43 named Qwen controls, 42 wired and one removed**. This
 covers every Qwen control named in the preceding `QWEN_NEXT_*` reports and
 shared-batch workstream, plus the existing deferred-token-resolution control.
 The generic replay/profiling/SDPA controls and CLI settings are listed separately.
@@ -54,8 +54,12 @@ Paired-development binary, not the installed Homebrew executable:
 /Volumes/edata2/dev/CODEX/maclocal-api-qwen-next-mtp-parity/.build/release/afm
 ```
 
-Latest measured runtime SHA-256 (`a1255dc6`, width and composed-verifier experiments):
+Historical runtime SHA-256 (`a1255dc6`, width and composed-verifier experiments):
 `777a3a8708dc8a650e1fe9773caa2aa6fa42030be4f47e8aac486cb47469ed3d`.
+Corrected shared-work experiment runtime SHA-256 (`4d2cf327`):
+`a78772f6c111715d68d9f428926d6ea035e1e9c16d0ccd9db5ada54a99d6c664`.
+The initial shared-work binary `e4d914ee…` exposed an int64 state-update crash;
+its failed arm remains separate evidence, not a passing qualification.
 The binary reports development `v0.9.20`; the version string does not establish
 source identity. The path is mutable: hash it again after any rebuild.
 Earlier reports' hashes identify earlier binaries, not what currently occupies
@@ -111,6 +115,9 @@ those particular experiments. They do not sanitize every possible variable.
   AFM_QWEN_MTP_SHARED_VERIFY=1 \
   AFM_QWEN_MTP_INDEPENDENT_ATTENTION=1 \
   AFM_QWEN_MTP_SHARED_VOCAB=0 \
+  AFM_QWEN_MTP_SHARED_HEAD=0 \
+  AFM_QWEN_MTP_ADAPTIVE_DEPTH=0 \
+  AFM_QWEN_MTP_PERSISTENT_STATE_MIB=0 \
   AFM_QWEN_MTP_RETAIN_ANCHOR=0 \
   AFM_QWEN_PLE_ROW_CACHE_MIB=0 \
   AFM_QWEN_PLE_VECTOR_UNPACK=0 \
@@ -162,6 +169,31 @@ caching off, omit `--enable-prefix-caching`; leave other settings unchanged
 for a controlled comparison. The replay cache then cannot activate. To leave
 the entire experiment, stop only the owned server and launch without these
 environment settings from a clean shell.
+
+### Recipes M16–M20: three independently controlled shared-work experiments
+
+Start from the **complete W8-L2 recipe** above (ladder 2, vocabulary 0).
+Replace only the assignments in the selected row; do not append duplicate
+assignments. These options are not API kwargs or installed-release defaults.
+
+| ID | Shared head | Adaptive depth | Persistent state MiB | Meaning |
+|---|---:|---:|---:|---|
+| Control | 0 | 0 | 0 | Fixed depth 3, independent head, ordinary state merges |
+| M16 | 1 | 0 | 0 | `AFM_QWEN_MTP_SHARED_HEAD=1` |
+| M17 | 0 | 1 | 0 | `AFM_QWEN_MTP_ADAPTIVE_DEPTH=1`; selects depths 1–3 |
+| M18 | 0 | 0 | 1024 | `AFM_QWEN_MTP_PERSISTENT_STATE_MIB=1024` |
+| M19 | 1 | 1 | 1024 | All three; separate combination, not summed individual gains |
+| M20 | 0 | 0 | 2048 | Larger state-bank budget only; separate screen |
+
+Head + adaptive without state, head + state without adaptive, and adaptive +
+state without head are **not measured**. Neither is the all-three combination
+at 2048 MiB. They must not inherit M16's gain or M19's qualification by addition.
+
+Implementation and qualification are documented in
+[shared speculative work](QWEN_NEXT_SHARED_SPECULATIVE_WORK.md). Other depths,
+sampled throughput and prefix-off combinations need their own evidence.
+Actual group width and state-reuse counters matter;
+enabled flags alone do not prove an active optimization.
 
 ### Request controls are separate
 
@@ -236,6 +268,11 @@ used the later ladder-4 settings. Older exact flags remain in their manifests.
 | M13 | Shared verifier + non-greedy requests (for example temperature 0.6/top-p 0.95) | Per-request sampling/lifecycle coverage exists, including mixed greedy/sampled groups. Latest full greedy matrix is **not** a sampled-performance matrix. |
 | M14 | W8 + replay off, prefix off, other client counts, longer contexts, or PLE row cache | Controls are available where their guards allow. **Latest window-8 throughput/quality matrix not run for these combinations.** Do not extrapolate C15/prefix-on results. |
 | M15 / W8-L2 | W8 with `AFM_QWEN_VERIFY_SHARED_ASYNC_LADDER=2`, vocabulary stays `0` | **Measured**, separate opt-in: repeat 117.46–119.21 tok/s, +2.35–5.39% over matched ladder-4 arms; first-phase token rate −1.10–1.45%. Structural 60/60 versus 59/60, but changed outputs and mixed latency. [Evidence](QWEN_NEXT_COMPOSED_VERIFIER_EXPERIMENTS.md#window-8-submission-every-two-versus-four-layers). |
+| M16 | W8-L2 + shared head only | **Measured candidate**: corrected repeat 125.62–130.25 tok/s, +6.03–12.81%; structurally valid tasks/s +6.87–11.06%. Candidate/control both 59/60 structural across two pairs, but outputs differ. Still opt-in. [Evidence](QWEN_NEXT_SHARED_SPECULATIVE_WORK.md). |
+| M17 | W8-L2 + adaptive depth only | **Measured, not recommended for speed**: 107.30 repeat tok/s, −9.43% versus matched control; smaller shared groups. 30/30 runtime and structural. [Evidence](QWEN_NEXT_SHARED_SPECULATIVE_WORK.md). |
+| M18 | W8-L2 + 1024-MiB persistent state only | Corrected live screen: 30/30 requests, 29/30 structural; 114.91 repeat tok/s versus control 115.45, only three reused rows. No demonstrated cache speedup. [Evidence](QWEN_NEXT_SHARED_SPECULATIVE_WORK.md). |
+| M19 | W8-L2 + all three | Live screen: 30/30 requests and structural checks; 111.83 repeat tok/s, −3.14% versus control. Reuse 60 / refresh 4; functional, not a speed recommendation. [Evidence](QWEN_NEXT_SHARED_SPECULATIVE_WORK.md). |
+| M20 | W8-L2 + 2048-MiB persistent state only | **Measured, no speed win**: 112.98 repeat tok/s, −2.15%; 195 reused / 5 refreshed rows. 30/30 runtime, 29/30 structural. [Evidence](QWEN_NEXT_SHARED_SPECULATIVE_WORK.md). |
 
 ## Six-mode coverage ledger
 
@@ -259,6 +296,11 @@ separate. The newer two-arm window experiment completed 120/120, with candidate
 were only 2/30 and 3/30. That is not proof of semantic parity. The subsequent
 composed-verifier screen completed another 240/240 requests; M11 and M15's
 structural and performance results remain separate in their linked report.
+The shared-work follow-up completes **240/240 runtime requests and 236/240
+structural checks** on its corrected binary, plus **240/240 lifecycle assertions**
+in separate C6 head-only and all-three runs. It does not replace the missing
+full six-mode requalification. The pre-fix state-cache crash remains separately
+documented; it is not counted as a successful performance arm.
 
 ## Setting inventory: effective defaults and prerequisites
 
@@ -314,6 +356,9 @@ to finish; those pages can still be reclaimed. Do not imply it pins the model.
 | `AFM_QWEN_MTP_INDEPENDENT_ATTENTION` | Off | `1` + shared verifier; request-owned real-offset attention in shared backbone groups |
 | `AFM_QWEN_MTP_SUBMISSION_WINDOW` | Requested 1 | Owner: clamp 1–4 independently, **2–4** if shared, **2–8** if shared + independent attention. Thus shared-on/unset effectively means 2, not 1. No owner means 1. |
 | `AFM_QWEN_MTP_SHARED_VOCAB` | Off | `1` + shared owner; eligible 2–4 requests, at most 16 request/token rows; otherwise independent projection |
+| `AFM_QWEN_MTP_SHARED_HEAD` | Off | `1` + shared owner and batched policy; 2–8 compatible heads, private attention; repair width at most 4; retained anchor uses fallback |
+| `AFM_QWEN_MTP_ADAPTIVE_DEPTH` | Off | `1` + owner and batched policy; request-local 1…min(requested depth, 8), not automatic MTP-off |
+| `AFM_QWEN_MTP_PERSISTENT_STATE_MIB` | 0 / off | Integer clamped 0–2048; independent-attention shared verifier; up to four revision-guarded fixed-state banks; not attention/prefix/answer caching |
 | `AFM_QWEN_MTP_RETAIN_ANCHOR` | Off | `1` + batched policy and qualified trimmable head state; strict mode ignores it |
 
 Window 8 does **not** mean MTP depth 8, eight copies of the model, or server
@@ -402,6 +447,14 @@ files. The follow-up `COMPOSED-VERIFIER-20260913-SHA256SUMS.txt` separately
 inventories the new timing arms, lifecycle runs, comparisons and test logs.
 Older manifests and helper scripts are immutable evidence. Do not
 edit a frozen runner or relabel an old result as a new combination.
+
+`SHARED-WORK-20260913-SHA256SUMS.txt` freezes **630 additional/current-workstream
+files**, including timing/lifecycle records, comparisons, build/test logs,
+the failed attempt and executable-byte checkpoints. Its SHA-256 is
+`0e9a101a527a517841e31b199c924abdfcbe367710a29a18a4e2d109f55c1002`.
+All 630 entries verified, as did the unchanged preceding 433-file and 452-file
+manifests. Some frozen shared workload inputs are intentionally also inventoried;
+630 is a manifest-entry count, not a count of new tests.
 
 Each new experiment must update this matrix **in the same workstream commit**:
 
