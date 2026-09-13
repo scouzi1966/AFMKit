@@ -54,7 +54,7 @@ Paired-development binary, not the installed Homebrew executable:
 /Volumes/edata2/dev/CODEX/maclocal-api-qwen-next-mtp-parity/.build/release/afm
 ```
 
-Latest measured runtime SHA-256 (`a1255dc6`, window-width experiment):
+Latest measured runtime SHA-256 (`a1255dc6`, width and composed-verifier experiments):
 `777a3a8708dc8a650e1fe9773caa2aa6fa42030be4f47e8aac486cb47469ed3d`.
 The binary reports development `v0.9.20`; the version string does not establish
 source identity. The path is mutable: hash it again after any rebuild.
@@ -140,7 +140,22 @@ For the **same-binary W4 control**, replace the window value with
 `AFM_QWEN_MTP_SUBMISSION_WINDOW=4`; keep independent attention enabled and
 vocabulary disabled. For the **V4 vocabulary candidate**, start with W4 and
 replace `AFM_QWEN_MTP_SHARED_VOCAB=0` with `AFM_QWEN_MTP_SHARED_VOCAB=1`.
-Do not call W8+vocabulary a tested preset.
+W8+vocabulary was subsequently measured as **M11**, with mixed quality and
+small gains; it is not a recommended preset.
+
+### Recipe W8-L2: smaller shared submission interval
+
+Start with the complete W8 command above and **replace**, rather than duplicate,
+`AFM_QWEN_VERIFY_SHARED_ASYNC_LADDER=4` with
+`AFM_QWEN_VERIFY_SHARED_ASYNC_LADDER=2`. Keep window 8, vocabulary `0` and all
+other arguments unchanged. Restore ladder `4` to return to W8.
+
+This is **M15**, a separately measured opt-in: repeat aggregate tok/s improved
+2.35–5.39%, while first-phase token rate decreased 1.10–1.45%. Outputs differed;
+one pair's repeat completion time barely changed. See
+[the complete tradeoff and quality evidence](QWEN_NEXT_COMPOSED_VERIFIER_EXPERIMENTS.md).
+W8-L2 plus vocabulary, prefix off, or sampled-performance combinations are
+**not measured** by this result. The existing W8 recipe remains ladder 4.
 
 For manual WebUI use append `-w`. Timing runs did not use it. To turn prefix
 caching off, omit `--enable-prefix-caching`; leave other settings unchanged
@@ -150,7 +165,7 @@ environment settings from a clean shell.
 
 ### Request controls are separate
 
-The latest W4/W8/V4 screen uses these fields with the frozen agentic prompts:
+The W4/W8/V4 and W8-L2 screens use these fields with the frozen agentic prompts:
 
 ```json
 {
@@ -216,10 +231,11 @@ used the later ladder-4 settings. Older exact flags remain in their manifests.
 | M8 / W4 | M + `AFM_QWEN_MTP_INDEPENDENT_ATTENTION=1`, window `4`, vocabulary `0` | Private real-offset attention plus shared backbone. Measured repeat gains varied about 2.8–8.2%; useful-task gain not consistently material. [Evidence](QWEN_NEXT_MIXED_POSITION_VERIFICATION.md). |
 | M9 / W8 | Full W8 command above: M8 with window `8` | Latest opposite-order pairs: +5.24/+6.40% first aggregate, +4.02/+8.73% repeat; repeat valid tasks/s +7.52/+6.41%. 60/60 candidate structural checks, but answers differ. Still opt-in. [Evidence](QWEN_NEXT_VERIFICATION_WIDTH_EXPERIMENTS.md). |
 | M10 / V4 | M8 with `AFM_QWEN_MTP_SHARED_VOCAB=1`, window stays `4` | Latest repeat tok/s +1.72/+2.71%; valid tasks/s −3.34/+2.59%. Mixed quality/useful-work evidence; not a default candidate. [Evidence](QWEN_NEXT_VERIFICATION_WIDTH_EXPERIMENTS.md). |
-| M11 | W8 + vocabulary `1` | **Available but NOT benchmarked together.** Vocabulary sharing is eligible only in subgroups of at most four requests; larger groups use independent projections. Not eight-way shared vocabulary. |
+| M11 | W8 + vocabulary `1`, ladder stays `4` | **Measured**, not recommended: repeat tok/s +0.95–3.59%; candidate 57/60 versus control 59/60 structural passes. Only eligible subgroups of at most four requests share vocabulary; not eight-way shared vocabulary. [Evidence](QWEN_NEXT_COMPOSED_VERIFIER_EXPERIMENTS.md#window-8-plus-vocabulary-sharing). |
 | M12 | MTP + `AFM_QWEN_MTP_RETAIN_ANCHOR=1` and batched policy | Earlier depth-4 screen: mixed sampled results, changed answers in several cases, no broad gain. Off in current recipes. Current W8/anchor combination untested. [Evidence](QWEN_NEXT_COMMITTED_ANCHOR_EXPERIMENT.md). |
 | M13 | Shared verifier + non-greedy requests (for example temperature 0.6/top-p 0.95) | Per-request sampling/lifecycle coverage exists, including mixed greedy/sampled groups. Latest full greedy matrix is **not** a sampled-performance matrix. |
 | M14 | W8 + replay off, prefix off, other client counts, longer contexts, or PLE row cache | Controls are available where their guards allow. **Latest window-8 throughput/quality matrix not run for these combinations.** Do not extrapolate C15/prefix-on results. |
+| M15 / W8-L2 | W8 with `AFM_QWEN_VERIFY_SHARED_ASYNC_LADDER=2`, vocabulary stays `0` | **Measured**, separate opt-in: repeat 117.46–119.21 tok/s, +2.35–5.39% over matched ladder-4 arms; first-phase token rate −1.10–1.45%. Structural 60/60 versus 59/60, but changed outputs and mixed latency. [Evidence](QWEN_NEXT_COMPOSED_VERIFIER_EXPERIMENTS.md#window-8-submission-every-two-versus-four-layers). |
 
 ## Six-mode coverage ledger
 
@@ -232,7 +248,7 @@ remains an explicit checklist, not “cache tested” inferred from one warm run
 | AR, prefix + C15 | A recipe unchanged | 109.55 / 128.24 | A9 historical paired screen: 175.09–175.86 repeat at 192; not a fresh current-binary six-mode run |
 | AR, C15 only | A recipe, omit prefix flag | 71.47 / 71.83 | A9 historical paired screen: 87.09 repeat at 192 |
 | MTP, prefix only | W8 recipe, `--concurrent 1` | 58.86 / 58.66 | C1 does not exercise the concurrent shared owner; latest W8 matrix not run |
-| MTP, prefix + C15 | W8 recipe unchanged | 59.93 / 87.13 | Latest W8: 72.06/112.81 and 73.21/115.67 at **512**, not a matched comparison to the old 192-token result |
+| MTP, prefix + C15 | W8 recipe unchanged; W8-L2 is a separate delta | 59.93 / 87.13 | W8 width screen: 72.06/112.81 and 73.21/115.67. Later W8-L2: 72.37/119.21 and 72.18/117.46. All at **512**, not matched to the old 192-token result. |
 | MTP, C15 only | W8 recipe, omit prefix flag | 58.69 / 58.24 | Latest W8 matrix not run |
 
 The historical integrated run used its own common tuned flags, not current
@@ -240,7 +256,9 @@ recipe A or W8: see [the full identity and qualification](SHARED_BATCH_EXECUTION
 It completed 180/180 requests with 146/180 structural passes. Keep those totals
 separate. The newer two-arm window experiment completed 120/120, with candidate
 60/60 versus control 58/60 structural passes; exact paired text/count matches
-were only 2/30 and 3/30. That is not proof of semantic parity.
+were only 2/30 and 3/30. That is not proof of semantic parity. The subsequent
+composed-verifier screen completed another 240/240 requests; M11 and M15's
+structural and performance results remain separate in their linked report.
 
 ## Setting inventory: effective defaults and prerequisites
 
@@ -315,7 +333,7 @@ group width depends on compatible ready work; look at counters, not just flags.
 | `AFM_QWEN_VERIFY_FUSED_ROUTER` | Off | `1`; eligible fused verification routing |
 | `AFM_QWEN_VERIFY_ASYNC_LADDER` | 0 / off | Nonnegative layer stride; singleton verifier recipe 8 |
 | `AFM_QWEN_MTP_DRAFT_ASYNC_LADDER` | 0 / off | Positive draft dispatch stride; recipe 1 |
-| `AFM_QWEN_VERIFY_SHARED_ASYNC_LADDER` | 0 / off | Nonnegative layer stride for eligible shared verification; 4/8/16 screened; recipe 4 |
+| `AFM_QWEN_VERIFY_SHARED_ASYNC_LADDER` | 0 / off | Nonnegative layer stride for eligible shared verification; 2/4/8/16 screened; M/W8 recipe 4, separate W8-L2 experiment 2 |
 | `AFM_QWEN_VERIFY_SHARED_COMPILED_TAIL` | Off | `1`; supported BF16/model-owned compile geometry and ordinary non-deferred shared tail; recipe 0 |
 | `AFM_QWEN_VERIFY_DEFER_HC` | Off | `1`; separate verifier HC deferral experiment; recipe off, not additive to compiled ordinary tail |
 | `AFM_QWEN_FUSED_QK_NORM_ROPE` | **On unless `0`** | Keep on for the banked AR preset; disabling bypasses its fused prerequisites |
@@ -345,7 +363,7 @@ Host laps include existing waits and are not individual GPU kernel durations.
 | Banked attention + fused QSA decode | Fused QSA path bypasses request banking. Not two additive gains. |
 | Banked dense attention + positive SDPA block override | Native partition-override fallback, not the measured custom bank family. |
 | Shared verification + no independent attention + requested window 8 | Clamped to four; does not activate the wider experiment. |
-| W8 + shared vocabulary | Untested together; vocabulary only shares eligible smaller subgroups, not the >4-request groups. |
+| W8 + shared vocabulary | Measured at ladder 4 with mixed quality; vocabulary only shares eligible smaller subgroups, not the >4-request groups. W8-L2 + vocabulary is still untested. |
 | PLE row cache + prefix replay | Different data/lifetimes; conceptually compatible, but latest W8/A9 combinations have not been jointly requalified. Do not add the individual gains. |
 | Prefix off + positive MTP replay budget | Replay cache not created; prefix-off repeated prompts are not replay hits. |
 | C1 + concurrent shared settings | No concurrent group to accelerate; serial C1 replay and scheduler-owned replay are distinct. |
@@ -379,9 +397,10 @@ External, untracked evidence root:
 /Volumes/edata2/afm-benchmarks/qwen-next-mtp-parity-20260909
 ```
 
-The latest frozen `VERIFICATION-WIDTH-20260913-SHA256SUMS.txt` inventories 452
-files, including raw responses, timing comparisons, tests, failures and launch
-identities. Older manifests and helper scripts are immutable evidence. Do not
+The frozen `VERIFICATION-WIDTH-20260913-SHA256SUMS.txt` inventories 452
+files. The follow-up `COMPOSED-VERIFIER-20260913-SHA256SUMS.txt` separately
+inventories the new timing arms, lifecycle runs, comparisons and test logs.
+Older manifests and helper scripts are immutable evidence. Do not
 edit a frozen runner or relabel an old result as a new combination.
 
 Each new experiment must update this matrix **in the same workstream commit**:
@@ -401,5 +420,5 @@ Each new experiment must update this matrix **in the same workstream commit**:
 6. Link the evidence report and frozen manifest; retain the prior control.
    Continue on PR #123, rather than opening one PR per matrix row.
 
-This documentation update launches no tests, changes no runtime defaults and
-does not imply background benchmarks are running.
+Updating this matrix does not change runtime defaults or imply background
+benchmarks are running. Each linked report states which tests actually ran.

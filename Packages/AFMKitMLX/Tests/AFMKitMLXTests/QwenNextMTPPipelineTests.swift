@@ -55,7 +55,7 @@ final class QwenNextMTPPipelineTests: XCTestCase {
         // Cross dense/sparse QSA and incomplete pooled-block boundaries.
         let lengths = expanded ? [2, 7, 8, 17, 5, 11, 16, 21] : [2, 7, 8, 17]
         let batchSize = lengths.count
-        for stride in [0, 4] {
+        for stride in [0, 2, 4] {
             let original = lengths.map { _ in model.newCache(parameters: nil) }
             let expected = lengths.map { _ in model.newCache(parameters: nil) }
             for row in lengths.indices {
@@ -119,7 +119,13 @@ final class QwenNextMTPPipelineTests: XCTestCase {
         model.update(parameters: model.mapParameters { $0.asType(.bfloat16) })
         quantize(model: model, groupSize: 32, bits: 4)
         eval(model)
-        for batchSize in 5...8 {
+        // Smaller dispatch intervals must preserve the same batched arithmetic
+        // and private rollback state, including mapped PLE when this helper is
+        // invoked by the sidecar test. Do not relax the exact-value oracle.
+        let cases = (5...8).flatMap { batch in
+            [2, 4].map { (batchSize: batch, stride: $0) }
+        }
+        for (batchSize, stride) in cases {
             let baseline = (0..<batchSize).map { _ in model.newCache(parameters: nil) }
             let scheduled = (0..<batchSize).map { _ in model.newCache(parameters: nil) }
             for row in 0..<batchSize {
@@ -133,7 +139,7 @@ final class QwenNextMTPPipelineTests: XCTestCase {
             let ids = (0..<batchSize).flatMap { [18 + $0, 23, 24, 25] }
             let input = MLXArray(ids).reshaped(batchSize, 4)
             let a = model.forwardMTPVerificationBatch(inputIDs: input, batch: base, hostTokenIDs: ids, ladderStride: 0)
-            let b = model.forwardMTPVerificationBatch(inputIDs: input, batch: ladder, hostTokenIDs: ids, ladderStride: 4)
+            let b = model.forwardMTPVerificationBatch(inputIDs: input, batch: ladder, hostTokenIDs: ids, ladderStride: stride)
             eval(a.hidden, b.hidden, a.stream, b.stream)
             XCTAssertEqual(a.hidden.asArray(Float.self), b.hidden.asArray(Float.self))
             XCTAssertEqual(a.stream.asArray(Float.self), b.stream.asArray(Float.self))
@@ -247,7 +253,7 @@ final class QwenNextMTPPipelineTests: XCTestCase {
         }
         try assertSharedSessionVerification(model, temperature: 0.6,
             independentAttention: true, sharedVocabulary: true, mixedSampling: true)
-        for shape in [[1, 4, 128], [4, 8, 128], [2, 1, 128], [5, 3, 128]] {
+        for shape in [[1, 4, 128], [4, 8, 128], [2, 1, 128], [5, 3, 128], [8, 4, 128]] {
             XCTAssertNil(model.projectSharedVerificationVocabulary(MLXArray.zeros(shape), greedy: true))
         }
         for dtype: DType in [.float32, .bfloat16] {
@@ -264,6 +270,15 @@ final class QwenNextMTPPipelineTests: XCTestCase {
                 let greedy = try XCTUnwrap(model.projectSharedVerificationVocabulary(x, greedy: true))
                 XCTAssertEqual(greedy.asArray(Int32.self), MLX.argMax(actual, axis: -1).asArray(Int32.self))
             }
+        }
+    }
+
+    func testExpandedSharedVocabularyKeepsFallbackSamplingAndCancellation() async throws {
+        let model = try await makeModel(indexerBudget: 4)
+        for temperature: Float in [0, 0.6] {
+            try assertSharedSessionVerification(model, temperature: temperature,
+                independentAttention: true, sharedVocabulary: true,
+                mixedSampling: temperature > 0, expanded: true)
         }
     }
 
@@ -1692,9 +1707,11 @@ final class QwenNextMTPPipelineTests: XCTestCase {
             XCTAssertEqual(qwen4ExpVerificationDispatchStride(
                 batchSize: 2, width: width, policy: .batched,
                 singletonStride: 8, sharedStride: 0), 0)
-            XCTAssertEqual(qwen4ExpVerificationDispatchStride(
-                batchSize: 2, width: width, policy: .batched,
-                singletonStride: 0, sharedStride: 4), 4)
+            for stride in [2, 4] {
+                XCTAssertEqual(qwen4ExpVerificationDispatchStride(
+                    batchSize: 2, width: width, policy: .batched,
+                    singletonStride: 0, sharedStride: stride), stride)
+            }
             for policy: MTPVerificationPolicy? in [nil, .strictSingletonEquivalent] {
                 XCTAssertEqual(qwen4ExpVerificationDispatchStride(
                     batchSize: 2, width: width, policy: policy,
@@ -1702,8 +1719,11 @@ final class QwenNextMTPPipelineTests: XCTestCase {
             }
         }
         for batch in 5...8 {
-            XCTAssertEqual(qwen4ExpVerificationDispatchStride(
-                batchSize: batch, width: 4, policy: .batched, singletonStride: 8, sharedStride: 4), 4)
+            for stride in [2, 4] {
+                XCTAssertEqual(qwen4ExpVerificationDispatchStride(
+                    batchSize: batch, width: 4, policy: .batched,
+                    singletonStride: 8, sharedStride: stride), stride)
+            }
             XCTAssertEqual(qwen4ExpVerificationDispatchStride(
                 batchSize: batch, width: 4, policy: .batched, singletonStride: 8, sharedStride: 0), 0)
         }
@@ -2214,7 +2234,7 @@ final class QwenNextMTPPipelineTests: XCTestCase {
         // first GPU submission. Then restore different acceptance frontiers
         // without changing another row's recurrent, QSA or n-gram state.
         for batchSize in 2...4 {
-            for stride in [1, 4, 8] {
+            for stride in [1, 2, 4, 8] {
                 let baselineRows = (0..<batchSize).map { _ in model.newCache(parameters: nil) }
                 let ladderRows = (0..<batchSize).map { _ in model.newCache(parameters: nil) }
                 for row in 0..<batchSize {

@@ -154,7 +154,10 @@ These are environment settings before the binary, **not CLI arguments or API
 kwargs**. Restart the owned server after changing them. Do not set them in a
 shell startup file or apply them globally. `--mtp-depth 3`, `--concurrent 15`,
 prefix caching, the exact checkpoint and the rest of the preset remain fixed.
-Combining the two variations has not been performance-qualified.
+The initial screen did not combine them. A later
+[composed-options screen](QWEN_NEXT_COMPOSED_VERIFIER_EXPERIMENTS.md) measured
+the combination with small gains and additional structural omissions in one
+pair; it is not a recommended preset.
 
 The larger setting requires both shared verification and private attention;
 equal-position mode and non-shared submission retain their four-row cap.
@@ -175,3 +178,12 @@ Vocabulary experiments additionally report `Qwen MTP shared vocabulary: true`;
 the flag alone is not proof that every group met the projection geometry.
 Do not enable profiling during timing arms. The latest measured binary identity
 is in the linked findings; `--version` alone does not identify an experimental build.
+
+## Follow-up: two-layer submission with window 8
+
+The [central matrix's W8-L2 recipe](QWEN_NEXT_OPT_IN_MATRIX.md#recipe-w8-l2-smaller-shared-submission-interval)
+keeps vocabulary off and replaces the complete W8 preset's shared ladder `4`
+with `2`. Opposite-order comparisons showed +2.35–5.39% repeat token throughput
+and −1.10–1.45% first-phase token throughput, with changed answers and mixed
+latency. It remains a separate opt-in, not a new default. Do not add vocabulary
+sharing and claim that three-way combination was measured.

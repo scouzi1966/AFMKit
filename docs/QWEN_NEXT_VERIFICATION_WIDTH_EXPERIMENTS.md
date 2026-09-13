@@ -207,3 +207,11 @@ External, untracked root:
 
 No installed binary, consumer dependency, main branch, release or global
 default is changed by this workstream.
+
+## Subsequent experiments
+
+The [composed-verifier follow-up](QWEN_NEXT_COMPOSED_VERIFIER_EXPERIMENTS.md)
+subsequently measures W8 plus vocabulary sharing, then W8 with the shared
+submission interval changed from four to two layers. Those results use new
+arms and a separate manifest; they do not relabel the original experiments
+above or change their recorded quality caveats.

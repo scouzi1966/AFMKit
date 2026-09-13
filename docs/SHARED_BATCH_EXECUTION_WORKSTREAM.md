@@ -1729,3 +1729,21 @@ See [full measurements, numerical test limitations and opt-in disposition](QWEN_
 In particular, quantized shared verification is not singleton-arithmetic
 equivalent, so cache/scheduling tests use exact equal-geometry oracles while
 independent Float32 and production-geometry HC checks remain separate.
+
+### Composed verifier and smaller submission interval, 2026-09-13
+
+Eight additional same-binary arms completed 240/240 agentic requests. Combining
+window 8 and vocabulary sharing produced +0.95–3.59% repeat token throughput,
+but 57/60 candidate versus 59/60 control structural passes; vocabulary stays
+off in the recorded presets. A separate ladder-4→2 experiment at window 8
+produced +2.35–5.39% repeat token throughput and 60/60 candidate structural
+passes. First-phase token throughput decreased 1.10–1.45%, and one pair's wall
+time barely improved despite emitting more tokens. This is an opt-in tradeoff,
+not a universal speedup or a default promotion.
+
+Both configurations passed 120/120 API lifecycle assertions separately.
+Expanded stride-2/mapped-PLE/rollback and vocabulary-fallback tests passed in
+two focused Release configurations (89 passed, 2 optional skips each). This
+iteration changes tests and documentation, not runtime kernels or settings.
+See [all timings, quality limitations and evidence](QWEN_NEXT_COMPOSED_VERIFIER_EXPERIMENTS.md)
+and matrix profiles [M11/M15](QWEN_NEXT_OPT_IN_MATRIX.md#combination-matrix-speculative-decoding).
