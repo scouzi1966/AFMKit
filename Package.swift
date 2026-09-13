@@ -405,7 +405,7 @@ var targets: [Target] = [
         sources: [
             "AFMDwarfStarBridge.c", "CDwarfStarKVStore.c", "CDwarfStarEngine.c", "CDwarfStarDistributed.c",
             "CDwarfStarTensorParallel.c", "CDwarfStarSSD.c", "CDwarfStarMetal.m", "CDwarfStarLayerPack.c",
-            "CDwarfStarGPUUnavailable.cpp"
+            "CDwarfStarGPUUnavailable.cpp", "CDwarfStarImage.c"
         ],
         publicHeadersPath: "include",
         linkerSettings: [.linkedFramework("Foundation"), .linkedFramework("Metal")]
