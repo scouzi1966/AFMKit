@@ -4,6 +4,37 @@ import AFMOpenAICompat
 import XCTest
 
 final class MLXStreamEventTranslatorTests: XCTestCase {
+    func testApertusDeliberationUsesExistingReasoningChannelsAtEverySplit() {
+        let raw = "visible<|inner_prefix|>private<|inner_suffix|>answer"
+        for split in 0...raw.count {
+            var translator = MLXStreamEventTranslator(
+                thinkStartTag: "<|inner_prefix|>", thinkEndTag: "<|inner_suffix|>",
+                maximumResponseTokens: 100)
+            let boundary = raw.index(raw.startIndex, offsetBy: split)
+            let events = [
+                translator.consume(.init(text: String(raw[..<boundary]))),
+                translator.consume(.init(text: String(raw[boundary...]))),
+                translator.finish()
+            ].flatMap { $0 }
+            XCTAssertEqual(text(from: events), "visibleanswer", "split \(split)")
+            XCTAssertEqual(reasoning(from: events), "private", "split \(split)")
+        }
+    }
+
+    func testApertusThinkingControlPreservesDefaultAndExplicitPrecedence() {
+        func normalized(_ kwargs: [String: any Sendable], forcedOff: Bool = false) -> [String: any Sendable] {
+            MLXModelService.normalizeReasoningKwargs(kwargs, canonicalModelType: "apertus",
+                                                     forceDisableThinking: forcedOff).kwargs
+        }
+        XCTAssertNil(normalized([:])["enable_thinking"])
+        XCTAssertEqual(normalized(["enable_thinking": true])["enable_thinking"] as? Bool, true)
+        XCTAssertEqual(normalized(["reasoning_effort": "high"])["enable_thinking"] as? Bool, true)
+        XCTAssertEqual(normalized(["reasoning_effort": "none"])["enable_thinking"] as? Bool, false)
+        XCTAssertEqual(normalized(["enable_thinking": false, "reasoning_effort": "high"])["enable_thinking"] as? Bool, false)
+        XCTAssertEqual(normalized(["enable_thinking": true], forcedOff: true)["enable_thinking"] as? Bool, false)
+        XCTAssertNil(normalized(["reasoning_effort": "high"])["reasoning_effort"])
+    }
+
     func testSyntheticThinkStartDoesNotCountAsGeneratedToken() {
         var translator = MLXStreamEventTranslator(
             thinkStartTag: "<think>",

@@ -1045,6 +1045,9 @@ public enum AFMMLXModelDescriptor {
             "marco-o1", "skywork-o1", "ling-", "nemotron", "minimax", "gpt-oss"
         ]
         if templates.contains(where: { $0.contains("<think>") })
+            || (canonicalModelType == "apertus" && templates.contains(where: {
+                $0.contains("<|inner_prefix|>") && $0.contains("<|inner_suffix|>")
+            }))
             || generation?["enable_thinking"] as? Bool == true
             || reasoningPatterns.contains(where: lowerID.contains) {
             capabilities.insert(.reasoning)
