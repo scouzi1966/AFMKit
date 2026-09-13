@@ -3,6 +3,10 @@
 September 13, 2026. Continuation of AFMKit [PR #123](https://github.com/scouzi1966/AFMKit/pull/123).
 Experimental paired-development code, not a default or release recommendation.
 
+Activation recipes, effective defaults and the distinction between separately
+measured versus untested combined options are maintained in the
+[central opt-in matrix](QWEN_NEXT_OPT_IN_MATRIX.md).
+
 ## Method and scope
 
 Use the exact `/Volumes/edata2/models/ddalcu/Qwen3.8-Flash-Next-MLX-Serve-4bit`

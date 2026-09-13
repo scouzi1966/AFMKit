@@ -3,6 +3,11 @@
 AFMKit PR [#123](https://github.com/scouzi1966/AFMKit/pull/123), updated September 13, 2026.
 **Experimental, off by default. No production-default or release recommendation.**
 
+The [central opt-in matrix](QWEN_NEXT_OPT_IN_MATRIX.md) tracks all workstream
+settings, defaults, prerequisites, activation combinations and evidence status.
+In particular, it distinguishes the window-4 control, window-8 candidate and
+separately tested shared-vocabulary candidate.
+
 This is the concurrent **MTP** experiment, not the separate
 [ordinary decode attention preset](QWEN_NEXT_BANKED_ATTENTION_OPT_IN.md).
 It submits bounded pieces of a shared verification graph while Swift constructs
@@ -92,9 +97,11 @@ A single chat does not demonstrate a concurrency throughput gain.
 | `AFM_PERF` | Off | `1` adds host-lap reports, including `[shared-host-phases]`; do not use these runs as timing controls |
 
 The new controls are process-start settings, not API kwargs. Restart after
-changing them. They are limited to explicitly batched-policy verification,
+changing them. The original recipe uses explicitly batched-policy verification,
 2–4 compatible requests, supported verification widths and at most 16 total
-request/token rows. The compiled-tail experiment additionally requires BF16,
+request/token rows. The wider independent-attention follow-up described below
+has separate 5–8-request/32-token-row bounds; do not infer them from this
+original window-4 recipe. The compiled-tail experiment additionally requires BF16,
 model-owned compiled execution support and the ordinary non-deferred tail path.
 The recorded preset leaves `AFM_QWEN_VERIFY_DEFER_HC` unset.
 Strict verification, ordinary AR, unsupported shapes and other model families

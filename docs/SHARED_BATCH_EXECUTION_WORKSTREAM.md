@@ -1,5 +1,11 @@
 # Shared batch execution workstream
 
+The [central opt-in activation and combination matrix](QWEN_NEXT_OPT_IN_MATRIX.md)
+is the current index of settings, defaults, prerequisites, measured/untested
+combinations and rejected variants. Keep it updated with each experiment on
+PR #123. The dated sections below retain historical binaries and results;
+their earlier implementation limits are not necessarily current limits.
+
 ## Objective
 
 Maximize sustainable useful aggregate throughput with bounded memory and

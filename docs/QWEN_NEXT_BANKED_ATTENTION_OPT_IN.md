@@ -4,6 +4,11 @@ Experimental AFMKit PR [#123](https://github.com/scouzi1966/AFMKit/pull/123),
 runtime checkpoint `05bfaefc`; instructions checked on 2026-09-12.
 **Off by default. For controlled experiments, not a production recommendation.**
 
+For the consolidated defaults, activation combinations, measured/untested
+coverage and MTP compatibility, use the
+[central opt-in matrix](QWEN_NEXT_OPT_IN_MATRIX.md). This guide retains the
+historical AR recipe and its measured binary identity.
+
 This shares an attention GPU dispatch across independent requests without
 padding/copying their full KV histories. It does not enable MTP, change weight
 quantization, or enable the optional PLE row cache. The native-arithmetic revision
@@ -28,8 +33,11 @@ shasum -a 256 /Volumes/edata2/dev/CODEX/maclocal-api-qwen-next-mtp-parity/.build
 
 Measured binary SHA-256:
 `e4607b07b05b359f73ff0c0f42cc082b60fb362685ca00ec06a775e70df35859`.
-Use this binary to reproduce the recorded results; a rebuild may have a new
-hash and must be recorded as a new artifact.
+This is the historical measurement hash. The development path above has since
+been rebuilt for later experiments; it is not a frozen copy of this binary.
+Exact reproduction requires the recorded artifact/source and launch manifest.
+Record any rebuilt binary as a new artifact; the central matrix identifies the
+latest measured runtime separately.
 
 If rebuilding is necessary, first stop your test server and verify the local
 AFMKit worktree contains the PR code. Use the existing paired worktrees:
