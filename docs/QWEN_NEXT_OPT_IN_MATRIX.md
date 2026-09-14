@@ -1,6 +1,6 @@
 # Qwen Next opt-in activation and experiment matrix
 
-Last source audit: **2026-09-13**, AFMKit runtime `739cdb6f`, paired consumer
+Last source audit: **2026-09-14**, candidate AFMKit runtime `49a97c7a`, paired consumer
 `9acccfc`. Workstream: [PR #123](https://github.com/scouzi1966/AFMKit/pull/123).
 This is the central index of settings and combinations for the Qwen Next
 optimization project. Update it with every new experiment, removal or result.
@@ -18,6 +18,14 @@ checked when this index was introduced.
 not installed-release recommendations. Measured combinations, available but
 untested combinations, and rejected implementations are different statuses.
 Unlisted combinations are **not tested**, not implicitly approved.
+
+Latest quality work: the candidate honors bounded MTP prefill and fixes the
+five initial greedy target probes. Sampled file-selection remains **17/25**
+versus old MTP **15/25**, ordinary **18/25** and frozen reference MTP **24/25**.
+The initial slow candidate run is retained; a full timing repeat gives
+**28.83 versus 28.60 tok/s**, with about 0.19 s longer candidate median TTFT.
+No new runtime environment controls were added and no preset is promoted.
+See [the full investigation and test-only capture controls](QWEN_NEXT_MTP_PREFILL_QUALITY.md).
 
 ## How to read the matrix
 
@@ -64,6 +72,8 @@ The cohort-work binary (`bfcb6b5b`) has SHA-256
 `0c63e09ab41c6a11b251f54a3a1fa9fd9659b48411e84aa15b4ebb566954c360`.
 The long-prompt replay-limit binary (`739cdb6f`) has SHA-256
 `4193a708f44f5b59cab393e3e4452d2e469e5e67e7a62faf82ffa607cdc5c93a`.
+The bounded-prefill quality candidate (`49a97c7a`) has SHA-256
+`10086d6504aa7dbd6e48ed5c8678cc0b1bdfd3a260a64836667de1a141b0b0c6`.
 The binary reports development `v0.9.20`; the version string does not establish
 source identity. The path is mutable: hash it again after any rebuild.
 Earlier reports' hashes identify earlier binaries, not what currently occupies
@@ -312,6 +322,7 @@ used the later ladder-4 settings. Older exact flags remain in their manifests.
 | M23 | M22 + membership remapping | **Functional, no material gain over no bank**: repeat 130.75 tok/s; +4.81% versus old bank, only +0.08% versus M16. 238 reused rows, 27 membership hits, 30/30 structural. |
 | M24 | M23 + cohort depth | Fully instrumented repeat 133.98 tok/s, +3.38% versus M16 but only +0.39% versus M21. 30/30 structural, 458 reused rows. Extra memory not yet justified by a repeatable additive gain. One earlier run excluded for missing shutdown counters. |
 | M25 | M16 + `AFM_QWEN_MTP_REPLAY_MAX_TOKENS=8192` | **Measured**, sampled 4.43K prompts: repeated aggregate 96.51/103.66 tok/s versus 32.62/32.54 at the default 4096 limit (top-p 1.0/0.95). Reversed top-p 1.0 confirmation: 99.57 versus 33.52. All 15 repeats hit complete state; default had zero hits. Across three pairs: 180/180 runtime, candidate 42/90 versus control 36/90 structural, so not quality-qualified. Long-context cancellation/replay: 120/120 assertions. Default, byte and entry budgets unchanged. This removes repeated prefill, not a 3× uncached decode gain. [Evidence](QWEN_NEXT_LONG_CONTEXT_REPLAY.md). |
+| Q1 | `49a97c7a`, same frozen M25 controls, C1/prefix off, existing `--prefill-step-size` now honored by MTP (4096 architecture policy) | **Candidate, not promoted.** Initial greedy probes 5/5 match AR; full greedy 5/5; sampled 17/25 vs old 15/25. First timing run 21.97 tok/s retained; repeat candidate/old 28.83/28.60, with +0.19 s candidate median TTFT. No new environment flag. C15/replay performance not requalified. [Evidence](QWEN_NEXT_MTP_PREFILL_QUALITY.md). |
 
 **Long sampled follow-up on M16/M21:** at 4,427–4,433 prompt tokens,
 temperature 0.6 and top-p 1.0/0.95, all 120 requests completed but only 51/120

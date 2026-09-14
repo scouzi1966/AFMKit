@@ -97,9 +97,13 @@ does not establish that verifier rounding is the only cause.
 
 Source inspection identifies two further differences worth isolating:
 
-1. Ordinary decoding processes the final prompt token separately; MTP's initial
-   target/head setup forwards the whole prompt and preserves aligned head history.
-   Their prefill arithmetic and cache boundaries differ.
+1. **Corrected by the 2026-09-14 source/capture audit:** prefix-disabled ordinary
+   decoding uses a 4096-token chunk plus the remaining tail, not a separately
+   forwarded final token. The separate-final-token behavior belongs to a replay
+   boundary path. The old MTP initial target/head setup forwards the whole prompt.
+   Their prefill arithmetic and cache boundaries therefore differ. See the
+   [bounded-prefill investigation](QWEN_NEXT_MTP_PREFILL_QUALITY.md) for the
+   candidate repair, actual logits and remaining quality/performance gate.
 2. Ordinary decoding makes one request-local sample per generated token. MTP
    samples a verification block, then commits its accepted prefix. The same seed
    does not imply the same random draws per emitted position. The existing
