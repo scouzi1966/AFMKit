@@ -4,6 +4,306 @@ import Foundation
 import MLX
 import MLXFast
 
+// The selector below is adapted from ddalcu/mlx-serve, src/transformer.zig,
+// QSA_SELECT_KERNEL_SOURCE, commit 1ec580a8b7f5f051daef892310660bb62b2ece6c.
+// https://github.com/ddalcu/mlx-serve
+//
+// MIT License
+// Copyright (c) 2026 David Dalcu
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in all
+// copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
+
+/// Exact bounded-window QSA selection in one dispatch, already sorted by index.
+/// The caller supplies the existing biased scores: this experiment changes the
+/// selection schedule, not the scoring arithmetic. Equal scores choose the
+/// lower index deterministically. Bounds and block count remain runtime data;
+/// growing context never creates a new Metal specialization.
+enum Qwen4ExpQSAVerifyRadixSelection {
+    static let enabled = ProcessInfo.processInfo.environment[
+        "AFM_QWEN_VERIFY_QSA_RADIX"
+    ] == "1"
+
+    private static let kernel = MLXFast.metalKernel(
+        name: "qwen4_exp_qsa_verify_radix_select",
+        inputNames: ["scores", "bounds"],
+        outputNames: ["ids"],
+        source: """
+            constexpr uint TGN   = (uint)TGS;
+            constexpr uint SIMDW = 32u;
+            constexpr uint NSIMD = TGN / SIMDW;
+            constexpr uint BINS  = 2048u;
+            constexpr uint KTOP  = (uint)K;
+            constexpr int  SENTINEL = 2147483647;
+
+            threadgroup metal::atomic_uint hist[BINS];
+            threadgroup uint sgs[2u * NSIMD];
+            threadgroup uint sh[4];
+
+            const uint row  = threadgroup_position_in_grid.y;
+            const uint tid  = thread_position_in_threadgroup.x;
+            const uint lane = thread_index_in_simdgroup;
+            const uint sg   = simdgroup_index_in_threadgroup;
+
+            // nb rides the SHAPE, never a template arg: it grows every `ratio`
+            // tokens of a generation, and a template value would JIT a fresh
+            // specialization per decode step.
+            const uint nb = (uint)scores_shape[2];
+            const int  vbi = bounds[row];
+            const uint vb  = (vbi > 0) ? (uint)vbi : 0u;
+            const device float* sc = scores + (ulong)row * (ulong)nb;
+            device int* outp = ids + (ulong)row * (ulong)KTOP;
+
+            if (vb <= KTOP) {
+              // Fewer visible blocks than the budget: every one of them is a pick.
+              for (uint i = tid; i < KTOP; i += TGN) outp[i] = (i < vb) ? int(i) : SENTINEL;
+              return;
+            }
+
+            uint pref = 0u;   // ordinal bits fixed so far, right-aligned
+            uint fixed = 0u;  // how many bits that is
+            uint need = KTOP; // still to take from within the prefix bucket
+            uint T = 0u;
+            uint need_eq = 0u;
+
+            for (uint lv = 0u; lv < 3u; ++lv) {
+              const uint width = (lv == 2u) ? 10u : 11u;
+              const uint nbins = 1u << width;
+              const uint shift = 32u - fixed - width;
+              // Clamped: at level 0 nothing is fixed and `32u - fixed` would be an
+              // out-of-range shift. The `fixed != 0u` guard below is what actually
+              // skips it; the clamp keeps the expression well-defined regardless.
+              const uint hi    = (fixed == 0u) ? 31u : (32u - fixed);
+
+              for (uint b = tid; b < nbins; b += TGN) metal::atomic_store_explicit(&hist[b], 0u, metal::memory_order_relaxed);
+              if (tid == 0u) { sh[0] = 0u; sh[1] = 0u; sh[2] = 0u; }
+              threadgroup_barrier(metal::mem_flags::mem_threadgroup);
+
+              // Run-length coalescing: a relu score row is mostly exact zeros, which
+              // all land in ONE bin. Folding a thread's consecutive equal digits into
+              // a single atomic keeps that bin from serializing the whole pass.
+              uint last_d = 0xFFFFFFFFu;
+              uint run = 0u;
+              for (uint i = tid; i < vb; i += TGN) {
+                const uint u = msv_qsa_ord(sc[i]);
+                if (fixed != 0u && (u >> hi) != pref) continue;
+                const uint d = (u >> shift) & (nbins - 1u);
+                if (d == last_d) { run += 1u; continue; }
+                if (run != 0u) metal::atomic_fetch_add_explicit(&hist[last_d], run, metal::memory_order_relaxed);
+                last_d = d;
+                run = 1u;
+              }
+              if (run != 0u) metal::atomic_fetch_add_explicit(&hist[last_d], run, metal::memory_order_relaxed);
+              threadgroup_barrier(metal::mem_flags::mem_threadgroup);
+
+              // One simdgroup scans the bins from the TOP down: lane 0 owns the
+              // highest chunk, so the exclusive prefix over lanes IS the count of
+              // elements above that lane's chunk.
+              if (sg == 0u) {
+                const uint chunk = nbins / SIMDW;
+                const uint base  = nbins - (lane + 1u) * chunk;
+                uint tot = 0u;
+                for (uint j = 0u; j < chunk; ++j) tot += metal::atomic_load_explicit(&hist[base + j], metal::memory_order_relaxed);
+                const uint pre = metal::simd_prefix_exclusive_sum(tot);
+                if (pre < need && need <= pre + tot) {
+                  uint acc = pre;
+                  for (uint jj = chunk; jj > 0u; --jj) {
+                    const uint bidx = base + jj - 1u;
+                    const uint c = metal::atomic_load_explicit(&hist[bidx], metal::memory_order_relaxed);
+                    if (acc + c >= need) { sh[0] = bidx; sh[1] = acc; sh[2] = c; break; }
+                    acc += c;
+                  }
+                }
+              }
+              threadgroup_barrier(metal::mem_flags::mem_threadgroup);
+              const uint d_sel   = sh[0];
+              const uint above_w = sh[1];
+              const uint cnt_d   = sh[2];
+              threadgroup_barrier(metal::mem_flags::mem_threadgroup);
+
+              need = need - above_w;
+              pref = (pref << width) | d_sel;
+              fixed += width;
+              // `cnt_d == need` means the whole bucket is taken: the threshold can be
+              // the bucket's FLOOR (low bits zero) and `need_eq` covers however many
+              // sit exactly on it — gt + eq is still exactly K either way.
+              if (cnt_d == need || fixed >= 32u) {
+                T = (fixed >= 32u) ? pref : (pref << (32u - fixed));
+                need_eq = need;
+                break;
+              }
+            }
+
+            // Pre-fill with the sentinel: the compaction is proven to write exactly
+            // KTOP slots, and a slot left unwritten must read as "no block" rather
+            // than as whatever the allocator handed us.
+            for (uint i = tid; i < KTOP; i += TGN) outp[i] = SENTINEL;
+            threadgroup_barrier(metal::mem_flags::mem_device);
+
+            uint run_gt = 0u;
+            uint run_eq = 0u;
+            for (uint base = 0u; base < vb; base += TGN) {
+              const uint i = base + tid;
+              uint g = 0u;
+              uint e = 0u;
+              if (i < vb) {
+                const uint u = msv_qsa_ord(sc[i]);
+                g = (u > T) ? 1u : 0u;
+                e = (u == T) ? 1u : 0u;
+              }
+              const uint pg = metal::simd_prefix_exclusive_sum(g);
+              const uint pe = metal::simd_prefix_exclusive_sum(e);
+              const uint sg_g = metal::simd_sum(g);
+              const uint sg_e = metal::simd_sum(e);
+              if (lane == 0u) { sgs[sg] = sg_g; sgs[NSIMD + sg] = sg_e; }
+              threadgroup_barrier(metal::mem_flags::mem_threadgroup);
+              uint off_g = 0u, off_e = 0u, tot_g = 0u, tot_e = 0u;
+              for (uint j = 0u; j < NSIMD; ++j) {
+                const uint a = sgs[j];
+                const uint b = sgs[NSIMD + j];
+                if (j < sg) { off_g += a; off_e += b; }
+                tot_g += a;
+                tot_e += b;
+              }
+              const uint gb = run_gt + off_g + pg;
+              const uint eb = run_eq + off_e + pe;
+              if (i < vb) {
+                // Slot = the number of SELECTED elements with a smaller index, so
+                // the row is written already ascending. `gt + min(eq, need_eq)` is
+                // exactly KTOP by construction; the bound is belt-and-braces so a
+                // miscount can never scribble into the next row.
+                if (g != 0u) {
+                  const uint pos = gb + metal::min(eb, need_eq);
+                  if (pos < KTOP) outp[pos] = int(i);
+                } else if (e != 0u && eb < need_eq) {
+                  const uint pos = gb + eb;
+                  if (pos < KTOP) outp[pos] = int(i);
+                }
+              }
+              run_gt += tot_g;
+              run_eq += tot_e;
+              threadgroup_barrier(metal::mem_flags::mem_threadgroup);
+              if (run_gt + metal::min(run_eq, need_eq) >= KTOP) break;
+            }
+            """,
+        header: """
+            // Monotone f32 -> uint32: ascending order preserved, NaN above every
+            // number, -0.0 and +0.0 the SAME key (torch compares them equal, and a
+            // relu sum can produce either).
+            inline uint msv_qsa_ord(float v) {
+              if (metal::isnan(v)) { return 0xFFFFFFFFu; }
+              if (v == 0.0f) { return 0x80000000u; }
+              uint u = as_type<uint>(v);
+              return (u & 0x80000000u) ? (~u) : (u | 0x80000000u);
+            }
+
+            """,
+        ensureRowContiguous: true)
+
+    static func call(
+        scores: MLXArray, visibleBlockCounts: [Int], topK: Int,
+        forceEnabledForTesting: Bool = false
+    ) -> MLXArray? {
+        guard enabled || forceEnabledForTesting,
+              Device.defaultDevice().deviceType == .gpu,
+              scores.ndim == 3, scores.dtype == .float32,
+              scores.dim(0) == 1, scores.dim(1) > 1,
+              scores.dim(1) <= 8, scores.dim(2) > 0,
+              visibleBlockCounts.count == scores.dim(1),
+              visibleBlockCounts.allSatisfy({ $0 >= 0 && $0 <= scores.dim(2) }),
+              topK > 0, topK <= scores.dim(2)
+        else { return nil }
+        let bounds = MLXArray(visibleBlockCounts.map(Int32.init))
+        return kernel(
+            [scores, bounds],
+            template: [("TGS", 1024), ("K", topK)],
+            grid: (1024, scores.dim(1), 1),
+            threadGroup: (1024, 1, 1),
+            outputShapes: [[1, scores.dim(1), topK]],
+            outputDTypes: [.int32],
+            cacheConfiguration: true)[0]
+    }
+}
+
+/// Bounded verifier mask expansion. The caller supplies sorted, nonnegative
+/// block IDs, with Int32.max sentinels, as produced by the QSA selectors.
+/// Binary-searching the small index row avoids scatter/repeat/pad/range
+/// intermediates. This changes neither block selection nor attention math.
+enum Qwen4ExpQSAVerifyMask {
+    private static let enabled = ProcessInfo.processInfo.environment[
+        "AFM_QWEN_VERIFY_FUSED_MASK"
+    ] == "1"
+
+    private static let kernel = MLXFast.metalKernel(
+        name: "qwen4_exp_qsa_verify_mask",
+        inputNames: ["blocks", "length"], outputNames: ["mask"],
+        source: """
+            const uint token = thread_position_in_grid.x;
+            const uint row = thread_position_in_grid.y;
+            const uint batch = thread_position_in_grid.z;
+            const uint kv = uint(length[0]);
+            const uint rows = uint(blocks_shape[1]);
+            const uint count = uint(blocks_shape[2]);
+            if (token >= kv) return;
+            const uint end = kv - rows + row + 1;
+            bool visible = false;
+            if (token < end) {
+                const uint tail = (end / uint(RATIO)) * uint(RATIO);
+                if (token >= tail) {
+                    visible = true;
+                } else {
+                    const int wanted = int(token / uint(RATIO));
+                    const device int* ids = blocks + (batch * rows + row) * count;
+                    uint lo = 0, hi = count;
+                    while (lo < hi) {
+                        const uint mid = lo + (hi - lo) / 2;
+                        if (ids[mid] < wanted) lo = mid + 1;
+                        else hi = mid;
+                    }
+                    visible = lo < count && ids[lo] == wanted;
+                }
+            }
+            mask[(batch * rows + row) * kv + token] = visible;
+        """)
+
+    static func call(
+        sortedBlocks: MLXArray, keyLength: Int, compressionRatio: Int,
+        forceEnabledForTesting: Bool = false
+    ) -> MLXArray? {
+        guard enabled || forceEnabledForTesting,
+              Device.defaultDevice().deviceType == .gpu,
+              sortedBlocks.dtype == .int32, sortedBlocks.ndim == 3,
+              sortedBlocks.dim(0) > 0,
+              sortedBlocks.dim(1) > 1, sortedBlocks.dim(1) <= 8,
+              sortedBlocks.dim(2) > 0, sortedBlocks.dim(2) <= 1024,
+              keyLength >= sortedBlocks.dim(1), keyLength < Int(Int32.max),
+              compressionRatio > 0
+        else { return nil }
+        return kernel(
+            [sortedBlocks, MLXArray([Int32(keyLength)])],
+            template: [("RATIO", compressionRatio)],
+            grid: (keyLength, sortedBlocks.dim(1), sortedBlocks.dim(0)),
+            threadGroup: (256, 1, 1),
+            outputShapes: [[sortedBlocks.dim(0), 1, sortedBlocks.dim(1), keyLength]],
+            outputDTypes: [.bool], cacheConfiguration: true)[0]
+    }
+}
+
 /// Direct-index QSA attention for long Qwen Next prefill chunks.
 ///
 /// The ordinary array-mask SDPA path materializes work proportional to the
@@ -76,12 +376,15 @@ enum Qwen4ExpQSAGather {
         }
 
         let firstQueryPosition = keyLength - queryLength
-        let queryEnds = MLXArray(
-            Int32(firstQueryPosition + 1) ..< Int32(keyLength + 1))
+        let queryEnds = MLX.arange(
+            firstQueryPosition + 1, keyLength + 1, dtype: .int32)
             .reshaped(1, queryLength, 1)
         let tailStarts = queryEnds.floorDivide(compressionRatio)
             * compressionRatio
-        let keyPositions = MLXArray(Int32(0) ..< Int32(keyLength))
+        // Build the range as a lazy MLX operation, not an O(context) Swift
+        // Sequence-to-Array conversion on every verification layer/round.
+        // Integer positions and the causal-tail mask remain unchanged.
+        let keyPositions = MLX.arange(keyLength, dtype: .int32)
             .reshaped(1, 1, keyLength)
         let tail = (keyPositions .>= tailStarts) .&& (keyPositions .< queryEnds)
         return (tokenMask .|| tail).expandedDimensions(axis: 1)
