@@ -1694,7 +1694,8 @@ actor BatchScheduler {
             seed: req.parameters.seed, promptState: replayState,
             retainPromptState: replayState?.promptIds.count != inputTokens.count
                 && qwenMTPReplayCache?.canStore(prompt: inputTokens) == true,
-            allowPromptPrefixReplay: true, adaptiveDepth: qwenMTPAdaptiveDepth)
+            allowPromptPrefixReplay: true, adaptiveDepth: qwenMTPAdaptiveDepth,
+            prefillStepSize: req.parameters.prefillStepSize)
         else {
             failPendingRequest(req,
                 error: MLXServiceError.loadFailed("Unable to create Qwen MTP session"))

@@ -79,6 +79,7 @@ private enum MTPGeneratorRuntime: @unchecked Sendable {
                 temperature: parameters?.temperature ?? 0,
                 topP: parameters?.topP ?? 1,
                 seed: parameters?.seed,
+                prefillStepSize: parameters?.prefillStepSize,
                 onToken: onToken
             )
         case .glm(let generator):

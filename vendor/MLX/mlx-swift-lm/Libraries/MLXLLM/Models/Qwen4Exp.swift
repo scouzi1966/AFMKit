@@ -4837,22 +4837,30 @@ private final class Qwen4ExpModelInner: Module {
     func layerStreams(
         _ inputIDs: MLXArray,
         inputEmbeddings: MLXArray? = nil,
-        positionIDs: MLXArray? = nil
+        positionIDs: MLXArray? = nil,
+        cache: [KVCache]? = nil,
+        lastRowOnly: Bool = false
     ) -> [MLXArray] {
         var hidden = MLX.tiled(
             inputEmbeddings ?? embedTokens(inputIDs),
             repetitions: [1, 1, hyperConnectionMixer.hcCount])
-        var streams = [hidden]
-        let layerCaches = Array<KVCache?>(repeating: nil, count: layers.count)
+        func captured(_ value: MLXArray) -> MLXArray {
+            guard lastRowOnly else { return value }
+            let row = value[0..., (value.dim(1) - 1)..., 0...]
+            eval(row)
+            return row
+        }
+        var streams = [captured(hidden)]
+        let layerCaches: [KVCache?] = cache ?? Array(repeating: nil, count: layers.count)
         let attentionIndex = layers.firstIndex { !$0.isLinear }
         let mask = attentionIndex.map { createAttentionMask(h: hidden, cache: layerCaches[$0]) } ?? .none
-        for layer in layers {
+        for (index, layer) in layers.enumerated() {
             hidden = layer(
                 hidden, inputIDs: inputIDs,
-                attentionMask: mask, positionIDs: positionIDs, cache: nil)
-            streams.append(hidden)
+                attentionMask: mask, positionIDs: positionIDs, cache: layerCaches[index])
+            streams.append(captured(hidden))
         }
-        streams.append(hyperConnectionMixer.combine(hidden))
+        streams.append(captured(hyperConnectionMixer.combine(hidden)))
         return streams
     }
 
@@ -5382,8 +5390,10 @@ public final class Qwen4ExpModel: Module, LLMModel, KVCacheDimensionProvider, Re
                 stream, verificationPolicy: verificationPolicy))
     }
 
-    func layerStreamsForTesting(inputIDs: MLXArray) -> [MLXArray] {
-        model.layerStreams(inputIDs)
+    func layerStreamsForTesting(
+        inputIDs: MLXArray, cache: [KVCache]? = nil, lastRowOnly: Bool = false
+    ) -> [MLXArray] {
+        model.layerStreams(inputIDs, cache: cache, lastRowOnly: lastRowOnly)
     }
 
     func verificationStreamForTesting(
@@ -5921,10 +5931,11 @@ public final class Qwen4ExpMTPPromptState {
     fileprivate let head: [Layer]
     fileprivate let hidden: MLXArray
     fileprivate let stream: MLXArray
+    fileprivate let prefillStepSize: Int?
 
     fileprivate init?(
         identity: UUID, promptIds: [Int], target: [KVCache], head: [KVCache],
-        hidden: MLXArray, stream: MLXArray
+        hidden: MLXArray, stream: MLXArray, prefillStepSize: Int?
     ) {
         let targetLayers = target.compactMap(Layer.init)
         let headLayers = head.compactMap(Layer.init)
@@ -5935,6 +5946,7 @@ public final class Qwen4ExpMTPPromptState {
         self.head = headLayers
         self.hidden = hidden * 1
         self.stream = stream * 1
+        self.prefillStepSize = prefillStepSize
         let arrays = (targetLayers + headLayers).flatMap(\.arrays) + [self.hidden, self.stream]
         eval(arrays)
         let historyBytes = (targetLayers + headLayers).reduce(0) { size, layer in
@@ -5993,13 +6005,16 @@ public final class Qwen4ExpMTPGenerator {
         promptIds: [Int], maxTokens: Int, eosIds: Set<Int> = [],
         temperature: Float = 0, topP: Float = 1, seed: UInt64? = nil,
         promptState: Qwen4ExpMTPPromptState? = nil, retainPromptState: Bool = false,
-        allowPromptPrefixReplay: Bool = false, adaptiveDepth: Bool = false
+        allowPromptPrefixReplay: Bool = false, adaptiveDepth: Bool = false,
+        prefillStepSize: Int? = nil
     ) -> Qwen4ExpMTPSession? {
         precondition(temperature.isFinite && temperature >= 0)
         precondition(topP.isFinite && (0...1).contains(topP))
+        precondition(prefillStepSize == nil || prefillStepSize! > 0)
         guard !promptIds.isEmpty, maxTokens > 0 else { return nil }
         if let promptState {
             guard promptState.identity == replayIdentity,
+                  promptState.prefillStepSize == prefillStepSize,
                   (promptState.promptIds == promptIds
                     || (allowPromptPrefixReplay && promptIds.starts(with: promptState.promptIds)))
             else { return nil }
@@ -6011,7 +6026,8 @@ public final class Qwen4ExpMTPGenerator {
             promptIds: promptIds, maxTokens: maxTokens, eosIds: eosIds,
             temperature: temperature, topP: topP, seed: seed,
             replayIdentity: replayIdentity, promptState: promptState,
-            retainPromptState: retainPromptState, adaptiveDepth: adaptiveDepth)
+            retainPromptState: retainPromptState, adaptiveDepth: adaptiveDepth,
+            prefillStepSize: prefillStepSize)
     }
 
     public func generate(
@@ -6021,11 +6037,13 @@ public final class Qwen4ExpMTPGenerator {
         temperature: Float = 0,
         topP: Float = 1,
         seed: UInt64? = nil,
+        prefillStepSize: Int? = nil,
         onToken: ((Int) -> Bool)? = nil
     ) -> [Int] {
         guard let session = makeSession(
             promptIds: promptIds, maxTokens: maxTokens, eosIds: eosIds,
-            temperature: temperature, topP: topP, seed: seed)
+            temperature: temperature, topP: topP, seed: seed,
+            prefillStepSize: prefillStepSize)
         else { return [] }
         defer { session.reportDiagnostics() }
         var output: [Int] = []
@@ -6046,8 +6064,8 @@ public final class Qwen4ExpMTPGenerator {
 /// behavior without doing unnecessary repair after cancellation/EOS/length.
 /// The optional prepareNextToken hook submits independent verification work
 /// before its host decision is needed. This is not a multi-request GPU batch.
-/// Prefill is still one whole-prompt operation; exact replay snapshots are
-/// transferred separately through takePromptState.
+/// Prefill honors the caller's bounded chunk size. Exact replay snapshots
+/// include that policy and are transferred separately through takePromptState.
 public final class Qwen4ExpMTPSession {
     private struct PreparedDraft {
         let headOffset: Int
@@ -6149,7 +6167,8 @@ public final class Qwen4ExpMTPSession {
         verificationPolicy: MTPVerificationPolicy, draftDispatchStride: Int,
         retainHeadAnchor: Bool, promptIds: [Int], maxTokens: Int, eosIds: Set<Int>,
         temperature: Float, topP: Float, seed: UInt64?, replayIdentity: UUID,
-        promptState: Qwen4ExpMTPPromptState?, retainPromptState: Bool, adaptiveDepth: Bool
+        promptState: Qwen4ExpMTPPromptState?, retainPromptState: Bool, adaptiveDepth: Bool,
+        prefillStepSize: Int?
     ) {
         // Request-owned RNG: no global seeding or mutable sampler on a shared
         // generator. Nil preserves the fused greedy readout and its graph.
@@ -6165,58 +6184,60 @@ public final class Qwen4ExpMTPSession {
         }
         let targetCache = model.newCache(parameters: nil)
         let mtpCache = head.newCache()
-        let primaryHidden: MLXArray
-        let primaryStream: MLXArray
+        var lastHidden = promptState?.hidden
+        var lastStream = promptState?.stream
         let primary: Int
         let primaryPosition = promptIds.count
         if let promptState {
             precondition(promptState.target.count == targetCache.count && promptState.head.count == mtpCache.count)
             for (layer, cache) in zip(promptState.target, targetCache) { layer.restore(into: cache) }
             for (layer, cache) in zip(promptState.head, mtpCache) { layer.restore(into: cache) }
-            let prefixCount = promptState.promptIds.count
-            if prefixCount == promptIds.count {
-                primaryHidden = promptState.hidden
-                primaryStream = promptState.stream
-            } else {
-                let suffix = Self.tokens(Array(promptIds.dropFirst(prefixCount)))
-                let initial = model.forwardStreamState(inputIDs: suffix, cache: targetCache)
-                primaryHidden = initial.hidden[0..., (initial.hidden.dim(1) - 1)..., 0...]
-                primaryStream = initial.stream[0..., (initial.stream.dim(1) - 1)..., 0...]
-                // The saved head ends one prompt token behind the target.
-                // Its next input pairs the saved final target stream with the
-                // first suffix token. Subsequent pairs use verified suffix
-                // streams, never a sampled token or a predicted draft stream.
-                let headStreams = suffix.dim(1) == 1 ? promptState.stream : concatenated([
-                    promptState.stream,
-                    initial.stream[0..., ..<(initial.stream.dim(1) - 1), 0...],
-                ], axis: 1)
-                _ = head(hiddenStream: headStreams,
-                    tokenEmbeddings: model.embedTokens(suffix), tokenIDs: suffix,
-                    positionIDs: Self.positions(prefixCount ..< promptIds.count), cache: mtpCache)
-            }
-            // Exactly one request-local sample, even when a prefix was reused.
-            primary = targetTokens(primaryHidden).item(Int.self)
-        } else {
-            let initial = model.forwardStreamState(inputIDs: Self.tokens(promptIds), cache: targetCache)
-            primaryHidden = initial.hidden[0..., (initial.hidden.dim(1) - 1)..., 0...]
-            primaryStream = initial.stream[0..., (initial.stream.dim(1) - 1)..., 0...]
-            primary = targetTokens(primaryHidden).item(Int.self)
-
-            // stream[p] + token[p+1] predicts token[p+2].
-            if promptIds.count > 1 {
-                let historyCount = promptIds.count - 1
+        }
+        // Match ordinary prefill's chunk geometry. The same four-bit target
+        // can select a different first token when MTP silently prefills the
+        // whole prompt instead. Keep this policy explicit and request-owned.
+        // Each head row pairs stream[p] with token[p+1], including the pair
+        // crossing a chunk/replay boundary. Never use a predicted head stream.
+        var offset = promptState?.promptIds.count ?? 0
+        let step = prefillStepSize ?? max(1, promptIds.count - offset)
+        while offset < promptIds.count {
+            let end = offset + min(step, promptIds.count - offset)
+            let ids = Self.tokens(Array(promptIds[offset..<end]))
+            let initial = model.forwardStreamState(inputIDs: ids, cache: targetCache)
+            let width = end - offset
+            let headStart = max(1, offset)
+            if end > headStart {
+                let streams: MLXArray
+                if let previous = lastStream {
+                    streams = width == 1 ? previous : concatenated([
+                        previous, initial.stream[0..., ..<(width - 1), 0...],
+                    ], axis: 1)
+                } else {
+                    streams = initial.stream[0..., ..<(width - 1), 0...]
+                }
+                let headIDs = Self.tokens(Array(promptIds[headStart..<end]))
                 _ = head(
-                    hiddenStream: initial.stream[0..., ..<historyCount, 0...],
-                    tokenEmbeddings: model.embedTokens(Self.tokens(Array(promptIds.dropFirst()))),
-                    tokenIDs: Self.tokens(Array(promptIds.dropFirst())),
-                    positionIDs: Self.positions(1 ..< promptIds.count),
+                    hiddenStream: streams,
+                    tokenEmbeddings: model.embedTokens(headIDs), tokenIDs: headIDs,
+                    positionIDs: Self.positions(headStart..<end),
                     cache: mtpCache)
             }
+            lastHidden = initial.hidden[0..., (width - 1)..., 0...]
+            lastStream = initial.stream[0..., (width - 1)..., 0...]
+            // Bound the lazy graph at every prefill chunk, including head state.
+            eval(targetCache.flatMap(\.state) + mtpCache.flatMap(\.state)
+                + [lastHidden!, lastStream!])
+            offset = end
         }
+        let primaryHidden = lastHidden!
+        let primaryStream = lastStream!
+        // Exactly one request-local sample, even for exact prompt replay.
+        primary = targetTokens(primaryHidden).item(Int.self)
         if retainPromptState && promptState?.promptIds.count != promptIds.count {
             capturedPromptState = Qwen4ExpMTPPromptState(
                 identity: replayIdentity, promptIds: promptIds, target: targetCache,
-                head: mtpCache, hidden: primaryHidden, stream: primaryStream)
+                head: mtpCache, hidden: primaryHidden, stream: primaryStream,
+                prefillStepSize: prefillStepSize)
         }
         self.model = model
         self.head = head

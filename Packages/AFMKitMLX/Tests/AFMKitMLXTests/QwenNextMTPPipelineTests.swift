@@ -550,6 +550,74 @@ final class QwenNextMTPPipelineTests: XCTestCase {
         try assertPromptReplay(model)
     }
 
+    func testBoundedMTPPrefillPreservesFirstTargetSampleAndZeroCycleLimit() async throws {
+        let model = try await makeModel(withPLE: true, indexerBudget: 4)
+        let head = Qwen4ExpMTPHead(model.configuration)
+        eval(model, head)
+        let generator = Qwen4ExpMTPGenerator(model: model, head: head, depth: 3,
+            verificationPolicy: .batched)
+        for step in [1, 2, 4, 8] {
+            for count in [1, 2, 9] {
+                let prompt = Array(1...count)
+                for temperature: Float in [0, 0.6] {
+                    let parameters = GenerateParameters(temperature: temperature, topP: 0.95,
+                        seed: 73, prefillStepSize: step)
+                    let cache = model.newCache(parameters: nil)
+                    var hidden: MLXArray?
+                    for start in stride(from: 0, to: count, by: step) {
+                        let end = min(start + step, count)
+                        let state = model.forwardStreamState(
+                            inputIDs: MLXArray(Array(prompt[start..<end])).reshaped(1, -1), cache: cache)
+                        hidden = state.hidden[0..., (end - start - 1)..., 0...]
+                        eval(cache)
+                    }
+                    let expected = parameters.sampler().sample(logits:
+                        model.projectLMHead(try XCTUnwrap(hidden))).item(Int.self)
+                    let session = try XCTUnwrap(generator.makeSession(promptIds: prompt,
+                        maxTokens: 1, temperature: temperature, topP: 0.95, seed: 73,
+                        prefillStepSize: step))
+                    XCTAssertEqual(session.nextToken(), expected, "step=\(step), count=\(count)")
+                    XCTAssertNil(session.nextToken())
+                    XCTAssertEqual(session.verificationCycleCount, 0)
+                }
+            }
+        }
+    }
+
+    func testBoundedMTPPrefillReplayPreservesHeadBoundaryAndRejectsChangedGeometry() async throws {
+        let model = try await makeModel(withPLE: true, indexerBudget: 4)
+        let head = Qwen4ExpMTPHead(model.configuration)
+        eval(model, head)
+        let generator = Qwen4ExpMTPGenerator(model: model, head: head, depth: 3,
+            verificationPolicy: .batched)
+        let prompt = Array(1...10)
+        for step in [1, 2, 4] {
+            let prefix = Array(prompt.prefix(step))
+            let initial = try XCTUnwrap(generator.makeSession(promptIds: prefix, maxTokens: 1,
+                retainPromptState: true, prefillStepSize: step))
+            let state = try XCTUnwrap(initial.takePromptState())
+            XCTAssertNil(generator.makeSession(promptIds: prompt, maxTokens: 8,
+                promptState: state, allowPromptPrefixReplay: true, prefillStepSize: step + 1))
+            for temperature: Float in [0, 0.6] {
+                let cold = generator.generate(promptIds: prompt, maxTokens: 8,
+                    temperature: temperature, topP: 0.95, seed: 123, prefillStepSize: step)
+                let warm = try XCTUnwrap(generator.makeSession(promptIds: prompt, maxTokens: 8,
+                    temperature: temperature, topP: 0.95, seed: 123, promptState: state,
+                    retainPromptState: true, allowPromptPrefixReplay: true, prefillStepSize: step))
+                let extended = try XCTUnwrap(warm.takePromptState())
+                var actual = [Int]()
+                while let token = warm.nextToken() { actual.append(token) }
+                XCTAssertEqual(actual, cold)
+                let replay = try XCTUnwrap(generator.makeSession(promptIds: prompt, maxTokens: 8,
+                    temperature: temperature, topP: 0.95, seed: 123, promptState: extended,
+                    prefillStepSize: step))
+                var repeated = [Int]()
+                while let token = replay.nextToken() { repeated.append(token) }
+                XCTAssertEqual(repeated, cold)
+            }
+        }
+    }
+
     private func assertPromptPrefixReplay(_ model: Qwen4ExpModel) throws {
         let head = Qwen4ExpMTPHead(model.configuration)
         eval(model, head)
