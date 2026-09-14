@@ -6030,6 +6030,22 @@ public final class Qwen4ExpMTPGenerator {
             prefillStepSize: prefillStepSize)
     }
 
+    /// Internal diagnostic seam: select a request-owned recording sampler at
+    /// initialization. The ordinary decode loop gains no observer or branch.
+    func makeSessionForTesting(
+        promptIds: [Int], maxTokens: Int, sampler: LogitSampler,
+        prefillStepSize: Int
+    ) -> Qwen4ExpMTPSession {
+        Qwen4ExpMTPSession(
+            model: model, head: head, depth: depth,
+            verificationPolicy: verificationPolicy,
+            draftDispatchStride: draftDispatchStride, retainHeadAnchor: retainHeadAnchor,
+            promptIds: promptIds, maxTokens: maxTokens, eosIds: [],
+            temperature: 0, topP: 1, seed: nil, replayIdentity: replayIdentity,
+            promptState: nil, retainPromptState: false, adaptiveDepth: false,
+            prefillStepSize: prefillStepSize, samplerForTesting: sampler)
+    }
+
     public func generate(
         promptIds: [Int],
         maxTokens: Int,
@@ -6168,13 +6184,13 @@ public final class Qwen4ExpMTPSession {
         retainHeadAnchor: Bool, promptIds: [Int], maxTokens: Int, eosIds: Set<Int>,
         temperature: Float, topP: Float, seed: UInt64?, replayIdentity: UUID,
         promptState: Qwen4ExpMTPPromptState?, retainPromptState: Bool, adaptiveDepth: Bool,
-        prefillStepSize: Int?
+        prefillStepSize: Int?, samplerForTesting: LogitSampler? = nil
     ) {
         // Request-owned RNG: no global seeding or mutable sampler on a shared
         // generator. Nil preserves the fused greedy readout and its graph.
-        let sampler: LogitSampler? = temperature > 0
+        let sampler: LogitSampler? = samplerForTesting ?? (temperature > 0
             ? GenerateParameters(temperature: temperature, topP: topP, seed: seed).sampler()
-            : nil
+            : nil)
         func targetTokens(_ hidden: MLXArray, policy: MTPVerificationPolicy? = nil) -> MLXArray {
             guard let sampler else {
                 return model.projectLMHeadArgmax(hidden, verificationPolicy: policy)

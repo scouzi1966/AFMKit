@@ -7,10 +7,11 @@ import MLXNN
 
 /// Numerical policy for target-model verification of speculative tokens.
 ///
-/// Batched verification uses the model's normal multi-token operators and is
-/// an explicitly approximate throughput mode. Singleton-equivalent
-/// verification retains the reduction schedule of independent decode calls
-/// and is the conformant default for autoregressive-equivalent decoding.
+/// Batched verification uses multi-token operators and is an explicitly
+/// approximate throughput mode. Singleton-equivalent verification requests
+/// decode-style projection reductions and remains the conservative default.
+/// This operator policy is not an end-to-end bitwise-equivalence certificate:
+/// attention, recurrent state and compiled regions require model qualification.
 public enum MTPVerificationPolicy: Sendable, Equatable {
     case batched
     case strictSingletonEquivalent
@@ -18,7 +19,7 @@ public enum MTPVerificationPolicy: Sendable, Equatable {
 
 /// Linear projection routing for short speculative-verification windows.
 ///
-/// Strict verification preserves the numerical behavior of independent
+/// Strict verification targets the projection reductions of independent
 /// single-token decode calls. Supported affine q4 projections use a Metal QMV
 /// that carries several independent token rows while retaining the decode
 /// reduction order. Every unsupported strict shape falls back to concatenated

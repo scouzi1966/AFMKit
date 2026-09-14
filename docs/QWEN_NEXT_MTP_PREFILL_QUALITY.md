@@ -6,6 +6,11 @@ the quality gate open in [issue #125](https://github.com/scouzi1966/AFMKit/issue
 MTP is not quality-qualified.** No main merge, default promotion, installed
 binary change, release, or cross-model promotion is included.
 
+Follow-up: [actual filename decisions and frozen-sampler analysis](QWEN_NEXT_MTP_FILENAME_QUALITY.md)
+reproduce the real failing prefixes and identify correlated seed-73 choices.
+The historical counts below are preserved; a distinct-seed full-budget screen
+is being run before reassessing the apparent cross-engine quality gap.
+
 ## What PR #121 contributed
 
 Merged its main checkpoint `6f0bf041` into this workstream as `a561c9eb`,
