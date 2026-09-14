@@ -8,8 +8,10 @@ binary change, release, or cross-model promotion is included.
 
 Follow-up: [actual filename decisions and frozen-sampler analysis](QWEN_NEXT_MTP_FILENAME_QUALITY.md)
 reproduce the real failing prefixes and identify correlated seed-73 choices.
-The historical counts below are preserved; a distinct-seed full-budget screen
-is being run before reassessing the apparent cross-engine quality gap.
+The historical counts below are preserved. The completed four-way distinct-seed
+screen has 220/220 runtime completions. Unique-key JSON plus identity passes
+37/50 AFM MTP, 38/50 AFM AR, 41/50 reference MTP, and 40/50 reference AR;
+these are not semantic-judge scores or a quality-equivalence certificate.
 
 ## What PR #121 contributed
 

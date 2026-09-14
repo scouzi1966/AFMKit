@@ -31,7 +31,10 @@ Latest follow-up: [actual filename decisions and sampler analysis](QWEN_NEXT_MTP
 reproduce five API prefixes and pass 81920 frozen-logit draws. The seed-73
 wrong-file cluster shares an identical random perturbation; reference MTP
 same-seed replay also varies. The distinct-seed 512-token-budget comparison
-is pending. No new runtime controls or default changes.
+is complete: 220/220 runtime requests, final unique-key JSON + identity scores
+37/50 AFM MTP, 38/50 AFM AR, 41/50 reference MTP, 40/50 reference AR. AFM MTP
+is within 0.64% in C1 output tok/s, but 14.0% behind in valid tasks/s. The
+quality gate remains open. No new runtime controls or default changes.
 
 ## How to read the matrix
 
@@ -329,7 +332,7 @@ used the later ladder-4 settings. Older exact flags remain in their manifests.
 | M24 | M23 + cohort depth | Fully instrumented repeat 133.98 tok/s, +3.38% versus M16 but only +0.39% versus M21. 30/30 structural, 458 reused rows. Extra memory not yet justified by a repeatable additive gain. One earlier run excluded for missing shutdown counters. |
 | M25 | M16 + `AFM_QWEN_MTP_REPLAY_MAX_TOKENS=8192` | **Measured**, sampled 4.43K prompts: repeated aggregate 96.51/103.66 tok/s versus 32.62/32.54 at the default 4096 limit (top-p 1.0/0.95). Reversed top-p 1.0 confirmation: 99.57 versus 33.52. All 15 repeats hit complete state; default had zero hits. Across three pairs: 180/180 runtime, candidate 42/90 versus control 36/90 structural, so not quality-qualified. Long-context cancellation/replay: 120/120 assertions. Default, byte and entry budgets unchanged. This removes repeated prefill, not a 3× uncached decode gain. [Evidence](QWEN_NEXT_LONG_CONTEXT_REPLAY.md). |
 | Q1 | `49a97c7a`, same frozen M25 controls, C1/prefix off, existing `--prefill-step-size` now honored by MTP (4096 architecture policy) | **Candidate, not promoted.** Initial greedy probes 5/5 match AR; full greedy 5/5; sampled 17/25 vs old 15/25. First timing run 21.97 tok/s retained; repeat candidate/old 28.83/28.60, with +0.19 s candidate median TTFT. No new environment flag. C15/replay performance not requalified. [Evidence](QWEN_NEXT_MTP_PREFILL_QUALITY.md). |
-| Q2 | Same Q1 runtime/preset; test-only filename geometry, actual sampling-cycle capture, frozen full-vocabulary RNG replay | **Diagnostic, not promoted.** Five API prefixes reproduce exactly; 45 target paths captured; 81920 sampling-law draws pass. Repeated seeds correlate wrong filenames. A short-budget comparison stopped on reference repeatability; full-budget distinct-seed comparison pending. No new runtime environment control. [Evidence](QWEN_NEXT_MTP_FILENAME_QUALITY.md). |
+| Q2 | Same Q1 runtime/preset; test-only filename geometry, actual sampling-cycle capture, frozen full-vocabulary RNG replay | **Diagnostic, not promoted.** Five API prefixes reproduce exactly; 45 target paths captured; 81920 sampling-law draws pass. Four-arm screen: 220/220 runtime; final unique-key structure + identity 37/50 AFM MTP, 38/50 AFM AR, 41/50 reference MTP, 40/50 reference AR. AFM MTP 29.57 versus reference 29.76 output tok/s including prefill; valid tasks/s 0.1283 versus 0.1491. Repeated-seed cluster explained, residual quality gate open. No new runtime control. [Evidence](QWEN_NEXT_MTP_FILENAME_QUALITY.md). |
 
 **Long sampled follow-up on M16/M21:** at 4,427–4,433 prompt tokens,
 temperature 0.6 and top-p 1.0/0.95, all 120 requests completed but only 51/120

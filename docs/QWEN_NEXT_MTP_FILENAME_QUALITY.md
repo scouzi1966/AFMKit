@@ -89,6 +89,10 @@ temperature-scaled token logit and selects the highest result. All four
 seed-73 fixtures reach the filename with the same PRNG key, array shape and
 row. Consequently the random perturbation of `services` is **identical**:
 6.359271. These are correlated choices, not independent trials.
+This is **not shared mutable RNG state between requests**: separate request
+RNGs initialized with the same explicit seed deliberately reproduce the same
+key sequence. Changing that behavior to hide a benchmark failure would break
+seeded replay; no such production change is proposed.
 
 | Task, seed 73 | Correct-token advantage before randomness | Correct-token perturbation | services perturbation | Outcome |
 |---|---:|---:|---:|---|
@@ -114,7 +118,7 @@ All checks pass. Maximum observed frequency error is below 0.7 percentage
 points. This rules out a large sampling-law error in these captured decisions,
 not every possible RNG issue or arbitrarily small statistical deviations.
 
-## Reference repeatability and the next comparison
+## Reference repeatability controls
 
 The initial distinct-seed, 40-output-token screen completed AFM MTP at 39/50
 filename checks, with 5/5 greedy controls. The reference short-run control then
@@ -130,7 +134,8 @@ responses per seed were not byte-identical. Thus the mismatch with the
 historical answer cannot be attributed simply to the 40-token cap. This is a
 repeatability limitation, not proof of an incorrect marginal sampling law.
 
-The inspected reference source (`1ec580a8`, `src/generate.zig`) uses a
+The inspected [reference source](https://github.com/ddalcu/mlx-serve/blob/1ec580a8b7f5f051daef892310660bb62b2ece6c/src/generate.zig)
+(`1ec580a8`, `mtpBatchedAcceptGraph`) uses a
 request-seeded host acceptance PRNG but passes a null/global MLX key for its
 batched residual/bonus categorical draw. Its startup seeds global MLX from
 time. This source observation cautions against treating seed equality as a
@@ -138,11 +143,90 @@ cross-engine replay contract; it is not a claim that the reference's marginal
 sampling distribution is incorrect, nor proof that this research checkout
 exactly matches every instruction in the frozen release binary.
 
-The follow-up retains the original **512-token request budget** and saves full
+## Completed four-way comparison
+
+The follow-up retained the original **512-token request budget** and saved full
 answers, with 50 distinct seeds derived before running from task/trial labels.
-Five greedy controls are separate. Request-ID/filename scores remain structural,
-not semantic-judge scores. Completion of that comparison is required before
-reassessing the historical 17/25 versus 24/25 gap.
+All four arms used identical request payloads. Five greedy controls per arm
+are separate; all pass both identity and unique-key structure checks.
+**220/220 measured runtime requests completed**, plus eight warmup/control
+requests. Every server exited cleanly; resource guards recorded no collision
+or low-memory stop. The final arm ran after the first three, not concurrently.
+
+| Mode | File + request ID / 50 | Exact unique-key JSON + identity / 50 | Output tok/s, including prefill | Valid tasks/s | Median TTFT, s | Peak process RSS, GiB |
+|---|---:|---:|---:|---:|---:|---:|
+| AFM, MTP on | 39 | 37 | 29.57 | 0.1283 | 3.568 | 71.61 |
+| Reference, MTP on | 43 | 41 | 29.76 | 0.1491 | 3.479 | 68.30 |
+| AFM, MTP off | 40 | 38 | 26.58 | 0.1213 | 3.518 | 69.13 |
+| Reference, MTP off | 42 | 40 | 27.07 | 0.1294 | 3.459 | 66.93 |
+
+Valid tasks/s here means unique-key structural successes divided by total
+sampled request wall time, including unsuccessful requests. It is **not** an
+AI semantic-judge score. Output tok/s is total emitted output tokens divided
+by total request wall time: neither decode-only nor concurrent aggregate speed.
+Process RSS is not full unified-memory/GPU allocation accounting. MTP depth is
+capped at three; the reference retains its adaptive controller.
+
+The initial structure audit used ordinary JSON loading, which silently keeps
+the last duplicate key. Manual answer review caught repeated `diagnosis` in
+AFM MTP case 38 and repeated `diagnosis`/`fix` in AFM AR case 53. Rejecting
+duplicate members corrects the initially reported structure counts **38 → 37**
+and **39 → 38**, respectively. Reference counts remain 41 and 40. Both audit
+versions are retained; the final checker includes duplicate/nested-duplicate
+and fenced-JSON regression assertions. No generated response was repaired.
+
+Other identity-passing structure failures: AFM MTP omitted `fix`; AFM AR
+misspelled `diagnosis`; each reference arm produced one extra-field answer
+and one fenced answer. The prompt requires exactly five keys and raw JSON.
+This was **not a grammar-constrained decoding request**.
+
+On this screen AFM MTP is 0.64% behind reference in output tok/s, but 14.0%
+behind in structurally valid tasks/s. MTP improves AFM's raw rate by 11.3%
+and valid-task rate by 5.7% over AFM AR. None of these C1 numbers qualifies
+C15, prefix reuse, broader prompts, or a default change.
+
+The large historical 17/25 versus 24/25 gap does not recur at that magnitude:
+the distinct-seed identity difference is 39/50 versus 43/50, while AFM itself
+changes by one pass between AR and MTP. All four exploratory 95% Wilson
+identity intervals overlap (AFM MTP 64.8–87.2%; reference MTP 73.8–93.0%).
+**Overlap is not proof of equivalence/noninferiority**, and five related task
+families limit generalization. We do not erase the old failures or declare
+quality parity from this result.
+
+## Semantic spot review and interpretation
+
+A fixed subset (trials 0, 6 and 9 × five tasks × four modes = 60 answers) was
+read directly. This is post-hoc, non-blinded Codex inspection, not a separately
+invoked judge or a semantic score for the full 200 sampled answers. The external
+`SEMANTIC-REVIEW.md` records the rubric and specific failures.
+
+- Replies are coherent and usually identify the supplied cause even when
+  they choose the wrong file. Some fabricate a relationship between the named
+  file and a distractor module: a real task failure, not harmless formatting.
+- Some apparently passing streaming replies discard final-chunk content when
+  `finish_reason` appears; that can lose valid output. The selected AFM AR
+  answers exhibit this problem, and one reference MTP answer is ambiguous.
+  One AFM MTP answer omits the fix entirely. Filename checks miss these issues.
+- Some cache sketches lack collision-safe composite encoding or describe
+  required model/template isolation as optional. Queue tests sometimes fail
+  to assert recovered capacity. Without source code, plausible advice is not
+  an executable repair certificate.
+
+The evidence points to **three distinct effects**, not one universal MTP bug:
+
+1. A real prefill-policy mismatch was repaired by `49a97c7a` before this run.
+2. Repeated explicit seeds correlated the original wrong-file choices; actual
+   trajectories and full-vocabulary sampler tests now explain that mechanism.
+3. Target arithmetic still changes probabilities with verifier geometry, and
+   sampled instruction-following/semantic failures remain in both AR and MTP.
+   Their residual cross-engine quality impact is not fully isolated.
+
+No biased sampler or rejection-state corruption has been established by the
+current probes. This does not justify removing the quality gate: broader
+semantic qualification, remaining verifier arithmetic isolation, and refreshed
+C15/prefix/cancellation measurements are still required. A slower numerical
+policy or changed sampling/default policy needs an explicit performance and
+quality tradeoff decision; none is introduced here.
 
 ## Reproducibility and performance scope
 
@@ -159,7 +243,17 @@ External evidence root (untracked):
   repeatability guard; not a completed cross-engine comparison.
 - `reference-budget-a`: alternating-budget repeatability controls.
 - `independent-full-a`: original-budget, distinct-seed full-answer screen.
+- `reference-ar-full-a`: final ordinary-reference arm of the same comparison.
+- `AUDIT-v2-unique-keys.json`: final four-arm audit; earlier audits preserved.
+- `SEMANTIC-REVIEW.md`: disclosed 60-answer inspection, including failed fixes.
 - Guarded launchers, fixtures, release-build logs and exit/resource records.
+
+All 475 evidence files passed SHA-256 verification. The frozen manifest
+`SHA256SUMS.txt` has SHA-256
+`18c782898ac56d27e0360f3c731194aadd5910fbe01eb5a6e9e747d485c9a9c3`.
+Earlier frozen evidence is unchanged. The README distinguishes the benchmarked
+API runtime from the newly compiled diagnostic tests and records provenance
+limits for the initial untracked test fixture.
 
 The API comparisons use the unchanged candidate Release executable
 `10086d6504aa7dbd6e48ed5c8678cc0b1bdfd3a260a64836667de1a141b0b0c6`
