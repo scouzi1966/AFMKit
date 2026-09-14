@@ -1,12 +1,12 @@
 # Qwen Next opt-in activation and experiment matrix
 
-Last source audit: **2026-09-13**, AFMKit runtime `bfcb6b5b`, paired consumer
+Last source audit: **2026-09-13**, AFMKit runtime `739cdb6f`, paired consumer
 `9acccfc`. Workstream: [PR #123](https://github.com/scouzi1966/AFMKit/pull/123).
 This is the central index of settings and combinations for the Qwen Next
 optimization project. Update it with every new experiment, removal or result.
 Historical reports remain the evidence; this index does not rewrite them.
 
-Inventory audit: **45 named Qwen controls, 44 wired and one removed**. This
+Inventory audit: **46 named Qwen controls, 45 wired and one removed**. This
 covers every Qwen control named in the preceding `QWEN_NEXT_*` reports and
 shared-batch workstream, plus the existing deferred-token-resolution control.
 The generic replay/profiling/SDPA controls and CLI settings are listed separately.
@@ -62,6 +62,8 @@ The initial shared-work binary `e4d914ee…` exposed an int64 state-update crash
 its failed arm remains separate evidence, not a passing qualification.
 The cohort-work binary (`bfcb6b5b`) has SHA-256
 `0c63e09ab41c6a11b251f54a3a1fa9fd9659b48411e84aa15b4ebb566954c360`.
+The long-prompt replay-limit binary (`739cdb6f`) has SHA-256
+`4193a708f44f5b59cab393e3e4452d2e469e5e67e7a62faf82ffa607cdc5c93a`.
 The binary reports development `v0.9.20`; the version string does not establish
 source identity. The path is mutable: hash it again after any rebuild.
 Earlier reports' hashes identify earlier binaries, not what currently occupies
@@ -113,6 +115,7 @@ those particular experiments. They do not sanitize every possible variable.
   AFM_QWEN_VERIFY_DEFER_HC=0 \
   AFM_QWEN_MTP_SCHEDULER=1 \
   AFM_QWEN_MTP_REPLAY_MIB=4096 \
+  AFM_QWEN_MTP_REPLAY_MAX_TOKENS=4096 \
   AFM_QWEN_MTP_SUBMISSION_WINDOW=8 \
   AFM_QWEN_MTP_SHARED_VERIFY=1 \
   AFM_QWEN_MTP_INDEPENDENT_ATTENTION=1 \
@@ -306,6 +309,16 @@ used the later ladder-4 settings. Older exact flags remain in their manifests.
 | M22 | M16 + old persistent bank, 2048 MiB | **No speed recommendation**: repeat 124.75 tok/s, −4.51% over control-a. 174 reused rows; 30/30 structural. |
 | M23 | M22 + membership remapping | **Functional, no material gain over no bank**: repeat 130.75 tok/s; +4.81% versus old bank, only +0.08% versus M16. 238 reused rows, 27 membership hits, 30/30 structural. |
 | M24 | M23 + cohort depth | Fully instrumented repeat 133.98 tok/s, +3.38% versus M16 but only +0.39% versus M21. 30/30 structural, 458 reused rows. Extra memory not yet justified by a repeatable additive gain. One earlier run excluded for missing shutdown counters. |
+| M25 | M16 + `AFM_QWEN_MTP_REPLAY_MAX_TOKENS=8192` | **Measured**, sampled 4.43K prompts: repeated aggregate 96.51/103.66 tok/s versus 32.62/32.54 at the default 4096 limit (top-p 1.0/0.95). Reversed top-p 1.0 confirmation: 99.57 versus 33.52. All 15 repeats hit complete state; default had zero hits. Across three pairs: 180/180 runtime, candidate 42/90 versus control 36/90 structural, so not quality-qualified. Long-context cancellation/replay: 120/120 assertions. Default, byte and entry budgets unchanged. This removes repeated prefill, not a 3× uncached decode gain. [Evidence](QWEN_NEXT_LONG_CONTEXT_REPLAY.md). |
+
+**Long sampled follow-up on M16/M21:** at 4,427–4,433 prompt tokens,
+temperature 0.6 and top-p 1.0/0.95, all 120 requests completed but only 51/120
+passed JSON/file-identity checks. Cohort repeat token rate changed +2.53% at
+top-p 1.0 and −3.63% at 0.95. This does not generalize the earlier short/greedy
+gain. Every measured prompt exceeded the original 4096-token replay limit,
+so repeats had **zero** cached tokens despite prefix caching being enabled.
+Do not label these as cache-hit rates or a regression against the short fixture.
+See [the distinct workload and quality limitations](QWEN_NEXT_LONG_CONTEXT_REPLAY.md).
 
 ## Six-mode coverage ledger
 
@@ -385,6 +398,7 @@ to finish; those pages can still be reclaimed. Do not imply it pins the model.
 | `AFM_QWEN_MTP_VERIFICATION_POLICY` | Strict singleton-equivalent | `batched` opts into the faster arithmetic schedule (`fast`/`approximate` aliases); unknown/unset selects strict |
 | `AFM_QWEN_MTP_SCHEDULER` | Off | `1` + supported concrete Qwen model + available MTP generator + concurrent scheduler lane |
 | `AFM_QWEN_MTP_REPLAY_MIB` | 0 / off | Integer clamped 0–4096; requires owner **and** prefix caching |
+| `AFM_QWEN_MTP_REPLAY_MAX_TOKENS` | 4096 | Prompt eligibility only; integer clamped 0–8192, invalid/unset 4096. Requires replay cache enabled; 0 retains no nonempty prompts. Does not increase byte or entry limits. |
 | `AFM_QWEN_MTP_SHARED_VERIFY` | Off | `1` + owner; actual sharing requires eligible batched-policy sessions |
 | `AFM_QWEN_MTP_INDEPENDENT_ATTENTION` | Off | `1` + shared verifier; request-owned real-offset attention in shared backbone groups |
 | `AFM_QWEN_MTP_SUBMISSION_WINDOW` | Requested 1 | Owner: clamp 1–4 independently, **2–4** if shared, **2–8** if shared + independent attention. Thus shared-on/unset effectively means 2, not 1. No owner means 1. |
