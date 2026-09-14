@@ -14,6 +14,11 @@ public enum AFMMLXPrefillPolicy {
     // its throughput and memory behavior.
     private static let architectureRecommendations: [String: Int] = [
         "qwen4_exp": throughputOptimizedStepSize,
+        // mlx-lm's reference generation path uses a 2,048-token prompt step.
+        // Apertus 4-bit is sensitive to chunk-boundary numerical drift, so keep
+        // the provider on the reference execution shape by default. Explicit
+        // user overrides still win.
+        "apertus": 2_048,
     ]
 
     /// Use a benchmarked architecture recommendation when the caller did not

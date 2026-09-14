@@ -128,11 +128,11 @@ public struct ApertusConfiguration: Codable, Sendable {
 // MARK: - Layers
 
 // Expanded Integral of the Exponential Linear Unit
-private class XIELU: Module, UnaryLayer {
-    @ModuleInfo(key: "alpha_p") var alphaPParam: MLXArray
-    @ModuleInfo(key: "alpha_n") var alphaNParam: MLXArray
-    @ModuleInfo(key: "beta") var betaParam: MLXArray
-    @ModuleInfo(key: "eps") var epsParam: MLXArray
+class ApertusXIELU: Module, UnaryLayer {
+    @ParameterInfo(key: "alpha_p") var alphaPParam: MLXArray
+    @ParameterInfo(key: "alpha_n") var alphaNParam: MLXArray
+    @ParameterInfo(key: "beta") var betaParam: MLXArray
+    @ParameterInfo(key: "eps") var epsParam: MLXArray
 
     override public init() {
         self._alphaPParam.wrappedValue = MLXArray(converting: [0.55])
@@ -146,13 +146,24 @@ private class XIELU: Module, UnaryLayer {
         let alphaN = betaParam + softplus(alphaNParam)
 
         let posTerm = alphaP * square(x) + betaParam * x
-        let negTerm = alphaN * (exp(minimum(x, epsParam)) - 1) - alphaN * x + betaParam * x
+        // Match mlx-lm/models/activations.py: expm1 preserves values near zero,
+        // and subtract before multiplying to avoid extra BF16 rounding.
+        let negTerm = (expm1(minimum(x, epsParam)) - x) * alphaN + betaParam * x
 
         return MLX.where(x .> 0, posTerm, negTerm)
     }
 }
 
 private class DynamicNTKScalingRoPE: Module {
+    /// Bit-for-bit frequency table produced by mlx-lm 0.31.3 / MLX 0.32.2
+    /// for the Apertus 2509 128-dimensional Llama 3 RoPE configuration.
+    /// The Swift-built scalar-power kernel differs by one BF16 ULP on a subset
+    /// of entries; that tiny prefix difference is amplified by the 4-bit
+    /// decoder enough to change long RAG outputs.
+    private static let mlxLMApertus2509Frequencies: [Float] = [
+        1, 1.29006684, 1.66427243, 2.14702272, 2.76980281, 3.57323074, 4.60970592, 5.94682884, 7.67180681, 9.89714432, 12.7679768, 16.4715443, 21.2493916, 27.4131355, 35.3647766, 45.622921, 58.8566208, 75.9289703, 97.9534531, 126.366501, 163.021225, 210.308273, 271.311737, 380.528992, 668.436768, 1198.21399, 2214.35767, 4297.49219, 9103.02051, 12907.5557, 16651.6094, 21481.6875, 27712.8125, 35751.3828, 46121.6719, 59500.0391, 76759.0312, 99024.2734, 127747.922, 164803.375, 212607.344, 274277.688, 353836.562, 456472.781, 588880.438, 759695.062, 980057.438, 1264339.5, 1631082.5, 2104205.5, 2714565.75, 3501971.25, 4517777, 5828234, 7518811, 9699769, 12513350, 16143058, 20825622, 26866446, 34659512, 44713084, 57682868, 74414752
+    ]
+
     let dims: Int
     let maxPositionEmbeddings: Int
     let traditional: Bool
@@ -189,17 +200,18 @@ private class DynamicNTKScalingRoPE: Module {
         }
 
         guard let ropeScaling = ropeScaling,
-            case .float(let factor) = ropeScaling["factor"],
-            case .float(let lowFreqFactor) = ropeScaling["low_freq_factor"] ?? .float(1.0),
-            case .float(let highFreqFactor) = ropeScaling["high_freq_factor"] ?? .float(4.0),
-            case .float(let oldContextLen) = ropeScaling["original_max_position_embeddings"]
-                ?? .float(8192),
+            let factor = ropeScaling["factor"]?.asFloat(),
             let base
         else {
             freqs = nil
             return
         }
 
+        // JSON numbers such as 8192 and 8.0 may decode as integers. Match
+        // mlx-lm's numeric handling instead of silently disabling Llama 3 scaling.
+        let lowFreqFactor = ropeScaling["low_freq_factor"]?.asFloat() ?? 1
+        let highFreqFactor = ropeScaling["high_freq_factor"]?.asFloat() ?? 4
+        let oldContextLen = ropeScaling["original_max_position_embeddings"]?.asFloat() ?? 8192
         let lowFreqWavelen = oldContextLen / lowFreqFactor
         let highFreqWavelen = oldContextLen / highFreqFactor
 
@@ -218,6 +230,16 @@ private class DynamicNTKScalingRoPE: Module {
         let smoothFreqs = frequencies / ((1 - smoothFactors) / factor + smoothFactors)
 
         freqs = MLX.where(isMediumFreq, smoothFreqs, frequencies)
+
+        // Align the canonical Apertus 2509 checkpoint with mlx-lm's reference
+        // frequency rounding. Non-matching architectures and RoPE settings use
+        // the general computation above.
+        if dims == 128, base == 12_000_000, ropeType == "llama3",
+            factor == 8, lowFreqFactor == 1, highFreqFactor == 4,
+            oldContextLen == 8192
+        {
+            freqs = MLXArray(Self.mlxLMApertus2509Frequencies)
+        }
         self.base = nil
     }
 
@@ -274,7 +296,7 @@ private class ApertusAttention: Module {
             base: args.ropeTheta,
             scale: 1.0,
             ropeType: {
-                if case .string(let value) = args.ropeScaling?["type"] {
+                if case .string(let value) = args.ropeScaling?["type"] ?? args.ropeScaling?["rope_type"] {
                     return value
                 } else {
                     return "default"
@@ -317,20 +339,18 @@ private class ApertusAttention: Module {
             queries = rope(queries, offset: cache.offset)
             keys = rope(keys, offset: cache.offset)
 
-            // Update cache (expects [B, H, L, D])
-            let (k, v) = cache.update(keys: keys, values: values)
-            keys = k
-            values = v
         } else {
             queries = rope(queries)
             keys = rope(keys)
         }
 
         // 5. Attention (SDPA expects [B, H, L, D])
-        let output = MLXFast.scaledDotProductAttention(
+        // Match mlx-lm's cache-aware attention dispatch, including quantized KV.
+        let output = attentionWithCacheUpdate(
             queries: queries,
             keys: keys,
             values: values,
+            cache: cache,
             scale: scale,
             mask: mask
         )
@@ -348,12 +368,12 @@ private class ApertusAttention: Module {
 private class ApertusMLP: Module {
     @ModuleInfo(key: "up_proj") var upProj: Linear
     @ModuleInfo(key: "down_proj") var downProj: Linear
-    @ModuleInfo(key: "act_fn") var act: XIELU
+    @ModuleInfo(key: "act_fn") var act: ApertusXIELU
 
     public init(dim: Int, hiddenDim: Int) {
         self._upProj.wrappedValue = Linear(dim, hiddenDim, bias: false)
         self._downProj.wrappedValue = Linear(hiddenDim, dim, bias: false)
-        self._act.wrappedValue = XIELU()
+        self._act.wrappedValue = ApertusXIELU()
     }
 
     public func callAsFunction(_ x: MLXArray) -> MLXArray {
@@ -449,6 +469,35 @@ public class ApertusModel: Module, LLMModel, KVCacheDimensionProvider {
         } else {
             return model.embedTokens.asLinear(out)
         }
+    }
+
+    /// Match mlx-lm's prompt execution shape for Apertus.
+    ///
+    /// The generic Swift prefill helper feeds the entire remaining suffix to
+    /// ``TokenIterator`` when it fits in one step. Python ``generate_step``
+    /// always reserves one token for its decode-shaped final step. Apertus
+    /// 4-bit is sensitive to this kernel-shape difference, so keep the
+    /// reference boundary without changing unrelated architectures.
+    public func prepare(
+        _ input: LMInput,
+        cache: [KVCache],
+        windowSize: Int?
+    ) throws -> PrepareResult {
+        let prefillStepSize = windowSize ?? 2_048
+        var remaining = input.text
+
+        while remaining.tokens.size > 1 {
+            let width = min(prefillStepSize, remaining.tokens.size - 1)
+            _ = self(
+                remaining[.newAxis, ..<width],
+                cache: cache.isEmpty ? nil : cache,
+                state: nil
+            )
+            eval(cache)
+            remaining = remaining[width...]
+        }
+
+        return .tokens(remaining)
     }
 
     public func sanitize(weights: [String: MLXArray]) -> [String: MLXArray] {
