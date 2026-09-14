@@ -221,7 +221,9 @@ M21 selects depths 1–3 in shared epochs, not independently per request. M23/24
 can reuse certified state rows across changed membership while keeping attention
 private. They still perform bank reconstruction, not zero-copy in-place storage.
 All remain opt-in. Other budgets, old adaptive + remapping, cohort + old bank
-without remapping, and prefix-off/sample-throughput variants remain unmeasured.
+without remapping, and prefix-off/sampled-throughput variants of the state-bank
+and remapping combinations remain unmeasured. M21's separate long sampled
+screen is recorded below; it did not generalize its short greedy speed gain.
 See [implementation and results](QWEN_NEXT_COHORT_WORK_EXPERIMENTS.md).
 New evidence is frozen in `COHORT-WORK-20260913-SHA256SUMS.txt` under the same
 external root: **442 verified entries**, SHA-256
@@ -297,7 +299,7 @@ used the later ladder-4 settings. Older exact flags remain in their manifests.
 | M10 / V4 | M8 with `AFM_QWEN_MTP_SHARED_VOCAB=1`, window stays `4` | Latest repeat tok/s +1.72/+2.71%; valid tasks/s −3.34/+2.59%. Mixed quality/useful-work evidence; not a default candidate. [Evidence](QWEN_NEXT_VERIFICATION_WIDTH_EXPERIMENTS.md). |
 | M11 | W8 + vocabulary `1`, ladder stays `4` | **Measured**, not recommended: repeat tok/s +0.95–3.59%; candidate 57/60 versus control 59/60 structural passes. Only eligible subgroups of at most four requests share vocabulary; not eight-way shared vocabulary. [Evidence](QWEN_NEXT_COMPOSED_VERIFIER_EXPERIMENTS.md#window-8-plus-vocabulary-sharing). |
 | M12 | MTP + `AFM_QWEN_MTP_RETAIN_ANCHOR=1` and batched policy | Earlier depth-4 screen: mixed sampled results, changed answers in several cases, no broad gain. Off in current recipes. Current W8/anchor combination untested. [Evidence](QWEN_NEXT_COMMITTED_ANCHOR_EXPERIMENT.md). |
-| M13 | Shared verifier + non-greedy requests (for example temperature 0.6/top-p 0.95) | Per-request sampling/lifecycle coverage exists, including mixed greedy/sampled groups. Latest full greedy matrix is **not** a sampled-performance matrix. |
+| M13 | Shared verifier + non-greedy requests (for example temperature 0.6/top-p 0.95) | Per-request sampling/lifecycle coverage exists, including mixed greedy/sampled groups. Long sampled M16/M21/M25 screens and a separate matched-control six-mode matrix now exist; their structural failures remain a qualification gate. They are not interchangeable with the short greedy results. [Long-mode qualification](QWEN_NEXT_LONG_MODE_QUALIFICATION.md). |
 | M14 | W8 + replay off, prefix off, other client counts, longer contexts, or PLE row cache | Controls are available where their guards allow. **Latest window-8 throughput/quality matrix not run for these combinations.** Do not extrapolate C15/prefix-on results. |
 | M15 / W8-L2 | W8 with `AFM_QWEN_VERIFY_SHARED_ASYNC_LADDER=2`, vocabulary stays `0` | **Measured**, separate opt-in: repeat 117.46–119.21 tok/s, +2.35–5.39% over matched ladder-4 arms; first-phase token rate −1.10–1.45%. Structural 60/60 versus 59/60, but changed outputs and mixed latency. [Evidence](QWEN_NEXT_COMPOSED_VERIFIER_EXPERIMENTS.md#window-8-submission-every-two-versus-four-layers). |
 | M16 | W8-L2 + shared head only | **Measured candidate**: corrected repeat 125.62–130.25 tok/s, +6.03–12.81%; structurally valid tasks/s +6.87–11.06%. Candidate/control both 59/60 structural across two pairs, but outputs differ. Still opt-in. [Evidence](QWEN_NEXT_SHARED_SPECULATIVE_WORK.md). |
@@ -324,6 +326,16 @@ See [the distinct workload and quality limitations](QWEN_NEXT_LONG_CONTEXT_REPLA
 
 The user-requested cross product is MTP off/on × these three scenarios. It
 remains an explicit checklist, not “cache tested” inferred from one warm run.
+
+**New, separate sampled matrix:** runtime `739cdb6f` completed all six modes
+with the M25 matched-control recipe, 4.43K prompts, temperature 0.6/top-p 1.0
+and cap 512: **180/180 runtime, 134/180 structural** (AR 90/90, MTP 44/90).
+One previously frozen M25 arm is reused, not counted as a new rerun. See the
+[complete six-mode table](QWEN_NEXT_LONG_MODE_QUALIFICATION.md#six-mode-matched-control-matrix).
+This holds controls fixed to isolate MTP; it does **not** replace the pending
+best-A9 versus best-MTP short-fixture qualification below. C1 cache counters
+were zero despite the prefix flag, and the C15 first phases had different
+amounts of actual reuse. Those distinctions are explicit in the new report.
 
 | Scenario | Activation delta | Historical integrated checkpoint `75d88a5a`: first / repeat tok/s | Latest A9 or W8 requalification |
 |---|---|---:|---|

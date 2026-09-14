@@ -175,12 +175,17 @@ success claim. After cancellation and on repeat, all three eligible MTP
 requests reported complete prompt hits above 4096 tokens. This establishes the
 tested ownership/replay path, not all possible cancellation interleavings.
 
-## Still to qualify
+## Follow-up qualification
 
-- Compare these exact long sampled prompts with ordinary decoding and the
-  reference before assigning the file-selection failures to the model or engine.
-- Refresh the full six-mode matrix on one binary, keeping short/long, sampled/
-  greedy, cold/repeated and C1/C15 results separate.
+The subsequent [long-mode qualification](QWEN_NEXT_LONG_MODE_QUALIFICATION.md)
+records the matched ordinary-decoding comparison, strict C1 diagnostic,
+six-mode sampled control matrix and reference checks. It is separate evidence,
+not an amendment to the frozen replay-limit arms.
+
+- Resolve the remaining quality gate before assigning the file-selection
+  failures to the model or engine. Use independent seeds and semantic checks.
+- Refresh best-preset short/greedy qualification independently of the completed
+  long sampled matched-control matrix; keep C1/C15 and actual cache hits distinct.
 - Profile the remaining target-verification execution cost independently of
   replay and host-only timings before changing state-bank or kernel architecture.
 - Fix consumer issue #304's asynchronous shutdown lifetime separately; these
