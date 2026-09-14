@@ -2,6 +2,47 @@ import XCTest
 @testable import AFMKitMLX
 
 final class ExactPromptReplayCacheTests: XCTestCase {
+    func testReplayPromptLimitPreservesDefaultAndBoundsExplicitOverride() {
+        let fallbackValues: [String?] = [nil, "", "invalid", "99999999999999999999999999999"]
+        for value in fallbackValues {
+            XCTAssertEqual(BatchScheduler.qwenMTPReplayPromptTokenLimit(value), 4096)
+        }
+        for (value, expected) in [("-1", 0), ("0", 0), ("1", 1), ("4096", 4096),
+                                  ("8192", 8192), ("8193", 8192), (String(Int.max), 8192)] {
+            XCTAssertEqual(BatchScheduler.qwenMTPReplayPromptTokenLimit(value), expected)
+        }
+    }
+
+    func testLongPromptOptInStillEnforcesBytesAndExactPrefixBoundaries() {
+        let prompt = Array(0..<4430)
+        let original = ExactPromptReplayCache<String>(maximumBytes: 40_000)
+        XCTAssertEqual(original.maximumPromptTokens, 4096)
+        XCTAssertFalse(original.canStore(prompt: prompt))
+        XCTAssertFalse(original.insert(prompt: prompt, value: "original", valueBytes: 64))
+
+        let expanded = ExactPromptReplayCache<String>(maximumBytes: 40_000,
+            maximumPromptTokens: BatchScheduler.qwenMTPReplayPromptTokenLimit("8192"))
+        XCTAssertTrue(expanded.canStore(prompt: prompt))
+        XCTAssertTrue(expanded.insert(prompt: prompt, value: "complete state", valueBytes: 64))
+        XCTAssertEqual(expanded.find(prompt: prompt), "complete state")
+        XCTAssertEqual(expanded.find(prompt: prompt + [9000], allowPrefix: true), "complete state")
+        XCTAssertNil(expanded.find(prompt: Array(prompt.dropLast()), allowPrefix: true))
+        let bytes = expanded.retainedBytes
+        XCTAssertLessThanOrEqual(bytes, 40_000)
+        XCTAssertFalse(expanded.insert(prompt: prompt, value: "oversized", valueBytes: 5_000))
+        XCTAssertFalse(expanded.canStore(prompt: Array(0..<8193)))
+        XCTAssertEqual(expanded.find(prompt: prompt), "complete state")
+        XCTAssertEqual(expanded.retainedBytes, bytes)
+
+        let other = Array(repeating: 7, count: 4430)
+        XCTAssertTrue(expanded.insert(prompt: other, value: "other", valueBytes: 64))
+        XCTAssertEqual(expanded.count, 1, "Byte budget still evicts the older complete snapshot")
+        XCTAssertNil(expanded.find(prompt: prompt))
+        XCTAssertEqual(expanded.find(prompt: other), "other")
+        expanded.removeAll()
+        XCTAssertEqual(expanded.retainedBytes, 0)
+    }
+
     func testOptionalLongestPrefixUsesCompleteBoundariesAndUpdatesLRU() {
         let cache = ExactPromptReplayCache<String>(maximumBytes: 4096, maximumEntries: 3)
         XCTAssertTrue(cache.insert(prompt: [1, 2], value: "short", valueBytes: 8))

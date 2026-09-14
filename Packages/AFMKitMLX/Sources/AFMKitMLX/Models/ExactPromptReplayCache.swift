@@ -10,7 +10,7 @@ final class ExactPromptReplayCache<Value> {
 
     private let maximumBytes: Int
     private let maximumEntries: Int
-    private let maximumPromptTokens: Int
+    let maximumPromptTokens: Int
     private var entries: [Entry] = []
     private(set) var retainedBytes = 0
     var count: Int { entries.count }

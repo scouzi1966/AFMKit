@@ -807,7 +807,9 @@ actor BatchScheduler {
         let replayMiB = min(4096, max(0,
             Int(ProcessInfo.processInfo.environment["AFM_QWEN_MTP_REPLAY_MIB"] ?? "0") ?? 0))
         self.qwenMTPReplayCache = ownsQwenMTP && enablePrefixCaching && replayMiB > 0
-            ? ExactPromptReplayCache(maximumBytes: replayMiB * 1024 * 1024) : nil
+            ? ExactPromptReplayCache(maximumBytes: replayMiB * 1024 * 1024,
+                maximumPromptTokens: Self.qwenMTPReplayPromptTokenLimit(
+                    ProcessInfo.processInfo.environment["AFM_QWEN_MTP_REPLAY_MAX_TOKENS"])) : nil
         self.glmMTPPromptReplayCache = glmMTPPromptReplayCache
         self.glmMTPReplayModelID = Self.glmMTPReplayModelID(
             serviceModelID: serviceModelID,
@@ -1063,7 +1065,10 @@ actor BatchScheduler {
                 print("[BatchScheduler] Qwen MTP state membership: hits=\(state.membershipHits) | remapped rows=\(state.remappedRows) | peak bytes=\(state.peakRetainedBytes)")
             }
         }
-        qwenMTPReplayCache?.removeAll()
+        if let replay = qwenMTPReplayCache {
+            print("[BatchScheduler] Qwen MTP replay maximum prompt tokens: \(replay.maximumPromptTokens)")
+            replay.removeAll()
+        }
         qwenMTPPersistentState?.prune(activeRows: [])
         groupedSlotIDs.removeAll()
         needsUniformDecodeGrouping = false
@@ -1569,6 +1574,14 @@ actor BatchScheduler {
         configurationName: String
     ) -> String {
         serviceModelID ?? configurationName
+    }
+
+    /// A prompt-count eligibility limit is separate from the replay byte budget.
+    /// Preserve the 4K policy unless explicitly overridden; bound this experiment
+    /// at 8K. Larger prompts otherwise miss even when the cache budget has room.
+    /// This does not relax complete-state ownership, entry count or byte limits.
+    static func qwenMTPReplayPromptTokenLimit(_ value: String?) -> Int {
+        min(8192, max(0, Int(value ?? "4096") ?? 4096))
     }
 
     /// Keep deferred GLM work ahead of AR work while a dense cohort drains.
