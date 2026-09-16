@@ -36,6 +36,11 @@ is complete: 220/220 runtime requests, final unique-key JSON + identity scores
 is within 0.64% in C1 output tok/s, but 14.0% behind in valid tasks/s. The
 quality gate remains open. No new runtime controls or default changes.
 
+September 15: [peak/degradation ledger](QWEN_NEXT_PERFORMANCE_LEDGER.md) retains
+the context highs. The [paired explicit-prefill screen](QWEN_NEXT_PREFILL_TRADEOFFS.md)
+completed 220/220 runtime requests: 8192 is **not** a general recommendation.
+The CLI remains available; no automatic selection or default change is adopted.
+
 ## How to read the matrix
 
 - **AR**: ordinary decoding, without `--mtp`.
@@ -333,6 +338,8 @@ used the later ladder-4 settings. Older exact flags remain in their manifests.
 | M25 | M16 + `AFM_QWEN_MTP_REPLAY_MAX_TOKENS=8192` | **Measured**, sampled 4.43K prompts: repeated aggregate 96.51/103.66 tok/s versus 32.62/32.54 at the default 4096 limit (top-p 1.0/0.95). Reversed top-p 1.0 confirmation: 99.57 versus 33.52. All 15 repeats hit complete state; default had zero hits. Across three pairs: 180/180 runtime, candidate 42/90 versus control 36/90 structural, so not quality-qualified. Long-context cancellation/replay: 120/120 assertions. Default, byte and entry budgets unchanged. This removes repeated prefill, not a 3× uncached decode gain. [Evidence](QWEN_NEXT_LONG_CONTEXT_REPLAY.md). |
 | Q1 | `49a97c7a`, same frozen M25 controls, C1/prefix off, existing `--prefill-step-size` now honored by MTP (4096 architecture policy) | **Candidate, not promoted.** Initial greedy probes 5/5 match AR; full greedy 5/5; sampled 17/25 vs old 15/25. First timing run 21.97 tok/s retained; repeat candidate/old 28.83/28.60, with +0.19 s candidate median TTFT. No new environment flag. C15/replay performance not requalified. [Evidence](QWEN_NEXT_MTP_PREFILL_QUALITY.md). |
 | Q2 | Same Q1 runtime/preset; test-only filename geometry, actual sampling-cycle capture, frozen full-vocabulary RNG replay | **Diagnostic, not promoted.** Five API prefixes reproduce exactly; 45 target paths captured; 81920 sampling-law draws pass. Four-arm screen: 220/220 runtime; final unique-key structure + identity 37/50 AFM MTP, 38/50 AFM AR, 41/50 reference MTP, 40/50 reference AR. AFM MTP 29.57 versus reference 29.76 output tok/s including prefill; valid tasks/s 0.1283 versus 0.1491. Repeated-seed cluster explained, residual quality gate open. No new runtime control. [Evidence](QWEN_NEXT_MTP_FILENAME_QUALITY.md). |
+| Q3 | Same Q1 binary, historical depth-3/depth-4 launch controls; depth 4 adds CLI `--prefill-step-size 8192` | **Context-specific recovery, not quality-qualified.** At 4150 prompt tokens, depth-4 decode 72.31→88.63 tok/s, acceptance 46.7→60.8%; restores prior response text. 54 measured +18 warmups, eight separate diagnostics. Keep the peak, do not extrapolate to other workloads. [Ledger](QWEN_NEXT_PERFORMANCE_LEDGER.md). |
+| Q4 | Same Q1/M25 C1, prefix off, depth 3; CLI `--prefill-step-size 4096` versus `8192`, MTP off/on | **Reject blanket 8192 recommendation.** 220/220 runtime + four warmups; both 4096 controls reproduce 55/55 prior answers. AR strict 38→37/50 and output 25.00→24.09 tok/s; MTP strict 37→34/50 and output 28.59→28.47. MTP valid tasks/s −9.18%. All rates include prefill; no semantic-judge or C15 qualification. No new environment variable or default. [Tradeoff gate](QWEN_NEXT_PREFILL_TRADEOFFS.md). |
 
 **Long sampled follow-up on M16/M21:** at 4,427–4,433 prompt tokens,
 temperature 0.6 and top-p 1.0/0.95, all 120 requests completed but only 51/120

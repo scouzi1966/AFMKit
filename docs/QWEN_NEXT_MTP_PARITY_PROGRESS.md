@@ -1,5 +1,16 @@
 # Qwen Next MTP parity: controlled implementation work
 
+Current work order and retained/rejected decisions:
+[consolidation and qualification](QWEN_NEXT_CONSOLIDATION.md).
+
+September 15 follow-up: [peak-performance/degradation ledger](QWEN_NEXT_PERFORMANCE_LEDGER.md)
+retains historical maxima, matched-launch controls and the measured prefill-policy
+effect on speculative acceptance. This does not close the quality gate.
+The completed [paired prefill quality screen](QWEN_NEXT_PREFILL_TRADEOFFS.md)
+rejects 8192 as a blanket recommendation: 220/220 runtime completions, but
+sampled strict passes change 38→37 without MTP and 37→34 with MTP, with no
+agentic output-throughput gain. Defaults remain unchanged.
+
 This records intermediate work for AFMKit PR #123, following research PR #122.
 **The MTP performance goal is not achieved.** These are targeted experiments,
 not release qualification, and default MTP is not yet consistently faster than AR.
