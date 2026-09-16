@@ -49,3 +49,96 @@ historical peak. Ask about performance/quality tradeoffs before adopting them.
 
 Local evidence root:
 `/Volumes/edata2/afm-benchmarks/qwen-next-mtp-parity-20260909/consolidation-20260915`.
+
+## Consolidation checkpoint, September 15–16
+
+Steps 1–3 are complete. Diagnostics and findings were checkpointed at
+`f0c9782a`; the ten main commits merged cleanly at `c356e5be`. The merge did
+not change Qwen, batching or replay runtime files. The fixed-control replay
+harness is committed at `0ec5db44`; all 21 CPU harness tests pass.
+
+The pre-merge executable and its adjacent resource bundles are preserved in
+`pre-merge-binary`, with a verified `PRE-MERGE-SHA256SUMS.txt`. Its executable
+SHA-256 is
+`10086d6504aa7dbd6e48ed5c8678cc0b1bdfd3a260a64836667de1a141b0b0c6`.
+The rebuilt executable SHA-256 is
+`3d449739c0535de9426403d074140e86317902f15fff0c5c1c8e52b4cc282074`.
+No installed version or main branch was changed. Unrelated uncommitted work
+in the user's main consumer checkout was left untouched.
+
+### Build and focused regression results
+
+The first incremental link failed on the newly added DwarfStar image C
+translation unit: SwiftPM's generated release plan still contained the old
+source list. Regenerating that plan, without deleting compiled objects,
+compiled the missing source and passed in 21.51 seconds. The paired consumer
+now invalidates the generated configuration plan when its local provider
+fingerprint changes (`e8b8e7a`). A second build exercised that safeguard and
+passed in 4.16 seconds with the same executable hash. This is a build-plan
+repair, not a change to Qwen inference or the reference libraries.
+
+Focused Release XCTest: **209 passed, 10 skipped, one failed test case** out
+of 220. Another 17 Swift Testing streaming tests passed. All selected Qwen
+and GLM tests passed, including GLM score-allocation bounds. Optional
+checkpoint diagnostics that require explicit fixture paths were skipped,
+not counted as checkpoint validation.
+
+The failing case is
+`DeepseekV4DSparkPrefillTests.testFullAndChunkedPrefillPreserveLogitsAndNextProposalAcrossBoundaries`
+(59 failed assertions). Main already documents this exact case as its RC5
+DSpARK exception. This run deliberately did not enable the release script's
+skip flag and reproduced the failure. It is not a green release gate; no
+new DeepSeek fix or full cross-model qualification is claimed here.
+
+### Fixed context replay
+
+Same M25 controls, unchanged checkpoint and prompts. Each value is the median
+of three measured trials; four warmups per mode are excluded. Pairs are
+**prefill proxy / decode tokens per second**, not agentic wall-time throughput.
+
+| Context | Before, MTP off | Consolidated, MTP off | Before, MTP depth 3 | Consolidated, MTP depth 3 |
+|---|---:|---:|---:|---:|
+| 0.5K | 893.08 / 68.72 | 883.70 / 66.70 | 959.63 / 89.00 | 956.14 / 89.47 |
+| 1K | 1045.58 / 68.28 | 1036.53 / 66.69 | 1119.43 / 86.45 | 1117.71 / 85.97 |
+| 2K | 1190.89 / 62.00 | 1186.54 / 62.01 | 1276.50 / 81.85 | 1271.38 / 82.12 |
+| 4K | 1293.68 / 60.77 | 1291.81 / 60.54 | 1261.43 / 82.92 | 1258.23 / 84.29 |
+
+All 24 measured responses match the frozen pre-merge text exactly. These are
+historical-versus-current timings, not a counterbalanced same-session causal
+experiment: the roughly 2.9% short-context non-MTP decrease remains recorded,
+not attributed to a code regression without a paired replay. MTP decode is
+within -0.6% to +1.7% of the same preset's previous medians. Historical
+depth-4 peaks remain in the performance ledger; none is replaced by this run.
+
+### Fixed agentic replay
+
+Both modes completed all 55 measured cases plus one excluded warmup. All
+110 measured texts and payloads reproduce the frozen pre-merge controls.
+
+| Mode | Runtime | Greedy strict | Sampled identity | Sampled strict | Sampled wall-time output tok/s | Strict tasks/s | Sampled median TTFT | Sampled median decode tok/s |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| MTP off | 55/55 | 5/5 | 40/50 | 38/50 | 25.01 | 0.11416 | 3.536 s | 53.90 |
+| MTP depth 3 | 55/55 | 5/5 | 39/50 | 37/50 | 27.79 | 0.12054 | 3.588 s | 68.25 |
+
+Against the immediately preceding paired 4096-prefill screen, wall-time output
+rate is +0.03% without MTP and -2.82% with MTP. Against September 14's earlier
+independent screen it is -5.90% and -6.03%, respectively. Those earlier rates
+remain recorded: unchanged answers do not establish unchanged performance,
+and historical timing differences alone do not isolate a cause.
+
+Across context and agentic replay, **134 measured responses are identical**
+to their saved same-mode controls. Ten warmups are excluded. All four servers
+exited normally; resource guards recorded no competing named build/inference
+process and at least 364.45 GiB available memory. This is not a leak soak or
+a guarantee that every possible external GPU workload was detected.
+
+`audit-replay.py` independently rechecks payloads, texts, token counts, strict
+scores, executable/runner/checkpoint metadata hashes and lifecycle results.
+`AUDIT-REPLAY.json` and `REPLAY-SHA256SUMS.txt` preserve its findings. The
+rebuilt executable and adjacent resources are frozen in `consolidated-binary`
+with `CONSOLIDATED-SHA256SUMS.txt`; its version smoke check reports `v0.9.20`.
+
+Step 4 is complete. This demonstrates consolidation equivalence on these
+controls, **not reference quality parity**. Numerical diagnosis and the
+combined C15/prefix/cancellation gate remain open. No experimental default
+is promoted.
