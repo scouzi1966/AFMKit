@@ -8,9 +8,11 @@ Current state (September 16): consolidation and fixed-baseline replay are
 complete; all 134 measured responses reproduce. Quality diagnosis has isolated
 HC and GDN Q/K normalization differences. The GDN-only prototype improves the
 fixed sampled API screen from 38/50 to 43/50 strict passes with essentially
-unchanged throughput. It is **not** a production default: two previous passes
-regress, broader quality parity is unproven, and fusion plus combined
-MTP/C15/prefix/cancellation qualification remain open.
+unchanged throughput. The fused implementation now preserves the prototype's
+full-model tensors and all API answers exactly, with no material throughput
+change against a warm repeat. It is **not** a production default: two original
+passes regress, broader quality parity is unproven, and combined
+MTP/C15/prefix/cancellation qualification remains open.
 
 ## Decisions retained
 
@@ -20,7 +22,7 @@ MTP/C15/prefix/cancellation qualification remain open.
 | Shared/batched verification, cache/replay experiments | Retain opt-ins; combined qualification remains required | [Opt-in matrix](QWEN_NEXT_OPT_IN_MATRIX.md) |
 | Bounded MTP initialization | Keep the correctness/memory repair; track trajectory-dependent speed differences | [Quality investigation](QWEN_NEXT_MTP_PREFILL_QUALITY.md) |
 | Prefill 8192 as a general default | Rejected: no agentic throughput benefit in the paired screen, fewer strict passes | [Prefill tradeoffs](QWEN_NEXT_PREFILL_TRADEOFFS.md) |
-| Precision/normalization changes | GDN-only improves the fixed API screen; diagnostic only pending wider quality and fused-performance qualification | [API screen below](#controlled-gdn-api-screen) |
+| Precision/normalization changes | GDN-only improves the fixed API screen; fusion preserves it without material timing change; default-off pending wider quality and combined qualification | [Latest fused results](#fused-gdn-implementation-follow-up) |
 | New automatic tuning | Not authorized; keep explicit CLI choice and guidance | [Prefill tradeoffs](QWEN_NEXT_PREFILL_TRADEOFFS.md) |
 
 ## Ordered work
@@ -380,7 +382,7 @@ hashes and all changed pass/fail cases), `normalization-api-control-a`,
 evidence root. The audit rechecks payloads, scores, binary/runner/checkpoint
 identity, greedy activation controls and normal server exits.
 
-**Next gate:** preserve this quality signal while moving the Q/K arithmetic
+**Next gate at this checkpoint (completed below):** preserve this quality signal while moving the Q/K arithmetic
 into fused preprocessing, eliminating the diagnostic duplicate convolution.
 Require component-equivalence tests and a same-checkpoint quality/performance
 repeat before broader sampled and MTP/cache/concurrency qualification. Keep
@@ -425,3 +427,57 @@ pass strict structure/identity and terminate normally. The CPU audit is
 290.283 seconds; incremental build: 5.73 seconds; minimum available memory:
 362.17 GiB. These diagnostic times are not a throughput comparison. The
 next gate is paired API timing with exact saved-prototype answer checks.
+
+That API gate is complete as an A/B/A screen: unfused prototype, fused
+implementation, then the identical unfused prototype again. Each arm completes
+55/55 runtime requests, 5/5 greedy strict and 43/50 sampled strict (45/50
+identity). All 55 responses and completion-token counts in each arm exactly
+match the original saved prototype, including its seven sampled failures.
+Three warmups are excluded. These are repeated controls, not 165 independent
+quality tasks.
+
+| Sampled measure | Unfused before | Fused | Unfused after |
+|---|---:|---:|---:|
+| Output / request wall tok/s | 24.6049 | 26.9248 | 26.9797 |
+| Strict tasks/s | 0.125654 | 0.137502 | 0.137783 |
+| Median TTFT | 3.4923 s | 3.5031 s | 3.4924 s |
+| Median decode tok/s | 52.4445 | 61.8237 | 61.6710 |
+| Peak process RSS, whole arm | 69.1528 GiB | 69.1797 GiB | 69.2210 GiB |
+
+Against the warm after-control, fusion changes median decode **+0.25%**, wall
+token rate/strict tasks per second **-0.20%**, and TTFT **+0.31%**: no material
+throughput improvement or regression is established. The apparent large gain
+versus the first control does not survive the warm repeat. The same unfused
+binary recovers from 52.44 to 61.67 tok/s; its timing variation has not been
+causally isolated. Run order or filesystem warming are possibilities, not
+proven explanations. A single triplet is not a statistical performance bound.
+The prior 60.25 tok/s prototype observation and historical context/MTP peaks
+remain preserved, not overwritten.
+
+The useful result is **removing redundant computation while preserving the
+observed quality benefit**, not a new decoder-speed breakthrough. Further
+normalization-only micro-tuning offers no demonstrated material return to
+justify more numerical risk/retesting. Retain this default-off implementation
+and move to broader sampled/semantic and MTP/cache/concurrency qualification.
+
+All three servers exited 0; available memory remained at least 365.13 GiB.
+No named competing build/inference process was detected. The one-second RSS
+samples are not full Metal-memory accounting, a leak soak, or evidence of
+memory savings. No MTP, prefix reuse or concurrent serving was run here.
+
+Fused code checkpoint: `2c9c8241`. Private enabled binary SHA-256:
+`f59804bc41db85f57366aa29d5c5a27d2a10a12d71bd820a7f0ad307d2fe8a3c`.
+The temporary one-line activation was restored and never committed. Evidence:
+`FUSED-NORMALIZATION-API-SCREEN.md`, `AUDIT-FUSED-API.json`,
+`normalization-unfused-repeat-a`, `normalization-fused-a`, and
+`normalization-unfused-repeat-b`. The independent audit checks scores,
+payloads, texts, token counts, hashes and normal exits. No default is promoted.
+
+After the screen, the mutable consumer executable was rebuilt from the clean,
+default-off `2c9c8241` source in 98.12 seconds. Restored SHA-256:
+`e7970fd1f444e13f23fc8f589b7dad29723216ea803697d7b02d71c4f85d7f91`.
+`restored-fused-default-smoke-a` passes its first greedy API case and exactly
+matches the frozen default-control response, with an excluded warmup and
+normal server exit. This is a restoration smoke, not broad qualification.
+The separate private binaries and all previous results remain preserved;
+the installed nightly and production defaults were not changed.

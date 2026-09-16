@@ -70,11 +70,13 @@ diagnostic properties default off and are restored after the test.
 | reference-hc-and-gdn-qk | On | On | Current 4096 chunks | 5/5 greedy; mixed probability effects, not adopted |
 
 GDN reference Q/K preparation is limited to unbatched prefill of at least
-128 tokens. Its diagnostic implementation deliberately repeats convolution
-to isolate the arithmetic while keeping actual fused values/gates and FP32
-recurrence unchanged. It is **not** a throughput implementation. If a quality
-benefit survives qualification, port the arithmetic into the fused prework
-and retest API performance before considering adoption. GDN-reference arms
+128 tokens. The initial diagnostic deliberately repeated convolution to
+isolate arithmetic; its binary and evidence are preserved. The current
+default-off implementation fuses the same arithmetic into prework for
+128-dimensional heads, retaining actual values/gates and FP32 recurrence.
+Exact full-model and A/B/A API replays pass, with no material warm throughput
+change. Wider quality and combined qualification remain required before
+considering adoption. GDN-reference arms
 with N−1 geometry, MTP, prefix reuse or concurrency are not tested by this
 screen; unlisted combinations are not qualified.
 
@@ -85,17 +87,20 @@ screen; unlisted combinations are not qualified.
 | N0 control | Frozen consolidated binary; saved M25 settings, AR/C1/prefix off, thinking off, prefill 4096 | 55/55 runtime; 5/5 greedy; 38/50 sampled strict; 26.3007 wall tok/s; 60.3155 median decode tok/s | All frozen texts reproduced |
 | N1 GDN Q/K | Same launch/payloads/checkpoint; private build enabling only internal GDN normalization diagnostic | 55/55 runtime; 5/5 greedy; 43/50 sampled strict; 26.4605 wall tok/s; 60.2497 median decode tok/s | Diagnostic only, not promoted; +7/-2 strict cases |
 | N1 + MTP/prefix/C15 | Not run in this screen | No combined throughput/quality claim | Untested |
-| N2 fused implementation | Same internal activation; reference Q/K directly in prework, without duplicate convolution | Six focused tests pass; whole-model replay matches 90 arrays and 20 greedy answers exactly; API timing pending | Default-off; [follow-up](QWEN_NEXT_CONSOLIDATION.md#fused-gdn-implementation-follow-up) |
+| N2 fused implementation | Same internal activation; reference Q/K directly in prework, without duplicate convolution | Six focused tests pass; 90 arrays and 20 greedy answers exact; A/B/A API answers identical, 43/50 sampled strict each; warm decode 61.8237 vs 61.6710 tok/s, wall 26.9248 vs 26.9797 | Retained default-off; no material throughput gain; [follow-up](QWEN_NEXT_CONSOLIDATION.md#fused-gdn-implementation-follow-up) |
 
-The source activation was reverted before testing and never committed. Both
-diagnostic defaults are off. The mutable development binary has also been
+The temporary source activation was reverted after each private build and
+never committed; the frozen enabled binaries were used for API testing. Both
+source diagnostic defaults are off. The mutable development binary has also been
 rebuilt default-off and passed a one-case frozen-answer API restore smoke.
 The installed nightly is unchanged. Frozen candidate/control hashes, exact
 protocol, failure details and limitations are in the
-[controlled GDN API screen](QWEN_NEXT_CONSOLIDATION.md#controlled-gdn-api-screen).
+[controlled GDN API screen](QWEN_NEXT_CONSOLIDATION.md#controlled-gdn-api-screen)
+and [fused follow-up](QWEN_NEXT_CONSOLIDATION.md#fused-gdn-implementation-follow-up).
 The saved 26 M25 overrides are retained: these are **not** unset-environment
 results. No inference-setting inventory entry is added for an internal test
-property. Memory guards passed; peak process/Metal memory was not measured.
+property. Memory guards passed. N0/N1 did not measure peak process memory;
+N2 includes one-second process RSS sampling, not full Metal-memory accounting.
 No prefix hits, repeated-phase gain or aggregate-concurrency gain is claimed.
 
 ## How to read the matrix
