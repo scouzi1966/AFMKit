@@ -6,9 +6,11 @@ work, not a replacement for historical evidence.
 
 Current state (September 16): consolidation and fixed-baseline replay are
 complete; all 134 measured responses reproduce. Quality diagnosis has isolated
-HC and GDN Q/K normalization differences. GDN-only normalization is advancing
-to a sampled API screen, **not** to a production default. Reference quality
-parity and combined MTP/C15/prefix/cancellation qualification remain open.
+HC and GDN Q/K normalization differences. The GDN-only prototype improves the
+fixed sampled API screen from 38/50 to 43/50 strict passes with essentially
+unchanged throughput. It is **not** a production default: two previous passes
+regress, broader quality parity is unproven, and fusion plus combined
+MTP/C15/prefix/cancellation qualification remain open.
 
 ## Decisions retained
 
@@ -18,7 +20,7 @@ parity and combined MTP/C15/prefix/cancellation qualification remain open.
 | Shared/batched verification, cache/replay experiments | Retain opt-ins; combined qualification remains required | [Opt-in matrix](QWEN_NEXT_OPT_IN_MATRIX.md) |
 | Bounded MTP initialization | Keep the correctness/memory repair; track trajectory-dependent speed differences | [Quality investigation](QWEN_NEXT_MTP_PREFILL_QUALITY.md) |
 | Prefill 8192 as a general default | Rejected: no agentic throughput benefit in the paired screen, fewer strict passes | [Prefill tradeoffs](QWEN_NEXT_PREFILL_TRADEOFFS.md) |
-| Precision/normalization changes | Diagnostic only; no proven whole-model quality fix | [Quality investigation](QWEN_NEXT_MTP_PREFILL_QUALITY.md) |
+| Precision/normalization changes | GDN-only improves the fixed API screen; diagnostic only pending wider quality and fused-performance qualification | [API screen below](#controlled-gdn-api-screen) |
 | New automatic tuning | Not authorized; keep explicit CLI choice and guidance | [Prefill tradeoffs](QWEN_NEXT_PREFILL_TRADEOFFS.md) |
 
 ## Ordered work
@@ -313,3 +315,74 @@ sampled result would still need fusion and performance requalification.
 Test: 258.665 seconds after a 136.71-second build; guard passed with at least
 365.26 GiB available memory. Evidence: `normalization-b`, its command/test/exit
 records, and `AUDIT-NORMALIZATION-B.json`. No installed executable was changed.
+
+### Controlled GDN API screen
+
+The GDN-only prototype has now completed the same frozen 55-request API screen
+as the control. Exact ddalcu checkpoint; saved M25 controls; MTP off; C1;
+prefix off; thinking off; unchanged 4096 prefill; five greedy controls plus
+50 sampled cases at temperature 0.6/top-p 1 with saved distinct seeds and a
+512-token cap. One warmup per binary is excluded. This is a sequential
+control-then-candidate screen, not a counterbalanced performance study.
+
+| Measure | Frozen control | GDN Q/K prototype |
+|---|---:|---:|
+| Runtime completion | 55/55 | 55/55 |
+| Greedy structure + identity | 5/5 | 5/5 |
+| Sampled identity | 40/50 | 45/50 |
+| Sampled unique-key JSON + identity | 38/50 | 43/50 |
+| Sampled output tokens / total request wall seconds | 26.3007 | 26.4605 |
+| Sampled strict tasks/s | 0.120051 | 0.135131 |
+| Sampled median TTFT | 3.5366 s | 3.5427 s |
+| Sampled median decode | 60.3155 tok/s | 60.2497 tok/s |
+
+Seven prior failures pass and two prior passes fail, net **+5/50**. The two
+regressions both identify `stream.swift` correctly: case 13 omits the required
+`fix` field, while case 33 reaches the 512-token cap with incomplete JSON.
+They remain failures; the token limit and scoring rules were not relaxed.
+Strict passes by family (ten samples each) change from 6/9/6/8/9 to
+7/10/9/8/9. All 55 control texts reproduce the frozen control; 52 of 55
+candidate texts differ. Each candidate greedy answer matches its independent
+direct-model test, verifying that the experimental arithmetic was active.
+
+Within this screen, raw wall-time token rate changes **+0.61%**, median decode
+**-0.11%**, and strict tasks/s **+12.56%**. The last improvement comes from
+more passing tasks, not a 12.56% faster decoder. These five related task
+families do not establish statistical or semantic quality parity. The frozen
+reference AR results, rescored on identical payloads, are 42/50 identity and
+40/50 strict. That historical reference was not rerun in this timing pair;
+43/50 versus 40/50 is not a claim of general superiority.
+
+Both servers exited normally, with no detected named competing workload and
+at least 371.63 GiB available memory. This guard is not peak process/Metal
+memory measurement or a leak soak. Prefix reuse, MTP and concurrency were
+not exercised. Context peaks and the earlier agentic timing records remain
+unchanged in their ledgers.
+
+The private candidate is AFMKit `f8a7c073` plus one recorded temporary
+default-activation line, consumer `e8b8e7a`; executable SHA-256
+`4f16295fe193e39bf7b5a71d31d98d399709de53f9e72ae99f9d71b1ec1524aa`.
+It is frozen outside the repository with the control's unchanged adjacent
+resources. The source activation was restored immediately after building and
+was **never committed or pushed**. Both internal diagnostic defaults remain
+off, with no new CLI/API/environment option. The installed nightly is unchanged.
+
+After the comparison, the mutable development executable was rebuilt from
+the clean default-off source: SHA-256
+`afb80df2ba0182436c18b41f985e127863d60517913aa989436bc81373c90737`.
+A first-case API restore smoke passes and reproduces the frozen control text;
+this one-case smoke is not a second full qualification. The frozen control
+and private candidate remain available independently of that mutable path.
+
+Evidence: `NORMALIZATION-API-SCREEN.md`, `AUDIT-NORMALIZATION-API.json` (including
+hashes and all changed pass/fail cases), `normalization-api-control-a`,
+`normalization-api-candidate-a`, and `restored-default-smoke-a` in the external
+evidence root. The audit rechecks payloads, scores, binary/runner/checkpoint
+identity, greedy activation controls and normal server exits.
+
+**Next gate:** preserve this quality signal while moving the Q/K arithmetic
+into fused preprocessing, eliminating the diagnostic duplicate convolution.
+Require component-equivalence tests and a same-checkpoint quality/performance
+repeat before broader sampled and MTP/cache/concurrency qualification. Keep
+HC-only rounding and automatic chunk/precision selection out of that change.
+No default promotion or claim that the full parity goal is complete.

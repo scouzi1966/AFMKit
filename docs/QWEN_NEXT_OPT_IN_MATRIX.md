@@ -44,13 +44,12 @@ The CLI remains available; no automatic selection or default change is adopted.
 September 16: [consolidation and calibrated component diagnosis](QWEN_NEXT_CONSOLIDATION.md)
 preserves the baseline and reproduces all 134 measured responses after merging
 provider main. An actual source-server capture isolates a grouped-normalization
-rounding difference. The next experiment is **test-only**, not another launch
-preset: `QwenNextNormalizationAblationTests` compares current/reference rounding
-with current/reference prompt geometry. It changes only an internal property
-on its own loaded model, restores it afterward, and does not enable a new CLI,
-API or environment tuning option. Numerical closeness alone is not adoption
-criteria. Combined concurrent-cache qualification and reference quality parity
-remain pending.
+rounding difference and a GDN Q/K preparation difference. Test-only ablations
+are complete; a private GDN-only API prototype improves sampled strict passes
+from 38/50 to 43/50, with seven improvements and two regressions. No new launch
+preset or CLI/API/environment option is enabled. Numerical closeness and this
+small quality screen alone are not adoption criteria. Combined concurrent-cache
+qualification and broader reference quality parity remain pending.
 
 ### Test-only normalization matrix
 
@@ -67,7 +66,7 @@ diagnostic properties default off and are restored after the test.
 | reference-norm | On | Off | Current 4096 chunks | 5/5 greedy; mixed probability changes, not adopted |
 | reference-geometry | Off | Off | N−1 then singleton | Fixed-prefix diagnostic only |
 | reference-norm-and-geometry | On | Off | N−1 then singleton | Fixed-prefix diagnostic only, mixed effects |
-| reference-gdn-qk | Off | On | Current 4096 chunks | 5/5 greedy; four probability gains, one unchanged; sampled API gate next |
+| reference-gdn-qk | Off | On | Current 4096 chunks | 5/5 greedy; four probability gains, one unchanged; private API screen below |
 | reference-hc-and-gdn-qk | On | On | Current 4096 chunks | 5/5 greedy; mixed probability effects, not adopted |
 
 GDN reference Q/K preparation is limited to unbatched prefill of at least
@@ -78,6 +77,26 @@ benefit survives qualification, port the arithmetic into the fused prework
 and retest API performance before considering adoption. GDN-reference arms
 with N−1 geometry, MTP, prefix reuse or concurrency are not tested by this
 screen; unlisted combinations are not qualified.
+
+### Private API normalization screen (no user activation)
+
+| Profile | Delta / settings | Measured outcome | Status |
+|---|---|---|---|
+| N0 control | Frozen consolidated binary; saved M25 settings, AR/C1/prefix off, thinking off, prefill 4096 | 55/55 runtime; 5/5 greedy; 38/50 sampled strict; 26.3007 wall tok/s; 60.3155 median decode tok/s | All frozen texts reproduced |
+| N1 GDN Q/K | Same launch/payloads/checkpoint; private build enabling only internal GDN normalization diagnostic | 55/55 runtime; 5/5 greedy; 43/50 sampled strict; 26.4605 wall tok/s; 60.2497 median decode tok/s | Diagnostic only, not promoted; +7/-2 strict cases |
+| N1 + MTP/prefix/C15 | Not run in this screen | No combined throughput/quality claim | Untested |
+| N1 fused implementation | Remove duplicate convolution while preserving qualified Q/K arithmetic | Not implemented/benchmarked by this screen | Next bounded gate |
+
+The source activation was reverted before testing and never committed. Both
+diagnostic defaults are off. The mutable development binary has also been
+rebuilt default-off and passed a one-case frozen-answer API restore smoke.
+The installed nightly is unchanged. Frozen candidate/control hashes, exact
+protocol, failure details and limitations are in the
+[controlled GDN API screen](QWEN_NEXT_CONSOLIDATION.md#controlled-gdn-api-screen).
+The saved 26 M25 overrides are retained: these are **not** unset-environment
+results. No inference-setting inventory entry is added for an internal test
+property. Memory guards passed; peak process/Metal memory was not measured.
+No prefix hits, repeated-phase gain or aggregate-concurrency gain is claimed.
 
 ## How to read the matrix
 
