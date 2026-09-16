@@ -4,6 +4,12 @@ September 15. Continue on PR #123; do not create a new optimization PR or
 promote experimental defaults. This page is the entry point for the current
 work, not a replacement for historical evidence.
 
+Current state (September 16): consolidation and fixed-baseline replay are
+complete; all 134 measured responses reproduce. Quality diagnosis has isolated
+HC and GDN Q/K normalization differences. GDN-only normalization is advancing
+to a sampled API screen, **not** to a production default. Reference quality
+parity and combined MTP/C15/prefix/cancellation qualification remain open.
+
 ## Decisions retained
 
 | Area | Decision | Evidence |
@@ -275,3 +281,35 @@ both selected tests pass (3.021 seconds total, 47.69-second build). The
 test-only HC setting's scope test also verifies that singleton, small-block
 and batched inputs are unchanged. Minimum available memory: 383.32 GiB.
 None of these diagnostic RMS reductions is a speedup or quality pass rate.
+
+### Whole-model GDN follow-up
+
+The six-arm extension (`normalization-b`) completed 30 fixed-prefix arms and
+20 independent greedy answers. All four greedy configurations pass 5/5
+structure/identity checks and terminate normally. The previous experiment's
+20 scalar-result rows and all its greedy texts/token IDs reproduce exactly;
+the unchanged control again reproduces the saved full logits and API answers.
+
+| Filename decision | Current | GDN Q/K only | HC + GDN Q/K |
+|---|---:|---:|---:|
+| cache.swift | 55.17% | 60.25% | 60.25% |
+| retry.swift | 83.72% | 90.45% | 88.73% |
+| queue.swift | 81.11% | 86.69% | 84.10% |
+| stream.swift | 90.81% | 94.86% | 95.78% |
+| limits.swift | 94.83% | 94.83% | 93.68% |
+
+These are full-vocabulary probabilities at temperature 0.6 on fixed prefixes,
+not sampled quality scores. GDN-only improves four probes and essentially
+preserves the fifth; combining HC rounding has mixed effects. Advance only
+GDN-only to the fixed sampled API screen. Do not promote either precision
+change, alter chunk defaults or claim parity from these five related tasks.
+
+The GDN diagnostic property is model-local, internal, default-off, and limited
+to B=1 prefill of at least 128 tokens. It preserves actual fused values/gates,
+cache updates and FP32 recurrence but deliberately duplicates convolution to
+isolate Q/K arithmetic. This is not the proposed fast implementation. A useful
+sampled result would still need fusion and performance requalification.
+
+Test: 258.665 seconds after a 136.71-second build; guard passed with at least
+365.26 GiB available memory. Evidence: `normalization-b`, its command/test/exit
+records, and `AUDIT-NORMALIZATION-B.json`. No installed executable was changed.

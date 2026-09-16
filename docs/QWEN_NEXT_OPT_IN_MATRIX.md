@@ -52,6 +52,33 @@ API or environment tuning option. Numerical closeness alone is not adoption
 criteria. Combined concurrent-cache qualification and reference quality parity
 remain pending.
 
+### Test-only normalization matrix
+
+These arms belong to `QwenNextNormalizationAblationTests`, not AFM launch
+recipes. All use the same checkpoint, saved token IDs, MTP off, and fresh
+request-owned caches. The test inputs are `AFM_QWEN_PREFILL_QUALITY_MODEL`,
+`AFM_QWEN_PREFILL_QUALITY_TOKENS` and a fresh `AFM_QWEN_PREFILL_QUALITY_OUT`.
+There are **no new runtime tuning environment variables**. Both internal
+diagnostic properties default off and are restored after the test.
+
+| Arm | HC reference rounding | GDN reference Q/K | Prefill geometry | Qualification |
+|---|---|---|---|---|
+| current | Off | Off | Current 4096 chunks | Frozen logits and greedy answers reproduced |
+| reference-norm | On | Off | Current 4096 chunks | 5/5 greedy; mixed probability changes, not adopted |
+| reference-geometry | Off | Off | N−1 then singleton | Fixed-prefix diagnostic only |
+| reference-norm-and-geometry | On | Off | N−1 then singleton | Fixed-prefix diagnostic only, mixed effects |
+| reference-gdn-qk | Off | On | Current 4096 chunks | 5/5 greedy; four probability gains, one unchanged; sampled API gate next |
+| reference-hc-and-gdn-qk | On | On | Current 4096 chunks | 5/5 greedy; mixed probability effects, not adopted |
+
+GDN reference Q/K preparation is limited to unbatched prefill of at least
+128 tokens. Its diagnostic implementation deliberately repeats convolution
+to isolate the arithmetic while keeping actual fused values/gates and FP32
+recurrence unchanged. It is **not** a throughput implementation. If a quality
+benefit survives qualification, port the arithmetic into the fused prework
+and retest API performance before considering adoption. GDN-reference arms
+with N−1 geometry, MTP, prefix reuse or concurrency are not tested by this
+screen; unlisted combinations are not qualified.
+
 ## How to read the matrix
 
 - **AR**: ordinary decoding, without `--mtp`.

@@ -2522,6 +2522,8 @@ func qwen4ExpSupportsCompiledGDNPrework(
 
 private final class Qwen4ExpGatedDeltaNet: Module {
     let captureRecurrentStates: Bool
+    // Checkpoint diagnostic only; never set by runtime configuration.
+    var referencePrefillQKNormalizationForTesting = false
     private static let compileDecode =
         ProcessInfo.processInfo.environment["AFM_QWEN_COMPILE_GDN_DECODE"] != "0"
             && HardwareInfo.isModelOwnedCompiledDecodeSupported
@@ -2808,8 +2810,24 @@ private final class Qwen4ExpGatedDeltaNet: Module {
         let k: MLXArray
         let v: MLXArray
         if let fusedPrework {
-            q = fusedPrework.queries
-            k = fusedPrework.keys
+            if b == 1, l >= 128, referencePrefillQKNormalizationForTesting {
+                // Diagnostic replay of ddalcu/mlx-serve (MIT), v26.9.2
+                // gatedDeltaNet Q/K preparation. Preserve actual fused values,
+                // gates, cache updates and FP32 recurrence; change only Q/K.
+                // This deliberately duplicates convolution for isolation and
+                // is not a proposed performance implementation.
+                let mixed = silu(conv1d(concatenated([initialConvolutionState, projected], axis: 1)))
+                let qHeads = mixed[0..., 0..., 0..<keyDim].reshaped(b, l, keyHeads, keyHeadDim)
+                let kHeads = mixed[0..., 0..., keyDim..<(2 * keyDim)].reshaped(b, l, keyHeads, keyHeadDim)
+                let ones = MLXArray.ones([keyHeadDim], dtype: x.dtype)
+                q = MLXFast.rmsNorm(qHeads, weight: ones, eps: 1e-6)
+                    * MLXArray(1 / Float(keyHeadDim)).asType(x.dtype)
+                k = MLXFast.rmsNorm(kHeads, weight: ones, eps: 1e-6)
+                    * MLXArray(sqrt(1 / Float(keyHeadDim))).asType(x.dtype)
+            } else {
+                q = fusedPrework.queries
+                k = fusedPrework.keys
+            }
             v = fusedPrework.values
             prior = fusedPrework.convolutionState
             cache?[0] = prior
@@ -4170,6 +4188,14 @@ final class Qwen4ExpDecoderLayer: Module {
     func gatedDeltaDecodeForTesting(_ input: MLXArray, cache: ArraysCache) -> MLXArray {
         precondition(isLinear)
         return linearAttention!(input, cache: cache, verificationPolicy: nil)
+    }
+
+    var referenceGatedDeltaPrefillNormalizationForTesting: Bool {
+        get { linearAttention?.referencePrefillQKNormalizationForTesting ?? false }
+        set {
+            precondition(isLinear)
+            linearAttention!.referencePrefillQKNormalizationForTesting = newValue
+        }
     }
 
     func rollbackGatedDeltaForTesting(_ cache: ArraysCache, keeping count: Int) {

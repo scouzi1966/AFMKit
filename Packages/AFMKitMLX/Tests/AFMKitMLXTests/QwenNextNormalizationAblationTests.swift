@@ -59,9 +59,16 @@ final class QwenNextNormalizationAblationTests: XCTestCase {
             ModelConfiguration(directory: URL(fileURLWithPath: modelPath)))
         let model = try XCTUnwrap(context.model as? Qwen4ExpModel)
         let norms = model.namedModules().compactMap { $0.1 as? Qwen4ExpZeroCenteredRMSNorm }
+        let gdnLayers = model.namedModules().compactMap { $0.1 as? Qwen4ExpDecoderLayer }
+            .filter(\.isLinear)
         XCTAssertFalse(norms.isEmpty)
+        XCTAssertFalse(gdnLayers.isEmpty)
         XCTAssertTrue(norms.allSatisfy { !$0.referenceGroupedPrefillRoundingForTesting })
-        defer { norms.forEach { $0.referenceGroupedPrefillRoundingForTesting = false } }
+        XCTAssertTrue(gdnLayers.allSatisfy { !$0.referenceGatedDeltaPrefillNormalizationForTesting })
+        defer {
+            norms.forEach { $0.referenceGroupedPrefillRoundingForTesting = false }
+            gdnLayers.forEach { $0.referenceGatedDeltaPrefillNormalizationForTesting = false }
+        }
         let eos = context.configuration.resolvedEOSTokenIds(tokenizer: context.tokenizer)
         XCTAssertFalse(eos.isEmpty)
         let step = AFMMLXPrefillPolicy.throughputOptimizedStepSize
@@ -93,8 +100,9 @@ final class QwenNextNormalizationAblationTests: XCTestCase {
             return logits
         }
         var results: [[String: Any]] = []
-        let arms = [("current", false, false), ("reference-norm", false, true),
-                    ("reference-geometry", true, false), ("reference-norm-and-geometry", true, true)]
+        let arms = [("current", false, false, false), ("reference-norm", false, true, false),
+                    ("reference-geometry", true, false, false), ("reference-norm-and-geometry", true, true, false),
+                    ("reference-gdn-qk", false, false, true), ("reference-hc-and-gdn-qk", false, true, true)]
         for fixture in fixtures {
             XCTAssertGreaterThan(fixture.prompt.count, step)
             let golden = try loadArrays(url: fixtureURL.deletingLastPathComponent()
@@ -102,8 +110,9 @@ final class QwenNextNormalizationAblationTests: XCTestCase {
             let goldenLogits = try XCTUnwrap(golden["logits"]).asType(.float32)
             // Reverse paired order on alternating task families. These remain
             // diagnostic timings, not a warmup-qualified throughput benchmark.
-            for (name, splitFinal, referenceNorm) in (fixture.task.isMultiple(of: 2) ? arms : Array(arms.reversed())) {
+            for (name, splitFinal, referenceNorm, referenceQK) in (fixture.task.isMultiple(of: 2) ? arms : Array(arms.reversed())) {
                 norms.forEach { $0.referenceGroupedPrefillRoundingForTesting = referenceNorm }
+                gdnLayers.forEach { $0.referenceGatedDeltaPrefillNormalizationForTesting = referenceQK }
                 let started = ProcessInfo.processInfo.systemUptime
                 let cache = model.newCache(parameters: nil)
                 var logits = prefill(fixture, cache, splitFinal: splitFinal)
@@ -121,6 +130,7 @@ final class QwenNextNormalizationAblationTests: XCTestCase {
                 let probability = probabilities[fixture.correctToken].item(Float.self)
                 var result: [String: Any] = ["task": fixture.task, "arm": name,
                     "prompt_tokens": fixture.prompt.count, "reference_norm": referenceNorm,
+                    "reference_gdn_qk": referenceQK,
                     "reference_geometry": splitFinal, "correct_probability": probability,
                     "logit_gap": gap, "max_logit_difference_from_control": difference,
                     "teacher_forced_prefix_argmax_matches": prefixMatches,
