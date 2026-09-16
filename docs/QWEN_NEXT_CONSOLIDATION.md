@@ -386,3 +386,42 @@ Require component-equivalence tests and a same-checkpoint quality/performance
 repeat before broader sampled and MTP/cache/concurrency qualification. Keep
 HC-only rounding and automatic chunk/precision selection out of that change.
 No default promotion or claim that the full parity goal is complete.
+
+### Fused GDN implementation follow-up
+
+The internal/default-off GDN experiment now prepares reference Q/K directly
+inside `Qwen4ExpGatedDeltaPrework`, instead of recomputing convolution and
+running two additional RMSNorm graphs. A compile-time variant retains the
+prototype's FP32 reduction, model-dtype RMS output rounding, and separate
+model-dtype Q/K scales. The existing decode/verifier variant keeps its
+low-precision L2 arithmetic. Source comments credit ddalcu/mlx-serve and MLX's
+RMSNorm implementation; no external runtime dependency is introduced.
+
+The reference variant fails closed outside B=1, at least 128 tokens, and
+128-dimensional heads. No CLI/API/environment switch or default activation
+is added. Existing singleton, verification and batched calls keep the old
+variant. The original prototype binary and outputs remain frozen separately.
+
+Six focused Release tests pass (29.875 seconds after a 261.04-second rebuild).
+Twenty-four BF16/FP16 synthetic combinations cover zero/small/ordinary/large
+inputs, nonempty convolution history, and widths 128/129/257. Fused Q/K match
+the composed prototype exactly. On the real 4,431-token reference input,
+queries, keys, values, gates, beta and next convolution history are also
+bit-identical to their expected counterparts. Existing batched-row isolation
+and compile-eligibility tests pass. Minimum available memory: 378.60 GiB.
+
+Evidence: `reference-components-f`, `components-f-command.json`,
+`components-f-test.log` and `components-f-exit.json`. These are component
+correctness checks, not a throughput or complete model-quality measurement.
+Whole-model replay and paired API timing are separate gates.
+
+Whole-model replay is now complete: `normalization-c` reproduces all 30 prior
+configurations, all 20 greedy token sequences/texts, and **90 full-vocabulary
+arrays exactly** (initial logits, decision logits and probabilities). The
+unchanged control still matches the older frozen logits. All 20 greedy answers
+pass strict structure/identity and terminate normally. The CPU audit is
+`AUDIT-NORMALIZATION-C.json`; its comparison target is the preserved unfused
+`normalization-b` output, not a newly regenerated oracle. Test duration:
+290.283 seconds; incremental build: 5.73 seconds; minimum available memory:
+362.17 GiB. These diagnostic times are not a throughput comparison. The
+next gate is paired API timing with exact saved-prototype answer checks.

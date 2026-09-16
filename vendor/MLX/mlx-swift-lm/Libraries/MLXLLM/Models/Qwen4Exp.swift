@@ -2803,31 +2803,18 @@ private final class Qwen4ExpGatedDeltaNet: Module {
                 valueHeads: valueHeads,
                 keyHeadDimension: keyHeadDim,
                 valueHeadDimension: valueHeadDim,
-                convolutionKernel: convKernel)
+                convolutionKernel: convKernel,
+                referencePrefillQKNormalization: referencePrefillQKNormalizationForTesting
+                    && b == 1
+                    && l >= Qwen4ExpGatedDeltaPrework.minimumReferencePrefillSequenceLength)
             : nil
 
         let q: MLXArray
         let k: MLXArray
         let v: MLXArray
         if let fusedPrework {
-            if b == 1, l >= 128, referencePrefillQKNormalizationForTesting {
-                // Diagnostic replay of ddalcu/mlx-serve (MIT), v26.9.2
-                // gatedDeltaNet Q/K preparation. Preserve actual fused values,
-                // gates, cache updates and FP32 recurrence; change only Q/K.
-                // This deliberately duplicates convolution for isolation and
-                // is not a proposed performance implementation.
-                let mixed = silu(conv1d(concatenated([initialConvolutionState, projected], axis: 1)))
-                let qHeads = mixed[0..., 0..., 0..<keyDim].reshaped(b, l, keyHeads, keyHeadDim)
-                let kHeads = mixed[0..., 0..., keyDim..<(2 * keyDim)].reshaped(b, l, keyHeads, keyHeadDim)
-                let ones = MLXArray.ones([keyHeadDim], dtype: x.dtype)
-                q = MLXFast.rmsNorm(qHeads, weight: ones, eps: 1e-6)
-                    * MLXArray(1 / Float(keyHeadDim)).asType(x.dtype)
-                k = MLXFast.rmsNorm(kHeads, weight: ones, eps: 1e-6)
-                    * MLXArray(sqrt(1 / Float(keyHeadDim))).asType(x.dtype)
-            } else {
-                q = fusedPrework.queries
-                k = fusedPrework.keys
-            }
+            q = fusedPrework.queries
+            k = fusedPrework.keys
             v = fusedPrework.values
             prior = fusedPrework.convolutionState
             cache?[0] = prior

@@ -85,7 +85,7 @@ screen; unlisted combinations are not qualified.
 | N0 control | Frozen consolidated binary; saved M25 settings, AR/C1/prefix off, thinking off, prefill 4096 | 55/55 runtime; 5/5 greedy; 38/50 sampled strict; 26.3007 wall tok/s; 60.3155 median decode tok/s | All frozen texts reproduced |
 | N1 GDN Q/K | Same launch/payloads/checkpoint; private build enabling only internal GDN normalization diagnostic | 55/55 runtime; 5/5 greedy; 43/50 sampled strict; 26.4605 wall tok/s; 60.2497 median decode tok/s | Diagnostic only, not promoted; +7/-2 strict cases |
 | N1 + MTP/prefix/C15 | Not run in this screen | No combined throughput/quality claim | Untested |
-| N1 fused implementation | Remove duplicate convolution while preserving qualified Q/K arithmetic | Not implemented/benchmarked by this screen | Next bounded gate |
+| N2 fused implementation | Same internal activation; reference Q/K directly in prework, without duplicate convolution | Six focused tests pass; whole-model replay matches 90 arrays and 20 greedy answers exactly; API timing pending | Default-off; [follow-up](QWEN_NEXT_CONSOLIDATION.md#fused-gdn-implementation-follow-up) |
 
 The source activation was reverted before testing and never committed. Both
 diagnostic defaults are off. The mutable development binary has also been

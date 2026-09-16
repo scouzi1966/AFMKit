@@ -141,6 +141,23 @@ final class QwenNextReferenceCaptureTests: XCTestCase {
             * MLXArray(1 / Float(config.linearKeyHeadDim)).asType(qHeads.dtype)
         let kReference = MLXFast.rmsNorm(kHeads, weight: ones, eps: 1e-6)
             * MLXArray(sqrt(1 / Float(config.linearKeyHeadDim))).asType(kHeads.dtype)
+        let fusedReference = try XCTUnwrap(Qwen4ExpGatedDeltaPrework.call(
+            projected: projected, prior: prior, convolutionWeight: convolution.weight,
+            projectedA: projectedA, projectedB: projectedB, aLog: aLog, dtBias: dtBias,
+            keyHeads: config.linearNumKeyHeads, valueHeads: config.linearNumValueHeads,
+            keyHeadDimension: config.linearKeyHeadDim, valueHeadDimension: config.linearValueHeadDim,
+            convolutionKernel: config.linearConvKernelDim, referencePrefillQKNormalization: true))
+        for (name, actual, expected) in [
+            ("fused_reference_queries_vs_composed", fusedReference.queries, qReference),
+            ("fused_reference_keys_vs_composed", fusedReference.keys, kReference),
+            ("fused_reference_values_unchanged", fusedReference.values, prework.values),
+            ("fused_reference_history_unchanged", fusedReference.convolutionState, prework.convolutionState),
+            ("fused_reference_gate_unchanged", fusedReference.gate, prework.gate),
+            ("fused_reference_beta_unchanged", fusedReference.beta, prework.beta),
+        ] {
+            compare(name, actual, expected)
+            XCTAssertEqual(abs(actual.asType(.float32) - expected.asType(.float32)).max().item(Float.self), 0, name)
+        }
         let gateReference = exp(-exp(aLog.asType(.float32))
             * log1p(exp((projectedA + dtBias).asType(.float32)))).asType(.bfloat16)
         let z = try linear("in_proj_z")(referenceMixed)
