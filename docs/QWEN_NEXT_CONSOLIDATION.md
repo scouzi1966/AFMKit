@@ -142,3 +142,59 @@ Step 4 is complete. This demonstrates consolidation equivalence on these
 controls, **not reference quality parity**. Numerical diagnosis and the
 combined C15/prefix/cancellation gate remain open. No experimental default
 is promoted.
+
+## Calibrated component diagnosis, September 16
+
+Step 5 now has an actual reference-server capture, rather than only a replay
+of its equations. The unmodified ReleaseFast source build reproduces all five
+saved greedy answers and five 32-token top-20 logprob traces from the frozen
+v26.9.2 executable. A second build adds a one-shot diagnostic capture and
+reproduces the same controls. It reuses the frozen release's backend libraries;
+this is not a new MLX backend build or an AFM runtime dependency.
+
+The capture contains the actual first 4,431 prompt tokens and layer-zero
+intermediates. Every token ID matches the frozen task. An earlier capture
+selected the loader's eight-token warmup and is excluded. The portable patch
+is [the reference capture patch](../Scripts/diagnostics/qwen-next-reference-capture-v26.9.2.patch),
+credited to the MIT-licensed ddalcu/mlx-serve source. Its local research commit
+is `748acfb6`; no upstream reference PR was opened.
+
+[QwenNextReferenceCaptureTests](../Packages/AFMKitMLX/Tests/AFMKitMLXTests/QwenNextReferenceCaptureTests.swift)
+compares components with the same checkpoint and real captured inputs. It
+first verifies exact embeddings and the initial HyperConnection stream.
+Changing the *diagnostic equation* to round normalized values to BF16 before
+the learned multiply makes both layer-zero HyperConnection reads and injection
+gates bit-for-bit identical to the captured reference. No production equation
+has changed.
+
+| Isolated comparison | Maximum absolute difference | RMS difference | Fraction of elements different |
+|---|---:|---:|---:|
+| AFM normalization, attention HC read | 0.125 | 0.002327 | 21.57% |
+| Reference normalization, attention HC read | 0 | 0 | 0% |
+| AFM normalization, MLP HC read | 0.046875 | 0.001544 | 43.55% |
+| Reference normalization, MLP HC read | 0 | 0 | 0% |
+| AFM GDN, identical reference input | 0.0107422 | 0.00042247 | 63.75% |
+| AFM MoE, identical reference input | 0.000488281 | 0.000000504 | 0.00158% |
+
+This isolates normalization rounding and a separate recurrent-path difference.
+It does **not** establish that the reference rounding is more mathematically
+accurate, that GDN is buggy, or that changing either improves answer quality.
+The next gate is a whole-model controlled experiment, with the frozen baseline
+retained and performance measured separately. No automatic precision/default
+selection is authorized by this result.
+
+The diagnostic XCTest passed in 2.839 seconds after a 249.66-second build.
+Its guard recorded no competing named workload and at least 385.29 GiB
+available memory. The build/test wrapper unnecessarily invalidated this test
+scratch after a consumer build; this is a build-efficiency issue, not a model
+failure. Two earlier harness attempts stopped before test execution and are
+excluded (process-ownership detection and a missing prebuild executable).
+
+Reproduction requires explicit `AFM_QWEN_PREFILL_QUALITY_MODEL`,
+`AFM_QWEN_REFERENCE_CAPTURE` and a fresh `AFM_QWEN_PREFILL_QUALITY_OUT` directory;
+otherwise the diagnostic skips. These are test inputs, not inference tuning
+options. In the external evidence root, see `reference-source-control-a`,
+`reference-capture-width-control-a`, `reference-components-c/summary.json`,
+`components-c-test.log` and `components-c-exit.json`. Diagnostic timings are
+not throughput benchmarks. Reference quality parity and combined concurrent
+cache qualification remain open.
