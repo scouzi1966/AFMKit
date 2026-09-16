@@ -206,6 +206,11 @@ final class Qwen4ExpZeroCenteredRMSNorm: Module {
     let groupSize: Int
     let eps: Float
 
+    /// Request-isolated checkpoint diagnosis only; no public API or environment
+    /// option enables this. Tests restore it before releasing their model.
+    /// Keep the production precision contract until whole-model qualification.
+    var referenceGroupedPrefillRoundingForTesting = false
+
     init(dimensions: Int, groupSize: Int? = nil, eps: Float) {
         self.groupSize = groupSize ?? dimensions
         self.eps = eps
@@ -223,6 +228,18 @@ final class Qwen4ExpZeroCenteredRMSNorm: Module {
         }
         let grouped = x.reshaped(
             Array(originalShape.dropLast()) + [-1, groupSize])
+        if x.ndim == 3, x.dim(0) == 1, x.dim(1) >= 128,
+            referenceGroupedPrefillRoundingForTesting
+        {
+            // Diagnostic equation from ddalcu/mlx-serve (MIT), v26.9.2,
+            // transformer.zig hcGroupNorm: round RMS output before gamma.
+            // Singleton decode, small verification blocks and batching stay
+            // on their existing path even in this test-only experiment.
+            let normalized = MLXFast.rmsNorm(grouped,
+                weight: MLXArray.ones([groupSize], dtype: x.dtype), eps: eps)
+            return (normalized * (weight + 1).reshaped(-1, groupSize))
+                .reshaped(originalShape)
+        }
         if let fused = Qwen4ExpHyperConnectionFusion.normalizeGroupedPrefill(
             input: x,
             normWeight: weight,

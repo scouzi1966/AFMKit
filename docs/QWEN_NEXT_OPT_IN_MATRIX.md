@@ -41,6 +41,17 @@ the context highs. The [paired explicit-prefill screen](QWEN_NEXT_PREFILL_TRADEO
 completed 220/220 runtime requests: 8192 is **not** a general recommendation.
 The CLI remains available; no automatic selection or default change is adopted.
 
+September 16: [consolidation and calibrated component diagnosis](QWEN_NEXT_CONSOLIDATION.md)
+preserves the baseline and reproduces all 134 measured responses after merging
+provider main. An actual source-server capture isolates a grouped-normalization
+rounding difference. The next experiment is **test-only**, not another launch
+preset: `QwenNextNormalizationAblationTests` compares current/reference rounding
+with current/reference prompt geometry. It changes only an internal property
+on its own loaded model, restores it afterward, and does not enable a new CLI,
+API or environment tuning option. Numerical closeness alone is not adoption
+criteria. Combined concurrent-cache qualification and reference quality parity
+remain pending.
+
 ## How to read the matrix
 
 - **AR**: ordinary decoding, without `--mtp`.

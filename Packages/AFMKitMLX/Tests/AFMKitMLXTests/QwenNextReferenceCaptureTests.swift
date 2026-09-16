@@ -97,6 +97,79 @@ final class QwenNextReferenceCaptureTests: XCTestCase {
         let attended = layer.gatedDeltaDecodeForTesting(referenceMixed,
             cache: try XCTUnwrap(cache[0] as? ArraysCache))
         compare("afm_gdn_same_input", attended, referenceAttention)
+        // Isolate Q/K normalization before blaming persistent-state precision.
+        // This replay must reproduce the actual AFM prefill exactly first.
+        // Source credit: ddalcu/mlx-serve (MIT), transformer.zig gatedDeltaNet
+        // and gdnGateChain, v26.9.2. The reference uses RMSNorm with an FP32
+        // reduction, then BF16 scales; AFM's stock path uses BF16 L2 operations.
+        let gdnBase = "model.layers.0.linear_attn"
+        func linear(_ name: String) throws -> Linear {
+            try XCTUnwrap(modules["\(gdnBase).\(name)"] as? Linear)
+        }
+        let projected = try linear("in_proj_qkv")(referenceMixed)
+        let projectedA = try linear("in_proj_a")(referenceMixed)
+        let projectedB = try linear("in_proj_b")(referenceMixed)
+        let convolution = try XCTUnwrap(modules["\(gdnBase).conv1d"] as? Conv1d)
+        let gdnParameters = Dictionary(uniqueKeysWithValues:
+            try XCTUnwrap(modules[gdnBase]).parameters().flattened())
+        let aLog = try XCTUnwrap(gdnParameters["A_log"])
+        let dtBias = try XCTUnwrap(gdnParameters["dt_bias"])
+        let normWeight = try XCTUnwrap(gdnParameters["norm.weight"])
+        let keyDim = config.linearNumKeyHeads * config.linearKeyHeadDim
+        let valueDim = config.linearNumValueHeads * config.linearValueHeadDim
+        let prior = MLXArray.zeros([1, config.linearConvKernelDim - 1, keyDim * 2 + valueDim],
+            dtype: referenceMixed.dtype)
+        let prework = try XCTUnwrap(Qwen4ExpGatedDeltaPrework.call(
+            projected: projected, prior: prior, convolutionWeight: convolution.weight,
+            projectedA: projectedA, projectedB: projectedB, aLog: aLog, dtBias: dtBias,
+            keyHeads: config.linearNumKeyHeads, valueHeads: config.linearNumValueHeads,
+            keyHeadDimension: config.linearKeyHeadDim, valueHeadDimension: config.linearValueHeadDim,
+            convolutionKernel: config.linearConvKernelDim))
+        let mixed = silu(convolution(concatenated([prior, projected], axis: 1)))
+        let pieces = MLX.split(mixed, indices: [keyDim, keyDim * 2], axis: -1)
+        let qHeads = pieces[0].reshaped(1, -1, config.linearNumKeyHeads, config.linearKeyHeadDim)
+        let kHeads = pieces[1].reshaped(1, -1, config.linearNumKeyHeads, config.linearKeyHeadDim)
+        let values = pieces[2].reshaped(1, -1, config.linearNumValueHeads, config.linearValueHeadDim)
+        let qCurrent = qHeads * rsqrt((qHeads * qHeads).sum(axis: -1, keepDims: true) + 1e-6)
+            * pow(Float(config.linearKeyHeadDim), -0.5)
+        let kCurrent = kHeads * rsqrt((kHeads * kHeads).sum(axis: -1, keepDims: true) + 1e-6)
+        compare("afm_composed_queries_vs_actual_prework", qCurrent, prework.queries)
+        compare("afm_composed_keys_vs_actual_prework", kCurrent, prework.keys)
+        compare("afm_composed_values_vs_actual_prework", values, prework.values)
+        let ones = MLXArray.ones([config.linearKeyHeadDim], dtype: qHeads.dtype)
+        let qReference = MLXFast.rmsNorm(qHeads, weight: ones, eps: 1e-6)
+            * MLXArray(1 / Float(config.linearKeyHeadDim)).asType(qHeads.dtype)
+        let kReference = MLXFast.rmsNorm(kHeads, weight: ones, eps: 1e-6)
+            * MLXArray(sqrt(1 / Float(config.linearKeyHeadDim))).asType(kHeads.dtype)
+        let gateReference = exp(-exp(aLog.asType(.float32))
+            * log1p(exp((projectedA + dtBias).asType(.float32)))).asType(.bfloat16)
+        let z = try linear("in_proj_z")(referenceMixed)
+            .reshaped(1, -1, config.linearNumValueHeads, config.linearValueHeadDim)
+        let outputProjection = try linear("out_proj")
+        for (name, useReferenceQK, useReferenceGate) in [
+            ("afm_gdn_replayed_current", false, false),
+            ("afm_gdn_reference_qk", true, false),
+            ("afm_gdn_reference_gate", false, true),
+            ("afm_gdn_reference_qk_and_gate", true, true),
+        ] {
+            let q = useReferenceQK ? qReference : prework.queries
+            let k = useReferenceQK ? kReference : prework.keys
+            let initialState = MLXArray.zeros([1, config.linearNumValueHeads,
+                config.linearValueHeadDim, config.linearKeyHeadDim], dtype: .float32)
+            // The B=1 fused prework also covers long prefill. Replay that
+            // actual dispatch, not the separate unfused fallback equation.
+            let recurrent = gatedDeltaKernel(q: q, k: k, v: prework.values,
+                g: useReferenceGate ? gateReference : prework.gate,
+                beta: prework.beta, state: initialState).0
+            let normalized = MLXFast.rmsNorm(recurrent, weight: normWeight, eps: config.rmsNormEps)
+            let gated = normalized * (config.outputGateType == "sigmoid" ? sigmoid(z) : silu(z))
+            let actual = outputProjection(gated.reshaped(1, -1, valueDim))
+            if name == "afm_gdn_replayed_current" {
+                XCTAssertEqual(abs(actual - attended).max().item(Float.self), 0,
+                    "Component replay must reproduce the real AFM path before attribution")
+            }
+            compare(name, actual, referenceAttention)
+        }
         let referenceResidual = input + (expandedDimensions(referenceAttention, axis: -2)
             * expandedDimensions(referenceInjection, axis: -1)).reshaped(input.shape)
         let referenceMLPMixed = try XCTUnwrap(captured["mixed_mlp"])

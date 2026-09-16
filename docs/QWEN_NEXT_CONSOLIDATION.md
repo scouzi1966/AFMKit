@@ -198,3 +198,80 @@ options. In the external evidence root, see `reference-source-control-a`,
 `components-c-test.log` and `components-c-exit.json`. Diagnostic timings are
 not throughput benchmarks. Reference quality parity and combined concurrent
 cache qualification remain open.
+
+### Whole-model normalization experiment
+
+`QwenNextNormalizationAblationTests` completed 20 fixed-prefix arms (five task
+families, current/reference rounding crossed with current/reference chunk
+geometry) and ten independently generated greedy answers. The control exactly
+reproduces all five saved full-vocabulary decision-logit vectors. Its five
+greedy answers also match the saved API texts after trimming outer whitespace.
+Both current and reference-rounding arms pass **5/5** greedy structure/identity
+checks and stop normally. Four candidate answers change wording.
+
+Correct-token probabilities below use full-vocabulary softmax at temperature
+0.6 on the identical forced prefix. These are not sampled task pass rates.
+
+| Filename decision | Current | Reference rounding only | Reference rounding + reference chunk geometry |
+|---|---:|---:|---:|
+| cache.swift | 55.17% | 77.67% | 60.24% |
+| retry.swift | 83.72% | 86.52% | 73.66% |
+| queue.swift | 81.11% | 81.12% | 65.12% |
+| stream.swift | 90.81% | 92.41% | 93.74% |
+| limits.swift | 94.83% | 93.71% | 95.76% |
+
+The isolated rounding change improves three margins, leaves one essentially
+unchanged, and worsens one. Matching the first HC layer therefore does **not**
+establish full-model parity or justify a default change. Reference chunking
+also has mixed effects; it is not silently folded into the candidate. The
+remaining GDN difference warrants component-level isolation before a broad
+sampled/performance retest.
+
+This experiment only sets `referenceGroupedPrefillRoundingForTesting` on
+the test's own norm modules. There is no CLI/API/environment activation. It
+defaults off, is restored after the test, and is limited to unbatched grouped
+prefill of at least 128 rows. Singleton decode, small verification blocks and
+batched inputs retain their existing normalization path. All installed and
+frozen API executables remain unchanged. This internal test seam is **not a
+production precision policy**.
+
+The test passed in 152.324 seconds after a 135.53-second incremental build;
+minimum available memory was 365.93 GiB. Per-arm diagnostic timings include
+synchronization and are not a server-throughput comparison. The next sampled
+or performance claim requires the same API harness, not these XCTest times.
+Evidence: `normalization-a`, `normalization-a-test.log`,
+`normalization-a-command.json`, `normalization-a-exit.json` and the independent
+`AUDIT-NORMALIZATION-A.json`. Historical decode and prefill peaks are unchanged
+in the ledger.
+
+### GDN difference isolated further
+
+The corrected component replay is bit-identical to AFM's actual first-layer
+GDN output. Its composed convolution/Q/K values also exactly match AFM's
+fused preprocessing on this input. This validates the control before the
+ablation is interpreted.
+
+Keeping projections, values, gates, FP32 recurrent state, recurrence kernel
+and output projection unchanged, replacing **only Q/K normalization** with
+the reference equation reduces output RMS error versus the real reference
+capture from **0.000422468 to 0.00000999913 (97.63%)**. The fraction of
+different output elements falls from 63.75% to 0.33%. The reference computes
+an FP32 RMS reduction, rounds to model dtype and applies Q/K scaling; AFM's
+existing path uses model-dtype L2 operations. Epsilon placement differs too.
+This identifies an arithmetic contract difference, not evidence that the
+reference equation is necessarily more mathematically accurate.
+
+Replacing the gate equation gives no further output change in this probe.
+The remaining small difference is not yet isolated. The next bounded test is
+the same whole-model fixed-prefix/greedy screen with Q/K normalization alone
+and together with HC rounding, preserving both original controls. Only after
+that should a candidate enter the larger sampled/API performance screen.
+
+The initial GDN replay (`reference-components-d`) incorrectly used the
+unfused fallback dispatch as its AFM control; its exactness assertion failed.
+Those candidate results are excluded. The corrected replay
+(`reference-components-e`) uses the actual fused prework and packed recurrence;
+both selected tests pass (3.021 seconds total, 47.69-second build). The
+test-only HC setting's scope test also verifies that singleton, small-block
+and batched inputs are unchanged. Minimum available memory: 383.32 GiB.
+None of these diagnostic RMS reductions is a speedup or quality pass rate.
