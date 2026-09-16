@@ -20,10 +20,18 @@ clean_build_configuration() {
 run_release_tests() {
     local package_root="$1"
     local package_build_root="$2"
+    local AFMKIT_BUILD_ROOT="$package_build_root"
+    local AFMKIT_SKIP_RC5_DSPARK_BASELINE=1
+    # Xcode 27 beta FoundationModels crashes are reproducibly independent of
+    # the provider changes. Reuse the curated hosted-runner skip list rather
+    # than allowing an Apple framework segfault to mask later test results.
+    local RUNNER_ENVIRONMENT="github-hosted"
 
     clean_build_configuration "$package_build_root" release
-    AFMKIT_BUILD_ROOT="$package_build_root" \
-        "$ROOT/Scripts/run-xctest-targets.sh"
+    export AFMKIT_BUILD_ROOT
+    export AFMKIT_SKIP_RC5_DSPARK_BASELINE
+    export RUNNER_ENVIRONMENT
+    "$ROOT/Scripts/run-xctest-targets.sh"
     afmkit_run_qualified_swift test \
         --package-path "$package_root" \
         --scratch-path "$package_build_root" \

@@ -826,6 +826,11 @@ final class GLM5NextIndexer: Module {
 // MARK: - NoPE MLA and sparse attention
 
 final class GLM5NextSparseAttention: Module {
+    // Bound one float32 score tensor, not total working memory. At B=1/H=64
+    // and K=32768 this permits 128 query rows instead of a 256 GiB Q=K tensor.
+    // Keep short attention/decode on the existing unsplit path.
+    static let maximumAttentionScoreBytes = 1_024 * 1_024 * 1_024
+    private static let attentionScoreElementBytes = 4
     let heads: Int
     let qLoraRank: Int
     let qHeadDim: Int
@@ -906,6 +911,14 @@ final class GLM5NextSparseAttention: Module {
         var attentionMask: MLXArray? = cacheMask
             ?? (queryPositions .>= keyPositions)
 
+        if let selected, length > 1 && length <= 8, attentionMask?.dtype == .bool {
+            let output = gatheredVerificationAttention(
+                query: query, latent: latent, selected: selected,
+                mask: attentionMask!)
+            return outputProjection(
+                output.transposed(0, 2, 1, 3).reshaped(batch, length, -1))
+        }
+
         if let selected {
             let validSelection = selected .>= 0
             if length == 1 {
@@ -983,6 +996,49 @@ final class GLM5NextSparseAttention: Module {
             output.transposed(0, 2, 1, 3).reshaped(batch, length, -1))
     }
 
+    /// Short-block gather strategy follows oMLX's GLM5 Next implementation:
+    /// https://github.com/jundot/omlx/blob/aa8db73496bd8367989e2862f50b315885b9b91a/omlx/patches/mlx_vlm_glm5_next_compat/vendor/mlx_vlm/models/glm5_next/language.py
+    /// Unlike a validity-only gather, retain the caller's causal/padding mask.
+    /// Cache/indexer updates are completed by the caller, exactly once.
+    func gatheredVerificationAttention(
+        query: MLXArray, latent: MLXArray, selected: MLXArray, mask: MLXArray
+    ) -> MLXArray {
+        precondition(mask.dtype == .bool, "Sparse verification requires a boolean mask")
+        let batch = query.dim(0)
+        let length = query.dim(2)
+        let keys = latent.dim(2)
+        let dim = latent.dim(3)
+        let count = selected.dim(-1)
+        let indices = selected.reshaped(batch, length, count)
+        let safe = minimum(maximum(indices, 0), keys - 1)
+        let gathered = takeAlong(
+            broadcast(latent, to: [batch, length, keys, dim]),
+            broadcast(safe.expandedDimensions(axis: -1),
+                      to: [batch, length, count, dim]), axis: 2)
+            .reshaped(batch * length, 1, count, dim)
+        let fullMask = broadcast(mask, to: [batch, 1, length, keys])
+            .reshaped(batch, length, keys)
+        let selectedMask = takeAlong(fullMask, safe, axis: -1)
+        let valid = (indices .>= 0) .&& (indices .< keys)
+        let gatheredMask = valid .&& selectedMask
+        let absorbedQuery = embedQuery(query).transposed(0, 2, 1, 3)
+            .reshaped(batch * length, heads, 1, dim)
+        let attended = attend(
+            query: absorbedQuery, key: gathered, value: gathered,
+            mask: gatheredMask.reshaped(batch * length, 1, 1, count))
+        let latentOutput = attended.reshaped(batch, length, heads, dim)
+            .transposed(0, 2, 1, 3)
+        // The legacy finite-negative mask yields uniform attention over ALL
+        // keys for an empty row. Preserve that result in latent space rather
+        // than averaging clamped gather slots. Linear value projection commutes
+        // with the mean (subject to the same low-precision reassociation as
+        // absorbed attention). Keep selection on-device: no per-layer CPU sync.
+        let hasKeys = MLX.any(gatheredMask, axis: -1)
+            .reshaped(batch, 1, length, 1)
+        let emptyRow = mean(latent, axis: 2, keepDims: true)
+        return unembedOutput(MLX.where(hasKeys, latentOutput, emptyRow))
+    }
+
     static func fastSDPAEnabled(override raw: String?) -> Bool {
         guard let raw else { return true }
         return raw != "0" && raw.lowercased() != "false"
@@ -1006,7 +1062,27 @@ final class GLM5NextSparseAttention: Module {
         value: MLXArray,
         mask: MLXArray?
     ) -> MLXArray {
-        attend(query: query, key: key, value: value, mask: mask)
+        attendUnchunked(query: query, key: key, value: value, mask: mask)
+    }
+
+    func boundedAttentionForTesting(
+        query: MLXArray, key: MLXArray, value: MLXArray, mask: MLXArray?,
+        scoreByteLimit: Int
+    ) -> MLXArray {
+        attend(query: query, key: key, value: value, mask: mask,
+               scoreByteLimit: scoreByteLimit)
+    }
+
+    static func attentionQueryChunkSize(
+        batch: Int, heads: Int, queries: Int, keys: Int,
+        scoreByteLimit: Int = maximumAttentionScoreBytes
+    ) -> Int {
+        precondition(batch > 0 && heads > 0 && queries > 0 && keys > 0)
+        precondition(scoreByteLimit > 0)
+        // Successive divisions avoid overflow from multiplying model dimensions.
+        let rows = scoreByteLimit / attentionScoreElementBytes / batch / heads / keys
+        // A single row is the irreducible allocation if it exceeds the budget.
+        return min(queries, max(1, rows))
     }
 
     /// Test hook for the fused primitive used by the guarded decode path.
@@ -1025,6 +1101,46 @@ final class GLM5NextSparseAttention: Module {
     }
 
     private func attend(
+        query: MLXArray,
+        key: MLXArray,
+        value: MLXArray,
+        mask: MLXArray?,
+        scoreByteLimit: Int = maximumAttentionScoreBytes
+    ) -> MLXArray {
+        let length = query.dim(-2)
+        let chunkSize = Self.attentionQueryChunkSize(
+            batch: query.dim(0), heads: query.dim(1), queries: length,
+            keys: key.dim(-2), scoreByteLimit: scoreByteLimit)
+        guard chunkSize < length else {
+            return attendUnchunked(query: query, key: key, value: value, mask: mask)
+        }
+
+        // Materialize shared inputs once; otherwise a retained lazy key/mask
+        // graph can span every query tile. Cache updates and index selection
+        // have already happened and are never repeated or changed here.
+        let floatQuery = query.asType(.float32)
+        let floatKey = key.asType(.float32)
+        eval(floatQuery, floatKey, value)
+        if let mask { eval(mask) }
+        var outputs = [MLXArray]()
+        for start in stride(from: 0, to: length, by: chunkSize) {
+            let end = min(start + chunkSize, length)
+            let querySlice = floatQuery[.ellipsis, start ..< end, 0...]
+            let maskSlice = mask.map {
+                $0.ndim >= 2 && $0.dim(-2) != 1
+                    ? $0[.ellipsis, start ..< end, 0...] : $0
+            }
+            let output = attendUnchunked(
+                query: querySlice, key: floatKey, value: value, mask: maskSlice)
+            // Appending lazy outputs alone would retain all quadratic score
+            // graphs until concatenation, defeating the memory bound.
+            eval(output)
+            outputs.append(output)
+        }
+        return concatenated(outputs, axis: -2)
+    }
+
+    private func attendUnchunked(
         query: MLXArray,
         key: MLXArray,
         value: MLXArray,

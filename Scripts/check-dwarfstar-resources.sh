@@ -13,6 +13,9 @@ SNAPSHOT_FILES=(
     ds4_gpu.h
     ds4_gpu_args.h
     ds4_gpu_mgpu.h
+    ds4_image.c
+    ds4_image.h
+    ds4_linux_memory.h
     ds4_kvstore.c
     ds4_kvstore.h
     ds4_layer_pack.c
@@ -47,6 +50,10 @@ for source_file in "${SNAPSHOT_FILES[@]}"; do
 done
 if ! diff -qr "$UPSTREAM/metal" "$PACKAGE_COPY/metal"; then
     echo "DwarfStar Metal snapshot drifted from vendor/ds4/metal." >&2
+    exit 1
+fi
+if ! diff -qr "$UPSTREAM/third_party/iris" "$PACKAGE_COPY/third_party/iris"; then
+    echo "DwarfStar Iris snapshot drifted from vendor/ds4/third_party/iris." >&2
     exit 1
 fi
 
