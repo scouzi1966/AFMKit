@@ -75,10 +75,10 @@ isolate arithmetic; its binary and evidence are preserved. The current
 default-off implementation fuses the same arithmetic into prework for
 128-dimensional heads, retaining actual values/gates and FP32 recurrence.
 Exact full-model and A/B/A API replays pass, with no material warm throughput
-change. Wider quality and combined qualification remain required before
-considering adoption. GDN-reference arms
-with N−1 geometry, MTP, prefix reuse or concurrency are not tested by this
-screen; unlisted combinations are not qualified.
+change. Wider quality has not justified adoption. GDN-reference arms with
+N−1 geometry, MTP, prefix reuse or concurrency are not tested by the initial
+tensor screen; the separate API screens below cover only their listed
+combinations. Unlisted combinations are not qualified.
 
 ### Private API normalization screen (no user activation)
 
@@ -89,6 +89,10 @@ screen; unlisted combinations are not qualified.
 | N1 + MTP/prefix/C15 | Not run in this screen | No combined throughput/quality claim | Untested |
 | N2 fused implementation | Same internal activation; reference Q/K directly in prework, without duplicate convolution | Six focused tests pass; 90 arrays and 20 greedy answers exact; A/B/A API answers identical, 43/50 sampled strict each; warm decode 61.8237 vs 61.6710 tok/s, wall 26.9248 vs 26.9797 | Retained default-off; no material throughput gain; [follow-up](QWEN_NEXT_CONSOLIDATION.md#fused-gdn-implementation-follow-up) |
 | N3 broader semantic gate | N0 versus N2; 15 new task families, 15 greedy + 30 sampled; C1, prefix off; MTP off/on, with a live reference control | Sampled passes: default/fused/reference AR 23/23/22 of 30; MTP 22/23/23 of 30. Candidate loses one greedy LRU case; mixed changes, no broad quality promotion | Default-off; [semantic and combined-mode report](QWEN_NEXT_BROADER_QUALITY.md) |
+| N4 C15, prefix off | N3 fixtures and M25 settings; both binaries/modes, first plus exact repeats | 360/360 runtime/identity, 356/360 structure. Repeat sampled default/fused AR 23/23, MTP 23/21 of 30; aggregate AR 35.17/34.91, MTP 53.57/52.62 tok/s | Candidate not promoted; M25 is not the fastest AR banking recipe |
+| N5 serial AR replay | N3 AR/C1 + prefix flag + existing `AFM_PREFIX_REPLAY_BOUNDARIES=1` | 180/180 runtime/structure/identity. Repeat sampled 23/30 each, 30,132 restored tokens each, 66.03/65.76 wall tok/s. Without the serial option, exact repeats restored zero tokens in this screen | Existing cache benefit, not a normalization speedup; greedy default falls 13→12/15 versus no replay |
+| N6 C15 bounded replay | N3/M25 + prefix, first/repeat in 15-prompt windows, all original fixtures/seeds; no cache-limit changes | 360/360 runtime/identity, 358/360 structure; all 45 repeats hit per arm. Sampled repeat default/fused AR 82.71/80.39 aggregate tok/s at 23/30 each; MTP 184.18/178.11 at 21/30 each | Retain replay, keep normalization off. A separate 45-prompt reuse-distance attempt evicted MTP entries at its 16-entry cap; no claim that larger working sets hit |
+| N7 serial MTP, prefix flag on | N3/M25 + prefix, C1/MTP, whole-workload first/repeat | 180/180 runtime/structure/identity. Both binaries reproduce their 45 cache-off answers exactly; zero restored tokens in every request. Sampled default/fused 22/23 of 30 in both phases | Flag-on behavior only, not serial Qwen MTP reuse; scheduler replay requires concurrent serving |
 
 The temporary source activation was reverted after each private build and
 never committed; the frozen enabled binaries were used for API testing. Both
@@ -101,8 +105,13 @@ and [fused follow-up](QWEN_NEXT_CONSOLIDATION.md#fused-gdn-implementation-follow
 The saved 26 M25 overrides are retained: these are **not** unset-environment
 results. No inference-setting inventory entry is added for an internal test
 property. Memory guards passed. N0/N1 did not measure peak process memory;
-N2 includes one-second process RSS sampling, not full Metal-memory accounting.
-No prefix hits, repeated-phase gain or aggregate-concurrency gain is claimed.
+N2 and subsequent API screens include one-second process RSS sampling, not full
+Metal-memory accounting. N0–N3 do not claim prefix/concurrent gains. N4–N6
+explicitly record client overlap and actual restored tokens; none is a full
+release, cancellation, or concurrent reference-parity qualification. N6 divides
+sampled output by the sum of two active 15-request window durations, not the
+original rolling 30-request phase. See the linked report for full evidence,
+capacity misses and the decision against normalization promotion.
 
 ## How to read the matrix
 

@@ -11,25 +11,36 @@ fixed sampled API screen from 38/50 to 43/50 strict passes with essentially
 unchanged throughput. The fused implementation now preserves the prototype's
 full-model tensors and all API answers exactly, with no material throughput
 change against a warm repeat. It is **not** a production default: two original
-passes regress, broader quality parity is unproven, and combined
-MTP/C15/prefix/cancellation qualification remains open.
+passes regress, broader quality parity is unproven, and full release/lifecycle
+qualification remains open.
 
 The subsequent [independent semantic gate](QWEN_NEXT_BROADER_QUALITY.md) is now
-measuring 15 new task families against both AFM binaries and the live preserved
+testing 15 new task families against both AFM binaries and the live preserved
 reference. C1 sampled counts are close, but the candidate introduces a greedy
 LRU regression; the earlier five-task improvement has not generalized
-convincingly. It remains default-off. Combined-mode evidence is separate from
-promotion, and historical performance peaks remain unchanged.
+convincingly. Completed C15 and bounded-prefix-repeat screens also do not
+justify promotion. It remains default-off: further production-facing work on
+this normalization candidate is not justified by the observed benefit.
+
+The default-normalization build, under M25 opt-ins, reaches 184.18 aggregate
+tok/s for C15 sampled exact repeats with MTP, versus 178.11 for the candidate,
+both 21/30 semantic passes. This is
+a new short-task, 15-prompt-working-set screen, **not** an improved Context
+curve or concurrent reference-parity claim. A 45-prompt reuse-distance run
+exceeded the existing 16-entry MTP cache cap and restored zero tokens; both
+the capacity miss and bounded-hit results are preserved. Existing optimizations
+and historical performance peaks remain intact. Runtime cancellation remains
+a separate gate; source defaults and the installed nightly are unchanged.
 
 ## Decisions retained
 
 | Area | Decision | Evidence |
 |---|---|---|
 | Context decode improvements | Preserve the exact working configurations and historical peaks | [Performance ledger](QWEN_NEXT_PERFORMANCE_LEDGER.md) |
-| Shared/batched verification, cache/replay experiments | Retain opt-ins; combined qualification remains required | [Opt-in matrix](QWEN_NEXT_OPT_IN_MATRIX.md) |
+| Shared/batched verification, cache/replay experiments | Retain opt-ins; C15 bounded reuse measured, full lifecycle/release qualification still required | [Opt-in matrix](QWEN_NEXT_OPT_IN_MATRIX.md) |
 | Bounded MTP initialization | Keep the correctness/memory repair; track trajectory-dependent speed differences | [Quality investigation](QWEN_NEXT_MTP_PREFILL_QUALITY.md) |
 | Prefill 8192 as a general default | Rejected: no agentic throughput benefit in the paired screen, fewer strict passes | [Prefill tradeoffs](QWEN_NEXT_PREFILL_TRADEOFFS.md) |
-| Precision/normalization changes | GDN-only improves the fixed API screen; fusion preserves it without material timing change; default-off pending wider quality and combined qualification | [Latest fused results](#fused-gdn-implementation-follow-up) |
+| Precision/normalization changes | Keep diagnostic only; the original local gain did not generalize convincingly and no material speed benefit justifies promotion | [Independent and combined results](QWEN_NEXT_BROADER_QUALITY.md) |
 | New automatic tuning | Not authorized; keep explicit CLI choice and guidance | [Prefill tradeoffs](QWEN_NEXT_PREFILL_TRADEOFFS.md) |
 
 ## Ordered work
