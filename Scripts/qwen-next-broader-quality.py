@@ -192,6 +192,21 @@ def command(frozen, binary, concurrency, prefix):
     return argv + (["--enable-prefix-caching"] if prefix else [])
 
 
+def reference_command(frozen, binary, mtp):
+    argv = list(frozen)
+    if "--mtp" not in argv or "--no-mtp" in argv:
+        raise ValueError("Require frozen MTP reference launch")
+    for option, value in (("--prefix-cache-entries", "0"), ("--prefix-cache-disk", "off"),
+                          ("--tokenize-cache-entries", "0"), ("--kv-quant", "off"),
+                          ("--max-concurrent", "1"), ("--top-k", "0"), ("--mtp-depth", "3")):
+        if argv[argv.index(option) + 1] != value:
+            raise ValueError("Reference launch policy changed")
+    argv[0] = str(binary)
+    if not mtp:
+        argv[argv.index("--mtp")] = "--no-mtp"
+    return argv
+
+
 def summarize(rows, wall):
     return {"total": len(rows), "runtime": sum(r["runtime_ok"] for r in rows),
             **{key: sum(r[key] for r in rows) for key in score("", {})},
@@ -217,10 +232,12 @@ def main():
     parser.add_argument("--concurrency", type=int, choices=(1, 15), default=1)
     parser.add_argument("--prefix", action="store_true")
     parser.add_argument("--repeat", action="store_true")
+    parser.add_argument("--reference-launch", type=Path,
+                        help="Frozen reference launch.json; only C1/prefix-off supported")
     args = parser.parse_args()
     b = load_module("frozen_lifecycle", args.lifecycle_helper)
     variants = read(args.variants)
-    assert len(variants) == 2 and len({v["name"] for v in variants}) == 2
+    assert 1 <= len(variants) <= 2 and len({v["name"] for v in variants}) == len(variants)
     assert all(v["name"].replace("-", "").isalnum() for v in variants)
     baseline = read(args.baseline / "plan.json")
     b.MODEL = Path(baseline["model"])
@@ -233,6 +250,13 @@ def main():
         assert metadata[name] == context[key], "Checkpoint metadata changed"
     launches = {False: read(args.baseline / "afm-ar-afm-mtp-0/launch.json")["argv"],
                 True: read(args.baseline / "afm-batched-afm-mtp-1/launch.json")["argv"]}
+    engine = "reference" if args.reference_launch else "afm"
+    if args.reference_launch:
+        assert args.concurrency == 1 and not args.prefix and len(variants) == 1
+        reference_launch = read(args.reference_launch)
+        assert all(v["sha256"] == reference_launch["binary_sha256"] for v in variants)
+        launches = {mtp: reference_command(reference_launch["argv"], Path(variants[0]["binary"]), mtp)
+                    for mtp in (False, True)}
     for variant in variants:
         assert b.sha(Path(variant["binary"])) == variant["sha256"], "Binary identity mismatch"
     all_cases = cases()
@@ -248,16 +272,16 @@ def main():
     assert not competing(), "Competing build/inference; will not stop it"
     b.ROOT = args.output.resolve()
     b.ROOT.mkdir(parents=True, exist_ok=False)
-    arms = ([(variants[0], False), (variants[1], False)] if args.mode != "mtp" else [])
-    arms += ([(variants[1], True), (variants[0], True)] if args.mode != "ar" else [])
+    arms = ([(v, False) for v in variants] if args.mode != "mtp" else [])
+    arms += ([(v, True) for v in reversed(variants)] if args.mode != "ar" else [])
     save(b.ROOT / "plan.json", {"variants": variants, "arms": [[v["name"], m] for v, m in arms],
-         "cases": all_cases, "model": str(b.MODEL), "metadata_hashes": metadata,
+         "cases": all_cases, "model": str(b.MODEL), "metadata_hashes": metadata, "engine": engine,
          "runner_sha256": b.sha(Path(__file__)), "lifecycle_sha256": b.sha(args.lifecycle_helper),
          "launches": {str(k): v for k, v in launches.items()}, "removed_environment_names": removed,
          "max_tokens": MAX_TOKENS, "top_p": 1.0, "concurrency": args.concurrency,
          "prefix": args.prefix, "repeat": args.repeat,
          "note": "Fixed-answer semantic screen, not a general quality benchmark or reference-engine parity claim. "
-                 "M25 controls retained; no default promotion. Sampled seeds do not guarantee matching RNG consumption "
+                 "Frozen engine launch controls retained; no default promotion. Sampled seeds do not guarantee matching RNG consumption "
                  "across MTP paths. RSS is not complete Metal-memory accounting."})
     active = None
 
@@ -269,7 +293,8 @@ def main():
         save(path, value)
 
     b.save = tagged_save
-    b.command = lambda engine, mtp: command(launches[mtp], Path(active["binary"]), args.concurrency, args.prefix)
+    b.command = lambda requested_engine, mtp: (launches[mtp] if engine == "reference" else
+        command(launches[mtp], Path(active["binary"]), args.concurrency, args.prefix))
 
     def workload(client, out, *unused):
         owner = read(out / "process.json")["pid"]
@@ -366,8 +391,8 @@ def main():
         assert not competing()
         assert b.sha(Path(active["binary"])) == active["sha256"]
         b.AFM = Path(active["binary"])
-        b.run_arm("afm", mtp, active["name"], True)
-        assert read(b.ROOT / f"{active['name']}-afm-mtp-{int(mtp)}/exit.json")["exit_code"] == 0
+        b.run_arm(engine, mtp, active["name"], True)
+        assert read(b.ROOT / f"{active['name']}-{engine}-mtp-{int(mtp)}/exit.json")["exit_code"] == 0
     save(b.ROOT / "all-complete.json", {"status": "completed"})
 
 

@@ -94,6 +94,19 @@ class BroaderQualityTests(unittest.TestCase):
         self.assertEqual(summary["aggregate_output_tok_s"], 750)
         self.assertEqual(summary["semantic_tasks_s"], 7.5)
 
+    def test_reference_changes_only_binary_and_mtp_switch(self):
+        original = ["/old/ref", "--model", "/exact/model", "--mtp", "--prefix-cache-entries", "0",
+                    "--prefix-cache-disk", "off", "--tokenize-cache-entries", "0", "--kv-quant", "off",
+                    "--max-concurrent", "1", "--top-k", "0", "--mtp-depth", "3"]
+        for mtp in (False, True):
+            expected = [*original]
+            expected[0], expected[3] = "/new/ref", "--mtp" if mtp else "--no-mtp"
+            self.assertEqual(q.reference_command(original, Path("/new/ref"), mtp), expected)
+        invalid = [*original]
+        invalid[5] = "10"
+        with self.assertRaises(ValueError):
+            q.reference_command(invalid, Path("/new/ref"), False)
+
 
 if __name__ == "__main__":
     unittest.main()
