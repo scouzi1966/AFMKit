@@ -122,6 +122,16 @@ identity. **Quality parity is still open.** See the
 
 ## Evidence and reproduction
 
+September 17 aggregate follow-up is recorded separately in
+[retained qualification](QWEN_NEXT_RETAINED_QUALIFICATION.md). The same frozen
+M25 binary measured 179.69 tok/s on sampled C15 repeats, versus the prior
+184.18 (-2.4%, with slightly different generated text/token totals). No Context
+curve is replaced by that value. A9 AR reached 154.36 on this new task set;
+it must not be compared as a regression against the old 175 tok/s workload.
+One-client scheduler replay improved wall-time throughput 47.95→120.70 tok/s
+with all 90 paired texts exact, while decode-only rate was 128.66→126.42 and
+first-use throughput 48.05→47.09. These costs remain visible alongside the win.
+
 Reports remain external and untracked:
 
 ```text

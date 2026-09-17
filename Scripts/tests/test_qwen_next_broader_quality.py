@@ -128,6 +128,39 @@ class BroaderQualityTests(unittest.TestCase):
                          [("first", "greedy", 15), ("first", "sampled", 30),
                           ("repeat", "greedy", 15), ("repeat", "sampled", 30)])
 
+    def test_frozen_ar_profile_only_replaces_binary(self):
+        base = ['/usr/bin/env', 'AFM_QWEN_BATCH_BANKED_ATTENTION=1', '/old/afm',
+                'mlx', '-m', '/exact/model', '--concurrent', '15', '--port', '9998',
+                '--no-think', '--enable-prefix-caching', '--prefill-step-size', '8192']
+        expected = [*base]
+        expected[2] = '/new/afm'
+        self.assertEqual(q.profile_command(base, Path('/new/afm'), Path('/exact/model'),
+                                          False, 15, True), expected)
+        for model, mtp, concurrency, prefix in (('/other/model', False, 15, True),
+                ('/exact/model', True, 15, True), ('/exact/model', False, 1, True),
+                ('/exact/model', False, 15, False)):
+            with self.assertRaises(ValueError):
+                q.profile_command(base, Path('/new/afm'), Path(model), mtp, concurrency, prefix)
+
+    def test_reference_c15_cache_budget_is_explicit(self):
+        base = ['/old/ref', '--mtp', '--prefix-cache-entries', '0', '--prefix-cache-disk', 'off',
+                '--tokenize-cache-entries', '0', '--kv-quant', 'off', '--max-concurrent', '1',
+                '--top-k', '0', '--mtp-depth', '3']
+        result = q.reference_command(base, Path('/new/ref'), True, 15, True)
+        self.assertEqual(result[result.index('--max-concurrent') + 1], '15')
+        self.assertEqual(result[result.index('--prefix-cache-entries') + 1], '16')
+        self.assertEqual(result[-2:], ['--prefix-cache-mem', '4GB'])
+        self.assertEqual(base[3], '0')
+
+    def test_two_slot_server_does_not_create_concurrent_client_requests(self):
+        base = ['/usr/bin/env', 'AFM_QWEN_MTP_SCHEDULER=1', '/old/afm', 'mlx',
+                '--concurrent', '1', '--mtp', '--mtp-depth', '3']
+        result = q.command(base, Path('/new/afm'), 2, True)
+        self.assertEqual(result[result.index('--concurrent') + 1], '2')
+        self.assertEqual(result[-1], '--enable-prefix-caching')
+        self.assertEqual(base[5], '1')
+        self.assertEqual(len(q.cases()), 45)
+
     def test_windowed_replay_preserves_every_payload_and_seed(self):
         cases = q.cases()
         groups = q.request_groups(cases, True, 15)

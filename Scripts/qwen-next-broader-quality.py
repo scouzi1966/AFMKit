@@ -198,7 +198,7 @@ def command(frozen, binary, concurrency, prefix, serial_replay=False):
     return argv + (["--enable-prefix-caching"] if prefix else [])
 
 
-def reference_command(frozen, binary, mtp):
+def reference_command(frozen, binary, mtp, concurrency=1, prefix=False):
     argv = list(frozen)
     if "--mtp" not in argv or "--no-mtp" in argv:
         raise ValueError("Require frozen MTP reference launch")
@@ -210,6 +210,34 @@ def reference_command(frozen, binary, mtp):
     argv[0] = str(binary)
     if not mtp:
         argv[argv.index("--mtp")] = "--no-mtp"
+    if concurrency not in (1, 15):
+        raise ValueError("Unsupported reference concurrency")
+    argv[argv.index("--max-concurrent") + 1] = str(concurrency)
+    if prefix:
+        if "--prefix-cache-mem" in argv:
+            raise ValueError("Reference baseline already sets a memory budget")
+        argv[argv.index("--prefix-cache-entries") + 1] = "16"
+        argv += ["--prefix-cache-mem", "4GB"]
+    return argv
+
+
+def profile_command(frozen, binary, model, mtp, concurrency, prefix):
+    """Retain an independently measured AFM preset, changing only its binary."""
+    argv = list(frozen)
+    indices = [i for i, value in enumerate(argv) if Path(value).name == "afm"]
+    if len(indices) != 1 or ("--mtp" in argv) != mtp:
+        raise ValueError("Frozen profile mode does not match the requested arm")
+    if argv[argv.index("-m") + 1] != str(model):
+        raise ValueError("Frozen profile checkpoint mismatch")
+    if argv[argv.index("--concurrent") + 1] != str(concurrency):
+        raise ValueError("Frozen profile concurrency mismatch")
+    if ("--enable-prefix-caching" in argv) != prefix:
+        raise ValueError("Frozen profile cache policy mismatch")
+    if argv[argv.index("--port") + 1] != "9998" or "--no-think" not in argv:
+        raise ValueError("Frozen profile endpoint/thinking policy mismatch")
+    if any(v.startswith(("AFM_DEBUG=", "AFM_PERF=")) for v in argv):
+        raise ValueError("Instrumented profile is not a timing baseline")
+    argv[indices[0]] = str(binary)
     return argv
 
 
@@ -261,6 +289,8 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--mode", choices=("ar", "mtp", "all"), default="all")
     parser.add_argument("--concurrency", type=int, choices=(1, 15), default=1)
+    parser.add_argument("--server-concurrency", type=int, choices=(1, 2, 15),
+                        help="Explicit AFM admission ceiling; defaults to client concurrency, never automatic")
     parser.add_argument("--prefix", action="store_true")
     parser.add_argument("--repeat", action="store_true")
     parser.add_argument("--replay-window", type=int, choices=(0, 15), default=0,
@@ -270,12 +300,18 @@ def main():
     parser.add_argument("--require-cache-hits", action="store_true",
                         help="Fail coverage unless both repeat phases restore tokens")
     parser.add_argument("--reference-launch", type=Path,
-                        help="Frozen reference launch.json; only C1/prefix-off supported")
+                        help="Frozen C1/cache-off reference launch; selected concurrency/cache policy is explicit in plan")
+    parser.add_argument("--afm-launch", type=Path,
+                        help="Frozen AFM preset; single mode, same checkpoint/concurrency/cache; only binary substituted")
     args = parser.parse_args()
+    server_concurrency = args.server_concurrency or args.concurrency
+    assert not args.reference_launch or args.server_concurrency is None
     assert not args.require_cache_hits or (args.prefix and args.repeat)
     assert not args.replay_window or args.repeat
-    assert not args.serial_replay_boundaries or (args.prefix and args.concurrency == 1
+    assert not args.serial_replay_boundaries or (args.prefix and args.concurrency == 1 and server_concurrency == 1
                                                 and args.mode == "ar" and not args.reference_launch)
+    assert not args.afm_launch or (not args.reference_launch and not args.serial_replay_boundaries
+                                  and args.mode != "all")
     b = load_module("frozen_lifecycle", args.lifecycle_helper)
     variants = read(args.variants)
     assert 1 <= len(variants) <= 2 and len({v["name"] for v in variants}) == len(variants)
@@ -293,11 +329,16 @@ def main():
                 True: read(args.baseline / "afm-batched-afm-mtp-1/launch.json")["argv"]}
     engine = "reference" if args.reference_launch else "afm"
     if args.reference_launch:
-        assert args.concurrency == 1 and not args.prefix and len(variants) == 1
+        assert len(variants) == 1
         reference_launch = read(args.reference_launch)
         assert all(v["sha256"] == reference_launch["binary_sha256"] for v in variants)
-        launches = {mtp: reference_command(reference_launch["argv"], Path(variants[0]["binary"]), mtp)
+        launches = {mtp: reference_command(reference_launch["argv"], Path(variants[0]["binary"]), mtp,
+                                          args.concurrency, args.prefix)
                     for mtp in (False, True)}
+    if args.afm_launch:
+        profile = read(args.afm_launch)
+        launches = {args.mode == "mtp": profile_command(profile["argv"], Path(variants[0]["binary"]),
+                     b.MODEL, args.mode == "mtp", server_concurrency, args.prefix)}
     for variant in variants:
         assert b.sha(Path(variant["binary"])) == variant["sha256"], "Binary identity mismatch"
     all_cases = cases()
@@ -318,8 +359,11 @@ def main():
     save(b.ROOT / "plan.json", {"variants": variants, "arms": [[v["name"], m] for v, m in arms],
          "cases": all_cases, "model": str(b.MODEL), "metadata_hashes": metadata, "engine": engine,
          "runner_sha256": b.sha(Path(__file__)), "lifecycle_sha256": b.sha(args.lifecycle_helper),
+         "afm_profile_source": str(args.afm_launch) if args.afm_launch else None,
+         "afm_profile_source_sha256": b.sha(args.afm_launch) if args.afm_launch else None,
          "launches": {str(k): v for k, v in launches.items()}, "removed_environment_names": removed,
          "max_tokens": MAX_TOKENS, "top_p": 1.0, "concurrency": args.concurrency,
+         "server_concurrency": server_concurrency,
          "prefix": args.prefix, "repeat": args.repeat,
          "replay_window": args.replay_window,
          "phase_wall_policy": "Sum of active window wall times; intervening other-phase windows excluded",
@@ -338,7 +382,9 @@ def main():
 
     b.save = tagged_save
     b.command = lambda requested_engine, mtp: (launches[mtp] if engine == "reference" else
-        command(launches[mtp], Path(active["binary"]), args.concurrency, args.prefix, args.serial_replay_boundaries))
+        profile_command(launches[mtp], Path(active["binary"]), b.MODEL, mtp, server_concurrency, args.prefix)
+        if args.afm_launch else command(launches[mtp], Path(active["binary"]), server_concurrency,
+                                       args.prefix, args.serial_replay_boundaries))
 
     def workload(client, out, *unused):
         owner = read(out / "process.json")["pid"]

@@ -4,6 +4,13 @@ September 15. Continue on PR #123; do not create a new optimization PR or
 promote experimental defaults. This page is the entry point for the current
 work, not a replacement for historical evidence.
 
+September 17 follow-up: [retained lifecycle and matched presets](QWEN_NEXT_RETAINED_QUALIFICATION.md)
+passed 665 lifecycle assertions and 540 runtime/structure/identity checks.
+Cached C15 throughput beats the preserved reference in this workload; first-use
+prefix handling and broad quality parity remain open. Single-client requests
+also benefit from the existing scheduler replay when explicitly selected.
+Actual model switching is not tested by the consumer's acknowledgment routes.
+
 Current state (September 16): consolidation and fixed-baseline replay are
 complete; all 134 measured responses reproduce. Quality diagnosis has isolated
 HC and GDN Q/K normalization differences. The GDN-only prototype improves the
