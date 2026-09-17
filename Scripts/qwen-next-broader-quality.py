@@ -213,6 +213,22 @@ def reference_command(frozen, binary, mtp):
     return argv
 
 
+def request_groups(all_cases, repeat, replay_window=0):
+    """Retain every fixture, optionally replaying a bounded working set immediately."""
+    if replay_window not in (0, 15) or (replay_window and not repeat):
+        raise ValueError("Replay window must be 0 or 15 and requires repeat")
+    phases = ("first", "repeat") if repeat else ("first",)
+    if not replay_window:
+        return [(phase, kind, [c for c in all_cases if c["kind"] == kind])
+                for phase in phases for kind in ("greedy", "sampled")]
+    groups = []
+    for kind in ("greedy", "sampled"):
+        selected = [c for c in all_cases if c["kind"] == kind]
+        for start in range(0, len(selected), replay_window):
+            groups.extend((phase, kind, selected[start:start + replay_window]) for phase in phases)
+    return groups
+
+
 def summarize(rows, wall):
     result = {"total": len(rows), "runtime": sum(r["runtime_ok"] for r in rows),
             **{key: sum(r[key] for r in rows) for key in score("", {})},
@@ -247,6 +263,8 @@ def main():
     parser.add_argument("--concurrency", type=int, choices=(1, 15), default=1)
     parser.add_argument("--prefix", action="store_true")
     parser.add_argument("--repeat", action="store_true")
+    parser.add_argument("--replay-window", type=int, choices=(0, 15), default=0,
+                        help="Replay each 15-prompt window immediately; all fixtures retained, separate profile")
     parser.add_argument("--serial-replay-boundaries", action="store_true",
                         help="Add the existing experimental serial AR replay opt-in; separate profile")
     parser.add_argument("--require-cache-hits", action="store_true",
@@ -255,6 +273,7 @@ def main():
                         help="Frozen reference launch.json; only C1/prefix-off supported")
     args = parser.parse_args()
     assert not args.require_cache_hits or (args.prefix and args.repeat)
+    assert not args.replay_window or args.repeat
     assert not args.serial_replay_boundaries or (args.prefix and args.concurrency == 1
                                                 and args.mode == "ar" and not args.reference_launch)
     b = load_module("frozen_lifecycle", args.lifecycle_helper)
@@ -302,6 +321,8 @@ def main():
          "launches": {str(k): v for k, v in launches.items()}, "removed_environment_names": removed,
          "max_tokens": MAX_TOKENS, "top_p": 1.0, "concurrency": args.concurrency,
          "prefix": args.prefix, "repeat": args.repeat,
+         "replay_window": args.replay_window,
+         "phase_wall_policy": "Sum of active window wall times; intervening other-phase windows excluded",
          "serial_replay_boundaries": args.serial_replay_boundaries, "require_cache_hits": args.require_cache_hits,
          "note": "Fixed-answer semantic screen, not a general quality benchmark or reference-engine parity claim. "
                  "Frozen engine launch controls retained; no default promotion. Sampled seeds do not guarantee matching RNG consumption "
@@ -395,17 +416,26 @@ def main():
             # Independent tiny warmup does not populate the measured common prefix.
             warmup = {**all_cases[0], "messages": [{"role": "user", "content": "Reply with OK."}]}
             one(warmup, "warmup")
-            for phase in (["first", "repeat"] if args.repeat else ["first"]):
-                for kind in ("greedy", "sampled"):
-                    selected = [c for c in all_cases if c["kind"] == kind]
-                    started = time.monotonic()
-                    with ThreadPoolExecutor(max_workers=args.concurrency) as pool:
-                        rows = list(pool.map(lambda c: one(c, f"{phase}-{c['request_id']}"), selected))
-                    summary = summarize(rows, time.monotonic() - started)
-                    save(out / f"{phase}-{kind}-summary.json", summary)
-                    print("SUMMARY", out.name, phase, kind, json.dumps(summary), flush=True)
-                    if phase == "repeat" and args.require_cache_hits:
-                        assert summary["cached_tokens"] > 0, "Coverage failure: no cache reuse, not a model runtime failure"
+            collected, walls, windows = {}, {}, []
+            for phase, kind, selected in request_groups(all_cases, args.repeat, args.replay_window):
+                started = time.monotonic()
+                with ThreadPoolExecutor(max_workers=args.concurrency) as pool:
+                    rows = list(pool.map(lambda c: one(c, f"{phase}-{c['request_id']}"), selected))
+                elapsed = time.monotonic() - started
+                key = (phase, kind)
+                collected.setdefault(key, []).extend(rows)
+                walls[key] = walls.get(key, 0) + elapsed
+                window = {"phase": phase, "kind": kind, "request_ids": [c["request_id"] for c in selected],
+                          "summary": summarize(rows, elapsed)}
+                windows.append(window)
+                save(out / f"window-{len(windows):02d}.json", window)
+                print("WINDOW", out.name, phase, kind, json.dumps(window["summary"]), flush=True)
+                if phase == "repeat" and args.require_cache_hits:
+                    assert window["summary"]["cached_tokens"] > 0, "Coverage failure: no cache reuse, not a model runtime failure"
+            for (phase, kind), rows in collected.items():
+                summary = summarize(rows, walls[(phase, kind)])
+                save(out / f"{phase}-{kind}-summary.json", summary)
+                print("SUMMARY", out.name, phase, kind, json.dumps(summary), flush=True)
         finally:
             stop.set()
             watcher.join()

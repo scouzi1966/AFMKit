@@ -122,6 +122,28 @@ class BroaderQualityTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             q.reference_command(invalid, Path("/new/ref"), False)
 
+    def test_default_groups_keep_original_phase_order(self):
+        groups = q.request_groups(q.cases(), True)
+        self.assertEqual([(p, k, len(c)) for p, k, c in groups],
+                         [("first", "greedy", 15), ("first", "sampled", 30),
+                          ("repeat", "greedy", 15), ("repeat", "sampled", 30)])
+
+    def test_windowed_replay_preserves_every_payload_and_seed(self):
+        cases = q.cases()
+        groups = q.request_groups(cases, True, 15)
+        self.assertEqual(len(groups), 6)
+        for start in (0, 2, 4):
+            first, repeated = groups[start:start + 2]
+            self.assertEqual(first[0], "first")
+            self.assertEqual(repeated[0], "repeat")
+            self.assertEqual(first[1:], repeated[1:])
+            self.assertEqual(len(first[2]), 15)
+        for phase in ("first", "repeat"):
+            self.assertEqual([c for p, k, group in groups if p == phase for c in group], cases)
+        for repeat, size in ((False, 15), (True, 16), (True, -1)):
+            with self.assertRaises(ValueError):
+                q.request_groups(cases, repeat, size)
+
 
 if __name__ == "__main__":
     unittest.main()
