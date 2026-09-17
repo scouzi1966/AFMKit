@@ -86,6 +86,15 @@ class BroaderQualityTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 q.command(command, Path("/new/afm"), 1, False)
 
+    def test_serial_replay_is_explicit_and_ar_only(self):
+        base = ["/usr/bin/env", "AFM_TEST=1", "/old/afm", "mlx", "--concurrent", "1"]
+        enabled = q.command(base, Path("/new/afm"), 1, True, True)
+        self.assertEqual(enabled[1], "AFM_PREFIX_REPLAY_BOUNDARIES=1")
+        self.assertNotIn("AFM_PREFIX_REPLAY_BOUNDARIES=1", q.command(base, Path("/new/afm"), 1, True))
+        for argv, concurrency, prefix in ((base, 15, True), (base, 1, False), (base + ["--mtp"], 1, True)):
+            with self.assertRaises(ValueError):
+                q.command(argv, Path("/new/afm"), concurrency, prefix, True)
+
     def test_aggregate_uses_phase_wall_not_sum_of_request_times(self):
         rows = [{"runtime_ok": True, **{k: True for k in q.score("", {})},
                  "usage": {"completion_tokens": 100}, "seconds": 2,

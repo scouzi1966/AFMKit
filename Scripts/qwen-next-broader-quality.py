@@ -177,7 +177,7 @@ def cases():
     return result
 
 
-def command(frozen, binary, concurrency, prefix):
+def command(frozen, binary, concurrency, prefix, serial_replay=False):
     argv = list(frozen)
     indices = [i for i, value in enumerate(argv) if Path(value).name == "afm"]
     if len(indices) != 1 or "--enable-prefix-caching" in argv:
@@ -189,6 +189,12 @@ def command(frozen, binary, concurrency, prefix):
     if argv[slot] != "1":
         raise ValueError("Expected C1 baseline")
     argv[slot] = str(concurrency)
+    if serial_replay:
+        if not prefix or concurrency != 1 or "--mtp" in argv or argv[0] != "/usr/bin/env":
+            raise ValueError("Serial replay option requires C1 AR/prefix on with explicit env launcher")
+        if any(v.startswith("AFM_PREFIX_REPLAY_BOUNDARIES=") for v in argv):
+            raise ValueError("Frozen baseline already sets serial replay")
+        argv.insert(1, "AFM_PREFIX_REPLAY_BOUNDARIES=1")
     return argv + (["--enable-prefix-caching"] if prefix else [])
 
 
@@ -241,9 +247,16 @@ def main():
     parser.add_argument("--concurrency", type=int, choices=(1, 15), default=1)
     parser.add_argument("--prefix", action="store_true")
     parser.add_argument("--repeat", action="store_true")
+    parser.add_argument("--serial-replay-boundaries", action="store_true",
+                        help="Add the existing experimental serial AR replay opt-in; separate profile")
+    parser.add_argument("--require-cache-hits", action="store_true",
+                        help="Fail coverage unless both repeat phases restore tokens")
     parser.add_argument("--reference-launch", type=Path,
                         help="Frozen reference launch.json; only C1/prefix-off supported")
     args = parser.parse_args()
+    assert not args.require_cache_hits or (args.prefix and args.repeat)
+    assert not args.serial_replay_boundaries or (args.prefix and args.concurrency == 1
+                                                and args.mode == "ar" and not args.reference_launch)
     b = load_module("frozen_lifecycle", args.lifecycle_helper)
     variants = read(args.variants)
     assert 1 <= len(variants) <= 2 and len({v["name"] for v in variants}) == len(variants)
@@ -289,6 +302,7 @@ def main():
          "launches": {str(k): v for k, v in launches.items()}, "removed_environment_names": removed,
          "max_tokens": MAX_TOKENS, "top_p": 1.0, "concurrency": args.concurrency,
          "prefix": args.prefix, "repeat": args.repeat,
+         "serial_replay_boundaries": args.serial_replay_boundaries, "require_cache_hits": args.require_cache_hits,
          "note": "Fixed-answer semantic screen, not a general quality benchmark or reference-engine parity claim. "
                  "Frozen engine launch controls retained; no default promotion. Sampled seeds do not guarantee matching RNG consumption "
                  "across MTP paths. RSS is not complete Metal-memory accounting."})
@@ -303,7 +317,7 @@ def main():
 
     b.save = tagged_save
     b.command = lambda requested_engine, mtp: (launches[mtp] if engine == "reference" else
-        command(launches[mtp], Path(active["binary"]), args.concurrency, args.prefix))
+        command(launches[mtp], Path(active["binary"]), args.concurrency, args.prefix, args.serial_replay_boundaries))
 
     def workload(client, out, *unused):
         owner = read(out / "process.json")["pid"]
@@ -390,6 +404,8 @@ def main():
                     summary = summarize(rows, time.monotonic() - started)
                     save(out / f"{phase}-{kind}-summary.json", summary)
                     print("SUMMARY", out.name, phase, kind, json.dumps(summary), flush=True)
+                    if phase == "repeat" and args.require_cache_hits:
+                        assert summary["cached_tokens"] > 0, "Coverage failure: no cache reuse, not a model runtime failure"
         finally:
             stop.set()
             watcher.join()
