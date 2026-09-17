@@ -14,6 +14,13 @@ change against a warm repeat. It is **not** a production default: two original
 passes regress, broader quality parity is unproven, and combined
 MTP/C15/prefix/cancellation qualification remains open.
 
+The subsequent [independent semantic gate](QWEN_NEXT_BROADER_QUALITY.md) is now
+measuring 15 new task families against both AFM binaries and the live preserved
+reference. C1 sampled counts are close, but the candidate introduces a greedy
+LRU regression; the earlier five-task improvement has not generalized
+convincingly. It remains default-off. Combined-mode evidence is separate from
+promotion, and historical performance peaks remain unchanged.
+
 ## Decisions retained
 
 | Area | Decision | Evidence |

@@ -88,6 +88,7 @@ screen; unlisted combinations are not qualified.
 | N1 GDN Q/K | Same launch/payloads/checkpoint; private build enabling only internal GDN normalization diagnostic | 55/55 runtime; 5/5 greedy; 43/50 sampled strict; 26.4605 wall tok/s; 60.2497 median decode tok/s | Diagnostic only, not promoted; +7/-2 strict cases |
 | N1 + MTP/prefix/C15 | Not run in this screen | No combined throughput/quality claim | Untested |
 | N2 fused implementation | Same internal activation; reference Q/K directly in prework, without duplicate convolution | Six focused tests pass; 90 arrays and 20 greedy answers exact; A/B/A API answers identical, 43/50 sampled strict each; warm decode 61.8237 vs 61.6710 tok/s, wall 26.9248 vs 26.9797 | Retained default-off; no material throughput gain; [follow-up](QWEN_NEXT_CONSOLIDATION.md#fused-gdn-implementation-follow-up) |
+| N3 broader semantic gate | N0 versus N2; 15 new task families, 15 greedy + 30 sampled; C1, prefix off; MTP off/on, with a live reference control | Sampled passes: default/fused/reference AR 23/23/22 of 30; MTP 22/23/23 of 30. Candidate loses one greedy LRU case; mixed changes, no broad quality promotion | Default-off; [semantic and combined-mode report](QWEN_NEXT_BROADER_QUALITY.md) |
 
 The temporary source activation was reverted after each private build and
 never committed; the frozen enabled binaries were used for API testing. Both
