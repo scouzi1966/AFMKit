@@ -208,7 +208,7 @@ def reference_command(frozen, binary, mtp):
 
 
 def summarize(rows, wall):
-    return {"total": len(rows), "runtime": sum(r["runtime_ok"] for r in rows),
+    result = {"total": len(rows), "runtime": sum(r["runtime_ok"] for r in rows),
             **{key: sum(r[key] for r in rows) for key in score("", {})},
             "output_tokens": sum(r["usage"].get("completion_tokens", 0) for r in rows),
             "aggregate_output_tok_s": sum(r["usage"].get("completion_tokens", 0) for r in rows) / wall,
@@ -218,6 +218,15 @@ def summarize(rows, wall):
             "median_decode_tok_s": statistics.median(r["decode_tps"] for r in rows),
             "cached_tokens": sum((r["usage"].get("prompt_tokens_details") or {}).get("cached_tokens", 0) or 0 for r in rows),
             "length_finishes": sum("length" in r["finish_reasons"] for r in rows)}
+    if all("started_monotonic" in r for r in rows):
+        events = [(r["started_monotonic"], 1) for r in rows]
+        events += [(r["started_monotonic"] + r["seconds"], -1) for r in rows]
+        active = peak = 0
+        for _, delta in sorted(events):
+            active += delta
+            peak = max(peak, active)
+        result["max_overlapping_client_requests"] = peak
+    return result
 
 
 def main():
@@ -328,6 +337,7 @@ def main():
                        "stream_options": {"include_usage": True}, "chat_template_kwargs": {"enable_thinking": False}}
             row = {"case": case, "payload": payload}
             start, first, last = time.monotonic(), None, None
+            row["started_monotonic"] = start
             chunks, text, reasoning, usage = [], "", "", {}
             try:
                 params = dict(payload)

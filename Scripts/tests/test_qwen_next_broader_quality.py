@@ -93,6 +93,12 @@ class BroaderQualityTests(unittest.TestCase):
         summary = q.summarize(rows, 2)
         self.assertEqual(summary["aggregate_output_tok_s"], 750)
         self.assertEqual(summary["semantic_tasks_s"], 7.5)
+        for row in rows:
+            row["started_monotonic"] = 10
+        self.assertEqual(q.summarize(rows, 2)["max_overlapping_client_requests"], 15)
+        for index, row in enumerate(rows):
+            row["started_monotonic"] = index * 2
+        self.assertEqual(q.summarize(rows, 30)["max_overlapping_client_requests"], 1)
 
     def test_reference_changes_only_binary_and_mtp_switch(self):
         original = ["/old/ref", "--model", "/exact/model", "--mtp", "--prefix-cache-entries", "0",
