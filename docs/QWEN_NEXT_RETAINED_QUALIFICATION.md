@@ -167,3 +167,10 @@ denominators. The C15 runner is preserved as `broader-runner-c15.py`; pass it
 to the auditor using `--runner` when reauditing those earlier arms.
 
 No raw reports enter the repository. No release or installation changed.
+
+The append-only evidence is sealed by `SHA256SUMS.txt` (778 files), SHA-256
+`74a56f83d236073872f4e974e9b774ee4cf3dc6f4215f2024bf29f50704c974d`.
+The manifest covers raw reports, exact runner copies, audits, logs and the
+point-in-time summary; all entries verified. The qualification checkpoint is
+`8b179910`. The 44 CPU harness tests pass; no new Swift XCTest run or runtime
+rebuild is claimed for this scripts-and-documentation checkpoint.
