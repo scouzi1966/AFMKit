@@ -33,6 +33,26 @@ class RetainedLifecycleTests(unittest.TestCase):
         row['usage']['prompt_tokens_details']['cached_tokens'] = 399
         self.assertFalse(gate.checks(row, 96, full_replay=True)['full_prompt_replay'])
 
+    def test_explicit_earlier_boundary_requires_exact_expected_position(self):
+        row = self.row()
+        for cached, expected in [(0, False), (368, False), (369, True), (370, False), (400, False)]:
+            row['usage']['prompt_tokens_details']['cached_tokens'] = cached
+            self.assertEqual(gate.checks(row, 96, full_replay=True, snapshot_backoff_tokens=31)
+                             ['prompt_boundary_replay'], expected)
+
+    def test_short_prompt_backoff_retains_endpoint(self):
+        row = self.row()
+        row['usage'].update(prompt_tokens=20, prompt_tokens_details=dict(cached_tokens=20))
+        self.assertTrue(gate.checks(row, 96, full_replay=True, snapshot_backoff_tokens=31)
+                        ['prompt_boundary_replay'])
+
+    def test_endpoint_promotion_does_not_accept_arbitrary_partial_hit(self):
+        row = self.row()
+        for cached, expected in [(0, False), (368, False), (369, True), (370, False), (400, True)]:
+            row['usage']['prompt_tokens_details']['cached_tokens'] = cached
+            self.assertEqual(gate.checks(row, 96, full_replay=True, snapshot_backoff_tokens=31,
+                                        allow_endpoint_promotion=True)['prompt_boundary_replay'], expected)
+
     def test_missing_finish_and_excess_tokens_rejected(self):
         row = self.row()
         row['chunks'] = []

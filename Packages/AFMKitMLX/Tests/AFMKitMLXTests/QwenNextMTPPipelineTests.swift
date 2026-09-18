@@ -550,6 +550,132 @@ final class QwenNextMTPPipelineTests: XCTestCase {
         try assertPromptReplay(model)
     }
 
+    func testPreSuffixReplayPreservesCompleteBoundaryAndChangedSuffixIsolation() async throws {
+        let model = try await makeModel(withPLE: true, indexerBudget: 4)
+        let head = Qwen4ExpMTPHead(model.configuration)
+        eval(model, head)
+        func drain(_ session: Qwen4ExpMTPSession) -> [Int] {
+            var result = [Int]()
+            while let token = session.nextToken() { result.append(token) }
+            return result
+        }
+        let prefix = Array(1...8)
+        let prompt = prefix + [9, 10, 11]
+        for policy: MTPVerificationPolicy in [.strictSingletonEquivalent, .batched] {
+            let generator = Qwen4ExpMTPGenerator(model: model, head: head, depth: 3,
+                verificationPolicy: policy)
+            for step in [1, 4, 32] {
+                let source = try XCTUnwrap(generator.makeSession(promptIds: prompt, maxTokens: 8,
+                    retainPromptState: true, prefillStepSize: step, promptSnapshotBackoffTokens: 3))
+                let snapshot = try XCTUnwrap(source.takePromptState())
+                XCTAssertEqual(snapshot.promptIds, prefix)
+                XCTAssertNil(source.takePromptState())
+                XCTAssertGreaterThan(snapshot.estimatedRetainedBytes, 0)
+                // Independent boundary, constructed without seeing the suffix.
+                let boundary = try XCTUnwrap(generator.makeSession(promptIds: prefix, maxTokens: 1,
+                    retainPromptState: true, prefillStepSize: step))
+                let expectedState = try XCTUnwrap(boundary.takePromptState())
+                XCTAssertEqual(snapshot.estimatedRetainedBytes, expectedState.estimatedRetainedBytes)
+                _ = source.nextToken()
+                source.prepareNextToken()
+                source.cancel()
+                boundary.cancel()
+                XCTAssertNil(generator.makeSession(promptIds: prompt, maxTokens: 8,
+                    promptState: snapshot, prefillStepSize: step)) // prefix replay must be explicit
+                XCTAssertNil(generator.makeSession(promptIds: [31] + prompt, maxTokens: 8,
+                    promptState: snapshot, allowPromptPrefixReplay: true, prefillStepSize: step))
+                XCTAssertNil(generator.makeSession(promptIds: Array(prefix.dropLast()), maxTokens: 8,
+                    promptState: snapshot, allowPromptPrefixReplay: true, prefillStepSize: step))
+                XCTAssertNil(generator.makeSession(promptIds: prompt, maxTokens: 8,
+                    promptState: snapshot, allowPromptPrefixReplay: true, prefillStepSize: step + 1))
+                let other = Qwen4ExpMTPGenerator(model: model, head: head, depth: 3,
+                    verificationPolicy: policy)
+                XCTAssertNil(other.makeSession(promptIds: prompt, maxTokens: 8,
+                    promptState: snapshot, allowPromptPrefixReplay: true, prefillStepSize: step))
+                for temperature: Float in [0, 0.6] {
+                    let prompts = [prompt, prefix + [14, 13, 12]]
+                    let controls = try prompts.enumerated().map { index, ids in
+                        drain(try XCTUnwrap(generator.makeSession(promptIds: ids, maxTokens: 8,
+                            temperature: temperature, topP: 0.95, seed: UInt64(73 + index),
+                            promptState: expectedState, allowPromptPrefixReplay: true, prefillStepSize: step)))
+                    }
+                    let sessions = try prompts.enumerated().map { index, ids in
+                        try XCTUnwrap(generator.makeSession(promptIds: ids, maxTokens: 8,
+                            temperature: temperature, topP: 0.95, seed: UInt64(73 + index),
+                            promptState: snapshot, retainPromptState: true, allowPromptPrefixReplay: true,
+                            prefillStepSize: step, promptSnapshotBackoffTokens: 3))
+                    }
+                    // Reusing this boundary must not allocate duplicate snapshots.
+                    for session in sessions { XCTAssertNil(session.takePromptState()) }
+                    var results = [[Int](), [Int]()]
+                    for _ in 0..<8 {
+                        for index in [0, 1, 1] {
+                            if let token = sessions[index].nextToken() { results[index].append(token) }
+                        }
+                    }
+                    XCTAssertEqual(results, controls)
+                    let again = try XCTUnwrap(generator.makeSession(promptIds: prompts[1], maxTokens: 8,
+                        temperature: temperature, topP: 0.95, seed: 74,
+                        promptState: snapshot, allowPromptPrefixReplay: true, prefillStepSize: step))
+                    XCTAssertEqual(drain(again), controls[1])
+                }
+            }
+        }
+    }
+
+    func testPreSuffixReplayShortPromptAndDisabledRetentionPreserveEndpointBehavior() async throws {
+        let model = try await makeModel(withPLE: true, indexerBudget: 4)
+        let head = Qwen4ExpMTPHead(model.configuration)
+        eval(model, head)
+        let generator = Qwen4ExpMTPGenerator(model: model, head: head, depth: 3,
+            verificationPolicy: .batched)
+        for prompt in [[1], [1, 2, 3], Array(1...11)] {
+            for backoff in [0, 3, 30] {
+                let plain = try XCTUnwrap(generator.makeSession(promptIds: prompt, maxTokens: 1,
+                    prefillStepSize: 4))
+                let disabled = try XCTUnwrap(generator.makeSession(promptIds: prompt, maxTokens: 1,
+                    prefillStepSize: 4, promptSnapshotBackoffTokens: backoff))
+                XCTAssertNil(disabled.takePromptState())
+                XCTAssertEqual(disabled.nextToken(), plain.nextToken())
+                let session = try XCTUnwrap(generator.makeSession(promptIds: prompt, maxTokens: 1,
+                    retainPromptState: true, prefillStepSize: 4, promptSnapshotBackoffTokens: backoff))
+                let snapshot = try XCTUnwrap(session.takePromptState())
+                let count = backoff > 0 && prompt.count > backoff ? prompt.count - backoff : prompt.count
+                XCTAssertEqual(snapshot.promptIds, Array(prompt.prefix(count)))
+                let repeated = try XCTUnwrap(generator.makeSession(promptIds: prompt, maxTokens: 1,
+                    promptState: snapshot, allowPromptPrefixReplay: true, prefillStepSize: 4))
+                XCTAssertEqual(repeated.nextToken(), session.nextToken())
+                XCTAssertEqual(repeated.verificationCycleCount, 0)
+            }
+        }
+    }
+
+    func testPreSuffixHitCanRetainEndpointWithoutChangingSampledContinuation() async throws {
+        let model = try await makeModel(withPLE: true, indexerBudget: 4)
+        let head = Qwen4ExpMTPHead(model.configuration)
+        eval(model, head)
+        let generator = Qwen4ExpMTPGenerator(model: model, head: head, depth: 3,
+            verificationPolicy: .batched)
+        let prompt = Array(1...11)
+        let origin = try XCTUnwrap(generator.makeSession(promptIds: prompt, maxTokens: 1,
+            retainPromptState: true, prefillStepSize: 4, promptSnapshotBackoffTokens: 3))
+        let prefix = try XCTUnwrap(origin.takePromptState())
+        origin.cancel()
+        let changed = Array(prompt.prefix(8)) + [16, 17, 18]
+        let promoted = try XCTUnwrap(generator.makeSession(promptIds: changed, maxTokens: 8,
+            temperature: 0.6, topP: 0.95, seed: 83, promptState: prefix,
+            retainPromptState: true, allowPromptPrefixReplay: true, prefillStepSize: 4))
+        let endpoint = try XCTUnwrap(promoted.takePromptState())
+        XCTAssertEqual(endpoint.promptIds, changed)
+        let exact = try XCTUnwrap(generator.makeSession(promptIds: changed, maxTokens: 8,
+            temperature: 0.6, topP: 0.95, seed: 83, promptState: endpoint, prefillStepSize: 4))
+        var expected = [Int](), actual = [Int]()
+        while let token = promoted.nextToken() { expected.append(token) }
+        while let token = exact.nextToken() { actual.append(token) }
+        XCTAssertEqual(actual, expected)
+        XCTAssertEqual(prefix.promptIds, Array(prompt.prefix(8)))
+    }
+
     func testBoundedMTPPrefillPreservesFirstTargetSampleAndZeroCycleLimit() async throws {
         let model = try await makeModel(withPLE: true, indexerBudget: 4)
         let head = Qwen4ExpMTPHead(model.configuration)
@@ -900,6 +1026,64 @@ final class QwenNextMTPPipelineTests: XCTestCase {
         let large = MLXReplayPrefill.boundaries(restoredPrefix: 0, finalBoundary: Int.max)
         XCTAssertLessThanOrEqual(large.count, MLXReplayPrefill.maximumCheckpoints)
         XCTAssertTrue(large.allSatisfy { $0 > 0 && $0 < Int.max })
+    }
+
+    func testNearEndReplayBoundaryReplacesGridWithoutExceedingBounds() {
+        XCTAssertEqual(MLXReplayPrefill.boundaries(restoredPrefix: 0, finalBoundary: 1024,
+            promptSnapshotBackoffTokens: 31), [994])
+        XCTAssertEqual(MLXReplayPrefill.boundaries(restoredPrefix: 993, finalBoundary: 1024,
+            promptSnapshotBackoffTokens: 31), [994])
+        for restored in [994, 1000, 1024] {
+            XCTAssertEqual(MLXReplayPrefill.boundaries(restoredPrefix: restored, finalBoundary: 1024,
+                promptSnapshotBackoffTokens: 31), [])
+        }
+        for backoff in [1, 31, Int.max] {
+            XCTAssertEqual(MLXReplayPrefill.boundaries(restoredPrefix: 0, finalBoundary: 20,
+                promptSnapshotBackoffTokens: backoff), [])
+        }
+        XCTAssertEqual(MLXReplayPrefill.boundaries(restoredPrefix: 0, finalBoundary: Int.max,
+            promptSnapshotBackoffTokens: 31), [Int.max - 30])
+        XCTAssertEqual(MLXReplayPrefill.boundaries(restoredPrefix: 0, finalBoundary: 1024,
+            maximumCheckpoints: 0, promptSnapshotBackoffTokens: 31), [])
+    }
+
+    func testNearEndReplayRestoresChangedSuffixAndRetainsCheapExactEndpoint() async throws {
+        let model = try await makeModel(withPLE: true, indexerBudget: 4)
+        eval(model)
+        let prompt = Array(1...12)
+        for step in [1, 4, 32] {
+            let radix = RadixTreeCache(modelID: "near-end-replay", maxEntries: 8)
+            let coldCache = model.newCache(parameters: nil)
+            let cold = try MLXReplayPrefill.prepare(model: model, cache: coldCache, inputTokens: prompt,
+                restoredPrefix: 0, radix: radix, prefillStepSize: step, promptSnapshotBackoffTokens: 3)
+            eval(cold.logits)
+            let exact = radix.findExactBoundaryMatch(prompt)
+            XCTAssertEqual(exact.prefixLen, 11)
+            let changed = Array(prompt.prefix(9)) + [16, 17, 18]
+            let prefix = radix.findExactBoundaryMatch(changed)
+            XCTAssertEqual(prefix.prefixLen, 9)
+            let states = try XCTUnwrap(prefix.layerStates)
+            let frozen = states.map { $0.map { $0.asArray(Float.self) } }
+            _ = model(LMInput.Text(tokens: MLXArray([20, 21]).reshaped(1, 2)), cache: coldCache, state: nil)
+            eval(coldCache)
+            for (ids, match) in [(prompt, exact), (changed, prefix)] {
+                var restored = model.newCache(parameters: nil)
+                let values = try XCTUnwrap(match.layerStates)
+                let metadata = try XCTUnwrap(match.layerMetaStates)
+                for i in restored.indices {
+                    restored[i].state = MLXReplayPrefill.snapshot(values[i])
+                    restored[i].metaState = metadata[i]
+                }
+                let warm = try MLXReplayPrefill.prepare(model: model, cache: restored, inputTokens: ids,
+                    restoredPrefix: match.prefixLen, radix: radix, prefillStepSize: step,
+                    promptSnapshotBackoffTokens: 3)
+                let independent = try MLXReplayPrefill.prepare(model: model,
+                    cache: model.newCache(parameters: nil), inputTokens: ids, restoredPrefix: 0,
+                    prefillStepSize: step, promptSnapshotBackoffTokens: 3, checkpoint: { _, _, _ in })
+                XCTAssertEqual(warm.logits.asArray(Float.self), independent.logits.asArray(Float.self))
+            }
+            XCTAssertEqual(states.map { $0.map { $0.asArray(Float.self) } }, frozen)
+        }
     }
 
     func testSharedReplayPrefillSupportsSmallChunkLimitsAndSingleTokenPrompts() async throws {

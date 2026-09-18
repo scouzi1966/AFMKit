@@ -5,7 +5,8 @@ promote experimental defaults. This page is the entry point for the current
 work, not a replacement for historical evidence.
 
 September 17 follow-up: [retained lifecycle and matched presets](QWEN_NEXT_RETAINED_QUALIFICATION.md)
-passed 665 lifecycle assertions and 540 runtime/structure/identity checks.
+passed 565 lifecycle assertions and 540 runtime/structure/identity checks
+(lifecycle total corrected September 18 from the saved phase sums).
 Cached C15 throughput beats the preserved reference in this workload; first-use
 prefix handling and broad quality parity remain open. Single-client requests
 also benefit from the existing scheduler replay when explicitly selected.

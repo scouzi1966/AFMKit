@@ -26,7 +26,7 @@ not new Context curves, comprehensive QA or general quality-parity proof.
 
 ## Lifecycle
 
-`Scripts/qwen-next-retained-lifecycle.py` passed **665/665 assertions** across
+`Scripts/qwen-next-retained-lifecycle.py` passed **565/565 assertions** across
 79 requests including warmup: mixed MTP/AR logprobs, penalties, stop sequences,
 sampled MTP, early disconnect/recovery, and prompts above 4096 but below 8192
 tokens. Fifteen isolated identity controls precede 15-client cancellation,
@@ -115,6 +115,11 @@ The existing 16-entry/byte limits remain; larger reuse distances can still miss.
 
 ## Remaining high-value experiment: pre-suffix complete-state boundaries
 
+September 18 follow-up: this proposal is now implemented as an opt-in, with
+first-use gains, a fixed cache-promotion capacity regression, and retained
+quality/performance costs. See [the boundary experiment](QWEN_NEXT_PREFIX_BOUNDARY_EXPERIMENT.md).
+The proposal and point-in-time statements below describe the earlier commit.
+
 The reference's `src/generate.zig` deliberately holds back 30 prompt tokens
 (`SSM_SNAPSHOT_BACKOFF`) so a reusable recurrent-state snapshot exists before
 the changing assistant-template suffix. Its `src/prefix_cache.zig` restores
@@ -167,6 +172,10 @@ denominators. The C15 runner is preserved as `broader-runner-c15.py`; pass it
 to the auditor using `--runner` when reauditing those earlier arms.
 
 No raw reports enter the repository. No release or installation changed.
+
+September 18 reporting correction: the original prose said 665 lifecycle
+assertions. Summing the eight saved phase totals gives **565**, all passing,
+across 79 requests. The raw results and sealed manifest are unchanged.
 
 The append-only evidence is sealed by `SHA256SUMS.txt` (778 files), SHA-256
 `74a56f83d236073872f4e974e9b774ee4cf3dc6f4215f2024bf29f50704c974d`.

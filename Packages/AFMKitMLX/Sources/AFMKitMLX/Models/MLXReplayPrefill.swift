@@ -21,10 +21,20 @@ enum MLXReplayPrefill {
     static func boundaries(
         restoredPrefix: Int, finalBoundary: Int,
         minimumStride: Int = minimumCheckpointStride,
-        maximumCheckpoints: Int = MLXReplayPrefill.maximumCheckpoints
+        maximumCheckpoints: Int = MLXReplayPrefill.maximumCheckpoints,
+        promptSnapshotBackoffTokens: Int = 0
     ) -> [Int] {
         guard restoredPrefix >= 0, finalBoundary > restoredPrefix,
               minimumStride > 0, maximumCheckpoints > 0 else { return [] }
+        if promptSnapshotBackoffTokens > 0 {
+            // Source: mlx-serve src/generate.zig, SSM_SNAPSHOT_BACKOFF.
+            // finalBoundary already excludes the final token. A full-prompt
+            // backoff of 31 corresponds to its 30-token prefill backoff.
+            // One earlier checkpoint replaces the coarse interior grid; the
+            // caller still captures the final boundary for cheap exact repeats.
+            let boundary = finalBoundary - (promptSnapshotBackoffTokens - 1)
+            return boundary > restoredPrefix && boundary < finalBoundary ? [boundary] : []
+        }
         let span = finalBoundary - restoredPrefix
         let roundedSpan = span / maximumCheckpoints + (span % maximumCheckpoints == 0 ? 0 : 1)
         let step = max(minimumStride, roundedSpan)
@@ -46,6 +56,7 @@ enum MLXReplayPrefill {
     static func prepare(
         model: any LanguageModel, cache: [KVCache], inputTokens: [Int],
         restoredPrefix: Int, radix: RadixTreeCache? = nil, prefillStepSize: Int = 512,
+        promptSnapshotBackoffTokens: Int = 0,
         checkpoint: ((Int, [[MLXArray]], [[String]]) -> Void)? = nil,
         checkCancellation: (() throws -> Void)? = nil,
         didCompleteChunk: ((Range<Int>) -> Void)? = nil,
@@ -53,6 +64,7 @@ enum MLXReplayPrefill {
     ) throws -> LMOutput {
         try prepareWithSnapshot(model: model, cache: cache, inputTokens: inputTokens,
             restoredPrefix: restoredPrefix, radix: radix, prefillStepSize: prefillStepSize,
+            promptSnapshotBackoffTokens: promptSnapshotBackoffTokens,
             checkpoint: checkpoint, checkCancellation: checkCancellation,
             didCompleteChunk: didCompleteChunk, isolation: isolation).output
     }
@@ -60,6 +72,7 @@ enum MLXReplayPrefill {
     static func prepareWithSnapshot(
         model: any LanguageModel, cache: [KVCache], inputTokens: [Int],
         restoredPrefix: Int, radix: RadixTreeCache? = nil, prefillStepSize: Int = 512,
+        promptSnapshotBackoffTokens: Int = 0,
         captureFinalSnapshot: Bool = false,
         checkpoint: ((Int, [[MLXArray]], [[String]]) -> Void)? = nil,
         checkCancellation: (() throws -> Void)? = nil,
@@ -72,7 +85,8 @@ enum MLXReplayPrefill {
         var state: LMOutput.State?
         var finalSnapshot: Snapshot?
         let checkpoints = radix != nil || checkpoint != nil
-            ? boundaries(restoredPrefix: restoredPrefix, finalBoundary: finalBoundary) : []
+            ? boundaries(restoredPrefix: restoredPrefix, finalBoundary: finalBoundary,
+                         promptSnapshotBackoffTokens: promptSnapshotBackoffTokens) : []
         for boundary in checkpoints
             + [finalBoundary] {
             try Task.checkCancellation()

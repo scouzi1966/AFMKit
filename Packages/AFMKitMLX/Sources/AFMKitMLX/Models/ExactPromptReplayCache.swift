@@ -6,6 +6,8 @@ final class ExactPromptReplayCache<Value> {
         let prompt: [Int]
         let value: Value
         let bytes: Int
+        let sourcePrompt: [Int]?
+        var sharedReuse = false
     }
 
     private let maximumBytes: Int
@@ -39,24 +41,45 @@ final class ExactPromptReplayCache<Value> {
             }
         }
         guard let index = match else { return nil }
-        let hit = entries.remove(at: index)
+        var hit = entries.remove(at: index)
+        if let source = hit.sourcePrompt, source != prompt {
+            hit.sharedReuse = true
+        }
         entries.append(hit)
         return hit.value
     }
 
     @discardableResult
-    func insert(prompt: [Int], value: Value, valueBytes: Int) -> Bool {
+    func insert(prompt: [Int], value: Value, valueBytes: Int, sourcePrompt: [Int]? = nil) -> Bool {
         guard canStore(prompt: prompt), valueBytes >= 0 else { return false }
+        // Opt-in ownership metadata, never inference input. An exact repeat
+        // promotes its unshared earlier snapshot in place, not into a second
+        // LRU entry. Keep a boundary that has actually served another prompt.
+        // Metadata is bounded/accounted; default callers keep exact-key policy.
+        if let sourcePrompt {
+            guard canStore(prompt: sourcePrompt), sourcePrompt.starts(with: prompt) else { return false }
+        }
         let (keyBytes, keyOverflow) = prompt.count.multipliedReportingOverflow(by: MemoryLayout<Int>.stride)
-        let (bytes, overflow) = valueBytes.addingReportingOverflow(keyBytes)
-        guard !keyOverflow && !overflow && bytes <= maximumBytes else { return false }
-        if let index = entries.firstIndex(where: { $0.prompt == prompt }) {
-            retainedBytes -= entries.remove(at: index).bytes
+        let (sourceBytes, sourceOverflow) = (sourcePrompt?.count ?? 0).multipliedReportingOverflow(by: MemoryLayout<Int>.stride)
+        let (keyAndSourceBytes, metadataOverflow) = keyBytes.addingReportingOverflow(sourceBytes)
+        let (bytes, overflow) = valueBytes.addingReportingOverflow(keyAndSourceBytes)
+        guard !keyOverflow && !sourceOverflow && !metadataOverflow && !overflow && bytes <= maximumBytes else { return false }
+        var sharedReuse = false
+        for index in entries.indices.reversed() {
+            let entry = entries[index]
+            let exactKey = entry.prompt == prompt
+            let unsharedPromotion = sourcePrompt != nil && entry.sourcePrompt == sourcePrompt
+                && !entry.sharedReuse && prompt.starts(with: entry.prompt)
+            if exactKey || unsharedPromotion {
+                if exactKey { sharedReuse = entry.sharedReuse }
+                retainedBytes -= entries.remove(at: index).bytes
+            }
         }
         while !entries.isEmpty && (entries.count >= maximumEntries || retainedBytes > maximumBytes - bytes) {
             retainedBytes -= entries.removeFirst().bytes
         }
-        entries.append(Entry(prompt: prompt, value: value, bytes: bytes))
+        entries.append(Entry(prompt: prompt, value: value, bytes: bytes,
+            sourcePrompt: sourcePrompt, sharedReuse: sharedReuse))
         retainedBytes += bytes
         return true
     }

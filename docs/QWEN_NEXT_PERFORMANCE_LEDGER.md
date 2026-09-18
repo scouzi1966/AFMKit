@@ -122,6 +122,42 @@ identity. **Quality parity is still open.** See the
 
 ## Evidence and reproduction
 
+### September 18 boundary-work regression control
+
+The [earlier-boundary experiment](QWEN_NEXT_PREFIX_BOUNDARY_EXPERIMENT.md)
+replays the frozen C1/prefix-off M25 controls on binary
+`21ee9bf82b49a361a240abd2fe09a3a416cf5cf9e794e95183a67805983387be`.
+Boundary opt-ins are unset. All 24 measured outputs match the saved text.
+
+| Context | Non-MTP prefill / decode | MTP depth 3 prefill / decode |
+|---|---:|---:|
+| 0.5K | 893.48 / 69.63 | 962.96 / 90.88 |
+| 1K | 1042.31 / 69.25 | 1121.94 / 86.60 |
+| 2K | 1200.45 / 62.99 | 1293.54 / 83.71 |
+| 4K | 1305.33 / 61.94 | 1275.51 / 85.29 |
+
+Same-launch decode is +0.18% to +2.85% and prefill proxy −0.31% to +1.34%
+against September 15. No material regression is observed; this does not
+attribute small changes to an inactive cache optimization. The historical
+depth-4 105.79 short-context peak, 87.54 at 2K and 88.63 at 4K remain recorded.
+Current depth-3 short-context decode is 14.09% below that different-preset
+peak, not a same-launch regression. Eight initial warmups stay separate.
+
+The separate C15/window-15 sampled cache screen measures first/repeat
+MTP 54.37/186.11 → 137.94/182.75 aggregate tok/s; AR 87.60/159.24 →
+119.92/158.67. Greedy MTP repeats still fall 14.3%, and AR adds one wrong
+answer shape. These costs and correct-task totals are in the linked report;
+no peak is overwritten and no default is promoted.
+
+New append-only index and raw controls:
+
+```text
+/Volumes/edata2/afm-benchmarks/qwen-next-mtp-parity-20260909/prefix-boundary-20260917/peak-ledger
+/Volumes/edata2/afm-benchmarks/qwen-next-mtp-parity-20260909/prefix-boundary-20260917/context-control-c
+```
+
+### Earlier retained follow-up
+
 September 17 aggregate follow-up is recorded separately in
 [retained qualification](QWEN_NEXT_RETAINED_QUALIFICATION.md). The same frozen
 M25 binary measured 179.69 tok/s on sampled C15 repeats, versus the prior

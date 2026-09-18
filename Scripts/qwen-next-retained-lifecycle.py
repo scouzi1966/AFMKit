@@ -30,7 +30,8 @@ def save(path, value):
         handle.write('\n')
 
 
-def checks(row, cap, logprobs=False, full_replay=False, identity=None):
+def checks(row, cap, logprobs=False, full_replay=False, identity=None, snapshot_backoff_tokens=0,
+           allow_endpoint_promotion=False):
     probs = [p for c in row['chunks'] for choice in c.get('choices', [])
              for p in (choice.get('logprobs') or {}).get('content') or []]
     usage = row['usage']
@@ -42,7 +43,11 @@ def checks(row, cap, logprobs=False, full_replay=False, identity=None):
                   stop_not_leaked='END_MARKER' not in row['text'],
                   finished=any(c.get('finish_reason') for chunk in row['chunks'] for c in chunk.get('choices', [])))
     if full_replay:
-        result['full_prompt_replay'] = cached == usage.get('prompt_tokens', -1) and cached > 0
+        prompt = usage.get('prompt_tokens', -1)
+        boundary = prompt - snapshot_backoff_tokens if prompt > snapshot_backoff_tokens else prompt
+        key = 'prompt_boundary_replay' if snapshot_backoff_tokens else 'full_prompt_replay'
+        allowed = {boundary, prompt} if allow_endpoint_promotion else {boundary}
+        result[key] = cached in allowed and cached > 0
     if identity is not None:
         result['identity'] = set(re.findall(r'OWNER_\d{2}_ISOLATED', row['text'])) == {identity}
     return result
@@ -55,9 +60,21 @@ def main():
     parser.add_argument('--lifecycle-helper', type=Path, required=True)
     parser.add_argument('--long-fixture', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--snapshot-backoff-tokens', type=int, default=0,
+                        help='Explicit earlier-boundary qualification; must match frozen launch (default 0).')
+    parser.add_argument('--allow-endpoint-promotion', action='store_true',
+                        help='Require explicit on-miss policy; accept earlier or promoted full boundary.')
     args = parser.parse_args()
     frozen = json.loads(args.launch.read_text())
     argv = frozen['argv']
+    assert 0 <= args.snapshot_backoff_tokens <= 256
+    backoff_settings = [s.split('=', 1)[1] for s in argv if s.startswith('AFM_QWEN_MTP_REPLAY_BACKOFF=')]
+    assert len(backoff_settings) <= 1
+    assert (int(backoff_settings[0]) if backoff_settings else 0) == args.snapshot_backoff_tokens
+    promotion = [s.split('=', 1)[1] for s in argv if s.startswith('AFM_QWEN_MTP_REPLAY_BACKOFF_ON_MISS=')]
+    assert len(promotion) <= 1
+    assert (promotion == ['1']) == args.allow_endpoint_promotion
+    assert not args.allow_endpoint_promotion or args.snapshot_backoff_tokens > 0
     binary, = [Path(s) for s in argv if Path(s).name == 'afm']
     assert '--mtp' in argv and '--enable-prefix-caching' in argv
     assert argv[argv.index('--concurrent') + 1] == '15'
@@ -82,6 +99,8 @@ def main():
     save(b.ROOT / 'plan.json', dict(argv=argv, binary_sha256=b.sha(binary), model=str(b.MODEL),
          runner_sha256=b.sha(Path(__file__)), helper_sha256=b.sha(args.lifecycle_helper),
          fixture_sha256=b.sha(args.long_fixture), removed_environment_names=removed,
+         snapshot_backoff_tokens=args.snapshot_backoff_tokens,
+         allow_endpoint_promotion=args.allow_endpoint_promotion,
          checkpoint_metadata={name: b.sha(b.MODEL / name) for name in
                               ('config.json', 'chat_template.jinja', 'model.safetensors.index.json')},
          scope='Mixed MTP/AR cancellation, long complete-state replay, C15 identity and slot reuse. '
@@ -162,7 +181,8 @@ def main():
                                 row['cancelled'] = True
                                 break
                 row['checks'] = {'closed_early': row['cancelled']} if cancel else checks(
-                    row, cap, params['logprobs'], expected_mtp and phase in ('after-cancel', 'repeat'), identity)
+                    row, cap, params['logprobs'], expected_mtp and phase in ('after-cancel', 'repeat'),
+                    identity, args.snapshot_backoff_tokens, args.allow_endpoint_promotion)
                 if not isolation and not cancel:
                     row['checks']['long_prompt'] = 4096 < row['usage'].get('prompt_tokens', 0) <= 8192
             except Exception as error:

@@ -134,6 +134,10 @@ actor BatchScheduler {
     private let glmMTPGenerator: GLM5NextMTPGenerator?
     private let qwenMTPGenerator: Qwen4ExpMTPGenerator?
     private let qwenMTPReplayCache: ExactPromptReplayCache<Qwen4ExpMTPPromptState>?
+    private let qwenMTPReplayBackoffTokens: Int
+    private let qwenMTPReplayBackoffOnMiss: Bool
+    private let qwenARReplayBackoffTokens: Int
+    private static let maximumQwenMTPReplayBackoffTokens = 256
     /// Bounded independent graph submission, not cross-request verification.
     /// One preserves the existing submit/wait order and is the default.
     private let qwenMTPSubmissionWindow: Int
@@ -810,6 +814,14 @@ actor BatchScheduler {
             ? ExactPromptReplayCache(maximumBytes: replayMiB * 1024 * 1024,
                 maximumPromptTokens: Self.qwenMTPReplayPromptTokenLimit(
                     ProcessInfo.processInfo.environment["AFM_QWEN_MTP_REPLAY_MAX_TOKENS"])) : nil
+        self.qwenMTPReplayBackoffTokens = ownsQwenMTP && enablePrefixCaching && replayMiB > 0
+            ? Self.qwenMTPReplayBackoffTokenCount(
+                ProcessInfo.processInfo.environment["AFM_QWEN_MTP_REPLAY_BACKOFF"]) : 0
+        self.qwenMTPReplayBackoffOnMiss = ProcessInfo.processInfo.environment[
+            "AFM_QWEN_MTP_REPLAY_BACKOFF_ON_MISS"] == "1"
+        self.qwenARReplayBackoffTokens = model is Qwen4ExpModel && enablePrefixCaching
+            ? Self.qwenMTPReplayBackoffTokenCount(
+                ProcessInfo.processInfo.environment["AFM_QWEN_PREFIX_REPLAY_BACKOFF"]) : 0
         self.glmMTPPromptReplayCache = glmMTPPromptReplayCache
         self.glmMTPReplayModelID = Self.glmMTPReplayModelID(
             serviceModelID: serviceModelID,
@@ -1584,6 +1596,17 @@ actor BatchScheduler {
         min(8192, max(0, Int(value ?? "4096") ?? 4096))
     }
 
+    /// Default-off earlier complete-state snapshot; does not expand cache budgets.
+    static func qwenMTPReplayBackoffTokenCount(_ value: String?) -> Int {
+        min(maximumQwenMTPReplayBackoffTokens, max(0, Int(value ?? "0") ?? 0))
+    }
+
+    /// Optional two-stage admission within the SAME replay budget: misses seed
+    /// a shared earlier boundary, hits retain the full endpoint for exact reuse.
+    static func qwenMTPReplayCaptureBackoff(_ requested: Int, onlyOnMiss: Bool, cacheHit: Bool) -> Int {
+        onlyOnMiss && cacheHit ? 0 : requested
+    }
+
     /// Keep deferred GLM work ahead of AR work while a dense cohort drains.
     /// Existing GLM requests remain ahead of newly deferred GLM requests.
     static func prioritizedDeferredGLMMTPQueue<T>(
@@ -1695,7 +1718,9 @@ actor BatchScheduler {
             retainPromptState: replayState?.promptIds.count != inputTokens.count
                 && qwenMTPReplayCache?.canStore(prompt: inputTokens) == true,
             allowPromptPrefixReplay: true, adaptiveDepth: qwenMTPAdaptiveDepth,
-            prefillStepSize: req.parameters.prefillStepSize)
+            prefillStepSize: req.parameters.prefillStepSize,
+            promptSnapshotBackoffTokens: Self.qwenMTPReplayCaptureBackoff(qwenMTPReplayBackoffTokens,
+                onlyOnMiss: qwenMTPReplayBackoffOnMiss, cacheHit: replayState != nil))
         else {
             failPendingRequest(req,
                 error: MLXServiceError.loadFailed("Unable to create Qwen MTP session"))
@@ -1703,7 +1728,9 @@ actor BatchScheduler {
         }
         if let captured = session.takePromptState() {
             qwenMTPReplayCache?.insert(prompt: captured.promptIds, value: captured,
-                valueBytes: captured.estimatedRetainedBytes)
+                valueBytes: captured.estimatedRetainedBytes,
+                sourcePrompt: qwenMTPReplayBackoffOnMiss && qwenMTPReplayBackoffTokens > 0
+                    ? inputTokens : nil)
         }
         installSpeculativeSession(.qwen(session), request: req,
             inputTokens: inputTokens, prefillStart: prefillStart,
@@ -1961,6 +1988,7 @@ actor BatchScheduler {
                 let prepared = try MLXReplayPrefill.prepareWithSnapshot(
                     model: model, cache: cache, inputTokens: inputTokens,
                     restoredPrefix: cachedTokens, prefillStepSize: req.parameters.prefillStepSize,
+                    promptSnapshotBackoffTokens: qwenARReplayBackoffTokens,
                     captureFinalSnapshot: shouldCaptureReplayBoundary, checkpoint: capture,
                     checkCancellation: {
                         if self.isCancellationRequested(req.id) || self._isShutdown.withLock({ $0 }) {

@@ -5911,7 +5911,7 @@ struct Qwen4ExpMTPHeadRepairPlan: Equatable {
     }
 }
 
-/// Immutable, generator-scoped complete-prompt state. Not Sendable: capture and
+/// Immutable, generator-scoped complete state at a prompt boundary. Not Sendable: capture and
 /// restore on the serialized model executor. No sampled token or RNG is shared.
 public final class Qwen4ExpMTPPromptState {
     fileprivate enum Layer {
@@ -6036,11 +6036,12 @@ public final class Qwen4ExpMTPGenerator {
         temperature: Float = 0, topP: Float = 1, seed: UInt64? = nil,
         promptState: Qwen4ExpMTPPromptState? = nil, retainPromptState: Bool = false,
         allowPromptPrefixReplay: Bool = false, adaptiveDepth: Bool = false,
-        prefillStepSize: Int? = nil
+        prefillStepSize: Int? = nil, promptSnapshotBackoffTokens: Int = 0
     ) -> Qwen4ExpMTPSession? {
         precondition(temperature.isFinite && temperature >= 0)
         precondition(topP.isFinite && (0...1).contains(topP))
         precondition(prefillStepSize == nil || prefillStepSize! > 0)
+        precondition(promptSnapshotBackoffTokens >= 0)
         guard !promptIds.isEmpty, maxTokens > 0 else { return nil }
         if let promptState {
             guard promptState.identity == replayIdentity,
@@ -6057,7 +6058,7 @@ public final class Qwen4ExpMTPGenerator {
             temperature: temperature, topP: topP, seed: seed,
             replayIdentity: replayIdentity, promptState: promptState,
             retainPromptState: retainPromptState, adaptiveDepth: adaptiveDepth,
-            prefillStepSize: prefillStepSize)
+            prefillStepSize: prefillStepSize, promptSnapshotBackoffTokens: promptSnapshotBackoffTokens)
     }
 
     /// Internal diagnostic seam: select a request-owned recording sampler at
@@ -6214,7 +6215,8 @@ public final class Qwen4ExpMTPSession {
         retainHeadAnchor: Bool, promptIds: [Int], maxTokens: Int, eosIds: Set<Int>,
         temperature: Float, topP: Float, seed: UInt64?, replayIdentity: UUID,
         promptState: Qwen4ExpMTPPromptState?, retainPromptState: Bool, adaptiveDepth: Bool,
-        prefillStepSize: Int?, samplerForTesting: LogitSampler? = nil
+        prefillStepSize: Int?, promptSnapshotBackoffTokens: Int = 0,
+        samplerForTesting: LogitSampler? = nil
     ) {
         // Request-owned RNG: no global seeding or mutable sampler on a shared
         // generator. Nil preserves the fused greedy readout and its graph.
@@ -6246,8 +6248,20 @@ public final class Qwen4ExpMTPSession {
         // crossing a chunk/replay boundary. Never use a predicted head stream.
         var offset = promptState?.promptIds.count ?? 0
         let step = prefillStepSize ?? max(1, promptIds.count - offset)
+        // Source credit: mlx-serve src/generate.zig, SSM_SNAPSHOT_BACKOFF.
+        // Save BEFORE the changing assistant suffix, so a different next turn
+        // can reuse complete target/head/PLE/QSA state. Never trim recurrence.
+        // Opt-in: replace (not supplement) the endpoint snapshot within the
+        // owner's existing entry/byte budget. Exact repeats re-forward the tail.
+        // Short prompts retain the endpoint; disabled retention changes nothing.
+        let prefixCaptureEnd: Int? = retainPromptState && promptSnapshotBackoffTokens > 0
+            && promptIds.count > promptSnapshotBackoffTokens
+            ? promptIds.count - promptSnapshotBackoffTokens : nil
         while offset < promptIds.count {
-            let end = offset + min(step, promptIds.count - offset)
+            var end = offset + min(step, promptIds.count - offset)
+            if let prefixCaptureEnd, prefixCaptureEnd > offset {
+                end = min(end, prefixCaptureEnd)
+            }
             let ids = Self.tokens(Array(promptIds[offset..<end]))
             let initial = model.forwardStreamState(inputIDs: ids, cache: targetCache)
             let width = end - offset
@@ -6274,12 +6288,21 @@ public final class Qwen4ExpMTPSession {
             eval(targetCache.flatMap(\.state) + mtpCache.flatMap(\.state)
                 + [lastHidden!, lastStream!])
             offset = end
+            if offset == prefixCaptureEnd {
+                // Capture before processing the suffix or sampling. The head
+                // is one token behind the target by design; lastStream bridges
+                // that pair when either the live request or a replay continues.
+                capturedPromptState = Qwen4ExpMTPPromptState(
+                    identity: replayIdentity, promptIds: Array(promptIds.prefix(end)),
+                    target: targetCache, head: mtpCache, hidden: lastHidden!, stream: lastStream!,
+                    prefillStepSize: prefillStepSize)
+            }
         }
         let primaryHidden = lastHidden!
         let primaryStream = lastStream!
         // Exactly one request-local sample, even for exact prompt replay.
         primary = targetTokens(primaryHidden).item(Int.self)
-        if retainPromptState && promptState?.promptIds.count != promptIds.count {
+        if retainPromptState && prefixCaptureEnd == nil && promptState?.promptIds.count != promptIds.count {
             capturedPromptState = Qwen4ExpMTPPromptState(
                 identity: replayIdentity, promptIds: promptIds, target: targetCache,
                 head: mtpCache, hidden: primaryHidden, stream: primaryStream,

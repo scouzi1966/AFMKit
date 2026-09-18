@@ -2,6 +2,78 @@ import XCTest
 @testable import AFMKitMLX
 
 final class ExactPromptReplayCacheTests: XCTestCase {
+    func testUnsharedEndpointPromotionKeepsFifteenPromptWorkingSetInSixteenEntries() {
+        let cache = ExactPromptReplayCache<Int>(maximumBytes: 4096, maximumEntries: 16)
+        for i in 0..<15 {
+            XCTAssertTrue(cache.insert(prompt: [i], value: i, valueBytes: 8, sourcePrompt: [i, 99]))
+        }
+        for i in 0..<15 {
+            XCTAssertEqual(cache.find(prompt: [i, 99], allowPrefix: true), i)
+            XCTAssertTrue(cache.insert(prompt: [i, 99], value: i + 100, valueBytes: 8,
+                sourcePrompt: [i, 99]))
+            XCTAssertEqual(cache.count, 15)
+        }
+        XCTAssertEqual(cache.retainedBytes, 15 * 40)
+        for i in 0..<15 { XCTAssertEqual(cache.find(prompt: [i, 99]), i + 100) }
+        XCTAssertNil(cache.find(prompt: [0, 98], allowPrefix: true), "Unshared earlier state was replaced")
+    }
+
+    func testSharedBoundarySurvivesEndpointPromotionWithinSameBudget() {
+        let cache = ExactPromptReplayCache<String>(maximumBytes: 4096, maximumEntries: 3)
+        XCTAssertTrue(cache.insert(prompt: [1, 2], value: "prefix", valueBytes: 8, sourcePrompt: [1, 2, 3]))
+        XCTAssertEqual(cache.find(prompt: [1, 2, 4], allowPrefix: true), "prefix")
+        XCTAssertTrue(cache.insert(prompt: [1, 2, 4], value: "other", valueBytes: 8, sourcePrompt: [1, 2, 4]))
+        XCTAssertEqual(cache.find(prompt: [1, 2, 3], allowPrefix: true), "prefix")
+        XCTAssertTrue(cache.insert(prompt: [1, 2, 3], value: "original", valueBytes: 8, sourcePrompt: [1, 2, 3]))
+        XCTAssertEqual(cache.count, 3)
+        XCTAssertEqual(cache.find(prompt: [1, 2, 5], allowPrefix: true), "prefix")
+        XCTAssertEqual(cache.find(prompt: [1, 2, 3]), "original")
+        XCTAssertEqual(cache.find(prompt: [1, 2, 4]), "other")
+    }
+
+    func testInvalidOrOversizePromotionDoesNotEvictTheSource() {
+        let cache = ExactPromptReplayCache<Int>(maximumBytes: 64, maximumPromptTokens: 3)
+        XCTAssertTrue(cache.insert(prompt: [1], value: 7, valueBytes: 8, sourcePrompt: [1, 2]))
+        XCTAssertEqual(cache.retainedBytes, 32)
+        XCTAssertFalse(cache.insert(prompt: [1, 2], value: 9, valueBytes: 40, sourcePrompt: [1, 2]))
+        XCTAssertFalse(cache.insert(prompt: [1, 2], value: 9, valueBytes: 8, sourcePrompt: [1, 3]))
+        XCTAssertFalse(cache.insert(prompt: [1], value: 9, valueBytes: 8, sourcePrompt: [1, 2, 3, 4]))
+        XCTAssertFalse(cache.insert(prompt: [1, 2], value: 9, valueBytes: Int.max, sourcePrompt: [1, 2]))
+        XCTAssertEqual(cache.find(prompt: [1, 2], allowPrefix: true), 7)
+        XCTAssertEqual(cache.retainedBytes, 32)
+        cache.removeAll()
+        XCTAssertEqual(cache.retainedBytes, 0)
+    }
+
+    func testReplayBackoffIsDefaultOffAndBounded() {
+        for value: String? in [nil, "", "invalid", "99999999999999999999999999999", "-1", "0"] {
+            XCTAssertEqual(BatchScheduler.qwenMTPReplayBackoffTokenCount(value), 0)
+        }
+        for (value, expected) in [("1", 1), ("30", 30), ("256", 256), ("257", 256),
+                                  (String(Int.max), 256)] {
+            XCTAssertEqual(BatchScheduler.qwenMTPReplayBackoffTokenCount(value), expected)
+        }
+    }
+
+    func testEarlierBoundaryOnMissPolicyDoesNotExpandOrInventState() {
+        for hit in [false, true] {
+            XCTAssertEqual(BatchScheduler.qwenMTPReplayCaptureBackoff(31,
+                onlyOnMiss: false, cacheHit: hit), 31)
+            XCTAssertEqual(BatchScheduler.qwenMTPReplayCaptureBackoff(31,
+                onlyOnMiss: true, cacheHit: hit), hit ? 0 : 31)
+            XCTAssertEqual(BatchScheduler.qwenMTPReplayCaptureBackoff(0,
+                onlyOnMiss: true, cacheHit: hit), 0)
+        }
+        let cache = ExactPromptReplayCache<String>(maximumBytes: 4096, maximumEntries: 2)
+        XCTAssertTrue(cache.insert(prompt: [1, 2], value: "prefix", valueBytes: 8))
+        XCTAssertTrue(cache.insert(prompt: [1, 2, 3], value: "exact", valueBytes: 8))
+        XCTAssertEqual(cache.find(prompt: [1, 2, 4], allowPrefix: true), "prefix")
+        XCTAssertEqual(cache.find(prompt: [1, 2, 3], allowPrefix: true), "exact")
+        XCTAssertTrue(cache.insert(prompt: [1, 2, 4], value: "other exact", valueBytes: 8))
+        XCTAssertEqual(cache.count, 2)
+        XCTAssertNil(cache.find(prompt: [1, 2, 5], allowPrefix: true), "Evicted state must not be fabricated")
+    }
+
     func testReplayPromptLimitPreservesDefaultAndBoundsExplicitOverride() {
         let fallbackValues: [String?] = [nil, "", "invalid", "99999999999999999999999999999"]
         for value in fallbackValues {
