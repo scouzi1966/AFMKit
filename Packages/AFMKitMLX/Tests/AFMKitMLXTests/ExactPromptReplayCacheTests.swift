@@ -2,6 +2,147 @@ import XCTest
 @testable import AFMKitMLX
 
 final class ExactPromptReplayCacheTests: XCTestCase {
+    func testCoverageAnchorPreservesUnsharedBroadDonorOverUsedNarrowDonor() {
+        let cache = ExactPromptReplayCache<String>(maximumBytes: 4096, maximumEntries: 4,
+            preserveCoverageAnchor: true)
+        let a = [1, 2, 8], b = [1, 2, 3, 5], c = [1, 2, 3, 6]
+        XCTAssertTrue(cache.insert(prompt: [1, 2], value: "broad", valueBytes: 8, sourcePrompt: a))
+        XCTAssertTrue(cache.insert(prompt: [1, 2, 3], value: "narrow", valueBytes: 8, sourcePrompt: b))
+        XCTAssertEqual(cache.find(prompt: c, allowPrefix: true), "narrow")
+        XCTAssertTrue(cache.insert(prompt: c, value: "c", valueBytes: 8, sourcePrompt: c))
+        // Broad donor has never been looked up. Promote its own source first.
+        XCTAssertTrue(cache.insert(prompt: a, value: "a", valueBytes: 8, sourcePrompt: a))
+        XCTAssertEqual(cache.count, 4)
+        XCTAssertTrue(cache.insert(prompt: b, value: "b", valueBytes: 8, sourcePrompt: b))
+        XCTAssertEqual(cache.count, 4)
+        XCTAssertEqual(cache.find(prompt: [1, 2, 9], allowPrefix: true), "broad")
+        XCTAssertEqual(cache.find(prompt: a), "a")
+        XCTAssertEqual(cache.find(prompt: b), "b")
+        XCTAssertEqual(cache.find(prompt: c), "c")
+        XCTAssertLessThanOrEqual(cache.retainedBytes, 4096)
+    }
+
+    func testCoverageAnchorFitsFifteenEndpointsWithoutIncreasingSixteenEntryBudget() {
+        let cache = ExactPromptReplayCache<Int>(maximumBytes: 4096, maximumEntries: 16,
+            preserveCoverageAnchor: true)
+        let owner = [1, 2, 100]
+        XCTAssertTrue(cache.insert(prompt: [1, 2], value: -1, valueBytes: 8, sourcePrompt: owner))
+        for i in 0..<14 {
+            let prompt = [1, 2, i]
+            XCTAssertTrue(cache.insert(prompt: prompt, value: i, valueBytes: 8, sourcePrompt: prompt))
+        }
+        XCTAssertTrue(cache.insert(prompt: owner, value: 100, valueBytes: 8, sourcePrompt: owner))
+        XCTAssertEqual(cache.count, 16)
+        XCTAssertEqual(cache.retainedBytes, 48 + 15 * 56)
+        XCTAssertEqual(cache.find(prompt: [1, 2, 999], allowPrefix: true), -1)
+        for i in 0..<14 { XCTAssertEqual(cache.find(prompt: [1, 2, i]), i) }
+        XCTAssertEqual(cache.find(prompt: owner), 100)
+        cache.removeAll()
+        XCTAssertEqual(cache.retainedBytes, 0)
+        XCTAssertEqual(cache.count, 0)
+    }
+
+    func testCoverageAnchorDeduplicatesSourcesAndExcludesOwnSource() {
+        let cache = ExactPromptReplayCache<String>(maximumBytes: 4096, maximumEntries: 16,
+            preserveCoverageAnchor: true)
+        let a = [1, 10], b = [2, 10], duplicated = [2, 20, 30, 40, 50]
+        XCTAssertTrue(cache.insert(prompt: [1], value: "family-a", valueBytes: 8, sourcePrompt: a))
+        for source in [[1, 11], [1, 12]] {
+            XCTAssertTrue(cache.insert(prompt: source, value: "other-a", valueBytes: 8, sourcePrompt: source))
+        }
+        XCTAssertTrue(cache.insert(prompt: [2], value: "family-b", valueBytes: 8, sourcePrompt: b))
+        // Three earlier entries and an endpoint from ONE source must not
+        // outvote family A's two DISTINCT other source prompts.
+        for width in 2...4 {
+            let prefix = Array(duplicated.prefix(width))
+            XCTAssertTrue(cache.insert(prompt: prefix, value: "duplicate", valueBytes: 8,
+                sourcePrompt: duplicated))
+            XCTAssertEqual(cache.find(prompt: prefix + [7], allowPrefix: true), "duplicate")
+        }
+        XCTAssertTrue(cache.insert(prompt: duplicated, value: "endpoint-b", valueBytes: 8,
+            sourcePrompt: duplicated))
+        XCTAssertTrue(cache.insert(prompt: a, value: "a", valueBytes: 8, sourcePrompt: a))
+        XCTAssertEqual(cache.find(prompt: [1, 99], allowPrefix: true), "family-a")
+        XCTAssertEqual(cache.find(prompt: a), "a")
+    }
+
+    func testCoverageAnchorNeverExceedsOneEntryOrSelectsEndpointAsAnchor() {
+        let cache = ExactPromptReplayCache<Int>(maximumBytes: 4096, maximumEntries: 1,
+            preserveCoverageAnchor: true)
+        XCTAssertTrue(cache.insert(prompt: [1], value: 1, valueBytes: 8, sourcePrompt: [1, 2]))
+        XCTAssertTrue(cache.insert(prompt: [1, 3], value: 2, valueBytes: 8, sourcePrompt: [1, 3]))
+        XCTAssertEqual(cache.count, 1)
+        XCTAssertNil(cache.find(prompt: [1, 4], allowPrefix: true))
+        XCTAssertEqual(cache.find(prompt: [1, 3]), 2)
+        XCTAssertTrue(cache.insert(prompt: [1, 3, 4], value: 3, valueBytes: 8, sourcePrompt: [1, 3, 4]))
+        XCTAssertEqual(cache.count, 1)
+        XCTAssertNil(cache.find(prompt: [1, 3]))
+        XCTAssertEqual(cache.find(prompt: [1, 3, 4]), 3)
+    }
+
+    func testCoverageTiePrefersLongerBoundaryAndDoesNotPinStaleState() {
+        let cache = ExactPromptReplayCache<String>(maximumBytes: 4096, maximumEntries: 4,
+            preserveCoverageAnchor: true)
+        let a = [1, 2, 4], b = [1, 2, 3]
+        XCTAssertTrue(cache.insert(prompt: b, value: "b", valueBytes: 8, sourcePrompt: b))
+        XCTAssertTrue(cache.insert(prompt: [1], value: "short", valueBytes: 8, sourcePrompt: a))
+        XCTAssertTrue(cache.insert(prompt: [1, 2], value: "long", valueBytes: 8, sourcePrompt: a))
+        XCTAssertTrue(cache.insert(prompt: a, value: "a", valueBytes: 8, sourcePrompt: a))
+        XCTAssertNil(cache.find(prompt: [1, 9], allowPrefix: true))
+        XCTAssertEqual(cache.find(prompt: [1, 2, 9], allowPrefix: true), "long")
+        for i in 10..<18 {
+            XCTAssertTrue(cache.insert(prompt: [i], value: "new", valueBytes: 8, sourcePrompt: [i]))
+        }
+        XCTAssertNil(cache.find(prompt: [1, 2, 9], allowPrefix: true), "No permanently pinned donor")
+        XCTAssertEqual(cache.count, 4)
+    }
+
+    func testCoverageAnchorWithoutOtherCoveredSourcesKeepsOriginalPolicy() {
+        let control = ExactPromptReplayCache<Int>(maximumBytes: 128, maximumEntries: 2)
+        let candidate = ExactPromptReplayCache<Int>(maximumBytes: 128, maximumEntries: 2,
+            preserveCoverageAnchor: true)
+        for cache in [control, candidate] {
+            for i in 0..<3 {
+                XCTAssertTrue(cache.insert(prompt: [i], value: i, valueBytes: 8, sourcePrompt: [i, 99]))
+                XCTAssertTrue(cache.insert(prompt: [i, 99], value: i + 10, valueBytes: 8,
+                    sourcePrompt: [i, 99]))
+            }
+        }
+        XCTAssertEqual(control.count, candidate.count)
+        XCTAssertEqual(control.retainedBytes, candidate.retainedBytes)
+        for i in 0..<3 {
+            XCTAssertEqual(control.find(prompt: [i, 99]), candidate.find(prompt: [i, 99]))
+            XCTAssertEqual(control.find(prompt: [i, 98], allowPrefix: true),
+                candidate.find(prompt: [i, 98], allowPrefix: true))
+        }
+    }
+
+    func testCoverageAnchorCannotOverrideByteBudgetOrMutateOnRejectedInsert() {
+        final class Value {}
+        let cache = ExactPromptReplayCache<Value>(maximumBytes: 96, maximumEntries: 3,
+            preserveCoverageAnchor: true)
+        var donor: Value? = Value()
+        weak var weakDonor = donor
+        XCTAssertTrue(cache.insert(prompt: [1], value: donor!, valueBytes: 8, sourcePrompt: [1, 2]))
+        donor = nil
+        XCTAssertTrue(cache.insert(prompt: [1, 3], value: Value(), valueBytes: 8, sourcePrompt: [1, 3]))
+        let count = cache.count, bytes = cache.retainedBytes
+        for size in [-1, 100, Int.max] {
+            XCTAssertFalse(cache.insert(prompt: [1, 2], value: Value(), valueBytes: size, sourcePrompt: [1, 2]))
+        }
+        XCTAssertFalse(cache.insert(prompt: [1, 2], value: Value(), valueBytes: 8, sourcePrompt: [9]))
+        XCTAssertEqual(cache.count, count)
+        XCTAssertEqual(cache.retainedBytes, bytes)
+        XCTAssertNotNil(weakDonor)
+        // Incoming endpoint fits alone, but cannot coexist with its anchor.
+        XCTAssertTrue(cache.insert(prompt: [1, 2], value: Value(), valueBytes: 64, sourcePrompt: [1, 2]))
+        XCTAssertEqual(cache.retainedBytes, 96)
+        XCTAssertEqual(cache.count, 1)
+        XCTAssertNil(weakDonor)
+        cache.removeAll()
+        XCTAssertEqual(cache.retainedBytes, 0)
+    }
+
     func testUnsharedEndpointPromotionKeepsFifteenPromptWorkingSetInSixteenEntries() {
         let cache = ExactPromptReplayCache<Int>(maximumBytes: 4096, maximumEntries: 16)
         for i in 0..<15 {

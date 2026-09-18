@@ -1086,6 +1086,139 @@ final class QwenNextMTPPipelineTests: XCTestCase {
         }
     }
 
+    func testQuantizedNearEndReplayPreservesSameGeometryContinuationAndPrivateState() async throws {
+        let model = try await makeModel(withPLE: true, indexerBudget: 4, pleEmbedDimension: 128)
+        model.update(parameters: model.mapParameters { $0.dtype.isFloatingPoint ? $0.asType(.bfloat16) : $0 })
+        quantize(model: model, groupSize: 32, bits: 4)
+        eval(model)
+        let prompt = (0..<40).map { $0 % 29 + 1 }
+        // Model a related prompt donating state before/at/after the target's
+        // own N-31 boundary. Compare storage integrity with IDENTICAL forward
+        // ranges, not a different cold tiling that may round differently.
+        for step in [8, 64] {
+            for frontier in [7, 9, 11] {
+                let live = model.newCache(parameters: nil)
+                var consumed = 0
+                while consumed < frontier {
+                    let end = min(frontier, consumed + step)
+                    let ids = Array(prompt[consumed..<end])
+                    let output = model(LMInput.Text(tokens: MLXArray(ids).reshaped(1, -1)),
+                        cache: live, state: nil, hostTokenIDs: ids)
+                    eval(output.logits, live)
+                    consumed = end
+                }
+                let stored = live.map { MLXReplayPrefill.snapshot($0.state) }
+                eval(stored.flatMap { $0 })
+                let metadata = live.map(\.metaState)
+                let frozen = stored.map { $0.map { $0.asArray(Float.self) } }
+                var restored = model.newCache(parameters: nil)
+                for i in restored.indices {
+                    restored[i].state = MLXReplayPrefill.snapshot(stored[i])
+                    restored[i].metaState = metadata[i]
+                }
+                var liveRanges: [Range<Int>] = []
+                var restoredRanges: [Range<Int>] = []
+                let expected = try MLXReplayPrefill.prepare(model: model, cache: live,
+                    inputTokens: prompt, restoredPrefix: frontier, prefillStepSize: step,
+                    promptSnapshotBackoffTokens: 31, checkpoint: { _, _, _ in },
+                    didCompleteChunk: { liveRanges.append($0) })
+                let actual = try MLXReplayPrefill.prepare(model: model, cache: restored,
+                    inputTokens: prompt, restoredPrefix: frontier, prefillStepSize: step,
+                    promptSnapshotBackoffTokens: 31, checkpoint: { _, _, _ in },
+                    didCompleteChunk: { restoredRanges.append($0) })
+                XCTAssertEqual(liveRanges, restoredRanges)
+                XCTAssertEqual(actual.logits.asArray(Float.self), expected.logits.asArray(Float.self),
+                    "Snapshot restore changed logits at step=\(step), frontier=\(frontier)")
+                for token in [12, 13] {
+                    let ids = MLXArray([token]).reshaped(1, 1)
+                    let a = model(LMInput.Text(tokens: ids), cache: restored, state: nil, hostTokenIDs: [token])
+                    let e = model(LMInput.Text(tokens: ids), cache: live, state: nil, hostTokenIDs: [token])
+                    XCTAssertEqual(a.logits.asArray(Float.self), e.logits.asArray(Float.self))
+                }
+                XCTAssertEqual(restored.map(\.offset), live.map(\.offset))
+                XCTAssertEqual(stored.map { $0.map { $0.asArray(Float.self) } }, frozen,
+                    "Continuations must not mutate the donated snapshot")
+            }
+        }
+    }
+
+    func testQuantizedNearEndReplayPreservesColdBoundaryAndExactEndpointLogits() async throws {
+        let model = try await makeModel(withPLE: true, indexerBudget: 4, pleEmbedDimension: 128)
+        model.update(parameters: model.mapParameters { $0.dtype.isFloatingPoint ? $0.asType(.bfloat16) : $0 })
+        quantize(model: model, groupSize: 32, bits: 4)
+        eval(model)
+        for length in [38, 40, 42] {
+            let prompt = (0..<length).map { $0 % 29 + 1 }
+            for step in [8, 64] {
+                var boundaries: [Int: MLXReplayPrefill.Snapshot] = [:]
+                let cold = try MLXReplayPrefill.prepare(model: model,
+                    cache: model.newCache(parameters: nil), inputTokens: prompt,
+                    restoredPrefix: 0, prefillStepSize: step, promptSnapshotBackoffTokens: 31,
+                    checkpoint: { boundary, states, metadata in
+                        boundaries[boundary] = .init(boundary: boundary, states: states, metadata: metadata)
+                    })
+                let expected = cold.logits.asArray(Float.self)
+                XCTAssertEqual(Set(boundaries.keys), Set([length - 31, length - 1]))
+                for frontier in [length - 31, length - 1] {
+                    let stored = try XCTUnwrap(boundaries[frontier])
+                    var restored = model.newCache(parameters: nil)
+                    for i in restored.indices {
+                        restored[i].state = MLXReplayPrefill.snapshot(stored.states[i])
+                        restored[i].metaState = stored.metadata[i]
+                    }
+                    let warm = try MLXReplayPrefill.prepare(model: model, cache: restored,
+                        inputTokens: prompt, restoredPrefix: frontier, prefillStepSize: step,
+                        promptSnapshotBackoffTokens: 31, checkpoint: { _, _, _ in })
+                    XCTAssertEqual(warm.logits.asArray(Float.self), expected,
+                        "Same-prompt replay changed logits at length=\(length), step=\(step), frontier=\(frontier)")
+                }
+            }
+        }
+    }
+
+    func testQuantizedMTPBoundaryReplayPreservesUnequalSuffixAndIndependentHeadState() async throws {
+        let model = try await makeModel(withPLE: true, indexerBudget: 4, pleEmbedDimension: 128)
+        let head = Qwen4ExpMTPHead(model.configuration)
+        for module: Module in [model, head] {
+            module.update(parameters: module.mapParameters { $0.dtype.isFloatingPoint ? $0.asType(.bfloat16) : $0 })
+            quantize(model: module, groupSize: 32, bits: 4)
+        }
+        eval(model, head)
+        func drain(_ session: Qwen4ExpMTPSession) -> [Int] {
+            var result: [Int] = []
+            while let token = session.nextToken() { result.append(token) }
+            return result
+        }
+        let target = (0..<40).map { $0 % 29 + 1 }
+        for policy: MTPVerificationPolicy in [.strictSingletonEquivalent, .batched] {
+            let generator = Qwen4ExpMTPGenerator(model: model, head: head, depth: 3,
+                verificationPolicy: policy)
+            for frontier in [7, 9, 11] {
+                let prefix = Array(target.prefix(frontier))
+                let source = try XCTUnwrap(generator.makeSession(
+                    promptIds: prefix + Array(repeating: 22, count: 31), maxTokens: 4,
+                    retainPromptState: true, prefillStepSize: 8, promptSnapshotBackoffTokens: 31))
+                let state = try XCTUnwrap(source.takePromptState())
+                XCTAssertEqual(state.promptIds, prefix)
+                let independent = try XCTUnwrap(generator.makeSession(promptIds: prefix,
+                    maxTokens: 1, retainPromptState: true, prefillStepSize: 8))
+                let expectedState = try XCTUnwrap(independent.takePromptState())
+                source.cancel()
+                independent.cancel()
+                for temperature: Float in [0, 0.6] {
+                    let expected = try XCTUnwrap(generator.makeSession(promptIds: target, maxTokens: 6,
+                        temperature: temperature, topP: 1, seed: 17018, promptState: expectedState,
+                        allowPromptPrefixReplay: true, prefillStepSize: 8))
+                    let replay = try XCTUnwrap(generator.makeSession(promptIds: target, maxTokens: 6,
+                        temperature: temperature, topP: 1, seed: 17018, promptState: state,
+                        allowPromptPrefixReplay: true, prefillStepSize: 8))
+                    XCTAssertEqual(drain(replay), drain(expected),
+                        "Complete target/head state differs at frontier=\(frontier)")
+                }
+            }
+        }
+    }
+
     func testSharedReplayPrefillSupportsSmallChunkLimitsAndSingleTokenPrompts() async throws {
         let model = try await makeModel()
         eval(model)
@@ -2553,7 +2686,7 @@ final class QwenNextMTPPipelineTests: XCTestCase {
     // The usual two-layer architecture fixture cannot exercise that boundary.
     private func makeModel(
         withPLE: Bool = false, attentionHeadDimension: Int = 64,
-        indexerBudget: Int = 2048
+        indexerBudget: Int = 2048, pleEmbedDimension: Int = 32
     ) async throws -> Qwen4ExpModel {
         var text: [String: Any] = [
             "model_type": "qwen4_exp_text", "hidden_size": 128,
@@ -2575,7 +2708,7 @@ final class QwenNextMTPPipelineTests: XCTestCase {
         ]
         if withPLE {
             text.merge([
-                "ple_layer_ids": [1], "ple_embed_dim": 32,
+                "ple_layer_ids": [1], "ple_embed_dim": pleEmbedDimension,
                 "ple_conv_kernel_size": 2, "ngram_size": 3,
                 "heads_per_ngram": 2, "ngram_vocab_size_base": 5,
                 "make_ngram_vocab_size_divisible_by": 4, "split_ngram_parts": 1,

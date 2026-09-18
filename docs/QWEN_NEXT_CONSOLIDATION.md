@@ -4,6 +4,11 @@ September 15. Continue on PR #123; do not create a new optimization PR or
 promote experimental defaults. This page is the entry point for the current
 work, not a replacement for historical evidence.
 
+September 18: [latest-reference refresh and cache diagnosis](QWEN_NEXT_REFERENCE_REFRESH.md)
+compares the preserved AFM checkpoint with released reference v26.9.4. Cached
+C15 MTP wins do not close the short-context MTP, uncached AR or quality gates.
+The new one-anchor cache experiment is default-off; no promotion is implied.
+
 September 17 follow-up: [retained lifecycle and matched presets](QWEN_NEXT_RETAINED_QUALIFICATION.md)
 passed 565 lifecycle assertions and 540 runtime/structure/identity checks
 (lifecycle total corrected September 18 from the saved phase sums).

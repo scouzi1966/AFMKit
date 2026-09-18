@@ -122,6 +122,37 @@ identity. **Quality parity is still open.** See the
 
 ## Evidence and reproduction
 
+### September 18 refreshed reference and retention experiment
+
+The [reference refresh](QWEN_NEXT_REFERENCE_REFRESH.md) pins released v26.9.4
+and reruns the unchanged AFM control on the exact checkpoint. It supersedes
+older reference comparisons without overwriting the historical AFM peaks.
+Depth-3 C1 AFM decode is 88.16/85.26/80.13/84.58 tok/s across the first four
+contexts; refreshed reference is 105.70/91.52/81.29/77.85. Short-context MTP
+therefore misses the 10% gate. All 24 AFM measured AR/MTP responses match the
+prior same-mode text; historical timing alone does not establish a regression.
+
+New C15 no-prefix sampled AR is 47.08/47.52 first/repeat versus reference
+54.82/55.66 (about 14% behind); do not hide that gap behind cached results.
+With prefix cache, sampled MTP is 136.69/177.22 versus reference 126.53/143.66,
+but correctness is 23/30 versus 24/30. Metrics and denominators remain separate.
+
+The M28 opt-in preserves an earlier shared boundary within unchanged cache
+limits. Same-binary reversed-order A/B pairs improve greedy second-repeat
+162.50→185.10 and 160.15→186.90 aggregate tok/s; sampled repeats vary from
+−2.6% to +2.4%, with no stable gain or loss. Despite unchanged 23/30 sampled
+totals, pair B improves one case and regresses another. Keep M28 experimental;
+do not replace a qualified default or a C1 Context peak with these C15 numbers.
+Targeted two-class Release tests pass (95 plus one optional skip), as do 565
+lifecycle assertions. A 45-prompt eviction screen completes but changes some
+answers. Real model switching and sustained qualification remain open.
+
+New untracked evidence/ledger root:
+
+```text
+/Volumes/edata2/afm-benchmarks/qwen-next-mtp-parity-20260909/reference-refresh-20260918
+```
+
 ### September 18 boundary-work regression control
 
 The [earlier-boundary experiment](QWEN_NEXT_PREFIX_BOUNDARY_EXPERIMENT.md)

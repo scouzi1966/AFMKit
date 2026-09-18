@@ -813,7 +813,9 @@ actor BatchScheduler {
         self.qwenMTPReplayCache = ownsQwenMTP && enablePrefixCaching && replayMiB > 0
             ? ExactPromptReplayCache(maximumBytes: replayMiB * 1024 * 1024,
                 maximumPromptTokens: Self.qwenMTPReplayPromptTokenLimit(
-                    ProcessInfo.processInfo.environment["AFM_QWEN_MTP_REPLAY_MAX_TOKENS"])) : nil
+                    ProcessInfo.processInfo.environment["AFM_QWEN_MTP_REPLAY_MAX_TOKENS"]),
+                preserveCoverageAnchor: ProcessInfo.processInfo.environment[
+                    "AFM_QWEN_MTP_REPLAY_ANCHOR"] == "1") : nil
         self.qwenMTPReplayBackoffTokens = ownsQwenMTP && enablePrefixCaching && replayMiB > 0
             ? Self.qwenMTPReplayBackoffTokenCount(
                 ProcessInfo.processInfo.environment["AFM_QWEN_MTP_REPLAY_BACKOFF"]) : 0
