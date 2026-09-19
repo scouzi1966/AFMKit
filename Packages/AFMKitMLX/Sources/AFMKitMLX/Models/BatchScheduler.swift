@@ -146,6 +146,9 @@ actor BatchScheduler {
     private let qwenMTPIndependentAttention: Bool
     private let qwenMTPSharedVocabulary: Bool
     private let qwenMTPSharedHead: Bool
+    /// Delay mapped PLE's draft-ID host read until its existing private-leaf
+    /// fill barrier. This is experimental and affects shared verification only.
+    private let qwenMTPSharedDeferredPLEIDs: Bool
     private let qwenMTPAdaptiveDepth: Bool
     private var qwenMTPCohortDepth: CohortSpeculationController?
     private let qwenMTPPersistentState: SpeculativeRowStateCache?
@@ -797,6 +800,8 @@ actor BatchScheduler {
             && ProcessInfo.processInfo.environment["AFM_QWEN_MTP_SHARED_VOCAB"] == "1"
         self.qwenMTPSharedHead = sharedVerification
             && ProcessInfo.processInfo.environment["AFM_QWEN_MTP_SHARED_HEAD"] == "1"
+        self.qwenMTPSharedDeferredPLEIDs = sharedVerification
+            && ProcessInfo.processInfo.environment["AFM_QWEN_MTP_SHARED_DEFER_PLE_IDS"] == "1"
         let cohortDepth = sharedVerification && qwenMTPGenerator?.verificationPolicy == .batched
             && ProcessInfo.processInfo.environment["AFM_QWEN_MTP_COHORT_DEPTH"] == "1"
         self.qwenMTPCohortDepth = cohortDepth
@@ -1071,6 +1076,7 @@ actor BatchScheduler {
             print("[BatchScheduler] Qwen MTP independent attention: \(qwenMTPIndependentAttention)")
             print("[BatchScheduler] Qwen MTP shared vocabulary: \(qwenMTPSharedVocabulary)")
             print("[BatchScheduler] Qwen MTP shared head: \(qwenMTPSharedHead) | draft rows=\(qwenMTPSharedDraftRows) | repair rows=\(qwenMTPSharedRepairRows)")
+            print("[BatchScheduler] Qwen MTP shared deferred PLE IDs: \(qwenMTPSharedDeferredPLEIDs)")
             print("[BatchScheduler] Qwen MTP adaptive depth: \(qwenMTPAdaptiveDepth)")
             print("[BatchScheduler] Qwen MTP cohort depth: \(qwenMTPCohortDepth != nil) | epochs=\(qwenMTPCohortDepth?.completedEpochs ?? 0) | changes=\(qwenMTPCohortDepth?.depthChanges ?? 0)")
             if qwenMTPAdaptiveDepth || qwenMTPCohortDepth != nil {
@@ -2353,6 +2359,7 @@ actor BatchScheduler {
                 let shared = Qwen4ExpMTPSession.prepareCompatibleVerificationBatches(
                     sessions, independentAttention: qwenMTPIndependentAttention,
                     sharedVocabularyProjection: qwenMTPSharedVocabulary,
+                    deferMappedPLEHostTokenIDs: qwenMTPSharedDeferredPLEIDs,
                     maximumRows: qwenMTPSubmissionWindow, persistentState: qwenMTPPersistentState)
                 qwenMTPSharedVerificationBatches += shared.batches
                 qwenMTPSharedVerificationRows += shared.rows

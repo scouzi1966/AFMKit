@@ -194,7 +194,7 @@ under full-model load, media inputs and additional architectures were not
 requalified by this benchmark set; focused source tests are not substitutes
 for those full-model cases.
 
-## Next bounded experiment: deferred prefill completion
+## Deferred prefill completion experiment
 
 Source inspection confirms that uncached independent-cache AR admission still
 finishes each `prefillOne` before the next request: lazy sampling is followed by
@@ -202,13 +202,27 @@ finishes each `prefillOne` before the next request: lazy sampling is followed by
 `didSample` itself can read the GPU token for penalties or grammar; deferring
 only the later `.item()` would not remove that boundary.
 
-A potential next experiment is a **two-request, token/memory-bounded pending
-cohort**: preserve each existing model/chunk call and lazy sampler graph, then
-complete materialization and publication after staging the small cohort. The
-independent decode path already stages sampled graphs before cohort evaluation.
-This is not implemented here and has no measured performance claim.
+A two-request, token/memory-bounded probe now preserves each existing
+model/chunk call and lazy sampler graph, builds two independent prefill graphs,
+evaluates them together, and only then reads the tokens. It uses the exact
+`ddalcu/Qwen3.8-Flash-Next-MLX-Serve-4bit` checkpoint, final-prefill head opt-in,
+493- and 998-token synthetic prompts, two excluded warmup pairs and six
+alternating-order measured pairs.
 
-Required gates before accepting such a change:
+The result is **not a production candidate**:
+
+- sequential median: **1280.395 ms** per pair;
+- staged median: **1275.333 ms** per pair;
+- staged change: **-0.40%**;
+- output tokens: identical in every arm (`[5513, 5513]`);
+- staged peak active memory: about **104 MiB higher**.
+
+That difference is below the noise/risk threshold for changing scheduler
+lifecycle semantics. The probe remains as an optional regression experiment;
+no production admission, cancellation or publication path was changed.
+
+The gates below remain requirements if a materially different staging design
+is proposed later:
 
 - Retain request-local caches, output/continuation state, model and reservations
   until completion; keep construction serialized under the existing owner.
@@ -224,7 +238,9 @@ Required gates before accepting such a change:
 - Independently measure quality: delayed publication can change later batch
   membership even if each prefill uses identical arithmetic.
 
-This is a scheduling/lifecycle investigation, not another cache-policy change.
+This was a scheduling/lifecycle investigation, not another cache-policy change.
+Evidence is under `deferred-prefill-20260919/poc-head-on-a/report.json` beneath
+the external root below.
 
 ## Evidence
 

@@ -182,7 +182,8 @@ final class QwenNextMTPPipelineTests: XCTestCase {
     private func assertSharedSessionVerification(
         _ model: Qwen4ExpModel, temperature: Float, independentAttention: Bool = false,
         sharedVocabulary: Bool = false, mixedSampling: Bool = false, expanded: Bool = false,
-        sharedHead: Bool = false, cohortDepth: Bool = false
+        sharedHead: Bool = false, cohortDepth: Bool = false,
+        deferredPLEHostTokenIDs: Bool = false
     ) throws {
         let head = Qwen4ExpMTPHead(model.configuration)
         eval(model, head)
@@ -226,7 +227,9 @@ final class QwenNextMTPPipelineTests: XCTestCase {
                 for session in group { session.prepareDraftTokens() }
                 let shared = Qwen4ExpMTPSession.prepareCompatibleVerificationBatches(
                     group, independentAttention: independentAttention,
-                    sharedVocabularyProjection: sharedVocabulary, maximumRows: maximumRows)
+                    sharedVocabularyProjection: sharedVocabulary,
+                    deferMappedPLEHostTokenIDs: deferredPLEHostTokenIDs,
+                    maximumRows: maximumRows)
                 batchedRows += shared.rows
                 if sharedHead {
                     for session in group {
@@ -2755,8 +2758,13 @@ final class QwenNextMTPPipelineTests: XCTestCase {
         try assertPromptPrefixReplay(model)
         try assertSharedVerificationRows(model)
         try assertSharedSessionVerification(model, temperature: 0.6)
+        try assertSharedSessionVerification(
+            model, temperature: 0.6, deferredPLEHostTokenIDs: true)
         try assertMixedPositionVerificationRows(model)
         try assertSharedSessionVerification(model, temperature: 0.6, independentAttention: true)
+        try assertSharedSessionVerification(
+            model, temperature: 0.6, independentAttention: true,
+            deferredPLEHostTokenIDs: true)
         // Shared dispatch must flush every request row's PLE leaf before the
         // first GPU submission. Then restore different acceptance frontiers
         // without changing another row's recurrent, QSA or n-gram state.

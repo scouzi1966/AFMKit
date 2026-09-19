@@ -549,6 +549,30 @@ independent requests, abandoned work, mapped-table EOS history and every partial
 acceptance/rollback boundary in a small model. These do not replace live API
 concurrency, radix-cache reuse and model-switch qualification.
 
+### Shared-verifier draft-ID boundary
+
+The concurrent shared verifier previously materialized every draft token ID on
+the CPU before constructing the target graph. That duplicated an early
+synchronization even though mapped PLE already owns a private deferred leaf and
+must resolve those IDs at its guarded flush boundary. The default-off
+`AFM_QWEN_MTP_SHARED_DEFER_PLE_IDS=1` experiment passes `nil` through the shared
+target graph so the existing PLE callback performs the read later. It adds no
+placeholder shared between requests and does not defer cache rollback.
+
+The exact ddalcu checkpoint was tested in two reversed-order, cache-off C15
+pairs using one Release binary. All **180/180** requests had valid runtime and
+JSON structure. Pair-one aggregate output improved **2.25% greedy** and **4.10%
+sampled** with 45/45 identical texts. The reverse pair improved **0.48% greedy**;
+one sampled control changed its own seeded completion length between runs, so
+that sampled aggregate comparison is not clean. Across the pair, 44/45 texts
+matched. Peak process RSS differed by less than 17 MiB. Shared work was exercised
+(730–738 rows per arm), and the complete 78-test MTP pipeline suite passed with
+one intentional opt-in skip.
+
+This removes a proven early synchronization but is **not promoted by default**:
+the end-to-end benefit varies with shared-group scheduling. Evidence is under
+`shared-deferred-ple-ids-20260919` in the external benchmark root.
+
 ## Masked attention grouping
 
 The reference's `splitMaskedSdpa256` bounds each group by `query rows * GQA <= 32`

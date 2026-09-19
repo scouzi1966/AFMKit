@@ -5683,10 +5683,10 @@ public final class Qwen4ExpModel: Module, LLMModel, KVCacheDimensionProvider, Re
     }
 
     func forwardMTPVerificationBatch(
-        inputIDs: MLXArray, batch: MTPVerificationBatch, hostTokenIDs: [Int],
+        inputIDs: MLXArray, batch: MTPVerificationBatch, hostTokenIDs: [Int]? = nil,
         ladderStride: Int? = nil
     ) -> (stream: MLXArray, hidden: MLXArray) {
-        precondition(inputIDs.ndim == 2 && hostTokenIDs.count == inputIDs.size)
+        precondition(inputIDs.ndim == 2 && (hostTokenIDs == nil || hostTokenIDs!.count == inputIDs.size))
         if batch.attentionRows == nil, ladderStride == nil {
             return forwardStreamState(inputIDs: inputIDs, cache: batch.caches,
                 verificationPolicy: .batched, hostTokenIDs: hostTokenIDs)
@@ -6562,7 +6562,8 @@ public final class Qwen4ExpMTPSession {
     /// target sampling, acceptance, cache commit and repairs remain per request.
     public static func prepareCompatibleVerificationBatches(
         _ sessions: [Qwen4ExpMTPSession], independentAttention: Bool = false,
-        sharedVocabularyProjection: Bool = false, maximumRows: Int = 4,
+        sharedVocabularyProjection: Bool = false,
+        deferMappedPLEHostTokenIDs: Bool = false, maximumRows: Int = 4,
         persistentState: SpeculativeRowStateCache? = nil
     ) -> (batches: Int, rows: Int) {
         let limit = min(independentAttention ? 8 : 4, max(2, maximumRows))
@@ -6610,9 +6611,15 @@ public final class Qwen4ExpMTPSession {
                 concatenated([tokens([session.primary]), draft.tokenIDs], axis: 1)
             }
             first.endSharedPhase(2)
-            let hostIDs = zip(group, drafts).flatMap { session, draft in
-                [session.primary] + draft.tokenIDs.asArray(Int32.self).map(Int.init)
-            }
+            // The mapped PLE path already owns a private deferred leaf and
+            // flushes it before every graph submission. Let that barrier read
+            // draft IDs after the earlier graph has been constructed instead
+            // of forcing a synchronization here. Adapted from the deferred
+            // scheduling in David Dalcu's MIT-licensed mlx-serve.
+            let hostIDs: [Int]? = deferMappedPLEHostTokenIDs ? nil
+                : zip(group, drafts).flatMap { session, draft in
+                    [session.primary] + draft.tokenIDs.asArray(Int32.self).map(Int.init)
+                }
             first.endSharedPhase(3)
             first.startPhase()
             let verified = first.model.forwardMTPVerificationBatch(
