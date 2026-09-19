@@ -369,6 +369,9 @@ actor BatchScheduler {
     /// Total tokens generated across all slots (for periodic cache clearing).
     private var totalTokensGenerated = 0
     private var independentDecodeSteps = 0
+    // Host-only diagnostic; leave both clock reads and storage off in clean runs.
+    private var executionProfile: BatchExecutionProfile? =
+        ProcessInfo.processInfo.environment["AFM_PERF"] == "1" ? BatchExecutionProfile() : nil
 
     nonisolated static func supportsPrefillInterleave(
         modelType: any LanguageModel.Type, continuousGroups: Bool,
@@ -1082,6 +1085,10 @@ actor BatchScheduler {
         if let replay = qwenMTPReplayCache {
             print("[BatchScheduler] Qwen MTP replay maximum prompt tokens: \(replay.maximumPromptTokens)")
             replay.removeAll()
+        }
+        if let profile = executionProfile {
+            for line in profile.logLines { print(line) }
+            executionProfile = nil
         }
         qwenMTPPersistentState?.prune(activeRows: [])
         groupedSlotIDs.removeAll()
@@ -1850,6 +1857,16 @@ actor BatchScheduler {
         forceIndependentCaches: Bool = false,
         allowDecodeInterleave: Bool = true
     ) {
+        let profileStart = executionProfile == nil ? nil : DispatchTime.now().uptimeNanoseconds
+        let nestedDecodeBefore = executionProfile?.independentNanoseconds ?? 0
+        defer {
+            if let profileStart {
+                let nested = (executionProfile?.independentNanoseconds ?? 0) - nestedDecodeBefore
+                executionProfile?.record(.prefillService, rows: 1,
+                    nanoseconds: BatchExecutionProfile.exclusiveNanoseconds(
+                        start: profileStart, end: DispatchTime.now().uptimeNanoseconds, nested: nested))
+            }
+        }
         var cache = model.newCache(parameters: req.parameters)
         var generateInput = req.input
         var cachedTokens = 0
@@ -2190,7 +2207,10 @@ actor BatchScheduler {
     /// ticks and ticks between prefill chunks. Otherwise long admissions can
     /// bypass the safety intervals even though their output is being streamed.
     private func advanceIndependentDecode() {
+        let tickStart = executionProfile == nil ? nil : DispatchTime.now().uptimeNanoseconds
+        let profileRows = slots.count
         let activeCount = decodeIndependentSlots()
+        let profileStart = executionProfile == nil ? nil : DispatchTime.now().uptimeNanoseconds
         totalTokensGenerated += activeCount
         if activeCount > 0, totalTokensGenerated % 1024 < activeCount {
             Memory.clearCache()
@@ -2200,6 +2220,14 @@ actor BatchScheduler {
                 + uniformDecodeGroups.flatMap { $0.caches.flatMap { $0.innerState() } })
         }
         independentDecodeSteps += 1
+        if let profileStart {
+            executionProfile?.record(.independentMaintenance, rows: activeCount,
+                nanoseconds: DispatchTime.now().uptimeNanoseconds - profileStart)
+        }
+        if let tickStart {
+            executionProfile?.record(.independentTotal, rows: profileRows,
+                nanoseconds: DispatchTime.now().uptimeNanoseconds - tickStart)
+        }
     }
 
     private func prepareUniformDecodeGroups() {
@@ -2239,6 +2267,7 @@ actor BatchScheduler {
         }
         cancelledIndices.removeAll(keepingCapacity: true)
         guard !slots.isEmpty else { return 0 }
+        var profileLap = executionProfile == nil ? nil : DispatchTime.now().uptimeNanoseconds
         prepareUniformDecodeGroups()
 
         var groupedLogits: [UUID: MLXArray] = [:]
@@ -2416,6 +2445,12 @@ actor BatchScheduler {
         }
 
         asyncEval(sampledTokens)
+        if let start = profileLap {
+            let now = DispatchTime.now().uptimeNanoseconds
+            executionProfile?.record(.independentGraphSubmit, rows: activeSlotIDs.count,
+                nanoseconds: now - start)
+            profileLap = now
+        }
 
         var completedIndices: [Int] = []
         for requestIndex in activeSlotIDs.indices {
@@ -2440,8 +2475,18 @@ actor BatchScheduler {
             }
         }
 
+        if let start = profileLap {
+            let now = DispatchTime.now().uptimeNanoseconds
+            executionProfile?.record(.independentReadout, rows: activeSlotIDs.count,
+                nanoseconds: now - start)
+            profileLap = now
+        }
         for index in Set(completedIndices).sorted().reversed() {
             finishSlot(at: index)
+        }
+        if let start = profileLap {
+            executionProfile?.record(.independentRetire, rows: activeSlotIDs.count,
+                nanoseconds: DispatchTime.now().uptimeNanoseconds - start)
         }
         return activeSlotIDs.count
     }

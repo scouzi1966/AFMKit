@@ -568,9 +568,34 @@ The snapshot constructor also accepts an explicit model-owned setting, which
 takes precedence over its environment fallback. None of these variables is
 part of recipe A/M/W8; no new combined qualification is implied.
 
+The head-projection POC below is **test-only**, not an `afm` runtime option or
+a speed preset. It leaves production projection and all defaults unchanged:
+
+| Test setting | Unset behavior | Explicit opt-in |
+|---|---|---|
+| `AFM_QWEN_PREFILL_HEAD_MODEL` | Checkpoint benchmark skips | Exact frozen ddalcu checkpoint path in the execution-cost report |
+| `AFM_QWEN_PREFILL_HEAD_OUT` | Checkpoint benchmark skips | Fresh external evidence directory with an existing parent; must not be inside a repository or checkpoint |
+| `AFM_QWEN_PREFILL_HEAD_REVISION` | Records `unspecified` | Optional source identity label; source and head hashes are recorded independently |
+
+Use the consumer `Scripts/swiftpm-reliable.sh test --package-path <AFMKit>`
+wrapper with `-c release --filter QwenNextPrefillHeadProjectionTests`. Both
+required settings must be present. Normal test runs execute only the tiny CPU
+oracle and skip the checkpoint benchmark. Results and limitations are in
+[the execution-cost report](QWEN_NEXT_EXECUTION_COSTS.md).
+
 `AFM_PERF=1`, `AFM_DEBUG=1` and `AFM_QWEN_PROFILE_HOST=verify` are diagnostic
 activation examples, not speed presets. Leave them unset for timed comparisons.
 Host laps include existing waits and are not individual GPU kernel durations.
+
+September 19 [execution-cost isolation](QWEN_NEXT_EXECUTION_COSTS.md) adds
+`AFM_PERF=1` scheduler summaries by active-row count, using this existing switch
+only. Prefill excludes nested decode; `independent-total-inclusive` contains
+the component spans and must not be added to them. Counters include warmups,
+and active rows do not prove GPU batch size. This is diagnostic-only, not a new
+speed preset or a promoted cache/sampling setting. Clean rebuilt versus frozen
+AFM reproduces all 90 C15 uncached AR texts with a -0.35% observed wall-time
+difference; independent quality parity remains open. Reference proposal,
+predraft and coarse-head controls are recorded separately in that report.
 
 ## Compatibility / combinations that must not be conflated
 
