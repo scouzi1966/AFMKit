@@ -582,14 +582,56 @@ single rows. Tests compare BF16 attention at 24 query heads, 2 KV heads and head
 dimension 256 against independent singleton verification, including an odd tail.
 The depth-1 live comparison retained all saved token sequences.
 
+## General sampled-proposal acceptance
+
+The default-off `AFM_QWEN_MTP_SAMPLED_PROPOSALS=1` experiment implements the
+general speculative-sampling law for target temperatures above 0.5. Qwen Next
+draft rows use the family proposal distribution (temperature 1.0, top-p 0.95,
+top-k 20); the verifier accepts each draft with `min(1, p/q)` and samples a
+rejection from normalized `max(p-q, 0)`. Target, proposal, acceptance and
+correction RNG state is request-owned. Greedy/default MTP is unchanged. Source
+comments credit Leviathan et al. and David Dalcu's MIT-licensed `mlx-serve`;
+no reference source was copied.
+
+Four focused Release tests pass: filtering and forced accept/reject, a 1,024-
+draw target-distribution/acceptance oracle, seeded replay and cancellation, and
+eight-session shared verification. The paired consumer Release build also
+passes. The exact ddalcu checkpoint was then measured at 0.5K, temperature 0.6,
+top-p 1, seed 42, depth 3, batched/QMM policy, one excluded warmup and three
+128-token trials. The same binary measured **86.84 tok/s** with deterministic
+one-hot proposals and **86.88 tok/s** with general p/q proposals; prefill proxies
+were 960.59 and 962.01 tok/s. This is neutral, not a speedup.
+
+A separate 20-seed diagnostic explains the result. One-hot proposals reached a
+92.72 tok/s median, 60.7% median per-draft acceptance and 2.84 median
+tokens/cycle. General p/q reached 88.75 tok/s, 63.6% acceptance and 2.91
+tokens/cycle. The proposal law improves acceptance, but full-vocabulary draft
+probability construction costs more than it saves. A same-input greedy cross-
+engine diagnostic measured AFM at 97.79 tok/s versus reference 88.23 tok/s, so
+the sampled short-context gap is not evidence of a universal verifier-cycle
+deficit.
+
+The option therefore remains experimental and off. The next candidate is a
+specialized coarse-vocabulary shortlist plus exact selected-row rescoring,
+matching the architectural class used by the v26.9.4 reference while retaining
+AFM's request-local RNG and exact p/q correction. That candidate needs its own
+memory, quality and end-to-end A/B; it is not implied by this checkpoint.
+
+Evidence is append-only under `sampled-proposals-20260919`,
+`sampled-proposals-depth3-20260919`,
+`sampled-proposals-depth3-debug-v2-20260919`,
+`sampled-seed-sweep-20260919`, and
+`greedy-acceptance-cross-engine-v2-20260919` in the external benchmark root.
+
 ## Experiments not adopted
 
 - **Merged draft-head history / last-row-only tail:** little speed benefit and a
   changed token trajectory for the shortest prompt. Removed; ordinary head
   progression remains intact.
-- **3-bit auxiliary vocabulary readout + original-head top-32 rescoring:** the
-  target head was unchanged, but the generic selector did not justify its added
-  memory and latency. Removed. A specialized top-k kernel would need a new A/B.
+- **Earlier generic 3-bit auxiliary vocabulary readout + original-head top-32
+  rescoring:** the target head was unchanged, but that generic selector did not
+  justify its added memory and latency. Removed. This does not reject the new
+  specialized draft-only shortlist candidate described above.
 - **General batched verification:** explicitly measured as a diagnostic, not
   promoted to the default. It did not close the gap.
 - **Unsorted multirow affine expert kernels:** earlier experiment did not

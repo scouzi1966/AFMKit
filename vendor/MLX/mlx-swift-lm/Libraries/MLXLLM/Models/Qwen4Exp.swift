@@ -5900,7 +5900,7 @@ public final class Qwen4ExpModel: Module, LLMModel, KVCacheDimensionProvider, Re
 /// target operators remain available as an explicitly approximate throughput
 /// experiment because their reduction schedule can change greedy decisions.
 ///
-/// Sampling uses deterministic drafts (one-hot proposal q). Draw y from the
+/// Sampling normally uses deterministic drafts (one-hot proposal q). Draw y from the
 /// user's filtered target p, accept when y == draft, otherwise emit y and stop
 /// the round. P(accept) = p[draft]; conditional rejection samples p with that
 /// token excluded, exactly the normalized max(p-q, 0) residual. This is the
@@ -5908,8 +5908,46 @@ public final class Qwen4ExpModel: Module, LLMModel, KVCacheDimensionProvider, Re
 /// David Dalcu's MIT-licensed mlx-serve (src/generate.zig, nextMtp / greedy
 /// draft proposals). No source is copied. Target rows and RNG stay on device;
 /// only the existing packed token-ID decision crosses the host boundary.
+/// An opt-in sampled-proposal experiment retains the complete proposal density
+/// and applies the general p/q acceptance and residual-correction law. This is
+/// independently implemented from the algorithm described by Leviathan et al.;
+/// the per-request policy and Qwen-specific proposal constants were informed by
+/// David Dalcu's MIT-licensed mlx-serve (src/generate.zig). No source is copied.
 /// Same-seed repeatability is scoped to a fixed verification width/policy,
 /// not token identity with AR, which consumes a different sequence of draws.
+struct Qwen4ExpMTPProbability {
+    static func filtered(
+        logits: MLXArray, temperature: Float, topP: Float, topK: Int
+    ) -> MLXArray {
+        precondition(temperature > 0)
+        let shape = logits.shape
+        let vocabulary = logits.dim(-1)
+        var rows = logits.asType(.float32).reshaped(-1, vocabulary)
+        if topK > 0, topK < vocabulary {
+            let ordered = sorted(rows, axis: -1)
+            let threshold = ordered[0..., vocabulary - topK].reshaped(-1, 1)
+            rows = MLX.where(rows .>= threshold, rows, MLXArray(-Float.infinity))
+        }
+        var probabilities = softmax(rows / MLXArray(temperature), axis: -1)
+        if topP > 0, topP < 1 {
+            let order = argSort(probabilities, axis: -1)
+            let ascending = takeAlong(probabilities, order, axis: -1)
+            let retained = MLX.where(
+                cumsum(ascending, axis: -1) .> (1 - MLXArray(topP)),
+                ascending, zeros(like: ascending))
+            let restored = putAlong(
+                zeros(like: probabilities), order, values: retained, axis: -1)
+            probabilities = restored / maximum(
+                restored.sum(axis: -1, keepDims: true), MLXArray(Float.leastNonzeroMagnitude))
+        }
+        return probabilities.reshaped(shape)
+    }
+
+    static func sample(_ probabilities: MLXArray, state: MLXRandom.RandomState) -> MLXArray {
+        MLXRandom.categorical(log(probabilities), key: state).asType(.int32)
+    }
+}
+
 struct Qwen4ExpMTPCycleDecision: Equatable {
     let targetTokens: [Int]
     let draftTokens: [Int]
@@ -5945,6 +5983,56 @@ struct Qwen4ExpMTPCycleDecision: Equatable {
             targetTokens: targets,
             draftTokens: drafts,
             acceptedDraftCount: accepted)
+    }
+
+    static func resolve(
+        targetProbabilities: MLXArray,
+        proposalProbabilities: MLXArray,
+        draftTokenIDs: MLXArray,
+        acceptanceState: MLXRandom.RandomState,
+        correctionState: MLXRandom.RandomState,
+        materialize: (MLXArray) -> [Int32] = { $0.asArray(Int32.self) }
+    ) -> Self {
+        let draftCount = draftTokenIDs.size
+        let vocabulary = targetProbabilities.dim(-1)
+        let targetRows = targetProbabilities.reshaped(-1, vocabulary)
+        let proposalRows = proposalProbabilities.reshaped(-1, vocabulary)
+        precondition(targetRows.dim(0) == draftCount + 1)
+        precondition(proposalRows.shape == [draftCount, vocabulary])
+
+        let ids = draftTokenIDs.asType(.int32).reshaped(-1, 1)
+        let targetDraftRows = targetRows[..<draftCount]
+        let p = takeAlong(targetDraftRows, ids, axis: -1).squeezed(axis: -1)
+        let q = takeAlong(proposalRows, ids, axis: -1).squeezed(axis: -1)
+        let threshold = minimum(p / maximum(q, MLXArray(1e-12)), MLXArray(1))
+        let accepted = (MLXRandom.uniform(0 ..< 1, [draftCount], key: acceptanceState)
+            .< threshold).asType(.int32)
+
+        let residual = maximum(targetDraftRows - proposalRows, MLXArray(0))
+        let mass = residual.sum(axis: -1, keepDims: true)
+        let corrected = MLX.where(
+            mass .> 0, residual / maximum(mass, MLXArray(1e-12)), targetDraftRows)
+        let candidates = concatenated([corrected, targetRows[draftCount...]], axis: 0)
+        let corrections = Qwen4ExpMTPProbability.sample(candidates, state: correctionState)
+            .reshaped(-1)
+        let payload = concatenated([
+            accepted.reshaped(-1), corrections.asType(.int32),
+            draftTokenIDs.asType(.int32).reshaped(-1),
+        ])
+        let values = materialize(payload)
+        precondition(values.count == draftCount + (draftCount + 1) + draftCount)
+        let acceptMask = values[..<draftCount]
+        let correctionStart = draftCount
+        let draftStart = correctionStart + draftCount + 1
+        let drafts = values[draftStart...].map(Int.init)
+        var acceptedCount = 0
+        while acceptedCount < draftCount, acceptMask[acceptedCount] != 0 {
+            acceptedCount += 1
+        }
+        let choices = values[correctionStart..<draftStart].map(Int.init)
+        return Self(
+            targetTokens: choices, draftTokens: drafts,
+            acceptedDraftCount: acceptedCount)
     }
 }
 
@@ -6049,6 +6137,7 @@ public final class Qwen4ExpMTPGenerator {
     private let head: Qwen4ExpMTPHead
     private let draftDispatchStride: Int
     private let retainHeadAnchor: Bool
+    private let sampledProposalOverride: Bool?
     private let replayIdentity = UUID()
     public let depth: Int
     public let verificationPolicy: MTPVerificationPolicy
@@ -6065,7 +6154,8 @@ public final class Qwen4ExpMTPGenerator {
             draftDispatchStride: Int(ProcessInfo.processInfo.environment[
                 "AFM_QWEN_MTP_DRAFT_ASYNC_LADDER"] ?? "0") ?? 0,
             retainHeadAnchor: ProcessInfo.processInfo.environment[
-                "AFM_QWEN_MTP_RETAIN_ANCHOR"] == "1")
+                "AFM_QWEN_MTP_RETAIN_ANCHOR"] == "1",
+            sampledProposalOverride: nil)
     }
 
     // Internal stride injection allows request-isolation/cancellation tests
@@ -6073,7 +6163,7 @@ public final class Qwen4ExpMTPGenerator {
     init(
         model: Qwen4ExpModel, head: Qwen4ExpMTPHead, depth: Int,
         verificationPolicy: MTPVerificationPolicy, draftDispatchStride: Int,
-        retainHeadAnchor: Bool = false
+        retainHeadAnchor: Bool = false, sampledProposalOverride: Bool? = nil
     ) {
         self.model = model
         self.head = head
@@ -6081,6 +6171,7 @@ public final class Qwen4ExpMTPGenerator {
         self.verificationPolicy = verificationPolicy
         self.draftDispatchStride = max(0, draftDispatchStride)
         self.retainHeadAnchor = retainHeadAnchor && verificationPolicy == .batched
+        self.sampledProposalOverride = sampledProposalOverride
     }
 
     /// Creates request-owned state for serialized, resumable speculative work.
@@ -6112,7 +6203,8 @@ public final class Qwen4ExpMTPGenerator {
             temperature: temperature, topP: topP, seed: seed,
             replayIdentity: replayIdentity, promptState: promptState,
             retainPromptState: retainPromptState, adaptiveDepth: adaptiveDepth,
-            prefillStepSize: prefillStepSize, promptSnapshotBackoffTokens: promptSnapshotBackoffTokens)
+            prefillStepSize: prefillStepSize, promptSnapshotBackoffTokens: promptSnapshotBackoffTokens,
+            sampledProposalOverride: sampledProposalOverride)
     }
 
     /// Internal diagnostic seam: select a request-owned recording sampler at
@@ -6128,7 +6220,8 @@ public final class Qwen4ExpMTPGenerator {
             promptIds: promptIds, maxTokens: maxTokens, eosIds: [],
             temperature: 0, topP: 1, seed: nil, replayIdentity: replayIdentity,
             promptState: nil, retainPromptState: false, adaptiveDepth: false,
-            prefillStepSize: prefillStepSize, samplerForTesting: sampler)
+            prefillStepSize: prefillStepSize, sampledProposalOverride: false,
+            samplerForTesting: sampler)
     }
 
     public func generate(
@@ -6172,12 +6265,15 @@ public final class Qwen4ExpMTPSession {
         let headOffset: Int
         let tokens: [MLXArray]
         let tokenIDs: MLXArray
+        let proposalProbabilities: MLXArray?
     }
 
     private struct PreparedVerification {
         let headOffset: Int
         let draftTokenIDs: MLXArray
         let targetTokenIDs: MLXArray
+        let targetProbabilities: MLXArray?
+        let proposalProbabilities: MLXArray?
         let verifiedStream: MLXArray
         let snapshot: [Qwen3MTPCacheSnapshot.Layer]
         let usedSequentialVerifier: Bool
@@ -6196,6 +6292,12 @@ public final class Qwen4ExpMTPSession {
     private let targetCache: [KVCache]
     private let mtpCache: [KVCache]
     private let sampler: LogitSampler?
+    private let sampledProposal: Bool
+    private let targetTemperature: Float
+    private let targetTopP: Float
+    private let draftRandomState: MLXRandom.RandomState
+    private let acceptanceRandomState: MLXRandom.RandomState
+    private let correctionRandomState: MLXRandom.RandomState
     private let maxTokens: Int
     private let eosIds: Set<Int>
     private let depth: Int
@@ -6270,6 +6372,7 @@ public final class Qwen4ExpMTPSession {
         temperature: Float, topP: Float, seed: UInt64?, replayIdentity: UUID,
         promptState: Qwen4ExpMTPPromptState?, retainPromptState: Bool, adaptiveDepth: Bool,
         prefillStepSize: Int?, promptSnapshotBackoffTokens: Int = 0,
+        sampledProposalOverride: Bool? = nil,
         samplerForTesting: LogitSampler? = nil
     ) {
         // Request-owned RNG: no global seeding or mutable sampler on a shared
@@ -6277,6 +6380,16 @@ public final class Qwen4ExpMTPSession {
         let sampler: LogitSampler? = samplerForTesting ?? (temperature > 0
             ? GenerateParameters(temperature: temperature, topP: topP, seed: seed).sampler()
             : nil)
+        let sampledProposal = samplerForTesting == nil && temperature > 0.5
+            && (sampledProposalOverride
+                ?? (ProcessInfo.processInfo.environment["AFM_QWEN_MTP_SAMPLED_PROPOSALS"] == "1"))
+        func requestState(_ salt: UInt64) -> MLXRandom.RandomState {
+            guard let seed else { return MLXRandom.RandomState() }
+            var value = seed &+ salt &+ 0x9E3779B97F4A7C15
+            value = (value ^ (value >> 30)) &* 0xBF58476D1CE4E5B9
+            value = (value ^ (value >> 27)) &* 0x94D049BB133111EB
+            return MLXRandom.RandomState(seed: value ^ (value >> 31))
+        }
         func targetTokens(_ hidden: MLXArray, policy: MTPVerificationPolicy? = nil) -> MLXArray {
             guard let sampler else {
                 return model.projectLMHeadArgmax(hidden, verificationPolicy: policy)
@@ -6373,6 +6486,12 @@ public final class Qwen4ExpMTPSession {
         self.targetCache = targetCache
         self.mtpCache = mtpCache
         self.sampler = sampler
+        self.sampledProposal = sampledProposal
+        self.targetTemperature = temperature
+        self.targetTopP = topP
+        self.draftRandomState = requestState(0x4452414654)
+        self.acceptanceRandomState = requestState(0x414343455054)
+        self.correctionRandomState = requestState(0x434F5252454354)
         self.maxTokens = maxTokens
         self.eosIds = eosIds
         self.promptTokenCount = promptIds.count
@@ -6421,7 +6540,8 @@ public final class Qwen4ExpMTPSession {
     }
 
     /// Draft one compatible owner group in [request, token] head passes.
-    /// Proposals remain greedy; target sampling and RNGs are never touched.
+    /// This optimized batch currently remains greedy; sampled-proposal rows
+    /// retain their request-owned RNG and probability graph in the fallback.
     /// The caller subsequently invokes prepareDraftTokens for fallback rows.
     public static func prepareCompatibleDraftBatch(_ sessions: [Qwen4ExpMTPSession]) -> Int {
         guard (2...8).contains(sessions.count),
@@ -6432,6 +6552,7 @@ public final class Qwen4ExpMTPSession {
                       && session.pendingVerification == nil && session.preparedDraft == nil
                       && session.preparedVerification == nil && session.verificationPolicy == .batched
                       && session.model === first.model && session.head === first.head
+                      && !session.sampledProposal
                       && session.activeDraftDepth == first.activeDraftDepth
                       && session.mtpCache.count == 1 && session.mtpCache[0] is Qwen4ExpAttentionCache
               }) else { return 0 }
@@ -6460,7 +6581,8 @@ public final class Qwen4ExpMTPSession {
         asyncEval(ids)
         for (row, session) in sessions.enumerated() {
             session.preparedDraft = PreparedDraft(headOffset: offsets[row],
-                tokens: drafts.map { $0[row..<(row + 1)] }, tokenIDs: ids[row..<(row + 1)])
+                tokens: drafts.map { $0[row..<(row + 1)] }, tokenIDs: ids[row..<(row + 1)],
+                proposalProbabilities: nil)
             session.totalDrafted += depth
         }
         return sessions.count
@@ -6639,11 +6761,29 @@ public final class Qwen4ExpMTPSession {
                 // changes its call order. Mixed greedy/sampled groups retain
                 // one request-local decision per verification token.
                 let targetIDs: MLXArray
+                let targetProbabilities: MLXArray?
                 if let vocabulary {
                     let values = vocabulary[row..<(row + 1)]
-                    targetIDs = allGreedy ? values[0, 0...]
-                        : (session.sampler?.sample(logits: values) ?? MLX.argMax(values, axis: -1))[0, 0...]
+                    if session.sampledProposal {
+                        targetProbabilities = Qwen4ExpMTPProbability.filtered(
+                            logits: values, temperature: session.targetTemperature,
+                            topP: session.targetTopP, topK: 0)
+                        targetIDs = MLXArray.zeros([0], dtype: .int32)
+                    } else {
+                        targetProbabilities = nil
+                        targetIDs = allGreedy ? values[0, 0...]
+                            : (session.sampler?.sample(logits: values)
+                                ?? MLX.argMax(values, axis: -1))[0, 0...]
+                    }
+                } else if session.sampledProposal {
+                    targetProbabilities = Qwen4ExpMTPProbability.filtered(
+                        logits: session.model.projectLMHead(
+                            verified.hidden[row..<(row + 1)], verificationPolicy: .batched),
+                        temperature: session.targetTemperature,
+                        topP: session.targetTopP, topK: 0)
+                    targetIDs = MLXArray.zeros([0], dtype: .int32)
                 } else {
+                    targetProbabilities = nil
                     targetIDs = session.targetTokens(
                         verified.hidden[row..<(row + 1)], policy: .batched)[0, 0...]
                 }
@@ -6651,9 +6791,11 @@ public final class Qwen4ExpMTPSession {
                 session.preparedDraft = nil
                 session.preparedVerification = PreparedVerification(
                     headOffset: drafts[row].headOffset, draftTokenIDs: drafts[row].tokenIDs,
-                    targetTokenIDs: targetIDs, verifiedStream: verified.stream[row..<(row + 1)],
+                    targetTokenIDs: targetIDs, targetProbabilities: targetProbabilities,
+                    proposalProbabilities: drafts[row].proposalProbabilities,
+                    verifiedStream: verified.stream[row..<(row + 1)],
                     snapshot: snapshots[row], usedSequentialVerifier: false)
-                sampled.append(targetIDs)
+                sampled.append(targetProbabilities ?? targetIDs)
                 consumed.insert(ObjectIdentifier(session))
                 first.endSharedPhase(5)
             }
@@ -6691,9 +6833,15 @@ public final class Qwen4ExpMTPSession {
               preparedVerification == nil else { return false }
         let prepared = prepareVerification()
         // forwardStreamState has flushed every request-owned deferred PLE
-        // leaf before returning. Both target sampling and draft IDs are safe
-        // to submit now, without waiting for their CPU decision payload.
-        asyncEval(prepared.targetTokenIDs, prepared.draftTokenIDs)
+        // leaf before returning. Submit the probability graph used by sampled
+        // proposals as well as the draft IDs; otherwise its first evaluation
+        // is delayed until the host resolves the cycle and loses the overlap
+        // this staging point is intended to provide.
+        if let targetProbabilities = prepared.targetProbabilities {
+            asyncEval(targetProbabilities, prepared.draftTokenIDs)
+        } else {
+            asyncEval(prepared.targetTokenIDs, prepared.draftTokenIDs)
+        }
         preparedVerification = prepared
         return true
     }
@@ -6774,7 +6922,9 @@ public final class Qwen4ExpMTPSession {
         startPhase()
         let roundHeadOffset = mtpCache[0].offset
         var draftTokens: [MLXArray] = []
+        var proposalRows: [MLXArray] = []
         draftTokens.reserveCapacity(depth)
+        proposalRows.reserveCapacity(depth)
         var chainStream = primaryStream
         var chainToken = Self.tokens([primary])
         for index in 0 ..< depth {
@@ -6786,9 +6936,19 @@ public final class Qwen4ExpMTPSession {
                     (primaryPosition + index) ..< (primaryPosition + index + 1)),
                 cache: mtpCache
             )
-            let draft = model.projectLMHeadArgmax(draftOutput.hidden)
-                .asType(.int32)
-                .reshaped([1, 1])
+            let draft: MLXArray
+            if sampledProposal {
+                let proposal = Qwen4ExpMTPProbability.filtered(
+                    logits: model.projectLMHead(draftOutput.hidden),
+                    temperature: 1, topP: 0.95, topK: 20).reshaped(1, -1)
+                proposalRows.append(proposal)
+                draft = Qwen4ExpMTPProbability.sample(proposal, state: draftRandomState)
+                    .reshaped([1, 1])
+            } else {
+                draft = model.projectLMHeadArgmax(draftOutput.hidden)
+                    .asType(.int32)
+                    .reshaped([1, 1])
+            }
             draftTokens.append(draft)
             chainStream = draftOutput.stream
             chainToken = draft
@@ -6813,7 +6973,9 @@ public final class Qwen4ExpMTPSession {
         // the ordinary path keeps its deferred token lookup schedule.
         asyncEval(draftTokenIDs)
         endPhase(0)
-        return PreparedDraft(headOffset: roundHeadOffset, tokens: draftTokens, tokenIDs: draftTokenIDs)
+        return PreparedDraft(
+            headOffset: roundHeadOffset, tokens: draftTokens, tokenIDs: draftTokenIDs,
+            proposalProbabilities: sampledProposal ? concatenated(proposalRows, axis: 0) : nil)
     }
 
     private func prepareVerification() -> PreparedVerification {
@@ -6836,43 +6998,74 @@ public final class Qwen4ExpMTPSession {
         sharedFinalStateReusable = false
         let verifiedStream: MLXArray
         let targetTokenIDs: MLXArray
+        let targetProbabilities: MLXArray?
         let usedSequentialVerifier = ProcessInfo.processInfo.environment[
             "AFM_QWEN_VERIFY_SEQUENTIAL"
         ] == "1"
         if usedSequentialVerifier {
             var streams: [MLXArray] = []
             var sampledRows: [MLXArray] = []
+            var probabilityRows: [MLXArray] = []
             let verifyInputs = [Self.tokens([primary])] + draftTokens
             for (index, token) in verifyInputs.enumerated() {
                 let state = model.forwardStreamState(
                     inputIDs: token, cache: targetCache,
                     hostTokenIDs: hostTokenIDs.map { [$0[index]] })
                 streams.append(state.stream)
-                sampledRows.append(targetTokens(state.hidden))
+                if sampledProposal {
+                    probabilityRows.append(Qwen4ExpMTPProbability.filtered(
+                        logits: model.projectLMHead(state.hidden),
+                        temperature: targetTemperature, topP: targetTopP, topK: 0))
+                } else {
+                    sampledRows.append(targetTokens(state.hidden))
+                }
             }
             verifiedStream = concatenated(streams, axis: 1)
-            targetTokenIDs = concatenated(sampledRows, axis: 1)
+            targetProbabilities = sampledProposal
+                ? concatenated(probabilityRows, axis: 1) : nil
+            targetTokenIDs = sampledProposal ? MLXArray.zeros([0], dtype: .int32)
+                : concatenated(sampledRows, axis: 1)
         } else {
             let verified = model.forwardStreamState(
                 inputIDs: verifyTokenIDs, cache: targetCache,
                 verificationPolicy: verificationPolicy, hostTokenIDs: hostTokenIDs)
             verifiedStream = verified.stream
-            targetTokenIDs = targetTokens(
-                verified.hidden,
-                policy: verificationPolicy)[0, 0...]
+            if sampledProposal {
+                targetProbabilities = Qwen4ExpMTPProbability.filtered(
+                    logits: model.projectLMHead(
+                        verified.hidden, verificationPolicy: verificationPolicy),
+                    temperature: targetTemperature, topP: targetTopP, topK: 0)
+                targetTokenIDs = MLXArray.zeros([0], dtype: .int32)
+            } else {
+                targetProbabilities = nil
+                targetTokenIDs = targetTokens(
+                    verified.hidden,
+                    policy: verificationPolicy)[0, 0...]
+            }
         }
         endPhase(1)
         return PreparedVerification(
             headOffset: draft.headOffset, draftTokenIDs: draftTokenIDs,
-            targetTokenIDs: targetTokenIDs, verifiedStream: verifiedStream,
+            targetTokenIDs: targetTokenIDs, targetProbabilities: targetProbabilities,
+            proposalProbabilities: draft.proposalProbabilities, verifiedStream: verifiedStream,
             snapshot: targetSnapshot, usedSequentialVerifier: usedSequentialVerifier)
     }
 
     private func resolveVerification(_ prepared: PreparedVerification) -> Verification {
         startPhase()
-        let decision = Qwen4ExpMTPCycleDecision.resolve(
-            targetTokenIDs: prepared.targetTokenIDs,
-            draftTokenIDs: prepared.draftTokenIDs)
+        let decision: Qwen4ExpMTPCycleDecision
+        if let target = prepared.targetProbabilities,
+           let proposal = prepared.proposalProbabilities {
+            decision = Qwen4ExpMTPCycleDecision.resolve(
+                targetProbabilities: target, proposalProbabilities: proposal,
+                draftTokenIDs: prepared.draftTokenIDs,
+                acceptanceState: acceptanceRandomState,
+                correctionState: correctionRandomState)
+        } else {
+            decision = Qwen4ExpMTPCycleDecision.resolve(
+                targetTokenIDs: prepared.targetTokenIDs,
+                draftTokenIDs: prepared.draftTokenIDs)
+        }
         endPhase(2)
         startPhase()
         for index in 0 ..< decision.acceptedDraftCount {

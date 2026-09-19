@@ -551,6 +551,7 @@ to finish; those pages can still be reclaimed. Do not imply it pins the model.
 | `AFM_QWEN_MTP_STATE_REMAP` | Off | `1` + positive persistent-state budget; reuse certified UUID/revision rows across group ordering/membership changes; attention remains private |
 | `AFM_QWEN_MTP_PERSISTENT_STATE_MIB` | 0 / off | Integer clamped 0–2048; independent-attention shared verifier; up to four revision-guarded fixed-state banks; not attention/prefix/answer caching |
 | `AFM_QWEN_MTP_RETAIN_ANCHOR` | Off | `1` + batched policy and qualified trimmable head state; strict mode ignores it |
+| `AFM_QWEN_MTP_SAMPLED_PROPOSALS` | Off | `1` + Qwen Next MTP + target temperature above 0.5 selects request-local sampled draft q (temperature 1/top-p .95/top-k 20) with exact p/q acceptance and residual correction. Functional foundation only: a 20-seed 0.5K screen improved median acceptance 60.7%→63.6% but reduced median decode 92.72→88.75 tok/s because full-vocabulary q processing dominates. Do not use as a speed preset pending shortlist work. |
 
 Window 8 does **not** mean MTP depth 8, eight copies of the model, or server
 capacity 8. Expanded groups support 5–8 requests with at most 3 drafts / 4

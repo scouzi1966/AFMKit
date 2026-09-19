@@ -183,12 +183,13 @@ final class QwenNextMTPPipelineTests: XCTestCase {
         _ model: Qwen4ExpModel, temperature: Float, independentAttention: Bool = false,
         sharedVocabulary: Bool = false, mixedSampling: Bool = false, expanded: Bool = false,
         sharedHead: Bool = false, cohortDepth: Bool = false,
-        deferredPLEHostTokenIDs: Bool = false
+        deferredPLEHostTokenIDs: Bool = false, sampledProposal: Bool = false
     ) throws {
         let head = Qwen4ExpMTPHead(model.configuration)
         eval(model, head)
         let generator = Qwen4ExpMTPGenerator(model: model, head: head, depth: 3,
-            verificationPolicy: .batched, draftDispatchStride: 1)
+            verificationPolicy: .batched, draftDispatchStride: 1,
+            sampledProposalOverride: sampledProposal)
         var prompts = [[1, 2, 3, 4, 5, 6, 7, 8], [1, 2, 3, 4, 5, 6, 7, 9],
                        [9, 8, 7, 6, 5, 4, 3, 2], [1, 2, 3, 4, 5]]
         if expanded { prompts += prompts.map { $0.map { $0 + 10 } } }
@@ -301,6 +302,13 @@ final class QwenNextMTPPipelineTests: XCTestCase {
                 XCTAssertEqual(greedy.asArray(Int32.self), MLX.argMax(actual, axis: -1).asArray(Int32.self))
             }
         }
+    }
+
+    func testSampledProposalSharedVerifierPreservesIndependentResultsAndCancellation() async throws {
+        try assertSharedSessionVerification(
+            await makeModel(indexerBudget: 4), temperature: 0.6,
+            independentAttention: true, sharedVocabulary: true,
+            expanded: true, sampledProposal: true)
     }
 
     func testExpandedSharedVocabularyKeepsFallbackSamplingAndCancellation() async throws {
@@ -1837,6 +1845,100 @@ final class QwenNextMTPPipelineTests: XCTestCase {
             XCTAssertEqual(decision.acceptedDraftCount, accepted)
             XCTAssertEqual(decision.nextPrimary, 9)
         }
+    }
+
+    func testSampledProposalFilteringAndGeneralCorrection() {
+        let probabilities = MLXArray([Float(0.05), 0.15, 0.30, 0.50])
+        let filtered = Qwen4ExpMTPProbability.filtered(
+            logits: log(probabilities).reshaped(1, 1, 4),
+            temperature: 1, topP: 0.8, topK: 3).reshaped(-1).asArray(Float.self)
+        XCTAssertEqual(filtered[0], 0, accuracy: 1e-6)
+        XCTAssertEqual(filtered[1], 0, accuracy: 1e-6)
+        XCTAssertEqual(filtered[2], 0.375, accuracy: 1e-5)
+        XCTAssertEqual(filtered[3], 0.625, accuracy: 1e-5)
+
+        // Disjoint p and q force rejection; the residual is exactly p.
+        let rejected = Qwen4ExpMTPCycleDecision.resolve(
+            targetProbabilities: MLXArray([
+                Float(0), 1, 0,
+                0, 1, 0,
+            ]).reshaped(2, 3),
+            proposalProbabilities: MLXArray([Float(0), 0, 1]).reshaped(1, 3),
+            draftTokenIDs: MLXArray([Int32(2)]),
+            acceptanceState: MLXRandom.RandomState(seed: 10),
+            correctionState: MLXRandom.RandomState(seed: 11))
+        XCTAssertEqual(rejected.acceptedDraftCount, 0)
+        XCTAssertEqual(rejected.draftTokens, [2])
+        XCTAssertEqual(rejected.nextPrimary, 1)
+
+        // Equal point-mass p and q force acceptance and preserve the bonus row.
+        let accepted = Qwen4ExpMTPCycleDecision.resolve(
+            targetProbabilities: MLXArray([
+                Float(0), 1, 0,
+                0, 0, 1,
+            ]).reshaped(2, 3),
+            proposalProbabilities: MLXArray([Float(0), 1, 0]).reshaped(1, 3),
+            draftTokenIDs: MLXArray([Int32(1)]),
+            acceptanceState: MLXRandom.RandomState(seed: 12),
+            correctionState: MLXRandom.RandomState(seed: 13))
+        XCTAssertEqual(accepted.acceptedDraftCount, 1)
+        XCTAssertEqual(accepted.draftTokens, [1])
+        XCTAssertEqual(accepted.nextPrimary, 2)
+    }
+
+    func testSampledProposalMonteCarloPreservesTargetDistribution() {
+        let target = [Float(0.10), 0.20, 0.70]
+        let proposal = [Float(0.60), 0.30, 0.10]
+        let draws = 1_024
+        var emitted = [Int](repeating: 0, count: target.count)
+        var accepted = 0
+        for seed in 0..<draws {
+            let draft = Qwen4ExpMTPProbability.sample(
+                MLXArray(proposal).reshaped(1, 3),
+                state: MLXRandom.RandomState(seed: UInt64(seed * 3 + 1)))
+            let decision = Qwen4ExpMTPCycleDecision.resolve(
+                targetProbabilities: MLXArray(target + target).reshaped(2, 3),
+                proposalProbabilities: MLXArray(proposal).reshaped(1, 3),
+                draftTokenIDs: draft,
+                acceptanceState: MLXRandom.RandomState(seed: UInt64(seed * 3 + 2)),
+                correctionState: MLXRandom.RandomState(seed: UInt64(seed * 3 + 3)))
+            let token = decision.acceptedDraftCount == 1
+                ? decision.draftTokens[0] : decision.nextPrimary
+            emitted[token] += 1
+            accepted += decision.acceptedDraftCount
+        }
+        for token in target.indices {
+            XCTAssertEqual(
+                Double(emitted[token]) / Double(draws), Double(target[token]), accuracy: 0.05,
+                "token=\(token)")
+        }
+        // E[accept] = sum(min(p_i, q_i)) = 0.40.
+        XCTAssertEqual(Double(accepted) / Double(draws), 0.40, accuracy: 0.05)
+    }
+
+    func testSampledProposalSessionsKeepSeedAndCancellationRequestLocal() async throws {
+        let model = try await makeModel()
+        let head = Qwen4ExpMTPHead(model.configuration)
+        eval(model, head)
+        let generator = Qwen4ExpMTPGenerator(
+            model: model, head: head, depth: 3, verificationPolicy: .batched,
+            draftDispatchStride: 0, sampledProposalOverride: true)
+        func run(_ seed: UInt64, limit: Int? = nil) -> [Int] {
+            var count = 0
+            return generator.generate(
+                promptIds: [1, 2, 3], maxTokens: 12,
+                temperature: 0.6, topP: 1, seed: seed
+            ) { _ in
+                count += 1
+                return limit.map { count < $0 } ?? true
+            }
+        }
+        let expected = run(42)
+        XCTAssertEqual(expected.count, 12)
+        XCTAssertEqual(run(42), expected)
+        XCTAssertNotEqual(run(43), expected)
+        XCTAssertEqual(run(42, limit: 4), Array(expected.prefix(4)))
+        XCTAssertEqual(run(42), expected)
     }
 
     func testSampledMTPSeedEOSCancellationAndRequestIsolation() async throws {
