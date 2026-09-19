@@ -13,7 +13,7 @@ struct Qwen4ExpGatedDeltaPreworkOutput {
     let beta: MLXArray
 }
 
-/// Fuses decode and short target-verification prework used by Qwen's
+/// Fuses prefill, decode and short target-verification prework used by Qwen's
 /// gated-delta layers. The packed gate/beta extension follows the MIT-licensed
 /// mlx-serve implementation in `src/transformer.zig`; see
 /// `LICENSE-mlx-serve`. The kernel deliberately has a narrow, fail-closed
@@ -21,6 +21,12 @@ struct Qwen4ExpGatedDeltaPreworkOutput {
 enum Qwen4ExpGatedDeltaPrework {
     private static let SIMDWidth = 32
     private static let minimumWidth = 1
+    static let maximumBatchSize = 32
+    private static let maximumBatchedSequenceLength = 8
+    static let minimumReferencePrefillSequenceLength = 128
+    private static let referenceNormalizationHeadDimension = 128
+    static let batchEnabled =
+        ProcessInfo.processInfo.environment["AFM_QWEN_BATCH_GDN_PREWORK"] == "1"
 
     private static let enabled =
         ProcessInfo.processInfo.environment["AFM_QWEN_FUSED_GDN_PREWORK"] != "0"
@@ -36,7 +42,14 @@ enum Qwen4ExpGatedDeltaPrework {
         ],
         source: """
             const uint lane = thread_position_in_threadgroup.x;
-            const uint token = threadgroup_position_in_grid.y;
+            // Request-major token indexing, following David Dalcu's
+            // MIT-licensed mlx-serve gdnPreworkFused. Convolution history is
+            // strictly row-owned, including when a batch is shrunk/reordered.
+            const uint row_token = threadgroup_position_in_grid.y;
+            const uint batch = row_token / uint(VERIFY_WIDTH);
+            const uint token = row_token % uint(VERIFY_WIDTH);
+            const uint prior_base = batch * uint(CONVOLUTION_KERNEL - 1) * uint(CHANNELS);
+            const uint projected_base = batch * uint(VERIFY_WIDTH) * uint(CHANNELS);
             const uint logical_head = threadgroup_position_in_grid.z;
 
             constexpr uint query_head_count = uint(KEY_HEADS);
@@ -62,15 +75,16 @@ enum Qwen4ExpGatedDeltaPrework {
 
             T activated[HEAD_DIMENSION / SIMD_WIDTH];
             T sum_of_squares = T(0);
+            float reference_sum_of_squares = 0.0f;
             for (uint element = 0; element < values_per_lane; ++element) {
                 const uint channel = channel_base + lane * values_per_lane + element;
                 float accumulator = 0.0f;
                 for (uint tap = 0; tap < uint(CONVOLUTION_KERNEL); ++tap) {
                     const uint source_row = token + tap;
                     const T input_value = source_row < prior_length
-                        ? prior[source_row * uint(CHANNELS) + channel]
+                        ? prior[prior_base + source_row * uint(CHANNELS) + channel]
                         : projected[
-                            (source_row - prior_length) * uint(CHANNELS) + channel];
+                            projected_base + (source_row - prior_length) * uint(CHANNELS) + channel];
                     accumulator += float(input_value) * float(
                         convolution_weight[channel * uint(CONVOLUTION_KERNEL) + tap]);
                 }
@@ -83,38 +97,60 @@ enum Qwen4ExpGatedDeltaPrework {
                 const T activation = convolution * (
                     convolution < T(0) ? sigmoid_tail : T(1) - sigmoid_tail);
                 activated[element] = activation;
-                // The stock graph squares and reduces in the model dtype.
-                // Preserve both BF16 rounding sites rather than promoting
-                // this reduction to FP32.
-                const T squared = activation * activation;
-                sum_of_squares = squared + sum_of_squares;
+                if constexpr (REFERENCE_QK_NORMALIZATION) {
+                    // ddalcu/mlx-serve (MIT), v26.9.2 gatedDeltaNet uses
+                    // MLX RMSNorm, not the stock low-precision L2 expression.
+                    // Match mlx/backend/metal/kernels/rms_norm.metal:
+                    // four adjacent values per lane, FP32 square/reduction.
+                    const float value = float(activation);
+                    reference_sum_of_squares += value * value;
+                } else {
+                    // Preserve the existing decode/verifier rounding sites.
+                    const T squared = activation * activation;
+                    sum_of_squares = squared + sum_of_squares;
+                }
             }
 
             if (is_query || is_key) {
-                sum_of_squares = simd_sum(sum_of_squares);
-                const T inverse_l2 = metal::precise::rsqrt(
-                    sum_of_squares + T(1.0e-6f));
                 const uint output_base =
-                    (token * uint(KEY_HEADS) + head) * uint(HEAD_DIMENSION)
+                    (row_token * uint(KEY_HEADS) + head) * uint(HEAD_DIMENSION)
                     + lane * values_per_lane;
-                for (uint element = 0; element < values_per_lane; ++element) {
-                    const T normalized = activated[element] * inverse_l2;
-                    if (is_query) {
-                        // Query normalization has a second model-dtype
-                        // multiplication by 1/sqrt(head dimension). Keys do
-                        // not; preserving that operation order is required
-                        // for exact BF16 target-verification parity.
-                        const T query_scale = T(
-                            metal::precise::rsqrt(float(HEAD_DIMENSION)));
-                        const T scaled = normalized * query_scale;
-                        queries[output_base + element] = scaled;
-                    } else {
-                        keys[output_base + element] = normalized;
+                if constexpr (REFERENCE_QK_NORMALIZATION) {
+                    const float total = simd_sum(reference_sum_of_squares);
+                    const float inverse_rms = metal::precise::rsqrt(
+                        total / float(HEAD_DIMENSION) + 1.0e-6f);
+                    const T scale = is_query
+                        ? T(1.0f / float(HEAD_DIMENSION))
+                        : T(metal::precise::sqrt(1.0f / float(HEAD_DIMENSION)));
+                    for (uint element = 0; element < values_per_lane; ++element) {
+                        // The RMS output rounds before the separate scale.
+                        // Combining these FP32 multiplies changes BF16 output.
+                        const T normalized = T(float(activated[element]) * inverse_rms);
+                        const T scaled = normalized * scale;
+                        if (is_query) {
+                            queries[output_base + element] = scaled;
+                        } else {
+                            keys[output_base + element] = scaled;
+                        }
+                    }
+                } else {
+                    sum_of_squares = simd_sum(sum_of_squares);
+                    const T inverse_l2 = metal::precise::rsqrt(
+                        sum_of_squares + T(1.0e-6f));
+                    for (uint element = 0; element < values_per_lane; ++element) {
+                        const T normalized = activated[element] * inverse_l2;
+                        if (is_query) {
+                            const T query_scale = T(
+                                metal::precise::rsqrt(float(HEAD_DIMENSION)));
+                            queries[output_base + element] = normalized * query_scale;
+                        } else {
+                            keys[output_base + element] = normalized;
+                        }
                     }
                 }
             } else {
                 const uint output_base =
-                    (token * uint(VALUE_HEADS) + head) * uint(HEAD_DIMENSION)
+                    (row_token * uint(VALUE_HEADS) + head) * uint(HEAD_DIMENSION)
                     + lane * values_per_lane;
                 for (uint element = 0; element < values_per_lane; ++element) {
                     values[output_base + element] = activated[element];
@@ -125,7 +161,7 @@ enum Qwen4ExpGatedDeltaPrework {
                     // repeating it across every recurrence-state row. These
                     // are the same model-dtype rounding points as the stock
                     // computeG/sigmoid graph and mlx-serve's packed prework.
-                    const uint scalar_index = token * uint(VALUE_HEADS) + head;
+                    const uint scalar_index = row_token * uint(VALUE_HEADS) + head;
                     const T beta_input = projected_b[scalar_index];
                     const T sigmoid_tail = T(1) /
                         (T(1) + metal::exp(metal::abs(beta_input)));
@@ -158,10 +194,10 @@ enum Qwen4ExpGatedDeltaPrework {
                         const uint channel =
                             channel_base + lane * values_per_lane + element;
                         const T value = source_row < prior_length
-                            ? prior[source_row * uint(CHANNELS) + channel]
+                            ? prior[prior_base + source_row * uint(CHANNELS) + channel]
                             : projected[
-                                (source_row - prior_length) * uint(CHANNELS) + channel];
-                        next_prior[state_row * uint(CHANNELS) + channel] = value;
+                                projected_base + (source_row - prior_length) * uint(CHANNELS) + channel];
+                        next_prior[prior_base + state_row * uint(CHANNELS) + channel] = value;
                     }
                 }
             }
@@ -179,9 +215,12 @@ enum Qwen4ExpGatedDeltaPrework {
         valueHeads: Int,
         keyHeadDimension: Int,
         valueHeadDimension: Int,
-        convolutionKernel: Int
+        convolutionKernel: Int,
+        allowBatch: Bool = batchEnabled,
+        referencePrefillQKNormalization: Bool = false
     ) -> Qwen4ExpGatedDeltaPreworkOutput? {
         let verifyWidth = projected.ndim == 3 ? projected.dim(1) : 0
+        let batchSize = projected.ndim == 3 ? projected.dim(0) : 0
         let channels = 2 * keyHeads * keyHeadDimension
             + valueHeads * valueHeadDimension
         let supportedType = projected.dtype == .bfloat16 || projected.dtype == .float16
@@ -189,7 +228,8 @@ enum Qwen4ExpGatedDeltaPrework {
         guard enabled,
               Device.defaultDevice().deviceType == .gpu,
               projected.ndim == 3,
-              projected.dim(0) == 1,
+              batchSize == 1 || (allowBatch && batchSize > 1 && batchSize <= maximumBatchSize
+                  && verifyWidth <= maximumBatchedSequenceLength),
               verifyWidth >= minimumWidth,
               keyHeads > 0,
               valueHeads > 0,
@@ -197,13 +237,19 @@ enum Qwen4ExpGatedDeltaPrework {
               keyHeadDimension.isMultiple(of: SIMDWidth),
               convolutionKernel > 1,
               projected.dim(2) == channels,
-              prior.shape == [1, convolutionKernel - 1, channels],
+              prior.shape == [batchSize, convolutionKernel - 1, channels],
               convolutionWeight.shape == [channels, convolutionKernel, 1],
-              projectedA.shape == [1, verifyWidth, valueHeads],
-              projectedB.shape == [1, verifyWidth, valueHeads],
+              projectedA.shape == [batchSize, verifyWidth, valueHeads],
+              projectedB.shape == [batchSize, verifyWidth, valueHeads],
               aLog.shape == [valueHeads],
               dtBias.shape == [valueHeads],
               supportedType,
+              // Fail closed outside the qualified single-SIMD RMS geometry.
+              // The flag is internal/default-off; decode and verifier calls
+              // do not silently acquire different arithmetic.
+              !referencePrefillQKNormalization || (
+                batchSize == 1 && verifyWidth >= minimumReferencePrefillSequenceLength
+                    && keyHeadDimension == referenceNormalizationHeadDimension),
               prior.dtype == projected.dtype,
               convolutionWeight.dtype == projected.dtype,
               projectedA.dtype == projected.dtype,
@@ -228,16 +274,17 @@ enum Qwen4ExpGatedDeltaPrework {
                 ("CHANNELS", channels),
                 ("VERIFY_WIDTH", verifyWidth),
                 ("SIMD_WIDTH", SIMDWidth),
+                ("REFERENCE_QK_NORMALIZATION", referencePrefillQKNormalization),
             ],
-            grid: (SIMDWidth, verifyWidth, 2 * keyHeads + valueHeads),
+            grid: (SIMDWidth, batchSize * verifyWidth, 2 * keyHeads + valueHeads),
             threadGroup: (SIMDWidth, 1, 1),
             outputShapes: [
-                [1, verifyWidth, keyHeads, keyHeadDimension],
-                [1, verifyWidth, keyHeads, keyHeadDimension],
-                [1, verifyWidth, valueHeads, valueHeadDimension],
-                [1, convolutionKernel - 1, channels],
-                [1, verifyWidth, valueHeads],
-                [1, verifyWidth, valueHeads],
+                [batchSize, verifyWidth, keyHeads, keyHeadDimension],
+                [batchSize, verifyWidth, keyHeads, keyHeadDimension],
+                [batchSize, verifyWidth, valueHeads, valueHeadDimension],
+                [batchSize, convolutionKernel - 1, channels],
+                [batchSize, verifyWidth, valueHeads],
+                [batchSize, verifyWidth, valueHeads],
             ],
             outputDTypes: Array(repeating: projected.dtype, count: 6),
             cacheConfiguration: true)

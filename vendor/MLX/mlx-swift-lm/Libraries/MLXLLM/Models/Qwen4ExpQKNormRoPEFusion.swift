@@ -126,6 +126,27 @@ enum Qwen4ExpQKNormRoPEFusion {
             }
         """)
 
+    /// A one-token request batch is a collection of independent norm/RoPE
+    /// rows, not a shared sequence history. Reuse the qualified row kernel by
+    /// flattening ONLY this stateless operation and supplying each row's own
+    /// angles. Never apply this reinterpretation to attention or recurrence.
+    static func callIndependentRows(
+        q: MLXArray, k: MLXArray, qWeight: MLXArray, kWeight: MLXArray,
+        angles: MLXArray, epsilon: Float, qHeads: Int, kvHeads: Int,
+        rotaryDimensions: Int
+    ) -> (q: MLXArray, k: MLXArray)? {
+        guard q.ndim == 4, k.ndim == 4, q.dim(0) == k.dim(0),
+              q.dim(0) > 0, q.dim(0) <= maximumSequenceLength,
+              q.dim(1) == 1, k.dim(1) == 1 else { return nil }
+        let count = q.dim(0)
+        guard let result = call(q: q.reshaped(1, count, q.dim(2), q.dim(3)),
+            k: k.reshaped(1, count, k.dim(2), k.dim(3)),
+            qWeight: qWeight, kWeight: kWeight, angles: angles,
+            epsilon: epsilon, qHeads: qHeads, kvHeads: kvHeads,
+            rotaryDimensions: rotaryDimensions) else { return nil }
+        return (result.q.transposed(2, 1, 0, 3), result.k.transposed(2, 1, 0, 3))
+    }
+
     static func call(
         q: MLXArray,
         k: MLXArray,
