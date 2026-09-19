@@ -10,6 +10,7 @@ repositories or submodules.
 | `mlx-swift/Source/Cmlx/mlx-c` | `ml-explore/mlx-c` | `0726ca922fc902c4c61ef9c27d94132be418e945` | `1692252c78e634a90ae09bd77a9f68929982b8a0` |
 | `mlx-swift` | `ml-explore/mlx-swift` | `0bb916c67f4b9e5c682cbe02a42c701c93ab5021` | `6000b7b26b70be2713c74e9ec2adeb89be07b9e5` |
 | `mlx-swift-lm` | `ml-explore/mlx-swift-lm` plus AFM model adaptations | — | `e0d7fa71bc5e422a416f191c297264f698391561` |
+| `mlx-swift-lm/Libraries/MLXLLM/Models/Qwen4Exp.swift` final-prefill preparation | AFM-authored adaptation using the existing `LanguageModel.prepare` contract | Existing AFM Qwen4Exp model snapshot | This AFMKit revision; opt-in final-row LM-head projection |
 | `mlx-swift-lm/Libraries/MLXLLM/Models/Qwen4ExpBatchedQuantizedProjection.swift` | `ddalcu/mlx-serve` plain-SIMD verify QMM, derived from MTPLX | `1ec580a8b7f5f051daef892310660bb62b2ece6c` | This AFMKit revision; experimental Qwen Next batched verification only |
 
 The AFM changes add DeepSeek V4 MXFP4/Q8 Metal primitives, their C and Swift
@@ -53,6 +54,19 @@ state. Service integration is opt-in with `AFM_PREFIX_REPLAY_BOUNDARIES=1`;
 ordinary callers retain the existing initialization path. No Metal source or
 prebuilt metallib changes are involved. Preserve the shared replay tests when
 refreshing this vendored snapshot.
+
+`Qwen4Exp.swift` captures `AFM_QWEN_PREFILL_LAST_LOGITS=1` at model creation
+to opt into final-row vocabulary projection during ordinary text preparation.
+It keeps the existing chunk widths, cache updates and final trunk/mixer path,
+then slices the final mixed hidden row before the original LM head. The default
+remaining-token contract, full forward/hidden-state APIs, replay preparation and
+MTP sessions keep their existing paths. Preserve `QwenNextFinalPrefillTests` and
+the separate checkpoint head-projection experiment during refreshes. GEMM/GEMV
+rounding can differ; the opt-in does not establish BF16 equality, model quality
+or end-to-end speedup. No Metal source or prebuilt metallib changes are involved.
+For both flag settings, an explicitly nonpositive prefill window now throws
+before cache mutation, replacing the former invalid or stalled chunk loop;
+valid opt-out inputs retain the existing preparation behavior.
 
 `ImmutableRowCache.swift` is an AFM-owned bounded host row cache. The mapped
 Qwen PLE table can opt into it with `AFM_QWEN_PLE_ROW_CACHE_MIB` (default 0,

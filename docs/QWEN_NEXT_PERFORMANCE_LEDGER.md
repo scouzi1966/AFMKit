@@ -230,3 +230,17 @@ python3 Scripts/qwen-next-performance-ledger.py \
 Coverage is the frozen September 9–15 Qwen Next context evidence, not every
 AFM model or harness. Other checkpoints, batching, 512-token agentic work and
 older differently defined plots need explicit metric adapters and provenance.
+
+## September 19 final-prefill candidate (separate evidence)
+
+[The final-prefill head report](QWEN_NEXT_FINAL_PREFILL_HEAD.md) records a new
+default-off, same-checkpoint experiment without replacing the above baseline or
+peak records. C15 uncached AR improves 49.69→51.88 aggregate tok/s, with all
+90 responses identical in the warmed comparison. C1 prefill improves
+5.62/6.25/7.16/0.54% at 0.5/1/2/4K. Corresponding AR decode changes are
+−1.91/−0.55/−0.48/+0.14%; no decode gain is claimed. The MTP bypass check has
+unchanged text and mixed timing, not a new peak. Cold first-use and cache-hit
+differences are retained rather than folded into an optimization claim.
+
+These results live under `final-prefill-head-20260919` in the same external
+evidence root. They are not silently added to this index's frozen coverage.

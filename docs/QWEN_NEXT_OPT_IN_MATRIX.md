@@ -7,8 +7,8 @@ This is the central index of settings and combinations for the Qwen Next
 optimization project. Update it with every new experiment, removal or result.
 Historical reports remain the evidence; this index does not rewrite them.
 
-Inventory: **49 named Qwen controls, 48 wired and one removed** (the original
-46 plus three boundary controls). This
+Inventory: **50 named Qwen controls, 49 wired and one removed** (the original
+46 plus three boundary controls and one final-prefill head experiment). This
 covers every Qwen control named in the preceding `QWEN_NEXT_*` reports and
 shared-batch workstream, plus the existing deferred-token-resolution control.
 The generic replay/profiling/SDPA controls and CLI settings are listed separately.
@@ -52,6 +52,21 @@ from 38/50 to 43/50, with seven improvements and two regressions. No new launch
 preset or CLI/API/environment option is enabled. Numerical closeness and this
 small quality screen alone are not adoption criteria. Combined concurrent-cache
 qualification and broader reference quality parity remain pending.
+
+### Final-prefill head projection (September 19)
+
+| Control / combination | Default | Opt-in | Qualification |
+|---|---|---|---|
+| `AFM_QWEN_PREFILL_LAST_LOGITS` | Off; ordinary remaining-token preparation | Exact value `1`, captured at model creation | Final mixed hidden row only is projected; trunk/chunk math retained; BF16 rounding can differ |
+| Above + ordinary AR / cache off | Existing preparation | Candidate final-head path | C15: 49.69→51.88 aggregate tok/s (+4.40%), 90/90 identical texts, 72/90 correct each. C1 prefill +5.62/+6.25/+7.16/+0.54% at 0.5/1/2/4K, 16/16 identical texts; no decode gain claimed. Default off; cold first-use anomaly retained separately |
+| Above + explicit replay helper or native MTP | Existing route | Override bypassed by those entry points | C15 AR prefix test: 90/90 identical texts with repeat cache hits. C1 MTP context: 16/16 identical texts. No cache/MTP speedup claimed; not C15 MTP or serial-prefix qualification |
+| Above + masked/media input | Existing route | Remaining-token fallback | No vision feature or masked-input optimization added |
+
+See [the controlled implementation report](QWEN_NEXT_FINAL_PREFILL_HEAD.md).
+This is a provider experiment, not a new production CLI option or default.
+Do not infer that all prefix-enabled requests bypass it: serial ordinary
+preparation can still reach the override without the explicit replay helper.
+The synthetic head-only speedup does not replace end-to-end qualification.
 
 ### Test-only normalization matrix
 

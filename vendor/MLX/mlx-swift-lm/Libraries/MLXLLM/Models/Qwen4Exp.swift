@@ -5263,6 +5263,19 @@ public final class Qwen4ExpModel: Module, LLMModel, KVCacheDimensionProvider, Re
     private let ngramTableConfiguration: Qwen4ExpNGramTableConfiguration?
     private var usesMappedNGramTable = false
 
+    /// Captured once per model. Narrowing the final projection changes the
+    /// GEMM/GEMV rounding path, so ordinary preparation remains opt-in.
+    let prefillLastLogits: Bool
+    private static let defaultPrefillWindowSize = 512
+
+    enum PrefillPreparationError: Error, Equatable {
+        case invalidWindowSize(Int)
+    }
+
+    static func prefillLastLogitsEnabled(environment: [String: String]) -> Bool {
+        environment["AFM_QWEN_PREFILL_LAST_LOGITS"] == "1"
+    }
+
     /// Diagnostic parity path for the mapped PLE table. The reference token
     /// loop reaches the PLE boundary before resolving the pending sampled
     /// scalar. Keep this opt-in until the fixed-gate A/B proves that scheduling
@@ -5273,9 +5286,17 @@ public final class Qwen4ExpModel: Module, LLMModel, KVCacheDimensionProvider, Re
         ] != "0"
     @ModuleInfo(key: "lm_head") var lmHead: Linear?
 
-    public init(_ wrapper: Qwen4ExpConfiguration) {
+    public convenience init(_ wrapper: Qwen4ExpConfiguration) {
+        self.init(wrapper, prefillLastLogits: Self.prefillLastLogitsEnabled(
+            environment: ProcessInfo.processInfo.environment))
+    }
+
+    /// Internal injection keeps tests independent of process-global environment
+    /// mutation and does not expose a second public generation interface.
+    init(_ wrapper: Qwen4ExpConfiguration, prefillLastLogits: Bool) {
         let config = wrapper.textConfig
         configuration = config
+        self.prefillLastLogits = prefillLastLogits
         ngramTableConfiguration = wrapper.ngramTable
         vocabularySize = config.vocabularySize
         kvHeads = config.layerTypes.map { $0 == "linear_attention" ? 0 : config.kvHeads }
@@ -5312,6 +5333,39 @@ public final class Qwen4ExpModel: Module, LLMModel, KVCacheDimensionProvider, Re
 
     public var consumesHostTokenIDs: Bool {
         usesMappedNGramTable && !Self.resolveMappedNGramTokenAtPLE
+    }
+
+    public func prepare(_ input: LMInput, cache: [KVCache], windowSize: Int?) throws
+        -> PrepareResult
+    {
+        let step = windowSize ?? Self.defaultPrefillWindowSize
+        guard step > 0 else { throw PrefillPreparationError.invalidWindowSize(step) }
+        var remaining = input.text
+
+        // Preserve LLMModel.prepare's chunk widths, full trunk, host-token
+        // behavior and cache materialization. Earlier unused chunk logits stay
+        // lazy; only the final remainder needs a vocabulary projection.
+        while remaining.tokens.size > step {
+            let chunk = remaining[.newAxis, ..<step]
+            _ = self(chunk, cache: cache.isEmpty ? nil : cache, state: nil)
+            eval(cache)
+            remaining = remaining[step...]
+        }
+
+        guard prefillLastLogits,
+              input.image == nil, input.video == nil,
+              remaining.mask == nil, remaining.tokens.ndim == 1,
+              remaining.tokens.size > 0
+        else { return .tokens(remaining) }
+
+        let hostTokenIDs = consumesHostTokenIDs
+            ? remaining.tokens.reshaped(-1).asArray(Int.self) : nil
+        // The ordinary inner forward includes the existing fused final mixer.
+        // forwardStreamState would materialize/combine that stream differently.
+        let hidden = model(remaining.tokens[.newAxis],
+                           cache: cache.isEmpty ? nil : cache, hostTokenIDs: hostTokenIDs)
+        let last = hidden[0..., (hidden.dim(1) - 1)..., 0...]
+        return .logits(LMOutput(logits: projectLMHead(last)))
     }
 
     public func callAsFunction(
