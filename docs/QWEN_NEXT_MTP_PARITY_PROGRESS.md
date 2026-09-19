@@ -623,6 +623,41 @@ Evidence is append-only under `sampled-proposals-20260919`,
 `sampled-seed-sweep-20260919`, and
 `greedy-acceptance-cross-engine-v2-20260919` in the external benchmark root.
 
+### Specialized sampled-draft shortlist (September 19)
+
+The candidate above is now implemented behind both
+`AFM_QWEN_MTP_SAMPLED_PROPOSALS=1` and
+`AFM_QWEN_MTP_DRAFT_SHORTLIST=1`. It is proposal-only: a resident 3-bit/group-64
+copy of the original vocabulary head produces 32 candidates through a custom
+two-dispatch Metal selector, then the unchanged checkpoint head exactly
+re-scores those 32 packed rows. Target verification and the p/q residual law
+remain unchanged. The implementation credits David Dalcu's MIT-licensed
+`mlx-serve` v26.9.4 design; the Swift kernels and integration are maintained
+locally.
+
+On the exact ddalcu checkpoint, 0.5K prompt, temperature 0.6/top-p 1, depth 3,
+seed 42, one excluded warmup and three 128-token trials, full-vocabulary sampled
+q measured **85.52 tok/s** median and the shortlist measured **95.69 tok/s**
+(**+11.9%**). Prefill was 954.57 versus 953.41 tok/s and median peak host memory
+was 131.27 versus 131.61 GiB. All saved responses were coherent.
+
+A separate 20-seed candidate sweep measured **98.70 tok/s median**, 97.99 mean,
+and 88.52–108.74 range. Median per-draft acceptance was 63.65% and median output
+was 2.91 tokens/cycle, so the gain comes from removing full-vocabulary draft
+projection work rather than changing output length or inflating acceptance.
+The prior full-vocabulary 20-seed screen measured 88.75 tok/s median. Relative
+to the refreshed 105.70 tok/s short-context reference, the candidate median is
+6.6% behind and therefore inside the workstream's 10% gate.
+
+Focused Release tests cover the production Metal selector, exact original-row
+rescoring, unsupported-input fallback and checkpoint-weight immutability. The
+full Release MTP pipeline passed **84 tests with 0 failures and one intentional
+skip** on September 19. It stays opt-in: quality qualification beyond the coherent context samples,
+longer-context performance, cancellation and concurrent/prefix-cache coverage
+are still required. Evidence is append-only under
+`draft-shortlist-depth3-20260919` and
+`draft-shortlist-seed-sweep-20260919` in the external benchmark root.
+
 ## Experiments not adopted
 
 - **Merged draft-head history / last-row-only tail:** little speed benefit and a

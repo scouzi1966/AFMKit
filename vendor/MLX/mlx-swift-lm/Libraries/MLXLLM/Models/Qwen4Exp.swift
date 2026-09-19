@@ -5285,6 +5285,16 @@ public final class Qwen4ExpModel: Module, LLMModel, KVCacheDimensionProvider, Re
             "AFM_QWEN_RESOLVE_MAPPED_NGRAM_TOKEN_AT_PLE"
         ] != "0"
     @ModuleInfo(key: "lm_head") var lmHead: Linear?
+    private lazy var draftSelector: Qwen4ExpDraftSelector? = {
+        guard ProcessInfo.processInfo.environment[
+            "AFM_QWEN_MTP_DRAFT_SHORTLIST"
+        ] == "1", let head = lmHead as? QuantizedLinear else { return nil }
+        return Qwen4ExpDraftSelector(target: head)
+    }()
+
+    func projectDraftShortlist(_ hidden: MLXArray) -> Qwen4ExpDraftShortlist? {
+        draftSelector?.shortlist(hidden)
+    }
 
     public convenience init(_ wrapper: Qwen4ExpConfiguration) {
         self.init(wrapper, prefillLastLogits: Self.prefillLastLogitsEnabled(
@@ -6938,16 +6948,37 @@ public final class Qwen4ExpMTPSession {
             )
             let draft: MLXArray
             if sampledProposal {
-                let proposal = Qwen4ExpMTPProbability.filtered(
-                    logits: model.projectLMHead(draftOutput.hidden),
-                    temperature: 1, topP: 0.95, topK: 20).reshaped(1, -1)
-                proposalRows.append(proposal)
-                draft = Qwen4ExpMTPProbability.sample(proposal, state: draftRandomState)
-                    .reshaped([1, 1])
+                if let shortlist = model.projectDraftShortlist(draftOutput.hidden) {
+                    let compact = Qwen4ExpMTPProbability.filtered(
+                        logits: shortlist.logits,
+                        temperature: 1, topP: 0.95, topK: 20).reshaped(-1)
+                    // The exact acceptance/correction implementation consumes
+                    // dense q rows. Only this cheap scatter is full-vocabulary;
+                    // the expensive draft projection remains 3-bit + 32 rows.
+                    let proposal = MLXArray.zeros(
+                        [shortlist.vocabularySize], dtype: compact.dtype
+                    ).at[shortlist.tokenIDs].add(compact).reshaped(1, -1)
+                    proposalRows.append(proposal)
+                    let local = Qwen4ExpMTPProbability.sample(
+                        compact, state: draftRandomState).reshaped(-1)
+                    draft = shortlist.tokenIDs[local].asType(.int32).reshaped([1, 1])
+                } else {
+                    let proposal = Qwen4ExpMTPProbability.filtered(
+                        logits: model.projectLMHead(draftOutput.hidden),
+                        temperature: 1, topP: 0.95, topK: 20).reshaped(1, -1)
+                    proposalRows.append(proposal)
+                    draft = Qwen4ExpMTPProbability.sample(
+                        proposal, state: draftRandomState).reshaped([1, 1])
+                }
             } else {
-                draft = model.projectLMHeadArgmax(draftOutput.hidden)
-                    .asType(.int32)
-                    .reshaped([1, 1])
+                if let shortlist = model.projectDraftShortlist(draftOutput.hidden) {
+                    let local = MLX.argMax(shortlist.logits.reshaped(-1))
+                    draft = shortlist.tokenIDs[local].asType(.int32).reshaped([1, 1])
+                } else {
+                    draft = model.projectLMHeadArgmax(draftOutput.hidden)
+                        .asType(.int32)
+                        .reshaped([1, 1])
+                }
             }
             draftTokens.append(draft)
             chainStream = draftOutput.stream

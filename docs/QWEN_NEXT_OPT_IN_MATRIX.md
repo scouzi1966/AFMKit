@@ -7,8 +7,9 @@ This is the central index of settings and combinations for the Qwen Next
 optimization project. Update it with every new experiment, removal or result.
 Historical reports remain the evidence; this index does not rewrite them.
 
-Inventory: **50 named Qwen controls, 49 wired and one removed** (the original
-46 plus three boundary controls and one final-prefill head experiment). This
+Inventory: **51 named Qwen controls, 50 wired and one removed** (the original
+46 plus three boundary controls, one final-prefill head experiment and one
+sampled-draft shortlist experiment). This
 covers every Qwen control named in the preceding `QWEN_NEXT_*` reports and
 shared-batch workstream, plus the existing deferred-token-resolution control.
 The generic replay/profiling/SDPA controls and CLI settings are listed separately.
@@ -552,6 +553,7 @@ to finish; those pages can still be reclaimed. Do not imply it pins the model.
 | `AFM_QWEN_MTP_PERSISTENT_STATE_MIB` | 0 / off | Integer clamped 0–2048; independent-attention shared verifier; up to four revision-guarded fixed-state banks; not attention/prefix/answer caching |
 | `AFM_QWEN_MTP_RETAIN_ANCHOR` | Off | `1` + batched policy and qualified trimmable head state; strict mode ignores it |
 | `AFM_QWEN_MTP_SAMPLED_PROPOSALS` | Off | `1` + Qwen Next MTP + target temperature above 0.5 selects request-local sampled draft q (temperature 1/top-p .95/top-k 20) with exact p/q acceptance and residual correction. Functional foundation only: a 20-seed 0.5K screen improved median acceptance 60.7%→63.6% but reduced median decode 92.72→88.75 tok/s because full-vocabulary q processing dominates. Do not use as a speed preset pending shortlist work. |
+| `AFM_QWEN_MTP_DRAFT_SHORTLIST` | Off | `1` is active only with Qwen Next MTP; sampled speed qualification also requires `AFM_QWEN_MTP_SAMPLED_PROPOSALS=1`. Uses a proposal-only 3-bit/group-64 vocabulary copy, custom Metal top-32, and exact original-head row rescoring. Same-binary seed-42 A/B: 85.52→95.69 tok/s median (+11.9%), prefill and median memory flat. A 20-seed candidate sweep measured 98.70 tok/s median with coherent outputs, 63.65% median acceptance and 2.91 tokens/cycle. Opt-in pending longer-context and concurrent/prefix qualification; [progress and evidence](QWEN_NEXT_MTP_PARITY_PROGRESS.md#specialized-sampled-draft-shortlist-september-19). |
 
 Window 8 does **not** mean MTP depth 8, eight copies of the model, or server
 capacity 8. Expanded groups support 5–8 requests with at most 3 drafts / 4

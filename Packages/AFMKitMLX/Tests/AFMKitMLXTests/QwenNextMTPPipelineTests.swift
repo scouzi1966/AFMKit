@@ -7,6 +7,47 @@ import XCTest
 @testable import AFMKitMLX
 
 final class QwenNextMTPPipelineTests: XCTestCase {
+    func testDraftShortlistUsesCoarseTop32AndExactTargetRows() throws {
+        // Clear the production Metal selector's 16,384-row eligibility floor
+        // while keeping this fixture small enough for a focused unit test.
+        let rows = 16_400
+        let columns = 64
+        var values = Array(repeating: Float(0), count: rows * columns)
+        for row in 0..<rows { values[row * columns] = Float(row) / Float(rows) }
+        let target = QuantizedLinear(
+            weight: MLXArray(values).reshaped(rows, columns).asType(.bfloat16),
+            bias: nil, groupSize: 64, bits: 4)
+        eval(target)
+        let originalWeight = target.weight.asArray(UInt32.self)
+        let selector = try XCTUnwrap(Qwen4ExpDraftSelector(target: target))
+
+        for sign: Float in [-1, 1] {
+            let hidden = MLXArray(
+                [sign] + Array(repeating: Float(0), count: columns - 1)
+            ).reshaped(1, 1, columns).asType(.bfloat16)
+            let shortlist = try XCTUnwrap(selector.shortlist(hidden))
+            let local = argMax(shortlist.logits.reshaped(-1))
+            let selected = shortlist.tokenIDs[local].item(Int.self)
+            let expected = argMax(target(hidden), axis: -1).item(Int.self)
+            eval(shortlist.tokenIDs, shortlist.logits)
+            XCTAssertEqual(shortlist.tokenIDs.size, Qwen4ExpDraftSelector.shortlistSize)
+            XCTAssertEqual(selected, expected)
+            XCTAssertEqual(Set(shortlist.tokenIDs.asArray(Int32.self)).count,
+                           Qwen4ExpDraftSelector.shortlistSize)
+        }
+        XCTAssertEqual(originalWeight, target.weight.asArray(UInt32.self))
+    }
+
+    func testDraftShortlistFailsClosedForUnsupportedInputAndHead() throws {
+        let weights = MLXArray.zeros([128, 64], dtype: .bfloat16)
+        let target = QuantizedLinear(weight: weights, bias: nil, groupSize: 64, bits: 4)
+        let selector = try XCTUnwrap(Qwen4ExpDraftSelector(target: target))
+        XCTAssertNil(selector.shortlist(MLXArray.zeros([2, 1, 64], dtype: .bfloat16)))
+        XCTAssertNil(selector.shortlist(MLXArray.zeros([1, 1, 64], dtype: .float32)))
+        XCTAssertNil(Qwen4ExpDraftSelector(target: QuantizedLinear(
+            weight: weights, bias: nil, groupSize: 64, bits: 3)))
+    }
+
     private func assertSharedVerificationRows(_ model: Qwen4ExpModel) throws {
         eval(model)
         let originals = (0..<3).map { _ in model.newCache(parameters: nil) }
