@@ -47,7 +47,7 @@ final class QwenNextBatchedProjectionTests: XCTestCase {
 
     func testUnsupportedLayoutsDeclineWithoutChangingOrdinaryProjection() throws {
         let q = layer(256, 512, .bfloat16)
-        for shape in [[1, 1, 256], [1, 8, 256], [2, 3, 256], [3, 256], [1, 3, 128]] {
+        for shape in [[1, 1, 256], [1, 8, 256], [1, 3, 128]] {
             XCTAssertNil(Qwen4ExpBatchedQuantizedProjection.call(
                 q, MLXArray.ones(shape, dtype: .bfloat16)))
         }
@@ -62,6 +62,25 @@ final class QwenNextBatchedProjectionTests: XCTestCase {
             scales: q.scales, biases: q.biases, groupSize: q.groupSize, bits: q.bits)
         XCTAssertNil(Qwen4ExpBatchedQuantizedProjection.call(
             biased, MLXArray.ones([1, 3, 256], dtype: .bfloat16)))
+    }
+
+    func testFlattenedSharedRowsMatchStockProjection() throws {
+        let q = layer(512, 1024, .bfloat16)
+        for shape in [[2, 2, 512], [2, 3, 512]] {
+            let x = MLXRandom.normal(shape, key: MLXRandom.key(UInt64(shape[0] * 100 + shape[1])))
+                .asType(.bfloat16)
+            let actual = try XCTUnwrap(Qwen4ExpBatchedQuantizedProjection.call(
+                q, x))
+            let expected = q(x)
+            eval(actual, expected)
+            XCTAssertEqual(actual.shape, [shape[0], shape[1], 1024])
+            XCTAssertLessThan(mean(square(
+                actual.asType(.float32) - expected.asType(.float32))).item(Float.self), 0.0002,
+                "shape=\(shape)")
+            XCTAssertLessThan(abs(
+                actual.asType(.float32) - expected.asType(.float32)).max().item(Float.self), 0.08,
+                "shape=\(shape)")
+        }
     }
 
     func testCompiledKernelKeepsDifferentModelsAndShapesIndependent() throws {

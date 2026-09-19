@@ -22,8 +22,7 @@ enum Qwen4ExpBatchedQuantizedProjection {
 
     static func call(_ linear: Linear, _ input: MLXArray) -> MLXArray? {
         guard Device.defaultDevice().deviceType == .gpu,
-              input.ndim == 3, input.dim(0) == 1,
-              (2...7).contains(input.dim(1)),
+              input.ndim >= 2,
               input.dtype == .bfloat16 || input.dtype == .float16,
               let q = linear as? QuantizedLinear,
               q.mode == .affine, q.bits == 4,
@@ -32,15 +31,18 @@ enum Qwen4ExpBatchedQuantizedProjection {
               q.scales.dtype == input.dtype,
               let biases = q.biases, biases.dtype == input.dtype
         else { return nil }
-        let k = input.dim(2)
+        let k = input.dim(-1)
         let n = q.weight.dim(0)
-        let rows = input.dim(1)
+        guard input.dim(-1) > 0 else { return nil }
+        let rows = input.size / input.dim(-1)
+        let outputShape = Array(input.shape.dropLast()) + [n]
         guard k > 0, k % 64 == 0, k % q.groupSize == 0,
               n >= 512, n % 4 == 0,
               q.weight.shape == [n, k / 8],
               q.scales.shape == [n, k / q.groupSize],
               biases.shape == q.scales.shape
         else { return nil }
+        guard (2...7).contains(rows) else { return nil }
         let wide = n >= 100_000
         let columns = rows <= 6 ? 4 : 2
         let groups = wide ? 8 : (n >= 4096 ? 2 : 4)
@@ -52,7 +54,7 @@ enum Qwen4ExpBatchedQuantizedProjection {
              contiguous(biases), MLXArray(Int32(k)), MLXArray(Int32(n))],
             template: [("T", input.dtype), ("GS", q.groupSize), ("GROUPS", groups)],
             grid: (32 * groups, tiles, 1), threadGroup: (32 * groups, 1, 1),
-            outputShapes: [[1, rows, n]], outputDTypes: [input.dtype]
+            outputShapes: [outputShape], outputDTypes: [input.dtype]
         )[0]
     }
 
