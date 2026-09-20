@@ -77,6 +77,23 @@ final class MLXGenerationAdmissionTests: XCTestCase {
             schedulerCanPreserveLogprobVisibility: false))
     }
 
+    func testQwenMTPSchedulerRetainsAvailabilityAndVisibilityGuards() {
+        for available in [false, true] {
+            for eligible in [false, true] {
+                for visible in [false, true] {
+                    for ownsQwen in [false, true] {
+                        XCTAssertEqual(MLXModelService.shouldUseStreamingScheduler(
+                            schedulerAvailable: available,
+                            mtpStreamEligible: eligible,
+                            schedulerCanPreserveLogprobVisibility: visible,
+                            schedulerOwnsQwenMTP: ownsQwen),
+                            available && visible && (!eligible || ownsQwen))
+                    }
+                }
+            }
+        }
+    }
+
     func testGLMMTPSchedulerReplayUsesServiceModelIdentity() {
         let serviceModelID = "/Volumes/edata2/models/afm/GLM-5.3-Flash-AFM-MLX-4bit-MTP"
         let configurationName = "afm/GLM-5.3-Flash-AFM-MLX-4bit-MTP"
@@ -192,6 +209,33 @@ final class MLXGenerationAdmissionTests: XCTestCase {
         XCTAssertFalse(eligible(greedy, wantsLogprobs: true))
         XCTAssertFalse(eligible(greedy, hasStopSequences: true))
         XCTAssertFalse(eligible(greedy, hasMedia: true))
+    }
+
+    func testSampledSpeculationRequiresCapableHeadAndKeepsUnsupportedContractsOnAR() {
+        func eligible(_ parameters: GenerateParameters = GenerateParameters(),
+                      supportsSampling: Bool = true,
+                      tools: Bool = false, schema: Bool = false, logprobs: Bool = false,
+                      stop: Bool = false, media: Bool = false) -> Bool {
+            MLXModelService.isSpeculationEligible(
+                parameters: parameters, supportsSampling: supportsSampling,
+                hasTools: tools, hasResponseFormat: schema, wantsLogprobs: logprobs,
+                hasStopSequences: stop, hasMedia: media)
+        }
+        XCTAssertTrue(eligible())  // temperature 0.6, topP 1: ordinary user defaults
+        XCTAssertTrue(eligible(GenerateParameters(temperature: 1, topP: 0.95, seed: 42)))
+        XCTAssertFalse(eligible(supportsSampling: false))
+        XCTAssertFalse(eligible(GenerateParameters(topK: 20)))
+        XCTAssertFalse(eligible(GenerateParameters(minP: 0.1)))
+        XCTAssertFalse(eligible(GenerateParameters(repetitionPenalty: 1.1)))
+        XCTAssertFalse(eligible(GenerateParameters(presencePenalty: 0.5)))
+        XCTAssertFalse(eligible(GenerateParameters(ignoreEndOfSequence: true)))
+        XCTAssertFalse(eligible(GenerateParameters(temperature: .nan)))
+        XCTAssertFalse(eligible(GenerateParameters(topP: .nan)))
+        XCTAssertFalse(eligible(tools: true))
+        XCTAssertFalse(eligible(schema: true))
+        XCTAssertFalse(eligible(logprobs: true))
+        XCTAssertFalse(eligible(stop: true))
+        XCTAssertFalse(eligible(media: true))
     }
 
     func testSuccessfulAndCancelledBatchSubmissionsReleaseCapacityExactlyOnce() {

@@ -1,0 +1,109 @@
+diff --git a/src/qwen4_numerical_capture.zig b/src/qwen4_numerical_capture.zig
+new file mode 100644
+index 0000000..52e976e
+--- /dev/null
++++ b/src/qwen4_numerical_capture.zig
+@@ -0,0 +1,34 @@
++// Local diagnosis only; never a benchmark or a release feature. Capture the
++// first prefill's real layer-0 inputs/outputs, without replacing any equation.
++// Requires an explicit fresh output filename and fires once per process.
++const std = @import("std");
++const mlx = @import("mlx.zig");
++var claimed = false; // The inference thread is the sole caller.
++
++pub const Capture = struct {
++    path: [*:0]const u8,
++    arrays: mlx.mlx_map_string_to_array,
++
++    pub fn begin(offset: usize, batch: c_int, length: c_int) ?Capture {
++        if (claimed or offset != 0 or batch != 1 or length <= 1) return null;
++        const path = std.c.getenv("QWEN4_NUMERICAL_CAPTURE") orelse return null;
++        const width_text = std.c.getenv("QWEN4_NUMERICAL_CAPTURE_WIDTH") orelse return null;
++        const width = std.fmt.parseInt(c_int, std.mem.span(width_text), 10) catch return null;
++        if (length != width) return null; // Never capture the loader's warmup.
++        claimed = true;
++        return .{ .path = path, .arrays = mlx.mlx_map_string_to_array_new() };
++    }
++    pub fn add(self: *Capture, name: [*:0]const u8, value: mlx.mlx_array) !void {
++        try mlx.check(mlx.mlx_map_string_to_array_insert(self.arrays, name, value));
++    }
++    pub fn write(self: *Capture) !void {
++        const metadata = mlx.mlx_map_string_to_string_new();
++        defer _ = mlx.mlx_map_string_to_string_free(metadata);
++        try mlx.check(mlx.mlx_map_string_to_string_insert(metadata, "scope", "first-prefill-layer-0-diagnostic-not-performance"));
++        try mlx.check(mlx.mlx_save_safetensors(self.path, self.arrays, metadata));
++        std.debug.print("[numerical-capture] saved {s}\n", .{self.path});
++    }
++    pub fn deinit(self: *Capture) void {
++        _ = mlx.mlx_map_string_to_array_free(self.arrays);
++    }
++};
+diff --git a/src/transformer.zig b/src/transformer.zig
+index d623875..49b4262 100644
+--- a/src/transformer.zig
++++ b/src/transformer.zig
+@@ -9,6 +9,7 @@ const mtp_mod = @import("mtp.zig");
+ const mlx = @import("mlx.zig");
+ const mrope = @import("mrope.zig");
+ const kv_quant = @import("kv_quant.zig");
++const qwen4_numerical_capture = @import("qwen4_numerical_capture.zig");
+ 
+ pub const KVQuantConfig = kv_quant.KVQuantConfig;
+ pub const KVQuantScheme = kv_quant.Scheme;
+@@ -17237,6 +17238,13 @@ pub const Transformer = struct {
+         const seq_len: c_int = x_shape[1];
+         const is_prefill = seq_len > 1;
+ 
++        var numerical = qwen4_numerical_capture.Capture.begin(offset, batch, seq_len);
++        defer if (numerical) |*capture| capture.deinit();
++        if (numerical) |*capture| {
++            try capture.add("token_ids", token_ids);
++            try capture.add("embedding", emb);
++        }
++
+         const reps = [_]c_int{ 1, 1, hc };
+         var h = mlx.mlx_array_new();
+         try mlx.check(mlx.mlx_tile(&h, emb, &reps, 3, self.s));
+@@ -17247,6 +17255,7 @@ pub const Transformer = struct {
+             _ = mlx.mlx_array_free(h);
+             h = h32;
+         }
++        if (numerical) |*capture| try capture.add("initial_stream", h);
+         // M-RoPE chunk tables: read by every full-attn layer AND the QSA
+         // indexer's queries (its pooled block keys take a strided build).
+         try self.beginMropeChunk(ctx, @intCast(offset), @intCast(seq_len), mlx.mlx_array_dtype(h));
+@@ -17302,6 +17311,11 @@ pub const Transformer = struct {
+                 Qwen4Trace.set(&tr.inj_attn, pre.inj);
+                 Qwen4Trace.set(&tr.attn_out, attn_out);
+             };
++            if (layer_idx == 0) if (numerical) |*capture| {
++                try capture.add("mixed_attn", pre.mixed);
++                try capture.add("inj_attn", pre.inj);
++                try capture.add("attn_out", attn_out);
++            };
+             if (si.hc) h = try self.hcWrite(h, attn_out, pre.inj, batch, seq_len) else try self.hcWriteOrDefer(&h, attn_out, pre.inj, batch, seq_len, &pending);
+             if (prof.timing) try self.hcFlush(&h, batch, seq_len, &pending);
+             try prof.lap(h, .hc_write);
+@@ -17320,6 +17334,11 @@ pub const Transformer = struct {
+                 Qwen4Trace.set(&tr.inj_mlp, pre2.inj);
+                 Qwen4Trace.set(&tr.mlp_out, mlp_out);
+             };
++            if (layer_idx == 0) if (numerical) |*capture| {
++                try capture.add("mixed_mlp", pre2.mixed);
++                try capture.add("inj_mlp", pre2.inj);
++                try capture.add("mlp_out", mlp_out);
++            };
+             if (si.hc) h = try self.hcWrite(h, mlp_out, pre2.inj, batch, seq_len) else try self.hcWriteOrDefer(&h, mlp_out, pre2.inj, batch, seq_len, &pending);
+             if (prof.timing) try self.hcFlush(&h, batch, seq_len, &pending);
+             try prof.lap(h, .hc_write);
+@@ -17365,6 +17384,10 @@ pub const Transformer = struct {
+         h = .{ .ctx = null };
+         if (mix.inj.ctx != null) _ = mlx.mlx_array_free(mix.inj);
+         const final = mix.mixed;
++        if (numerical) |*capture| {
++            try capture.add("final_mixed", final);
++            try capture.write();
++        }
+         if (self.embedding_mode or ctx.skip_lm_head) return final;
+         errdefer _ = mlx.mlx_array_free(final);
+         const logits = try self.lmHeadProject(final, ctx.argmax_only);

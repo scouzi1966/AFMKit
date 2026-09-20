@@ -1271,7 +1271,21 @@ public class SwitchGLU: Module, SwitchGLULayer {
         _ indices: MLXArray,
         preDownScores: MLXArray?
     ) -> MLXArray {
-        ensureFusedGateUp()
+        callAsFunction(input, indices, preDownScores: preDownScores, forceSort: false)
+    }
+
+    /// Explicit verify-width scheduling, not a global heuristic change.
+    /// mlx-serve (MIT, transformer.zig 1ec580a8) sorts every multi-token
+    /// block, including the 20–40 expert assignments below our usual floor.
+    package func sortedVerificationRows(_ input: MLXArray, _ indices: MLXArray) -> MLXArray {
+        callAsFunction(input, indices, preDownScores: nil, forceSort: true)
+    }
+
+    private func callAsFunction(
+        _ input: MLXArray, _ indices: MLXArray,
+        preDownScores: MLXArray?, forceSort: Bool
+    ) -> MLXArray {
+        if !forceSort { ensureFusedGateUp() }
 
         let profileStages = Self.profileStages && indices.size <= 32
         var stageStart = profileStages ? CFAbsoluteTimeGetCurrent() : 0
@@ -1299,13 +1313,13 @@ public class SwitchGLU: Module, SwitchGLULayer {
         let decodeThreshold: Int =
             Int(ProcessInfo.processInfo.environment["BENCH_FUSED_GATE_UP_THRESHOLD"] ?? "32") ?? 32
         let useFused =
-            (fusedGateUpWeight != nil)
+            !forceSort && (fusedGateUpWeight != nil)
             && (indices.size <= decodeThreshold)
 
         let inputDType = input.dtype
         var x = MLX.expandedDimensions(input, axes: [-2, -3])
 
-        let doSort = indices.size >= 64
+        let doSort = forceSort || indices.size >= 64
 
         var idx = indices
         var inverseOrder = MLXArray()

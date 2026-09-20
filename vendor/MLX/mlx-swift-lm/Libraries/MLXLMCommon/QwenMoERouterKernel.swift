@@ -115,13 +115,13 @@ private enum QwenMoERouterKernel {
             }
         """)
 
-    static func call(logits: MLXArray, topK: Int) -> (MLXArray, MLXArray)? {
+    static func call(logits: MLXArray, topK: Int, maximumRows: Int = 1) -> (MLXArray, MLXArray)? {
         guard enabled,
               Device.defaultDevice().deviceType == .gpu,
               logits.dtype == .bfloat16,
               logits.ndim == 3,
               logits.dim(0) == 1,
-              logits.dim(1) == 1,
+              logits.dim(1) > 0, logits.dim(1) <= maximumRows,
               logits.dim(2) >= topK,
               logits.dim(2) <= 2_048,
               topK > 0,
@@ -142,9 +142,9 @@ private enum QwenMoERouterKernel {
                 ("TOP_K", topK),
                 ("TG", threadGroup),
             ],
-            grid: (threadGroup, 1, 1),
+            grid: (threadGroup, logits.dim(1), 1),
             threadGroup: (threadGroup, 1, 1),
-            outputShapes: [[1, 1, topK], [1, 1, topK]],
+            outputShapes: [[1, logits.dim(1), topK], [1, logits.dim(1), topK]],
             outputDTypes: [.uint32, logits.dtype],
             cacheConfiguration: true)
         return (output[0], output[1])
@@ -158,6 +158,20 @@ public func qwenFusedSoftmaxTopK(
     topK: Int
 ) -> (indices: MLXArray, scores: MLXArray)? {
     guard let output = QwenMoERouterKernel.call(logits: logits, topK: topK)
+    else { return nil }
+    return (output.0, output.1)
+}
+
+/// Explicit Qwen Next verifier entry point. Each threadgroup handles one row
+/// with the exact same algorithm as the decode kernel; ordinary callers keep
+/// the existing one-row eligibility. No width-dependent score reduction.
+package func qwenFusedVerifySoftmaxTopK(
+    logits: MLXArray, topK: Int
+) -> (indices: MLXArray, scores: MLXArray)? {
+    guard logits.ndim == 3, logits.dim(1) > 1,
+          let output = QwenMoERouterKernel.call(
+            logits: logits, topK: topK,
+            maximumRows: VerifyWidthLinear.maximumAcceleratedWidth)
     else { return nil }
     return (output.0, output.1)
 }
