@@ -1,4 +1,3 @@
-import Foundation
 import MLX
 import MLXLMCommon
 @testable import MLXLLM
@@ -65,18 +64,13 @@ final class DeepseekV4DSparkPrefillTests: XCTestCase {
     }
 
     func testFullAndChunkedPrefillPreserveLogitsAndNextProposalAcrossBoundaries() throws {
-        if ProcessInfo.processInfo.environment["AFMKIT_SKIP_RC5_DSPARK_BASELINE"] == "1" {
-            // v0.1.18-rc.5 already fails this newly added, unexecuted parity
-            // test on the qualified toolchain. Keep the failure visible during
-            // normal development while allowing an Apertus emergency nightly
-            // to carry the unchanged baseline behavior explicitly.
-            throw XCTSkip(
-                "Known v0.1.18-rc.5 DSpARK chunked-prefill parity failure")
-        }
         let model = makeModel()
-        // Local-ring, ratio-4 and ratio-128 boundaries, including a one-token
-        // final chunk and chunk sizes that do not divide compression groups.
-        for (length, step) in [(1, 1), (7, 3), (8, 4), (9, 4), (17, 5), (129, 17), (257, 17)] {
+        // Local-ring, ratio-4 and ratio-128 boundaries, including requested
+        // widths one and two and sizes that do not divide compression groups.
+        for (length, step) in [
+            (1, 1), (2, 1), (3, 2), (4, 1), (5, 1), (5, 2),
+            (7, 3), (8, 4), (9, 4), (17, 5), (129, 17), (257, 17),
+        ] {
             let prompt = ids((0..<length).map { $0 % 31 })
             let fullTarget = model.newCache(parameters: nil)
             let fullDraft = model.newDSparkCache()
@@ -143,5 +137,15 @@ final class DeepseekV4DSparkPrefillTests: XCTestCase {
         XCTAssertNil(model.prefillDSparkVerifier(ids([3]),
             verifierCache: target, drafterCache: draft))
         XCTAssertEqual(target.map { $0.offset }, offsets)
+    }
+
+    func testGeneratorExposesEffectiveMinimumPrefillStepSize() {
+        let model = makeModel()
+        XCTAssertEqual(DeepseekV4DSparkGenerator(
+            model: model, prefillStepSize: 1).prefillStepSize, 3)
+        XCTAssertEqual(DeepseekV4DSparkGenerator(
+            model: model, prefillStepSize: 2).prefillStepSize, 3)
+        XCTAssertEqual(DeepseekV4DSparkGenerator(
+            model: model, prefillStepSize: 512).prefillStepSize, 512)
     }
 }
