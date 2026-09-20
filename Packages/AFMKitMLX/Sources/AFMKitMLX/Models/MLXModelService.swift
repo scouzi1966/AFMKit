@@ -3745,6 +3745,7 @@ public final class MLXModelService:
             }
             var generationCache = context.model.newCache(parameters: params)
             var generateInput: LMInput
+            var cachedPromptOutput: LMOutput?
 
             cacheOutcome = useCache ? "disabled" : "multimodal-skip"
             cacheLookupTime = nil
@@ -3765,16 +3766,27 @@ public final class MLXModelService:
                 let layerMetaStates = match.layerMetaStates
                 let tLookup1 = Date.timeIntervalSinceReferenceDate
                 cacheLookupTime = tLookup1 - tLookup0
-                let effectivePrefix = self.effectiveCachedPrefix(
-                    prefixLen: prefixLen,
+                let exactReplayLogits = MLXPrefixReplayPolicy.exactReplayLogits(
+                    from: match,
                     inputTokenCount: inputTokens.count,
-                    requiresExactBoundary: requiresExactBoundary,
-                    sourceTokenCount: match.sourceTokenCount
+                    requiresExactBoundary: requiresExactBoundary
                 )
+                let effectivePrefix = exactReplayLogits == nil
+                    ? self.effectiveCachedPrefix(
+                        prefixLen: prefixLen,
+                        inputTokenCount: inputTokens.count,
+                        requiresExactBoundary: requiresExactBoundary,
+                        sourceTokenCount: match.sourceTokenCount
+                    )
+                    : inputTokens.count
                 let bypassExactReplay = prefixLen == inputTokens.count && effectivePrefix == 0 && prefixLen > 0
 
                 if effectivePrefix > 0, let states = layerStates {
                     let tRestore0 = Date.timeIntervalSinceReferenceDate
+                    let restoredStates = MLXPrefixReplayPolicy.restoredLayerStates(
+                        states,
+                        requiresPrivateCopy: requiresExactBoundary
+                    )
                     // Restore KV cache from radix tree state
                     if debugLogging {
                         print("[\(ts())] [PrefixCache] RESTORE-BEGIN: prefixLen=\(prefixLen), effectivePrefix=\(effectivePrefix), inputTokens=\(inputTokens.count)")
@@ -3783,8 +3795,8 @@ public final class MLXModelService:
                             print("[\(ts())] [PrefixCache] STORED layer[\(i)]: \(states[i].count) arrays, shapes=[\(shapes)]")
                         }
                     }
-                    for i in 0..<generationCache.count where i < states.count {
-                        generationCache[i].state = states[i]
+                    for i in 0..<generationCache.count where i < restoredStates.count {
+                        generationCache[i].state = restoredStates[i]
                         let savedMetaState = layerMetaStates.flatMap { i < $0.count ? $0[i] : nil }
                         if let adjustedMetaState = self.restoredMetaState(
                             for: generationCache[i],
@@ -3822,10 +3834,15 @@ public final class MLXModelService:
                     }
                     let tRoundtrip = Date.timeIntervalSinceReferenceDate
                     let suffixTokens = Array(inputTokens[effectivePrefix...])
-                    generateInput = MLXPrefixReplayPolicy.replayInput(
-                        from: input,
-                        effectivePrefix: effectivePrefix
-                    )
+                    if let exactReplayLogits {
+                        cachedPromptOutput = LMOutput(logits: exactReplayLogits)
+                        generateInput = input
+                    } else {
+                        generateInput = MLXPrefixReplayPolicy.replayInput(
+                            from: input,
+                            effectivePrefix: effectivePrefix
+                        )
+                    }
                     cachedTokenCount = effectivePrefix
                     cacheOutcome = "hit"
                     StatsAggregator.shared.cacheHit()  // /metrics: afm:radix_cache_hits_total
@@ -3907,20 +3924,40 @@ public final class MLXModelService:
                 fflush(stdout)
             }
             try Task.checkCancellation()
-            let capturesReplayBoundaries = self.shouldCaptureSerialReplayBoundaries(
-                model: context.model, input: input, cache: generationCache, parameters: params)
+            let capturesPromptBoundary = self.shouldCaptureSerialPromptBoundary(
+                input: input, cache: generationCache, parameters: params)
+            let preparedPrefill: (([KVCache]) throws -> LMOutput)? = cachedPromptOutput.map {
+                output in { _ in output }
+            }
+            let promptBoundaryObserver: ((LMOutput, [KVCache]) -> Void)? =
+                capturesPromptBoundary && cachedPromptOutput == nil
+                ? { output, cache in
+                    guard output.state == nil, let radix = self.radixCache else { return }
+                    let tSave0 = Date.timeIntervalSinceReferenceDate
+                    radix.insert(
+                        tokens: inputTokens,
+                        layerStates: cache.map { $0.state },
+                        layerMetaStates: cache.map { $0.metaState },
+                        promptLogits: MLXPrefixReplayPolicy.promptBoundaryLogits(output.logits)
+                    )
+                    let tSave1 = Date.timeIntervalSinceReferenceDate
+                    saveInsertTime = tSave1 - tSave0
+                    self.logCacheSave(
+                        mode: "non-streaming",
+                        inputTokenCount: inputTokens.count,
+                        radixEntryCount: radix.count,
+                        cache: cache,
+                        insertTime: saveInsertTime
+                    )
+                } : nil
             let generationIterator = try TokenIterator(
                 input: generateInput,
                 model: context.model,
                 cache: generationCache,
                 parameters: params,
-                processorPrompt: capturesReplayBoundaries ? MLXArray(inputTokens) : nil,
-                preparedPrefill: capturesReplayBoundaries ? { cache in
-                    try MLXReplayPrefill.prepare(
-                        model: context.model, cache: cache, inputTokens: inputTokens,
-                        restoredPrefix: inputTokens.count - generateInput.text.tokens.size,
-                        radix: self.radixCache!, prefillStepSize: params.prefillStepSize)
-                } : nil
+                processorPrompt: cachedTokenCount > 0 ? MLXArray(inputTokens) : nil,
+                preparedPrefill: preparedPrefill,
+                promptBoundaryObserver: promptBoundaryObserver
             )
             let (generationStream, generationTask) = MLXLMCommon.generateTask(
                 promptTokenCount: generateInput.text.tokens.size,
@@ -4010,7 +4047,7 @@ public final class MLXModelService:
             // Save prompt cache state into radix tree.
             // Skip save when RotatingKVCache has wrapped past maxCacheSize (#94).
             if useCache, let radix = self.radixCache, !inputTokens.isEmpty,
-               !capturesReplayBoundaries,
+               !capturesPromptBoundary,
                !self.hasWrappedRotatingCache(generationCache) {
                 let promptLen = inputTokens.count
                 let tSave0 = Date.timeIntervalSinceReferenceDate
@@ -4727,6 +4764,7 @@ public final class MLXModelService:
                         var generationCache = context.model.newCache(parameters: params)
                         var generateInput: LMInput
                         var streamCachedTokens = 0
+                        var cachedPromptOutput: LMOutput?
 
                         var cacheOutcome = useCache ? "disabled" : "multimodal-skip"
                         var cacheLookupTime: Double? = nil
@@ -4746,19 +4784,30 @@ public final class MLXModelService:
                             let layerMetaStates = match.layerMetaStates
                             let tLookup1 = Date.timeIntervalSinceReferenceDate
                             cacheLookupTime = tLookup1 - tLookup0
-                            let effectivePrefix = self.effectiveCachedPrefix(
-                                prefixLen: prefixLen,
+                            let exactReplayLogits = MLXPrefixReplayPolicy.exactReplayLogits(
+                                from: match,
                                 inputTokenCount: inputTokens.count,
-                                requiresExactBoundary: requiresExactBoundary,
-                                sourceTokenCount: match.sourceTokenCount
+                                requiresExactBoundary: requiresExactBoundary
                             )
+                            let effectivePrefix = exactReplayLogits == nil
+                                ? self.effectiveCachedPrefix(
+                                    prefixLen: prefixLen,
+                                    inputTokenCount: inputTokens.count,
+                                    requiresExactBoundary: requiresExactBoundary,
+                                    sourceTokenCount: match.sourceTokenCount
+                                )
+                                : inputTokens.count
                             let bypassExactReplay = prefixLen == inputTokens.count && effectivePrefix == 0 && prefixLen > 0
 
                             if effectivePrefix > 0, let states = layerStates {
                                 let tRestore0 = Date.timeIntervalSinceReferenceDate
+                                let restoredStates = MLXPrefixReplayPolicy.restoredLayerStates(
+                                    states,
+                                    requiresPrivateCopy: requiresExactBoundary
+                                )
                                 // Restore KV cache from radix tree state
-                                for i in 0..<generationCache.count where i < states.count {
-                                    generationCache[i].state = states[i]
+                                for i in 0..<generationCache.count where i < restoredStates.count {
+                                    generationCache[i].state = restoredStates[i]
                                     let savedMetaState = layerMetaStates.flatMap {
                                         i < $0.count ? $0[i] : nil
                                     }
@@ -4786,10 +4835,15 @@ public final class MLXModelService:
                                 }
                                 let tRoundtrip = Date.timeIntervalSinceReferenceDate
                                 let suffixTokens = Array(inputTokens[effectivePrefix...])
-                                generateInput = MLXPrefixReplayPolicy.replayInput(
-                                    from: input,
-                                    effectivePrefix: effectivePrefix
-                                )
+                                if let exactReplayLogits {
+                                    cachedPromptOutput = LMOutput(logits: exactReplayLogits)
+                                    generateInput = input
+                                } else {
+                                    generateInput = MLXPrefixReplayPolicy.replayInput(
+                                        from: input,
+                                        effectivePrefix: effectivePrefix
+                                    )
+                                }
                                 streamCachedTokens = effectivePrefix
                                 cacheOutcome = "hit"
                                 StatsAggregator.shared.cacheHit()  // /metrics: afm:radix_cache_hits_total
@@ -4872,6 +4926,9 @@ public final class MLXModelService:
 
                         var pendingLogprobs: [TokenLogprobData]? = nil
                         var nextToolCallIndex = 0
+                        var saveTrimTime: Double? = nil
+                        var saveTruncateTime: Double? = nil
+                        var saveInsertTime: Double? = nil
                         // INSTRUMENT: Dump cache state right before generation starts (streaming)
                         if debugLogging || self.trace {
                             print("[\(ts())] [PREFLIGHT-STREAM] About to generate. Cache layers: \(generationCache.count), input shape: \(generateInput.text.tokens.shape)")
@@ -4885,21 +4942,41 @@ public final class MLXModelService:
                             fflush(stdout)
                         }
                         let generationIterator: TokenIterator
-                        let capturesReplayBoundaries = self.shouldCaptureSerialReplayBoundaries(
-                            model: context.model, input: input, cache: generationCache, parameters: params)
+                        let capturesPromptBoundary = self.shouldCaptureSerialPromptBoundary(
+                            input: input, cache: generationCache, parameters: params)
+                        let preparedPrefill: (([KVCache]) throws -> LMOutput)? = cachedPromptOutput.map {
+                            output in { _ in output }
+                        }
+                        let promptBoundaryObserver: ((LMOutput, [KVCache]) -> Void)? =
+                            capturesPromptBoundary && cachedPromptOutput == nil
+                            ? { output, cache in
+                                guard output.state == nil, let radix = self.radixCache else { return }
+                                let tSave0 = Date.timeIntervalSinceReferenceDate
+                                radix.insert(
+                                    tokens: inputTokens,
+                                    layerStates: cache.map { $0.state },
+                                    layerMetaStates: cache.map { $0.metaState },
+                                    promptLogits: MLXPrefixReplayPolicy.promptBoundaryLogits(output.logits)
+                                )
+                                let tSave1 = Date.timeIntervalSinceReferenceDate
+                                saveInsertTime = tSave1 - tSave0
+                                self.logCacheSave(
+                                    mode: "streaming",
+                                    inputTokenCount: inputTokens.count,
+                                    radixEntryCount: radix.count,
+                                    cache: cache,
+                                    insertTime: saveInsertTime
+                                )
+                            } : nil
                         do {
                             generationIterator = try TokenIterator(
                                 input: generateInput,
                                 model: context.model,
                                 cache: generationCache,
                                 parameters: params,
-                                processorPrompt: capturesReplayBoundaries ? MLXArray(inputTokens) : nil,
-                                preparedPrefill: capturesReplayBoundaries ? { cache in
-                                    try MLXReplayPrefill.prepare(
-                                        model: context.model, cache: cache, inputTokens: inputTokens,
-                                        restoredPrefix: streamCachedTokens,
-                                        radix: self.radixCache!, prefillStepSize: params.prefillStepSize)
-                                } : nil
+                                processorPrompt: streamCachedTokens > 0 ? MLXArray(inputTokens) : nil,
+                                preparedPrefill: preparedPrefill,
+                                promptBoundaryObserver: promptBoundaryObserver
                             )
                         } catch {
                             if debugLogging {
@@ -5097,14 +5174,10 @@ public final class MLXModelService:
                             print("[\(ts())] [KVCache] Timing: TTFT=\(String(format: "%.3f", ttft))s total=\(String(format: "%.3f", total))s (streaming)")
                         }
 
-                        var saveTrimTime: Double? = nil
-                        var saveTruncateTime: Double? = nil
-                        var saveInsertTime: Double? = nil
-
                         // Save prompt cache state into radix tree.
                         // Skip when RotatingKVCache has wrapped (#94).
                         if useCache, let radix = self.radixCache, !inputTokens.isEmpty, !Task.isCancelled,
-                           !capturesReplayBoundaries,
+                           !capturesPromptBoundary,
                            !self.hasWrappedRotatingCache(generationCache) {
                             let promptLen = inputTokens.count
                             let tSave0 = Date.timeIntervalSinceReferenceDate
@@ -8443,19 +8516,14 @@ public final class MLXModelService:
         !(cache is RotatingKVCache)
     }
 
-    /// Experimental shared replay capture. Kept opt-in until cold-prefill cost
-    /// and restore equivalence are qualified for each architecture.
-    private func shouldCaptureSerialReplayBoundaries(
-        model: any LanguageModel, input: LMInput, cache: [KVCache], parameters: GenerateParameters
+    /// Hybrid/recurrent state cannot be reconstructed by trimming a later cache.
+    /// Capture its exact prompt boundary before decode mutates it. The matching
+    /// raw logits are persisted with the state, so exact replay does not need an
+    /// empty model call or an architecture-specific prefill implementation.
+    private func shouldCaptureSerialPromptBoundary(
+        input: LMInput, cache: [KVCache], parameters: GenerateParameters
     ) -> Bool {
-        ProcessInfo.processInfo.environment["AFM_PREFIX_REPLAY_BOUNDARIES"] == "1"
-            // The helper is reusable, but bypassing model.prepare requires
-            // architecture qualification. Do not activate other adapters yet.
-            // The VL wrapper additionally creates positionDeltas in prepare,
-            // even for text input. Its continuation state needs a separate
-            // replay adapter; do not bypass that preparation here.
-            && model is Qwen4ExpModel
-            && radixCache != nil && !isMultimodalInput(input)
+        radixCache != nil && !isMultimodalInput(input)
             && parameters.kvBits == nil && input.text.tokens.size > 0
             && MLXPrefixReplayPolicy.requiresExactBoundaryRestore(cache)
     }

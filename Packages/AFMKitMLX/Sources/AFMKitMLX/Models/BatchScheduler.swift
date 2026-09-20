@@ -1561,6 +1561,10 @@ actor BatchScheduler {
         let ids = req.input.text.tokens.reshaped(-1).asArray(Int.self)
         let match = radix.findExactBoundaryMatch(ids)
         guard match.prefixLen > 0, match.layerStates != nil else { return max(1, count) }
+        if MLXPrefixReplayPolicy.exactReplayLogits(
+            from: match, inputTokenCount: count, requiresExactBoundary: true) != nil {
+            return 1
+        }
         let prefix = Self.effectiveCachedPrefixLength(
             matchedPrefix: match.prefixLen, inputTokenCount: count,
             hasRecurrentLayers: true, forcedSuffix: unsafeExactReplaySuffix(),
@@ -1658,6 +1662,13 @@ actor BatchScheduler {
             ? radix.findExactBoundaryMatch(inputTokens)
             : radix.findPrefixMatch(inputTokens)
         guard match.prefixLen > 0, match.layerStates != nil else { return false }
+        if MLXPrefixReplayPolicy.exactReplayLogits(
+            from: match,
+            inputTokenCount: inputTokens.count,
+            requiresExactBoundary: recurrent
+        ) != nil {
+            return true
+        }
         return Self.effectiveCachedPrefixLength(
             matchedPrefix: match.prefixLen,
             inputTokenCount: inputTokens.count,
@@ -1881,6 +1892,7 @@ actor BatchScheduler {
         var cacheRestoreTime: Double? = nil
         var cacheTrimTime: Double? = nil
         var cacheTruncateTime: Double? = nil
+        var cachedPromptOutput: LMOutput?
 
         // Extract token array for prefix cache lookup
         let inputTokens = req.input.text.tokens.reshaped(-1).asArray(Int.self)
@@ -1902,24 +1914,36 @@ actor BatchScheduler {
             let tLookup1 = Date.timeIntervalSinceReferenceDate
             cacheLookupTime = tLookup1 - tLookup0
             let forcedSuffix = unsafeExactReplaySuffix()
+            let exactReplayLogits = MLXPrefixReplayPolicy.exactReplayLogits(
+                from: match,
+                inputTokenCount: inputTokens.count,
+                requiresExactBoundary: recurrent
+            )
             // Inlined hasRecurrentLayers(cache): an actor-isolated call would make
             // the compiler treat the non-Sendable `cache` as "sent", conflicting
             // with its later in-actor uses. Inlining keeps it in one region.
-            let effectivePrefix = Self.effectiveCachedPrefixLength(
-                matchedPrefix: prefixLen,
-                inputTokenCount: inputTokens.count,
-                hasRecurrentLayers: recurrent,
-                forcedSuffix: forcedSuffix,
-                sourceTokenCount: match.sourceTokenCount
-            )
-            if prefixLen == inputTokens.count && recurrent && forcedSuffix == nil && prefixLen > 0 {
+            let effectivePrefix = exactReplayLogits == nil
+                ? Self.effectiveCachedPrefixLength(
+                    matchedPrefix: prefixLen,
+                    inputTokenCount: inputTokens.count,
+                    hasRecurrentLayers: recurrent,
+                    forcedSuffix: forcedSuffix,
+                    sourceTokenCount: match.sourceTokenCount
+                )
+                : inputTokens.count
+            if prefixLen == inputTokens.count && recurrent && forcedSuffix == nil
+                && exactReplayLogits == nil && prefixLen > 0 {
                 cacheOutcome = "exact-replay-bypass"
             }
 
             if effectivePrefix > 0, let states = layerStates {
                 let tRestore0 = Date.timeIntervalSinceReferenceDate
-                for i in 0..<cache.count where i < states.count {
-                    cache[i].state = states[i]
+                let restoredStates = MLXPrefixReplayPolicy.restoredLayerStates(
+                    states,
+                    requiresPrivateCopy: recurrent
+                )
+                for i in 0..<cache.count where i < restoredStates.count {
+                    cache[i].state = restoredStates[i]
                     let savedMetaState = layerMetaStates.flatMap { i < $0.count ? $0[i] : nil }
                     if let adjustedMetaState = restoredMetaState(
                         for: cache[i],
@@ -1946,10 +1970,15 @@ actor BatchScheduler {
                 }
                 let tRoundtrip = Date.timeIntervalSinceReferenceDate
                 let suffixTokens = Array(inputTokens[effectivePrefix...])
-                generateInput = MLXPrefixReplayPolicy.replayInput(
-                    from: req.input,
-                    effectivePrefix: effectivePrefix
-                )
+                if let exactReplayLogits {
+                    cachedPromptOutput = LMOutput(logits: exactReplayLogits)
+                    generateInput = req.input
+                } else {
+                    generateInput = MLXPrefixReplayPolicy.replayInput(
+                        from: req.input,
+                        effectivePrefix: effectivePrefix
+                    )
+                }
                 cachedTokens = effectivePrefix
                 cacheOutcome = "hit"
                 cacheRestoreTime = tRestore1 - tRestore0
@@ -1973,9 +2002,9 @@ actor BatchScheduler {
 
         // Hybrid recurrent state (DeepSeek compressor/indexer, Mamba, and
         // GatedDeltaNet) is not safely rewindable from a longer snapshot.
-        // Persist the exact prompt-minus-one boundary instead: restore that
-        // state later and evaluate the final prompt token to reproduce the
-        // original next-token logits.
+        // Interior boundaries remain useful for changed suffixes. The complete
+        // prompt boundary is captured once, together with its raw logits,
+        // after prefill below; do not also copy the prompt-minus-one boundary.
         let shouldCaptureReplayBoundary = Self.shouldCaptureReplayBoundary(
             prefixCacheEnabled: radixCache != nil,
             hasRecurrentLayers: Self.requiresReplayBoundarySnapshot(cache),
@@ -1990,7 +2019,13 @@ actor BatchScheduler {
         // peers unnecessarily destroys their equal-position batch eligibility.
         let interleave = enablesPrefillInterleave && forceIndependentCaches && !isMultimodal
             && allowDecodeInterleave && !slots.isEmpty && !inputTokens.isEmpty
-        if shouldCaptureReplayBoundary || interleave {
+        if let cachedPromptOutput {
+            result = cachedPromptOutput
+            // The restored radix entry already owns an immutable snapshot.
+            // Avoid copying the same prompt state again when this slot finishes.
+            prefixCacheStates = []
+            prefixCacheMetaStates = []
+        } else if shouldCaptureReplayBoundary || interleave {
             let finalBoundary = inputTokens.count - 1
             let capture: ((Int, [[MLXArray]], [[String]]) -> Void)? = shouldCaptureReplayBoundary
                 ? { boundary, states, metadata in
@@ -2014,7 +2049,9 @@ actor BatchScheduler {
                     model: model, cache: cache, inputTokens: inputTokens,
                     restoredPrefix: cachedTokens, prefillStepSize: req.parameters.prefillStepSize,
                     promptSnapshotBackoffTokens: qwenARReplayBackoffTokens,
-                    captureFinalSnapshot: shouldCaptureReplayBoundary, checkpoint: capture,
+                    captureFinalSnapshot: false,
+                    captureFinalCheckpoint: !shouldCaptureReplayBoundary,
+                    checkpoint: capture,
                     checkCancellation: {
                         if self.isCancellationRequested(req.id) || self._isShutdown.withLock({ $0 }) {
                             throw CancellationError()
@@ -2022,11 +2059,6 @@ actor BatchScheduler {
                     },
                     didCompleteChunk: afterChunk)
                 result = prepared.output
-                if let snapshot = prepared.finalSnapshot {
-                    prefixCacheTokens = Array(inputTokens.prefix(snapshot.boundary))
-                    prefixCacheStates = snapshot.states
-                    prefixCacheMetaStates = snapshot.metadata
-                }
                 // Unknown extra continuation state cannot be stored in radix.
                 if result.state != nil { prefixCacheTokens = [] }
             } catch {
@@ -2056,6 +2088,23 @@ actor BatchScheduler {
                 failPendingRequest(req, error: error)
                 return
             }
+        }
+
+        if shouldCaptureReplayBoundary && cachedPromptOutput == nil && result.state == nil {
+            // Capture the state after the complete prompt, before the sampled
+            // token is fed back into the model. Pair it with final-position raw
+            // logits so exact replay can recover the same first-token decision.
+            // Publish now so later admissions can reuse it while this request
+            // is still decoding; RadixTreeCache snapshots all supplied arrays.
+            radixCache?.insert(
+                tokens: inputTokens,
+                layerStates: cache.map { $0.state },
+                layerMetaStates: cache.map { $0.metaState },
+                promptLogits: MLXPrefixReplayPolicy.promptBoundaryLogits(result.logits)
+            )
+            prefixCacheTokens = []
+            prefixCacheStates = []
+            prefixCacheMetaStates = []
         }
 
         // Extract last-position logits and sample first token.

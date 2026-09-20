@@ -37,6 +37,35 @@ enum MLXPrefixReplayPolicy {
         return min(matchedPrefix, max(0, inputTokenCount - minimumSuffix))
     }
 
+    static func exactReplayLogits(
+        from match: RadixPrefixMatch,
+        inputTokenCount: Int,
+        requiresExactBoundary: Bool
+    ) -> MLXArray? {
+        guard requiresExactBoundary,
+              match.prefixLen == inputTokenCount,
+              match.sourceTokenCount == inputTokenCount
+        else { return nil }
+        return match.promptLogits
+    }
+
+    static func promptBoundaryLogits(_ logits: MLXArray) -> MLXArray {
+        logits[0..., -1, 0...].expandedDimensions(axis: 1)
+    }
+
+    /// Recurrent layers may update their state buffers in place. A radix entry
+    /// is shared by later serial and concurrent requests, so restoring those
+    /// arrays by reference would let one request corrupt every subsequent hit.
+    /// Ordinary KV caches retain their existing zero-copy restore path.
+    static func restoredLayerStates(
+        _ states: [[MLXArray]], requiresPrivateCopy: Bool
+    ) -> [[MLXArray]] {
+        guard requiresPrivateCopy else { return states }
+        let copies = states.map { MLXReplayPrefill.snapshot($0) }
+        eval(copies.flatMap { $0 })
+        return copies
+    }
+
     static func replayInput(from input: LMInput, effectivePrefix: Int) -> LMInput {
         precondition(effectivePrefix >= 0, "effectivePrefix must not be negative")
 

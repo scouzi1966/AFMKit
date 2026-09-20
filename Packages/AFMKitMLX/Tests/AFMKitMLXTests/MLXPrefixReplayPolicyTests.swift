@@ -47,7 +47,7 @@ final class MLXPrefixReplayPolicyTests: XCTestCase {
         )
     }
 
-    func testRecurrentExactReplayFallsBackToColdPrefill() {
+    func testRecurrentExactReplayWithoutSavedLogitsFallsBackToColdPrefill() {
         XCTAssertEqual(
             MLXPrefixReplayPolicy.effectivePrefixLength(
                 matchedPrefix: 218,

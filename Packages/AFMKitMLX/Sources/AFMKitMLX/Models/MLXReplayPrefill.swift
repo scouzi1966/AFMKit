@@ -74,6 +74,7 @@ enum MLXReplayPrefill {
         restoredPrefix: Int, radix: RadixTreeCache? = nil, prefillStepSize: Int = 512,
         promptSnapshotBackoffTokens: Int = 0,
         captureFinalSnapshot: Bool = false,
+        captureFinalCheckpoint: Bool = true,
         checkpoint: ((Int, [[MLXArray]], [[String]]) -> Void)? = nil,
         checkCancellation: (() throws -> Void)? = nil,
         didCompleteChunk: ((Range<Int>) -> Void)? = nil,
@@ -117,14 +118,19 @@ enum MLXReplayPrefill {
             }
             // LMOutput.State is not represented by RadixTreeCache. Fail closed
             // for models that keep additional continuation state outside KVCache.
+            let needsCheckpoint = checkpoint != nil
+                && (captureFinalCheckpoint || boundary < finalBoundary)
             if state == nil && boundary > 0
-                && (radix != nil || checkpoint != nil || (captureFinalSnapshot && boundary == finalBoundary)) {
+                && (radix != nil || needsCheckpoint
+                    || (captureFinalSnapshot && boundary == finalBoundary)) {
                 let states = cache.map { snapshot($0.state) }
                 eval(states.flatMap { $0 })
                 let metadata = cache.map { $0.metaState }
                 radix?.insert(tokens: Array(inputTokens.prefix(boundary)),
                               layerStates: states, layerMetaStates: metadata)
-                checkpoint?(boundary, states, metadata)
+                if captureFinalCheckpoint || boundary < finalBoundary {
+                    checkpoint?(boundary, states, metadata)
+                }
                 if captureFinalSnapshot && boundary == finalBoundary {
                     finalSnapshot = Snapshot(boundary: boundary, states: states, metadata: metadata)
                 }

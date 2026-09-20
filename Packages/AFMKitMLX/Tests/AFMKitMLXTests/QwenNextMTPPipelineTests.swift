@@ -1354,6 +1354,28 @@ final class QwenNextMTPPipelineTests: XCTestCase {
         XCTAssertEqual(states.map { $0.map { $0.asArray(Float.self) } }, frozen)
     }
 
+    func testReplayPrefillCanSkipRedundantFinalCheckpoint() async throws {
+        let model = try await makeModel(indexerBudget: 4)
+        eval(model)
+        let prompt = (0..<289).map { $0 % 25 + 1 }
+        var checkpoints: [Int] = []
+
+        let prepared = try MLXReplayPrefill.prepareWithSnapshot(
+            model: model,
+            cache: model.newCache(parameters: nil),
+            inputTokens: prompt,
+            restoredPrefix: 0,
+            prefillStepSize: 32,
+            captureFinalSnapshot: false,
+            captureFinalCheckpoint: false,
+            checkpoint: { boundary, _, _ in checkpoints.append(boundary) }
+        )
+        eval(prepared.output.logits)
+
+        XCTAssertEqual(checkpoints, [256])
+        XCTAssertNil(prepared.finalSnapshot)
+    }
+
     func testSchedulerReplayExecutorChecksCancellationBetweenChunks() async throws {
         let model = try await makeModel()
         eval(model)

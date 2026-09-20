@@ -7,21 +7,34 @@ import MLXLMCommon
 final class KVCacheEntry: @unchecked Sendable {
     let tokens: [Int]
     /// Per-layer KV cache state arrays (saved via cache.state)
-    var layerStates: [[MLXArray]]
+    let layerStates: [[MLXArray]]
     /// Per-layer KV cache metadata (saved via cache.metaState).
-    var layerMetaStates: [[String]]
+    let layerMetaStates: [[String]]
+    /// Raw next-token logits at this exact prompt boundary. Recurrent models
+    /// cannot safely execute an empty suffix; retaining these logits lets an
+    /// exact replay sample its first output token without another model call.
+    let promptLogits: MLXArray?
     var lastAccessTime: UInt64
 
-    init(tokens: [Int], layerStates: [[MLXArray]], layerMetaStates: [[String]] = []) {
+    init(
+        tokens: [Int], layerStates: [[MLXArray]], layerMetaStates: [[String]] = [],
+        promptLogits: MLXArray? = nil
+    ) {
         self.tokens = tokens
         // Snapshot into standalone contiguous buffers before storing in the radix tree.
         // Raw MLX slices keep the full backing Metal allocation alive and can also
         // retain lazy graph links to the live cache buffers from the completed request.
-        let snapshottedStates = layerStates.map { $0.map { MLX.contiguous($0) } }
+        // `contiguous` may return an already-contiguous buffer unchanged. Use a
+        // functional copy so request-owned recurrent buffers cannot mutate a
+        // cache entry while another request restores it.
+        let snapshottedStates = layerStates.map { $0.map { $0 * 1 } }
+        let snapshottedLogits = promptLogits.map { $0 * 1 }
         let allArrays = snapshottedStates.flatMap { $0 }
+            + (snapshottedLogits.map { [$0] } ?? [])
         MLX.eval(allArrays)
         self.layerStates = snapshottedStates
         self.layerMetaStates = layerMetaStates
+        self.promptLogits = snapshottedLogits
         self.lastAccessTime = mach_absolute_time()
     }
 
@@ -33,6 +46,7 @@ struct RadixPrefixMatch {
     let sourceTokenCount: Int?
     let layerStates: [[MLXArray]]?
     let layerMetaStates: [[String]]?
+    let promptLogits: MLXArray?
 }
 
 /// Radix tree node. Each edge is labeled with a token subsequence.
@@ -147,7 +161,8 @@ final class RadixTreeCache: @unchecked Sendable {
                 prefixLen: lastCachedLen,
                 sourceTokenCount: cached.tokens.count,
                 layerStates: cached.layerStates,
-                layerMetaStates: cached.layerMetaStates
+                layerMetaStates: cached.layerMetaStates,
+                promptLogits: cached.promptLogits
             )
         }
 
@@ -162,7 +177,8 @@ final class RadixTreeCache: @unchecked Sendable {
             prefixLen: 0,
             sourceTokenCount: nil,
             layerStates: nil,
-            layerMetaStates: nil
+            layerMetaStates: nil,
+            promptLogits: nil
         )
     }
 
@@ -199,7 +215,8 @@ final class RadixTreeCache: @unchecked Sendable {
                 prefixLen: 0,
                 sourceTokenCount: nil,
                 layerStates: nil,
-                layerMetaStates: nil
+                layerMetaStates: nil,
+                promptLogits: nil
             )
         }
         cached.touch()
@@ -207,13 +224,17 @@ final class RadixTreeCache: @unchecked Sendable {
             prefixLen: lastCachedLen,
             sourceTokenCount: cached.tokens.count,
             layerStates: cached.layerStates,
-            layerMetaStates: cached.layerMetaStates
+            layerMetaStates: cached.layerMetaStates,
+            promptLogits: cached.promptLogits
         )
     }
 
     /// Insert a cached prefix into the tree.
     /// layerStates: per-layer KV cache state (from cache[i].state).
-    func insert(tokens: [Int], layerStates: [[MLXArray]], layerMetaStates: [[String]] = []) {
+    func insert(
+        tokens: [Int], layerStates: [[MLXArray]], layerMetaStates: [[String]] = [],
+        promptLogits: MLXArray? = nil
+    ) {
         guard !tokens.isEmpty else { return }
 
         // Evict if at capacity
@@ -233,7 +254,8 @@ final class RadixTreeCache: @unchecked Sendable {
                 newNode.cacheEntry = KVCacheEntry(
                     tokens: tokens,
                     layerStates: layerStates,
-                    layerMetaStates: layerMetaStates
+                    layerMetaStates: layerMetaStates,
+                    promptLogits: promptLogits
                 )
                 node.children[nextToken] = newNode
                 entryCount += 1
@@ -265,7 +287,8 @@ final class RadixTreeCache: @unchecked Sendable {
                     newNode.cacheEntry = KVCacheEntry(
                         tokens: tokens,
                         layerStates: layerStates,
-                        layerMetaStates: layerMetaStates
+                        layerMetaStates: layerMetaStates,
+                        promptLogits: promptLogits
                     )
                     splitNode.children[tokens[pos]] = newNode
                     entryCount += 1
@@ -274,7 +297,8 @@ final class RadixTreeCache: @unchecked Sendable {
                     splitNode.cacheEntry = KVCacheEntry(
                         tokens: tokens,
                         layerStates: layerStates,
-                        layerMetaStates: layerMetaStates
+                        layerMetaStates: layerMetaStates,
+                        promptLogits: promptLogits
                     )
                     entryCount += 1
                 }
@@ -293,7 +317,8 @@ final class RadixTreeCache: @unchecked Sendable {
         node.cacheEntry = KVCacheEntry(
             tokens: tokens,
             layerStates: layerStates,
-            layerMetaStates: layerMetaStates
+            layerMetaStates: layerMetaStates,
+            promptLogits: promptLogits
         )
         if debugLogging {
             print("[PrefixCache] Radix insert (update): \(tokens.count) tokens, \(layerStates.count) layers (entries: \(entryCount))")
