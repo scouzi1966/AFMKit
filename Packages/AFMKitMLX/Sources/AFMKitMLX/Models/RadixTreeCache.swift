@@ -22,15 +22,12 @@ final class KVCacheEntry: @unchecked Sendable {
         statesAreIndependentSnapshots: Bool = false
     ) {
         self.tokens = tokens
-        // Snapshot into standalone contiguous buffers before storing in the radix tree.
-        // Raw MLX slices keep the full backing Metal allocation alive and can also
-        // retain lazy graph links to the live cache buffers from the completed request.
-        // `contiguous` may return an already-contiguous buffer unchanged. Use a
-        // functional copy so request-owned recurrent buffers cannot mutate a
-        // cache entry while another request restores it.
+        // Preserve the established contiguous snapshot path for ordinary KV
+        // entries. Mutable recurrent callers supply functional copies and mark
+        // them independent so large attention histories are never copied twice.
         let snapshottedStates = statesAreIndependentSnapshots
             ? layerStates
-            : layerStates.map { $0.map { $0 * 1 } }
+            : layerStates.map { $0.map { MLX.contiguous($0) } }
         let snapshottedLogits = promptLogits.map { $0 * 1 }
         let allArrays = snapshottedStates.flatMap { $0 }
             + (snapshottedLogits.map { [$0] } ?? [])
