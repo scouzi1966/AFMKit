@@ -2633,9 +2633,24 @@ public class DeepseekV4Model: Module, LLMModel, KVCacheDimensionProvider, LoRAMo
               verifierCache.allSatisfy({ $0.offset == 0 }),
               drafterCache.allSatisfy({ $0.offset == 0 }) else { return nil }
         let length = inputs.dim(1)
-        let step = max(1, stepSize)
-        for start in stride(from: 0, to: length, by: step) {
-            let end = start + min(step, length - start)
+        // A populated one-token chunk follows RotatingKVCache's decode path.
+        // Three is the smallest requested width that can partition every
+        // longer prompt into prefill-shaped chunks of at least two tokens.
+        // One- and two-token prompts still execute as a single fresh chunk.
+        let step = max(3, stepSize)
+        var start = 0
+        while start < length {
+            let remaining = length - start
+            let chunkLength: Int
+            if remaining == step + 1 {
+                // A one-token tail would enter RotatingKVCache's decode update
+                // path and produce a different ring timeline than full prefill.
+                // Shorten the preceding chunk so the tail is two tokens.
+                chunkLength = step - 1
+            } else {
+                chunkLength = min(step, remaining)
+            }
+            let end = start + chunkLength
             let result = model.forwardCapturingHiddenStates(
                 inputs[0..., start..<end], cache: verifierCache,
                 layerIds: config.dsparkTargetLayerIds)
@@ -2649,6 +2664,7 @@ public class DeepseekV4Model: Module, LLMModel, KVCacheDimensionProvider, LoRAMo
                 return logits
             }
             MLX.eval(verifierCache.flatMap { $0.innerState() })
+            start = end
         }
         return nil
     }
@@ -3144,7 +3160,7 @@ public final class DeepseekV4DSparkGenerator {
             1, min(draftLimit ?? model.config.dsparkBlockSize,
                    model.config.dsparkBlockSize))
         self.confidenceThreshold = min(max(confidenceThreshold, 0), 1)
-        self.prefillStepSize = max(1, prefillStepSize)
+        self.prefillStepSize = max(3, prefillStepSize)
     }
 
     private func tokens(_ ids: [Int]) -> MLXArray {
