@@ -53,17 +53,42 @@ enum MLXPrefixReplayPolicy {
         logits[0..., -1, 0...].expandedDimensions(axis: 1)
     }
 
-    /// Recurrent layers may update their state buffers in place. A radix entry
-    /// is shared by later serial and concurrent requests, so restoring those
-    /// arrays by reference would let one request corrupt every subsequent hit.
-    /// Ordinary KV caches retain their existing zero-copy restore path.
+    /// Snapshot each cache layer according to its mutation contract. Qwen's
+    /// attention cache replaces arrays on update, so an already-contiguous
+    /// buffer is safe to retain. Recurrent state is updated in place and must
+    /// be copied. This avoids copying prompt-length attention tensors merely to
+    /// protect the much smaller recurrent state.
+    static func snapshotLayerStates(_ cache: [KVCache]) -> [[MLXArray]] {
+        let snapshots = cache.map { layer in
+            if layer is CopyOnWriteKVCacheState {
+                return layer.state.map { MLX.contiguous($0) }
+            }
+            return MLXReplayPrefill.snapshot(layer.state)
+        }
+        // Enqueue the copies before the caller advances the live cache. MLX's
+        // stream ordering preserves the boundary without forcing a host/GPU
+        // synchronization at every interior checkpoint.
+        asyncEval(snapshots.flatMap { $0 })
+        return snapshots
+    }
+
+    /// A radix entry is shared by later serial and concurrent requests. Copy
+    /// only cache implementations that may mutate restored state buffers in
+    /// place; copy-on-write attention caches retain their zero-copy path.
     static func restoredLayerStates(
-        _ states: [[MLXArray]], requiresPrivateCopy: Bool
+        _ states: [[MLXArray]], cache: [KVCache]
     ) -> [[MLXArray]] {
-        guard requiresPrivateCopy else { return states }
-        let copies = states.map { MLXReplayPrefill.snapshot($0) }
-        eval(copies.flatMap { $0 })
-        return copies
+        var copiedArrays: [MLXArray] = []
+        let restored = states.enumerated().map { index, state in
+            guard index >= cache.count || !(cache[index] is CopyOnWriteKVCacheState) else {
+                return state
+            }
+            let copy = MLXReplayPrefill.snapshot(state)
+            copiedArrays.append(contentsOf: copy)
+            return copy
+        }
+        eval(copiedArrays)
+        return restored
     }
 
     static func replayInput(from input: LMInput, effectivePrefix: Int) -> LMInput {

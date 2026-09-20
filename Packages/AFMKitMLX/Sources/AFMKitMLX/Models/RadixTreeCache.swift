@@ -18,7 +18,8 @@ final class KVCacheEntry: @unchecked Sendable {
 
     init(
         tokens: [Int], layerStates: [[MLXArray]], layerMetaStates: [[String]] = [],
-        promptLogits: MLXArray? = nil
+        promptLogits: MLXArray? = nil,
+        statesAreIndependentSnapshots: Bool = false
     ) {
         self.tokens = tokens
         // Snapshot into standalone contiguous buffers before storing in the radix tree.
@@ -27,11 +28,17 @@ final class KVCacheEntry: @unchecked Sendable {
         // `contiguous` may return an already-contiguous buffer unchanged. Use a
         // functional copy so request-owned recurrent buffers cannot mutate a
         // cache entry while another request restores it.
-        let snapshottedStates = layerStates.map { $0.map { $0 * 1 } }
+        let snapshottedStates = statesAreIndependentSnapshots
+            ? layerStates
+            : layerStates.map { $0.map { $0 * 1 } }
         let snapshottedLogits = promptLogits.map { $0 * 1 }
         let allArrays = snapshottedStates.flatMap { $0 }
             + (snapshottedLogits.map { [$0] } ?? [])
-        MLX.eval(allArrays)
+        if statesAreIndependentSnapshots {
+            MLX.asyncEval(allArrays)
+        } else {
+            MLX.eval(allArrays)
+        }
         self.layerStates = snapshottedStates
         self.layerMetaStates = layerMetaStates
         self.promptLogits = snapshottedLogits
@@ -233,7 +240,8 @@ final class RadixTreeCache: @unchecked Sendable {
     /// layerStates: per-layer KV cache state (from cache[i].state).
     func insert(
         tokens: [Int], layerStates: [[MLXArray]], layerMetaStates: [[String]] = [],
-        promptLogits: MLXArray? = nil
+        promptLogits: MLXArray? = nil,
+        statesAreIndependentSnapshots: Bool = false
     ) {
         guard !tokens.isEmpty else { return }
 
@@ -255,7 +263,8 @@ final class RadixTreeCache: @unchecked Sendable {
                     tokens: tokens,
                     layerStates: layerStates,
                     layerMetaStates: layerMetaStates,
-                    promptLogits: promptLogits
+                    promptLogits: promptLogits,
+                    statesAreIndependentSnapshots: statesAreIndependentSnapshots
                 )
                 node.children[nextToken] = newNode
                 entryCount += 1
@@ -288,7 +297,8 @@ final class RadixTreeCache: @unchecked Sendable {
                         tokens: tokens,
                         layerStates: layerStates,
                         layerMetaStates: layerMetaStates,
-                        promptLogits: promptLogits
+                        promptLogits: promptLogits,
+                        statesAreIndependentSnapshots: statesAreIndependentSnapshots
                     )
                     splitNode.children[tokens[pos]] = newNode
                     entryCount += 1
@@ -298,7 +308,8 @@ final class RadixTreeCache: @unchecked Sendable {
                         tokens: tokens,
                         layerStates: layerStates,
                         layerMetaStates: layerMetaStates,
-                        promptLogits: promptLogits
+                        promptLogits: promptLogits,
+                        statesAreIndependentSnapshots: statesAreIndependentSnapshots
                     )
                     entryCount += 1
                 }
@@ -318,7 +329,8 @@ final class RadixTreeCache: @unchecked Sendable {
             tokens: tokens,
             layerStates: layerStates,
             layerMetaStates: layerMetaStates,
-            promptLogits: promptLogits
+            promptLogits: promptLogits,
+            statesAreIndependentSnapshots: statesAreIndependentSnapshots
         )
         if debugLogging {
             print("[PrefixCache] Radix insert (update): \(tokens.count) tokens, \(layerStates.count) layers (entries: \(entryCount))")

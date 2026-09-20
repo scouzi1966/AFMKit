@@ -123,11 +123,11 @@ enum MLXReplayPrefill {
             if state == nil && boundary > 0
                 && (radix != nil || needsCheckpoint
                     || (captureFinalSnapshot && boundary == finalBoundary)) {
-                let states = cache.map { snapshot($0.state) }
-                eval(states.flatMap { $0 })
+                let states = MLXPrefixReplayPolicy.snapshotLayerStates(cache)
                 let metadata = cache.map { $0.metaState }
                 radix?.insert(tokens: Array(inputTokens.prefix(boundary)),
-                              layerStates: states, layerMetaStates: metadata)
+                              layerStates: states, layerMetaStates: metadata,
+                              statesAreIndependentSnapshots: true)
                 if captureFinalCheckpoint || boundary < finalBoundary {
                     checkpoint?(boundary, states, metadata)
                 }

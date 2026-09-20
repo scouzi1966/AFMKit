@@ -1940,7 +1940,7 @@ actor BatchScheduler {
                 let tRestore0 = Date.timeIntervalSinceReferenceDate
                 let restoredStates = MLXPrefixReplayPolicy.restoredLayerStates(
                     states,
-                    requiresPrivateCopy: recurrent
+                    cache: cache
                 )
                 for i in 0..<cache.count where i < restoredStates.count {
                     cache[i].state = restoredStates[i]
@@ -2031,7 +2031,8 @@ actor BatchScheduler {
                 ? { boundary, states, metadata in
                     if boundary < finalBoundary {
                         self.radixCache?.insert(tokens: Array(inputTokens.prefix(boundary)),
-                            layerStates: states, layerMetaStates: metadata)
+                            layerStates: states, layerMetaStates: metadata,
+                            statesAreIndependentSnapshots: true)
                     }
                 } : nil
             // The prefilling request is reserved but is not in `slots` until
@@ -2096,11 +2097,13 @@ actor BatchScheduler {
             // logits so exact replay can recover the same first-token decision.
             // Publish now so later admissions can reuse it while this request
             // is still decoding; RadixTreeCache snapshots all supplied arrays.
+            let states = MLXPrefixReplayPolicy.snapshotLayerStates(cache)
             radixCache?.insert(
                 tokens: inputTokens,
-                layerStates: cache.map { $0.state },
+                layerStates: states,
                 layerMetaStates: cache.map { $0.metaState },
-                promptLogits: MLXPrefixReplayPolicy.promptBoundaryLogits(result.logits)
+                promptLogits: MLXPrefixReplayPolicy.promptBoundaryLogits(result.logits),
+                statesAreIndependentSnapshots: true
             )
             prefixCacheTokens = []
             prefixCacheStates = []

@@ -597,7 +597,7 @@ final class Qwen4ExpMultimodalRoPE {
     }
 }
 
-final class Qwen4ExpAttentionCache: KVCache, UniformBatchKVCache {
+final class Qwen4ExpAttentionCache: KVCache, UniformBatchKVCache, CopyOnWriteKVCacheState {
     var offset = 0
     var offsetArray: MLXArray? { nil }
     var maxSize: Int? { nil }

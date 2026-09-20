@@ -683,6 +683,7 @@ public struct TokenIterator: Sequence, IteratorProtocol {
                 processor?.prompt(processorPrompt ?? input.text.tokens)
                 let result = try preparedPrefill(self.cache)
                 state = result.state
+                promptBoundaryObserver?(result, self.cache)
                 y = .init(tokens: convertToToken(logits: result.logits))
                 if let y { asyncEval(y.tokens) }
             } else {

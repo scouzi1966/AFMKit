@@ -3785,7 +3785,7 @@ public final class MLXModelService:
                     let tRestore0 = Date.timeIntervalSinceReferenceDate
                     let restoredStates = MLXPrefixReplayPolicy.restoredLayerStates(
                         states,
-                        requiresPrivateCopy: requiresExactBoundary
+                        cache: generationCache
                     )
                     // Restore KV cache from radix tree state
                     if debugLogging {
@@ -3926,19 +3926,18 @@ public final class MLXModelService:
             try Task.checkCancellation()
             let capturesPromptBoundary = self.shouldCaptureSerialPromptBoundary(
                 input: input, cache: generationCache, parameters: params)
-            let preparedPrefill: (([KVCache]) throws -> LMOutput)? = cachedPromptOutput.map {
-                output in { _ in output }
-            }
             let promptBoundaryObserver: ((LMOutput, [KVCache]) -> Void)? =
                 capturesPromptBoundary && cachedPromptOutput == nil
                 ? { output, cache in
                     guard output.state == nil, let radix = self.radixCache else { return }
                     let tSave0 = Date.timeIntervalSinceReferenceDate
+                    let states = MLXPrefixReplayPolicy.snapshotLayerStates(cache)
                     radix.insert(
                         tokens: inputTokens,
-                        layerStates: cache.map { $0.state },
+                        layerStates: states,
                         layerMetaStates: cache.map { $0.metaState },
-                        promptLogits: MLXPrefixReplayPolicy.promptBoundaryLogits(output.logits)
+                        promptLogits: MLXPrefixReplayPolicy.promptBoundaryLogits(output.logits),
+                        statesAreIndependentSnapshots: true
                     )
                     let tSave1 = Date.timeIntervalSinceReferenceDate
                     saveInsertTime = tSave1 - tSave0
@@ -3950,6 +3949,9 @@ public final class MLXModelService:
                         insertTime: saveInsertTime
                     )
                 } : nil
+            let preparedPrefill: (([KVCache]) throws -> LMOutput)? = cachedPromptOutput.map {
+                output in { _ in output }
+            }
             let generationIterator = try TokenIterator(
                 input: generateInput,
                 model: context.model,
@@ -4803,7 +4805,7 @@ public final class MLXModelService:
                                 let tRestore0 = Date.timeIntervalSinceReferenceDate
                                 let restoredStates = MLXPrefixReplayPolicy.restoredLayerStates(
                                     states,
-                                    requiresPrivateCopy: requiresExactBoundary
+                                    cache: generationCache
                                 )
                                 // Restore KV cache from radix tree state
                                 for i in 0..<generationCache.count where i < restoredStates.count {
@@ -4944,19 +4946,18 @@ public final class MLXModelService:
                         let generationIterator: TokenIterator
                         let capturesPromptBoundary = self.shouldCaptureSerialPromptBoundary(
                             input: input, cache: generationCache, parameters: params)
-                        let preparedPrefill: (([KVCache]) throws -> LMOutput)? = cachedPromptOutput.map {
-                            output in { _ in output }
-                        }
                         let promptBoundaryObserver: ((LMOutput, [KVCache]) -> Void)? =
                             capturesPromptBoundary && cachedPromptOutput == nil
                             ? { output, cache in
                                 guard output.state == nil, let radix = self.radixCache else { return }
                                 let tSave0 = Date.timeIntervalSinceReferenceDate
+                                let states = MLXPrefixReplayPolicy.snapshotLayerStates(cache)
                                 radix.insert(
                                     tokens: inputTokens,
-                                    layerStates: cache.map { $0.state },
+                                    layerStates: states,
                                     layerMetaStates: cache.map { $0.metaState },
-                                    promptLogits: MLXPrefixReplayPolicy.promptBoundaryLogits(output.logits)
+                                    promptLogits: MLXPrefixReplayPolicy.promptBoundaryLogits(output.logits),
+                                    statesAreIndependentSnapshots: true
                                 )
                                 let tSave1 = Date.timeIntervalSinceReferenceDate
                                 saveInsertTime = tSave1 - tSave0
@@ -4968,6 +4969,8 @@ public final class MLXModelService:
                                     insertTime: saveInsertTime
                                 )
                             } : nil
+                        let preparedPrefill: (([KVCache]) throws -> LMOutput)? =
+                            cachedPromptOutput.map { output in { _ in output } }
                         do {
                             generationIterator = try TokenIterator(
                                 input: generateInput,

@@ -5,6 +5,35 @@ import MLX
 import XCTest
 
 final class MLXPrefixReplayPolicyTests: XCTestCase {
+    private final class CopyOnWriteTestCache: ArraysCache, CopyOnWriteKVCacheState {}
+
+    func testSnapshotKeepsCopyOnWriteCacheStableAfterRebindingLiveState() {
+        let cache = CopyOnWriteTestCache(size: 1)
+        cache.state = [MLXArray([Float(1), 2])]
+
+        let snapshot = MLXPrefixReplayPolicy.snapshotLayerStates([cache])
+        cache.state = [MLXArray([Float(9), 10])]
+        eval(snapshot.flatMap { $0 })
+
+        XCTAssertEqual(snapshot[0][0].asArray(Float.self), [1, 2])
+        XCTAssertEqual(cache.state[0].asArray(Float.self), [9, 10])
+    }
+
+    func testRestoreCopiesMutableCacheStateBeforeRequestOwnership() {
+        let cache = ArraysCache(size: 1)
+        let shared = MLXArray([Float(3), 4])
+
+        let restored = MLXPrefixReplayPolicy.restoredLayerStates(
+            [[shared]], cache: [cache]
+        )
+        XCTAssertFalse(restored[0][0] === shared)
+        cache.state = restored[0]
+        cache.state = [MLXArray([Float(7), 8])]
+
+        XCTAssertEqual(restored[0][0].asArray(Float.self), [3, 4])
+        XCTAssertEqual(cache.state[0].asArray(Float.self), [7, 8])
+    }
+
     func testDeepseekV4CacheRequiresExactBoundaryRestore() {
         let cache = DeepseekV4Cache(
             slidingWindow: 128,
