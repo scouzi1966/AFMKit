@@ -16,6 +16,11 @@ public enum OpenAIResponseFormatPolicy {
         options: []
     )
 
+    private static let trailingReasoningEndRegex = try! NSRegularExpression(
+        pattern: #"(?:\s*</(?:think|thinking|reasoning)(?::[a-zA-Z0-9_-]+)?>\s*)+$"#,
+        options: [.caseInsensitive]
+    )
+
     public static func effectiveResponseFormat(
         requestFormat: ResponseFormat?,
         serverDefault: ResponseFormat?
@@ -59,6 +64,18 @@ public enum OpenAIResponseFormatPolicy {
         ), let matchRange = Range(match.range, in: trimmed) {
             trimmed = String(trimmed[matchRange.upperBound...])
                 .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        // Some reasoning models emit a complete JSON value and then close an
+        // already-suppressed reasoning channel.  Remove only closing wrappers
+        // anchored after the JSON.  Marker-shaped text inside JSON strings is
+        // application data and must remain byte-for-byte intact.
+        if let match = trailingReasoningEndRegex.firstMatch(
+            in: trimmed,
+            range: NSRange(trimmed.startIndex..., in: trimmed)
+        ), let matchRange = Range(match.range, in: trimmed) {
+            trimmed.removeSubrange(matchRange)
+            trimmed = trimmed.trimmingCharacters(in: .whitespacesAndNewlines)
         }
 
         guard let match = fencedStructuredOutputRegex.firstMatch(

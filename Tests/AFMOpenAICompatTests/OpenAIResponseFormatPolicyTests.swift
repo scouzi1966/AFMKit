@@ -127,6 +127,33 @@ struct OpenAIResponseFormatPolicyTests {
         ) == raw.trimmingCharacters(in: .whitespacesAndNewlines))
     }
 
+    @Test("response_format policy strips a trailing reasoning close after JSON")
+    func structuredOutputSanitizationStripsTrailingReasoningClose() {
+        let jsonSchema = Self.schemaFormat(name: "markers")
+        let marker = "<think>kept</think> </think:opensource> <tool_call>literal</tool_call>"
+        let json = #"{"note":"\#(marker)"}"#
+
+        #expect(OpenAIResponseFormatPolicy.sanitizeStructuredOutput(
+            json + "</think>",
+            responseFormat: jsonSchema
+        ) == json)
+        #expect(OpenAIResponseFormatPolicy.sanitizeStructuredOutput(
+            json + "\n</THINK:opensource>\n",
+            responseFormat: jsonSchema
+        ) == json)
+    }
+
+    @Test("response_format policy preserves reasoning markers inside JSON")
+    func structuredOutputSanitizationPreservesMarkersInsideJSON() {
+        let jsonSchema = Self.schemaFormat(name: "markers")
+        let json = #"{"note":"<think>kept</think> </think:opensource>"}"#
+
+        #expect(OpenAIResponseFormatPolicy.sanitizeStructuredOutput(
+            json,
+            responseFormat: jsonSchema
+        ) == json)
+    }
+
     private static func schemaFormat(name: String, strict: Bool = true) -> ResponseFormat {
         ResponseFormat(
             type: "json_schema",
