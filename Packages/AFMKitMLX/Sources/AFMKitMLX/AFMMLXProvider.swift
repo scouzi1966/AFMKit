@@ -557,6 +557,11 @@ public final class AFMMLXModel: AFMModel, AFMTextTokenizing, AFMPrewarmableModel
                         throw AFMError.generationFailed("MLX service is unavailable.")
                     }
                     let tools = request.effectiveOpenAITools()
+                    let responseFormat = request.openAIResponseFormat()
+                    // In JSON output, marker strings are data, not reasoning delimiters.
+                    // Match the HTTP streaming path at both the token and event boundaries.
+                    let preserveJSONMarkers = responseFormat?.type == "json_object"
+                        || responseFormat?.type == "json_schema"
                     let result = try await AFMGenerationContext.$requestedMaximumOutputTokens
                         .withValue(request.options.maximumResponseTokens) {
                             try await AFMGenerationContext.$ignoreEndOfSequence.withValue(
@@ -578,8 +583,9 @@ public final class AFMMLXModel: AFMModel, AFMTextTokenizing, AFMPrewarmableModel
                                     tools: tools,
                                     parallelToolCalls: request.parallelToolCalls,
                                     stop: request.options.stopSequences,
-                                    responseFormat: request.openAIResponseFormat(),
+                                    responseFormat: responseFormat,
                                     chatTemplateKwargs: request.chatTemplateKwargs(),
+                                    preserveStructuralTags: preserveJSONMarkers,
                                     requestId: requestID
                                 )
                             }
@@ -588,7 +594,8 @@ public final class AFMMLXModel: AFMModel, AFMTextTokenizing, AFMPrewarmableModel
                         thinkStartTag: result.thinkStartTag,
                         thinkEndTag: result.thinkEndTag,
                         maximumResponseTokens: request.options.maximumResponseTokens,
-                        tools: tools
+                        tools: tools,
+                        preserveReasoningMarkers: preserveJSONMarkers
                     )
                     let streamService = service
                     var rawToolFallback = AFMMLXRawToolStreamFallback(

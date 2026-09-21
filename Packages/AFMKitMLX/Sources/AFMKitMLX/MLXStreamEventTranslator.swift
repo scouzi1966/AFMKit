@@ -30,10 +30,11 @@ public struct MLXStreamEventTranslator {
         thinkStartTag: String?,
         thinkEndTag: String?,
         maximumResponseTokens: Int?,
-        tools: [RequestTool]? = nil
+        tools: [RequestTool]? = nil,
+        preserveReasoningMarkers: Bool = false
     ) {
-        self.thinkStartTag = thinkStartTag
-        self.thinkEndTag = thinkEndTag
+        self.thinkStartTag = preserveReasoningMarkers ? nil : thinkStartTag
+        self.thinkEndTag = preserveReasoningMarkers ? nil : thinkEndTag
         self.maximumResponseTokens = maximumResponseTokens
         self.requestTools = tools
     }

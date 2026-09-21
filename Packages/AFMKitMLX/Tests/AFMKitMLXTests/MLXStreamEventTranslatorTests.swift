@@ -4,6 +4,24 @@ import AFMOpenAICompat
 import XCTest
 
 final class MLXStreamEventTranslatorTests: XCTestCase {
+    func testStructuredOutputPreservesLiteralReasoningMarkersAtEverySplit() {
+        let raw = #"{"note":"<think>kept</think> </think:opensource> <|channel>thought <|content_thinking|> <tool_call>literal</tool_call>"}"#
+        for split in 0...raw.count {
+            var translator = MLXStreamEventTranslator(
+                thinkStartTag: "<think>", thinkEndTag: "</think>",
+                maximumResponseTokens: 256, preserveReasoningMarkers: true)
+            let boundary = raw.index(raw.startIndex, offsetBy: split)
+            let events = [
+                translator.consume(.init(text: String(raw[..<boundary]))),
+                translator.consume(.init(text: String(raw[boundary...]))),
+                translator.finish()
+            ].flatMap { $0 }
+            XCTAssertEqual(text(from: events), raw, "split \(split)")
+            XCTAssertEqual(reasoning(from: events), "", "split \(split)")
+            XCTAssertEqual(completionReason(from: events), .stop)
+        }
+    }
+
     func testApertusDeliberationUsesExistingReasoningChannelsAtEverySplit() {
         let raw = "visible<|inner_prefix|>private<|inner_suffix|>answer"
         for split in 0...raw.count {
