@@ -23,23 +23,23 @@ enum Qwen4ExpHyperConnectionFusion {
             "AFM_QWEN_FUSED_HC_PREFILL_NORM"
         ] != "0"
 
-    /// Controlled long-prefill experiment. The reference avoids materializing
-    /// sigmoid(up), its elementwise product with every HC stream, and the HC
-    /// reduction as three separate graph operations. Keep this independently
-    /// selectable while its end-to-end quality and throughput are qualified.
+    /// Avoid materializing sigmoid(up), its elementwise product with every HC
+    /// stream, and the HC reduction as three separate graph operations. Live
+    /// API/cache qualification and graph-equivalence tests cover the default;
+    /// retain `0` only as a diagnostic and recovery escape hatch.
     private static let prefillMixEnabled =
         ProcessInfo.processInfo.environment[
             "AFM_QWEN_FUSED_HC_PREFILL_MIX"
-        ] == "1"
+        ] != "0"
 
-    /// The reference assigns four hidden values to each thread for grouped
-    /// prefill normalization (640 threads at Qwen Next's hidden size 2,560).
-    /// Keep the geometry independently selectable until memory, quality, and
-    /// throughput are qualified across the supported hardware matrix.
+    /// Assign four hidden values to each thread for grouped prefill
+    /// normalization (640 threads at Qwen Next's hidden size 2,560). This
+    /// matches the qualified reference launch geometry; retain `0` as a
+    /// diagnostic fallback.
     private static let prefillReferenceNormGeometryEnabled =
         ProcessInfo.processInfo.environment[
             "AFM_QWEN_HC_PREFILL_REFERENCE_NORM_GEOMETRY"
-        ] == "1"
+        ] != "0"
 
     private static let enabled =
         ProcessInfo.processInfo.environment["AFM_QWEN_FUSED_HYPER_CONNECTION"] != "0"

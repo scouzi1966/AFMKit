@@ -4956,11 +4956,12 @@ private final class Qwen4ExpModelInner: Module {
         ProcessInfo.processInfo.environment["AFM_QWEN_VERIFY_DEFER_HC"] == "1"
     private static let deferInterLayerHyperConnectionWriteDecode =
         ProcessInfo.processInfo.environment["AFM_QWEN_DEFER_HC_WRITE"] != "0"
-    /// Controlled long-prefill experiment: carry a completed layer's final HC
-    /// write into the next layer, whose grouped normalization can consume it
-    /// in one Metal pass. Decode remains enabled by default independently.
+    /// Carry a completed layer's final HC write into the next layer, whose
+    /// grouped normalization can consume it in one Metal pass. Graph-equivalence
+    /// and live prefix-cache/API qualification cover the default; retain `0`
+    /// only as a diagnostic and recovery escape hatch.
     private static let deferInterLayerHyperConnectionWritePrefill =
-        ProcessInfo.processInfo.environment["AFM_QWEN_PREFILL_DEFER_HC"] == "1"
+        ProcessInfo.processInfo.environment["AFM_QWEN_PREFILL_DEFER_HC"] != "0"
 
     /// Decode-side submission ladder. A completed layer prefix is
     /// handed to MLX while Swift continues constructing the rest of the token
