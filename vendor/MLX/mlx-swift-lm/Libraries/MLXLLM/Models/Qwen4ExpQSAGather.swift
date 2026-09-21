@@ -222,7 +222,7 @@ enum Qwen4ExpQSAVerifyRadixSelection {
         guard enabled || forceEnabledForTesting,
               Device.defaultDevice().deviceType == .gpu,
               scores.ndim == 3, scores.dtype == .float32,
-              scores.dim(0) == 1, scores.dim(1) > 1,
+              scores.dim(0) == 1, scores.dim(1) > 0,
               scores.dim(1) <= 8, scores.dim(2) > 0,
               visibleBlockCounts.count == scores.dim(1),
               visibleBlockCounts.allSatisfy({ $0 >= 0 && $0 <= scores.dim(2) }),

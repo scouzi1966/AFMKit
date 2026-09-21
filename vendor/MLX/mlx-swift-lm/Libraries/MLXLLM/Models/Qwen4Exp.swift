@@ -1679,7 +1679,6 @@ final class Qwen4ExpQSAIndexer: Module {
         } else {
             blockKeys = cachedBlockKeys!
         }
-
         // A one-token decode does not benefit from the row-batched selector;
         // its score-sheet setup is measurable on every generated token. Keep
         // the original single-row graph for decode and reserve vectorization
@@ -1782,17 +1781,10 @@ final class Qwen4ExpQSAIndexer: Module {
                 tokenPositions .< visibleCount, axes: [0, 1, 2])
         }
 
-        let query = queries[0..., 0..., 0, 0...]
-        let visibleBlockKeys = blockKeys[0..., ..<visibleBlocks, 0...]
-        let scores = Qwen4ExpQSADecodeScores.call(
+        let scores = selectDecodeScores(
             queries: queries,
-            blockKeys: visibleBlockKeys
-        ) ?? maximum(
-            (expandedDimensions(query, axis: -2)
-                * expandedDimensions(visibleBlockKeys, axis: 1))
-                .sum(axis: -1),
-            0
-        ).sum(axis: 1)
+            blockKeys: blockKeys,
+            previousOffset: previousOffset)
         if let fusedMask = Qwen4ExpQSADecodeMask.call(
             scores: scores,
             visibleCount: visibleCount,
@@ -1830,6 +1822,20 @@ final class Qwen4ExpQSAIndexer: Module {
         let blockIDs = MLX.arange(visibleBlocks, dtype: .int32)
         let biasedScores = scores
             - blockIDs.asType(.float32) * Self.tieBreakScale
+        // Reuse the exact radix selector already qualified for bounded MTP
+        // verification.  A decode request is the same selection problem with
+        // one row: scores are runtime-width data, ties prefer the lower block
+        // index, and the result is emitted in cache order.  Keep this behind
+        // the existing selector opt-in until the long-context A/B completes.
+        if let fused = Qwen4ExpQSAVerifyRadixSelection.call(
+            scores: biasedScores.expandedDimensions(axis: 0),
+            visibleBlockCounts: Array(
+                repeating: visibleBlocks,
+                count: biasedScores.dim(0)),
+            topK: blockTopK)
+        {
+            return fused.reshaped(biasedScores.dim(0), 1, blockTopK)
+        }
         let selected = MLX.argPartition(
             -biasedScores, kth: blockTopK - 1, axis: -1
         )[0..., ..<blockTopK].asType(.int32)

@@ -2229,8 +2229,10 @@ final class QwenNextMTPPipelineTests: XCTestCase {
         // Alternating block lengths reuses one specialization across growing
         // contexts. Include ties, signed zeros, negative values and NaNs.
         for blocks in [17, 533, 1061, 533] {
-            for width in [2, 4, 7] {
-                let bounds = (0..<width).map { min(blocks, $0 * blocks / (width - 1)) }
+            for width in [1, 2, 4, 7] {
+                let bounds = width == 1
+                    ? [blocks]
+                    : (0..<width).map { min(blocks, $0 * blocks / (width - 1)) }
                 let values: [Float] = (0..<(width * blocks)).map { index in
                     switch index % 19 {
                     case 0: return .nan
