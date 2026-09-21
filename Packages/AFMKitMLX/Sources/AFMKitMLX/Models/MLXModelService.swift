@@ -3949,8 +3949,29 @@ public final class MLXModelService:
                         insertTime: saveInsertTime
                     )
                 } : nil
-            let preparedPrefill: (([KVCache]) throws -> LMOutput)? = cachedPromptOutput.map {
+            var preparedPrefill: (([KVCache]) throws -> LMOutput)? = cachedPromptOutput.map {
                 output in { _ in output }
+            }
+            let replayBackoff = BatchScheduler.qwenARReplayBackoffTokenCount(
+                ProcessInfo.processInfo.environment["AFM_QWEN_PREFIX_REPLAY_BACKOFF"])
+            // A growing chat can rewrite the template's final assistant header.
+            // Reuse the batching policy to capture an actual earlier recurrent
+            // state; a final-only snapshot cannot safely be trimmed to that point.
+            // Exact repeats still use saved logits without prefilling again.
+            if preparedPrefill == nil, capturesPromptBoundary,
+               context.model is Qwen4ExpModel, replayBackoff > 0 {
+                preparedPrefill = { cache in
+                    try MLXReplayPrefill.prepareWithSnapshot(
+                        model: context.model, cache: cache, inputTokens: inputTokens,
+                        restoredPrefix: cachedTokenCount, prefillStepSize: params.prefillStepSize,
+                        promptSnapshotBackoffTokens: replayBackoff,
+                        captureFinalCheckpoint: false,
+                        checkpoint: { boundary, states, metadata in
+                            self.radixCache?.insert(tokens: Array(inputTokens.prefix(boundary)),
+                                layerStates: states, layerMetaStates: metadata,
+                                statesAreIndependentSnapshots: true)
+                        }).output
+                }
             }
             let generationIterator = try TokenIterator(
                 input: generateInput,
@@ -4969,8 +4990,28 @@ public final class MLXModelService:
                                     insertTime: saveInsertTime
                                 )
                             } : nil
-                        let preparedPrefill: (([KVCache]) throws -> LMOutput)? =
+                        var preparedPrefill: (([KVCache]) throws -> LMOutput)? =
                             cachedPromptOutput.map { output in { _ in output } }
+                        let replayBackoff = BatchScheduler.qwenARReplayBackoffTokenCount(
+                            ProcessInfo.processInfo.environment["AFM_QWEN_PREFIX_REPLAY_BACKOFF"])
+                        // Keep serial HTTP streaming and non-streaming on the
+                        // same exact-boundary snapshot policy as batch admission.
+                        if preparedPrefill == nil, capturesPromptBoundary,
+                           context.model is Qwen4ExpModel, replayBackoff > 0 {
+                            preparedPrefill = { cache in
+                                try MLXReplayPrefill.prepareWithSnapshot(
+                                    model: context.model, cache: cache, inputTokens: inputTokens,
+                                    restoredPrefix: streamCachedTokens,
+                                    prefillStepSize: params.prefillStepSize,
+                                    promptSnapshotBackoffTokens: replayBackoff,
+                                    captureFinalCheckpoint: false,
+                                    checkpoint: { boundary, states, metadata in
+                                        self.radixCache?.insert(tokens: Array(inputTokens.prefix(boundary)),
+                                            layerStates: states, layerMetaStates: metadata,
+                                            statesAreIndependentSnapshots: true)
+                                    }).output
+                            }
+                        }
                         do {
                             generationIterator = try TokenIterator(
                                 input: generateInput,
