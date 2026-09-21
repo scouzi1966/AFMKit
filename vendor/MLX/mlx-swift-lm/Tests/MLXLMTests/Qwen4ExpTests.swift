@@ -931,6 +931,74 @@ final class Qwen4ExpTests: XCTestCase {
         }
     }
 
+    func testLongPrefillPendingWriteNormalizationMatchesEagerGraph() throws {
+        let rows = 128
+        let hcCount = 4
+        let hiddenSize = 256
+        let width = hcCount * hiddenSize
+        let epsilon: Float = 1e-6
+        let input = MLXArray((0 ..< (rows * width)).map {
+            Float(($0 % 47) - 23) / 128
+        }).reshaped(1, rows, width).asType(.bfloat16)
+        let output = MLXArray((0 ..< (rows * hiddenSize)).map {
+            Float(($0 % 41) - 20) / 256
+        }).reshaped(1, rows, hiddenSize).asType(.bfloat16)
+        let weights = MLXArray((0 ..< (rows * hcCount)).map {
+            Float(($0 % 13) + 1) / 16
+        }).reshaped(1, rows, hcCount).asType(.bfloat16)
+        let normWeight = MLXArray((0 ..< width).map {
+            Float(($0 % 31) - 15) / 1_024
+        }).asType(.bfloat16)
+
+        let actual = try XCTUnwrap(
+            Qwen4ExpHyperConnectionFusion.normalizeGroupedPrefillAfterInjection(
+                input: input,
+                normWeight: normWeight,
+                output: output,
+                weights: weights,
+                groupSize: hiddenSize,
+                epsilon: epsilon))
+        let eagerStream = input + (
+            expandedDimensions(output, axis: -2)
+                * expandedDimensions(weights, axis: -1)
+        ).reshaped(input.shape)
+        let expectedNormalized = try XCTUnwrap(
+            Qwen4ExpHyperConnectionFusion.normalizeGroupedPrefill(
+                input: eagerStream,
+                normWeight: normWeight,
+                groupSize: hiddenSize,
+                epsilon: epsilon))
+
+        XCTAssertLessThanOrEqual(
+            maximumAbsoluteDifference(actual.stream, eagerStream), 0.002)
+        XCTAssertLessThanOrEqual(
+            maximumAbsoluteDifference(actual.normalized, expectedNormalized), 0.002)
+    }
+
+    func testLongPrefillMixerMatchesEagerGraph() throws {
+        let rows = 128
+        let hcCount = 4
+        let hiddenSize = 256
+        let width = hcCount * hiddenSize
+        let up = MLXArray((0 ..< (rows * width)).map {
+            Float(($0 % 79) - 39) / 16
+        }).reshaped(1, rows, width).asType(.bfloat16)
+        let normalized = MLXArray((0 ..< (rows * width)).map {
+            Float(($0 % 47) - 23) / 32
+        }).reshaped(1, rows, width).asType(.bfloat16)
+
+        let actual = try XCTUnwrap(
+            Qwen4ExpHyperConnectionFusion.mixGroupedPrefill(
+                up: up, normalized: normalized, groupSize: hiddenSize,
+                forceEnabledForTesting: true))
+        let shape = [1, rows, hcCount, hiddenSize]
+        let expected = (sigmoid(up).reshaped(shape)
+            * normalized.reshaped(shape)).mean(axis: -2)
+
+        XCTAssertLessThanOrEqual(
+            maximumAbsoluteDifference(actual, expected), 0.002)
+    }
+
     func testDecodeWidthHyperConnectionFusionRejectsIneligibleInputs() {
         let hcCount = 4
         let hiddenSize = 256
@@ -1298,6 +1366,34 @@ final class Qwen4ExpTests: XCTestCase {
         XCTAssertEqual(actual?.shape, [1, 2, 4])
         MLX.eval(expected, actual!)
         XCTAssertEqual(actual!.asArray(Float.self), expected.asArray(Float.self))
+    }
+
+    func testAttentionCacheAppendsOnlyNewQSAScoreColumns() throws {
+        let cache = Qwen4ExpAttentionCache(indexerCompressRatio: 4)
+        let firstBlocks = MLXArray((0 ..< 8).map(Float.init))
+            .reshaped(1, 2, 4).asType(.bfloat16)
+        _ = cache.appendPooledIndexKeys(firstBlocks)
+
+        let firstBank = try XCTUnwrap(
+            cache.qsaScoreKeyBank(completeBlockCount: 2))
+        let expectedFirst = firstBlocks.asType(.float32).swappedAxes(-1, -2)
+        MLX.eval(firstBank, expectedFirst)
+        XCTAssertEqual(firstBank.shape, [1, 4, 2])
+        XCTAssertEqual(
+            firstBank.asArray(Float.self),
+            expectedFirst.asArray(Float.self))
+
+        let nextBlock = MLXArray([Float(8), 9, 10, 11])
+            .reshaped(1, 1, 4).asType(.bfloat16)
+        let allBlocks = cache.appendPooledIndexKeys(nextBlock)
+        let extendedBank = try XCTUnwrap(
+            cache.qsaScoreKeyBank(completeBlockCount: 3))
+        let expectedExtended = allBlocks.asType(.float32).swappedAxes(-1, -2)
+        MLX.eval(extendedBank, expectedExtended)
+        XCTAssertEqual(extendedBank.shape, [1, 4, 3])
+        XCTAssertEqual(
+            extendedBank.asArray(Float.self),
+            expectedExtended.asArray(Float.self))
     }
 
     func testAttentionCacheDefersSequentialQSAPositionsUntilRequested() {
@@ -2799,6 +2895,23 @@ final class Qwen4ExpTests: XCTestCase {
         }
     }
 
+    func testQSAPrefillReturnsBlocksForAttentionToValidate() {
+        // These values describe the indexer (4 heads, 128-wide), not the
+        // model attention (24/2 heads, 256-wide). Block-selection routing must
+        // not reject the sparse attention path using indexer geometry; the
+        // gather validates the actual Q/K/V tensors when attention consumes it.
+        XCTAssertTrue(Qwen4ExpQSAGather.shouldSelectBlocks(
+            batch: 1,
+            queryLength: 16,
+            keyLength: 8_192,
+            dtype: .bfloat16))
+        XCTAssertFalse(Qwen4ExpQSAGather.shouldSelectBlocks(
+            batch: 1,
+            queryLength: 15,
+            keyLength: 8_192,
+            dtype: .bfloat16))
+    }
+
     func testQSADirectGatherMatchesDenseMaskForBatchedSelections() throws {
         let batch = 2
         let queryHeads = 24
@@ -2949,6 +3062,47 @@ final class Qwen4ExpTests: XCTestCase {
 
         XCTAssertEqual(
             actual.asArray(Int32.self), expected.asArray(Int32.self))
+    }
+
+    func testQSAWideRadixSelectionMatchesStableArgPartitionOracle() throws {
+        let blockCount = 1_061
+        let topK = 512
+        for rows in [16, 64, 128, 256] {
+            let values = (0 ..< (rows * blockCount)).map { index in
+                // Repeated scores deliberately exercise deterministic ties.
+                Float((index * 37 + index / blockCount * 11) % 257) / 31
+            }
+            let scores = MLXArray(values).reshaped(1, rows, blockCount)
+            let bounds = (0 ..< rows).map { row in
+                max(topK + 1, blockCount - row % 17)
+            }
+            let actual = try XCTUnwrap(
+                Qwen4ExpQSAVerifyRadixSelection.call(
+                    scores: scores,
+                    visibleBlockCounts: bounds,
+                    topK: topK,
+                    forceEnabledForTesting: true))
+
+            let blockIDs = MLX.arange(blockCount, dtype: .int32)
+                .reshaped(1, 1, blockCount)
+            let visible = blockIDs .< MLXArray(bounds.map(Int32.init))
+                .reshaped(1, rows, 1)
+            let masked = MLX.where(
+                visible,
+                scores,
+                MLXArray(-Float.greatestFiniteMagnitude))
+            let expected = sorted(
+                argPartition(-masked, kth: topK - 1, axis: -1)[
+                    0..., 0..., ..<topK
+                ].asType(.int32),
+                axis: -1)
+            eval(actual, expected)
+
+            XCTAssertEqual(
+                actual.asArray(Int32.self),
+                expected.asArray(Int32.self),
+                "row width \(rows)")
+        }
     }
 
     func testFusedCausalPrefillAttentionMatchesMLXSDPA() throws {

@@ -354,6 +354,52 @@ private final class Qwen4ExpGatedResidual: Module {
         }
     }
 
+    private func mixNormalized(
+        _ normalized: MLXArray,
+        residual: MLXArray,
+        verificationPolicy: MTPVerificationPolicy?
+    ) -> (MLXArray, MLXArray, MLXArray) {
+        let down = qwen4ExpVerificationLinear(
+            inputMixWeightDown, normalized, verificationPolicy: verificationPolicy,
+            role: .hyperConnection)
+        let up = qwen4ExpVerificationLinear(
+            inputMixWeightUp, silu(down / Float(hcCount)),
+            verificationPolicy: verificationPolicy,
+            role: .hyperConnection)
+        let mixed = Qwen4ExpHyperConnectionFusion.mixGroupedPrefill(
+            up: up, normalized: normalized, groupSize: hiddenSize)
+            ?? {
+                let shape = Array(normalized.shape.dropLast())
+                return (sigmoid(up).reshaped(shape + [hcCount, hiddenSize])
+                    * normalized.reshaped(shape + [hcCount, hiddenSize])).mean(axis: -2)
+            }()
+        let injection = 2 * sigmoid(qwen4ExpVerificationLinear(
+            blockInjectWeight!, normalized, verificationPolicy: verificationPolicy,
+            role: .hyperConnection) / Float(hcCount))
+        return (mixed, residual, injection)
+    }
+
+    private func combineNormalized(
+        _ normalized: MLXArray,
+        verificationPolicy: MTPVerificationPolicy?
+    ) -> MLXArray {
+        let down = qwen4ExpVerificationLinear(
+            inputMixWeightDown, normalized, verificationPolicy: verificationPolicy,
+            role: .hyperConnection)
+        let up = qwen4ExpVerificationLinear(
+            inputMixWeightUp, silu(down / Float(hcCount)),
+            verificationPolicy: verificationPolicy,
+            role: .hyperConnection)
+        if let fused = Qwen4ExpHyperConnectionFusion.mixGroupedPrefill(
+            up: up, normalized: normalized, groupSize: hiddenSize)
+        {
+            return fused
+        }
+        let shape = Array(normalized.shape.dropLast())
+        return (sigmoid(up).reshaped(shape + [hcCount, hiddenSize])
+            * normalized.reshaped(shape + [hcCount, hiddenSize])).mean(axis: -2)
+    }
+
     func mix(
         _ input: MLXArray,
         verificationPolicy: MTPVerificationPolicy? = nil
@@ -378,21 +424,8 @@ private final class Qwen4ExpGatedResidual: Module {
         {
             return (fused.mixed, input, fused.injection)
         }
-        let normalized = hcNorm(input)
-        let down = qwen4ExpVerificationLinear(
-            inputMixWeightDown, normalized, verificationPolicy: verificationPolicy,
-            role: .hyperConnection)
-        let weights = sigmoid(qwen4ExpVerificationLinear(
-            inputMixWeightUp, silu(down / Float(hcCount)),
-            verificationPolicy: verificationPolicy,
-            role: .hyperConnection))
-        let shape = Array(input.shape.dropLast())
-        let mixed = (weights.reshaped(shape + [hcCount, hiddenSize])
-            * normalized.reshaped(shape + [hcCount, hiddenSize])).mean(axis: -2)
-        let injection = 2 * sigmoid(qwen4ExpVerificationLinear(
-            blockInjectWeight!, normalized, verificationPolicy: verificationPolicy,
-            role: .hyperConnection) / Float(hcCount))
-        return (mixed, input, injection)
+        return mixNormalized(
+            hcNorm(input), residual: input, verificationPolicy: verificationPolicy)
     }
 
     func mixAfterInjection(
@@ -421,6 +454,18 @@ private final class Qwen4ExpGatedResidual: Module {
         {
             return (fused.mixed, fused.stream, fused.injection)
         }
+        if verificationPolicy == nil,
+           let prefill = Qwen4ExpHyperConnectionFusion.normalizeGroupedPrefillAfterInjection(
+               input: residual,
+               normWeight: hcNorm.weight,
+               output: output,
+               weights: weights,
+               groupSize: hiddenSize,
+               epsilon: hcNorm.eps)
+        {
+            return mixNormalized(
+                prefill.normalized, residual: prefill.stream, verificationPolicy: nil)
+        }
         return mix(
             inject(output, residual: residual, weights: weights, verificationPolicy: verificationPolicy),
             verificationPolicy: verificationPolicy)
@@ -447,17 +492,7 @@ private final class Qwen4ExpGatedResidual: Module {
         {
             return fused.mixed
         }
-        let normalized = hcNorm(input)
-        let down = qwen4ExpVerificationLinear(
-            inputMixWeightDown, normalized, verificationPolicy: verificationPolicy,
-            role: .hyperConnection)
-        let weights = sigmoid(qwen4ExpVerificationLinear(
-            inputMixWeightUp, silu(down / Float(hcCount)),
-            verificationPolicy: verificationPolicy,
-            role: .hyperConnection))
-        let shape = Array(input.shape.dropLast())
-        return (weights.reshaped(shape + [hcCount, hiddenSize])
-            * normalized.reshaped(shape + [hcCount, hiddenSize])).mean(axis: -2)
+        return combineNormalized(hcNorm(input), verificationPolicy: verificationPolicy)
     }
 
     func combineAfterInjection(
@@ -484,6 +519,17 @@ private final class Qwen4ExpGatedResidual: Module {
                allowExtendedRows: qwen4ExpUsesExtendedVerificationHC(residual, policy: verificationPolicy))
         {
             return fused.mixed
+        }
+        if verificationPolicy == nil,
+           let prefill = Qwen4ExpHyperConnectionFusion.normalizeGroupedPrefillAfterInjection(
+               input: residual,
+               normWeight: hcNorm.weight,
+               output: output,
+               weights: weights,
+               groupSize: hiddenSize,
+               epsilon: hcNorm.eps)
+        {
+            return combineNormalized(prefill.normalized, verificationPolicy: nil)
         }
         return combine(
             inject(output, residual: residual, weights: weights, verificationPolicy: verificationPolicy),
@@ -611,8 +657,13 @@ final class Qwen4ExpAttentionCache: KVCache, UniformBatchKVCache, CopyOnWriteKVC
     private var indexKeys: MLXArray?
     private var indexPositionIDs: MLXArray?
     private var pooledIndexKeys: MLXArray?
+    /// FP32 `[batch, headDimension, blocks]` operand for QSA score matmul.
+    /// It is derived incrementally from newly completed pooled blocks so long
+    /// prefill does not recast and transpose the entire growing BF16 bank.
+    private var pooledScoreKeyBank: MLXArray?
     private var indexKeyCount = 0
     private var pooledIndexKeyCount = 0
+    private var pooledScoreKeyCount = 0
 
     init(indexerCompressRatio: Int, usesCapacityStorage: Bool = true) {
         precondition(indexerCompressRatio > 0)
@@ -653,6 +704,32 @@ final class Qwen4ExpAttentionCache: KVCache, UniformBatchKVCache, CopyOnWriteKVC
         let updated = expanded
         updated[0..., previous ..< needed, 0...] = rows
         return (updated, needed, updated[0..., ..<needed, 0...])
+    }
+
+    private func appendingColumns3D(
+        _ columns: MLXArray,
+        to storage: MLXArray?,
+        count: Int
+    ) -> (storage: MLXArray, count: Int, visible: MLXArray) {
+        let previous = count
+        let needed = previous + columns.dim(2)
+        let currentCapacity = storage?.dim(2) ?? 0
+        let expanded: MLXArray
+        if storage == nil || needed > currentCapacity {
+            let capacity = nextCapacity(
+                current: currentCapacity, needed: needed)
+            let padding = MLXArray.zeros(
+                [columns.dim(0), columns.dim(1), capacity - previous],
+                dtype: columns.dtype)
+            expanded = storage.map {
+                concatenated([$0[0..., 0..., ..<previous], padding], axis: 2)
+            } ?? padding
+        } else {
+            expanded = storage!
+        }
+        let updated = expanded
+        updated[0..., 0..., previous ..< needed] = columns
+        return (updated, needed, updated[0..., 0..., ..<needed])
     }
 
     private func appendingPositions(
@@ -707,6 +784,10 @@ final class Qwen4ExpAttentionCache: KVCache, UniformBatchKVCache, CopyOnWriteKVC
 
     private func tightPooledIndexKeys() -> MLXArray? {
         pooledIndexKeys.map { $0[0..., ..<pooledIndexKeyCount, 0...] }
+    }
+
+    private func tightPooledScoreKeyBank() -> MLXArray? {
+        pooledScoreKeyBank.map { $0[0..., 0..., ..<pooledScoreKeyCount] }
     }
 
     private func tightKeys() -> MLXArray? {
@@ -808,12 +889,19 @@ final class Qwen4ExpAttentionCache: KVCache, UniformBatchKVCache, CopyOnWriteKVC
         if completeBlockCount == 0 {
             self.pooledIndexKeys = nil
             pooledIndexKeyCount = 0
+            pooledScoreKeyBank = nil
+            pooledScoreKeyCount = 0
             return nil
         }
         pooledIndexKeyCount = completeBlockCount
+        pooledScoreKeyCount = min(pooledScoreKeyCount, completeBlockCount)
         if !usesCapacityStorage {
             self.pooledIndexKeys = pooledIndexKeys[
                 0..., ..<completeBlockCount, 0...]
+            if let pooledScoreKeyBank {
+                self.pooledScoreKeyBank = pooledScoreKeyBank[
+                    0..., 0..., ..<pooledScoreKeyCount]
+            }
         }
         return self.pooledIndexKeys![0..., ..<completeBlockCount, 0...]
     }
@@ -833,8 +921,47 @@ final class Qwen4ExpAttentionCache: KVCache, UniformBatchKVCache, CopyOnWriteKVC
         return pooledIndexKeys!
     }
 
+    /// Return the score matmul's exact FP32 key operand, appending only columns
+    /// for blocks completed since the previous call. This mirrors the
+    /// incremental score-bank fallback in ddalcu/mlx-serve (MIT) and preserves
+    /// AFM's existing score arithmetic and block choices.
+    func qsaScoreKeyBank(completeBlockCount: Int) -> MLXArray? {
+        guard completeBlockCount > 0,
+              pooledIndexKeyCount >= completeBlockCount,
+              let pooledIndexKeys
+        else { return nil }
+
+        if pooledScoreKeyCount > completeBlockCount {
+            pooledScoreKeyCount = completeBlockCount
+            if !usesCapacityStorage, let pooledScoreKeyBank {
+                self.pooledScoreKeyBank = pooledScoreKeyBank[
+                    0..., 0..., ..<completeBlockCount]
+            }
+        }
+        if pooledScoreKeyCount < completeBlockCount {
+            let newColumns = pooledIndexKeys[
+                0..., pooledScoreKeyCount ..< completeBlockCount, 0...
+            ].asType(.float32).swappedAxes(-1, -2)
+            if usesCapacityStorage {
+                let result = appendingColumns3D(
+                    newColumns,
+                    to: pooledScoreKeyBank,
+                    count: pooledScoreKeyCount)
+                pooledScoreKeyBank = result.storage
+                pooledScoreKeyCount = result.count
+                return result.visible
+            }
+            pooledScoreKeyBank = pooledScoreKeyBank.map {
+                concatenated([$0, newColumns], axis: 2)
+            } ?? newColumns
+            pooledScoreKeyCount = completeBlockCount
+        }
+        return tightPooledScoreKeyBank()
+    }
+
     fileprivate var indexStateForProfiling: [MLXArray] {
-        [tightIndexKeys(), tightPositionIDs(), tightPooledIndexKeys()]
+        [tightIndexKeys(), tightPositionIDs(), tightPooledIndexKeys(),
+         tightPooledScoreKeyBank()]
             .compactMap { $0 }
     }
 
@@ -897,6 +1024,8 @@ final class Qwen4ExpAttentionCache: KVCache, UniformBatchKVCache, CopyOnWriteKVC
             offset = newValue[0].dim(2)
             indexKeyCount = indexKeys?.dim(1) ?? 0
             pooledIndexKeyCount = pooledIndexKeys?.dim(1) ?? 0
+            pooledScoreKeyBank = nil
+            pooledScoreKeyCount = 0
         }
     }
 
@@ -911,18 +1040,20 @@ final class Qwen4ExpAttentionCache: KVCache, UniformBatchKVCache, CopyOnWriteKVC
     fileprivate var promptReplayArrays: [MLXArray?] {
         get {
             [tightKeys(), tightValues(), tightIndexKeys(), tightPositionIDs(),
-             tightPooledIndexKeys()]
+             tightPooledIndexKeys(), tightPooledScoreKeyBank()]
         }
         set {
-            precondition(newValue.count == 5)
+            precondition(newValue.count == 5 || newValue.count == 6)
             keys = newValue[0]
             values = newValue[1]
             indexKeys = newValue[2]
             indexPositionIDs = newValue[3]
             pooledIndexKeys = newValue[4]
+            pooledScoreKeyBank = newValue.count == 6 ? newValue[5] : nil
             offset = keys?.dim(2) ?? 0
             indexKeyCount = indexKeys?.dim(1) ?? 0
             pooledIndexKeyCount = pooledIndexKeys?.dim(1) ?? 0
+            pooledScoreKeyCount = pooledScoreKeyBank?.dim(2) ?? 0
             clearMTPVerification()
         }
     }
@@ -950,11 +1081,18 @@ final class Qwen4ExpAttentionCache: KVCache, UniformBatchKVCache, CopyOnWriteKVC
         if pooledCount == 0 {
             pooledIndexKeys = nil
             pooledIndexKeyCount = 0
+            pooledScoreKeyBank = nil
+            pooledScoreKeyCount = 0
         } else if pooledIndexKeyCount > pooledCount {
             pooledIndexKeyCount = pooledCount
+            pooledScoreKeyCount = min(pooledScoreKeyCount, pooledCount)
             if !usesCapacityStorage, let pooledIndexKeys {
                 self.pooledIndexKeys = pooledIndexKeys[
                     0..., ..<pooledCount, 0...]
+                if let pooledScoreKeyBank {
+                    self.pooledScoreKeyBank = pooledScoreKeyBank[
+                        0..., 0..., ..<pooledScoreKeyCount]
+                }
             }
         }
         return amount
@@ -966,6 +1104,7 @@ final class Qwen4ExpAttentionCache: KVCache, UniformBatchKVCache, CopyOnWriteKVC
         indexKeys = tightIndexKeys()
         indexPositionIDs = tightPositionIDs()
         pooledIndexKeys = tightPooledIndexKeys()
+        pooledScoreKeyBank = tightPooledScoreKeyBank()
     }
 
     func makeMask(
@@ -1671,6 +1810,8 @@ final class Qwen4ExpQSAIndexer: Module {
     private static let scoreBytes = MemoryLayout<Float>.size
     private static let minimumScoreRows = 16
     private static let tieBreakScale: Float = 1e-7
+    private static let profileQSA =
+        ProcessInfo.processInfo.environment["AFM_QWEN_PROFILE_QSA"] == "1"
 
     let heads: Int
     let kvHeads: Int
@@ -1927,21 +2068,28 @@ final class Qwen4ExpQSAIndexer: Module {
         // mlx-serve and the direct-gather path select the same blocks in
         // bounded row chunks.  Below the gather crossover we expand these
         // indices back to the exact bool mask expected by masked SDPA.
+        let scoreKeyBank = cache?.qsaScoreKeyBank(
+            completeBlockCount: completeBlocks)
         let selectedBlocks = selectBlocks(
             queries: queries,
             blockKeys: blockKeys,
+            scoreKeyBank: scoreKeyBank,
             previousOffset: previousOffset,
-            totalLength: totalLength,
-            allowRadixSelection: verificationPolicy == .batched)
+            totalLength: totalLength)
 
+        if ProcessInfo.processInfo.environment["AFM_QWEN_PROFILE_QSA"] == "1" {
+            print(
+                "[qwen4-qsa-prof] route-candidate "
+                    + "batch=\(batch) S=\(length) kv=\(totalLength) "
+                    + "hidden=\(hidden.dtype) queries=\(queries.dtype) "
+                    + "blockKeys=\(blockKeys.dtype) heads=\(heads)/\(kvHeads) "
+                    + "headDim=\(headDim)")
+        }
         if Qwen4ExpQSAGather.shouldSelectBlocks(
             batch: batch,
             queryLength: length,
             keyLength: totalLength,
-            dtype: hidden.dtype,
-            queryHeads: heads,
-            keyHeads: kvHeads,
-            headDimension: headDim)
+            dtype: hidden.dtype)
         {
             return .blocks(selectedBlocks)
         }
@@ -2081,9 +2229,9 @@ final class Qwen4ExpQSAIndexer: Module {
     private func selectBlocks(
         queries: MLXArray,
         blockKeys: MLXArray,
+        scoreKeyBank: MLXArray?,
         previousOffset: Int,
-        totalLength: Int,
-        allowRadixSelection: Bool = false
+        totalLength: Int
     ) -> MLXArray {
         let batch = queries.dim(0)
         let length = queries.dim(2)
@@ -2095,12 +2243,27 @@ final class Qwen4ExpQSAIndexer: Module {
         let rowsPerChunk = max(
             Self.minimumScoreRows,
             min(length, Self.scoreSheetBudgetBytes / bytesPerRow))
-        let keyBank = blockKeys.asType(.float32).swappedAxes(-1, -2)
-        // Queries are [B,H,Q,D], while the bank is [B,D,K]. For B>1
-        // insert the head broadcast axis explicitly; otherwise matmul aligns
-        // the bank's batch dimension with H (or fails when B != H).
-        // Preserve the existing B=1 graph and its measured fast path.
-        let perHeadKeyBank = batch == 1 ? keyBank : expandedDimensions(keyBank, axis: 1)
+        var composedKeyBank = scoreKeyBank.map {
+            // Keep the same explicit batch/head broadcast contract as the
+            // composed fallback below.  A singleton batch aligns naturally;
+            // multi-slot prefill needs the head axis so each request scores
+            // against its own incremental bank.
+            batch == 1 ? $0 : expandedDimensions($0, axis: 1)
+        }
+        func composedScoreSheet(_ queryChunk: MLXArray) -> MLXArray {
+            if composedKeyBank == nil {
+                let keyBank = blockKeys.asType(.float32).swappedAxes(-1, -2)
+                // Queries are [B,H,Q,D], while the bank is [B,D,K]. For B>1
+                // insert the head broadcast axis explicitly; otherwise matmul
+                // aligns the bank's batch dimension with H.
+                composedKeyBank = batch == 1
+                    ? keyBank
+                    : expandedDimensions(keyBank, axis: 1)
+            }
+            return maximum(
+                matmul(queryChunk.asType(.float32), composedKeyBank!),
+                MLXArray(0)).sum(axis: 1)
+        }
         let blockIDs = MLX.arange(completeBlocks, dtype: .int32)[
             .newAxis, .newAxis, 0...]
         let tieBreak = blockIDs.asType(.float32) * Self.tieBreakScale
@@ -2123,13 +2286,9 @@ final class Qwen4ExpQSAIndexer: Module {
                     to: [batch, rows, selectedCapacity])
             } else {
                 let queryChunk = queries[0..., 0..., start ..< end, 0...]
-                    .asType(.float32)
-                let rawScores = maximum(
-                    matmul(queryChunk, perHeadKeyBank),
-                    MLXArray(0)).sum(axis: 1)
+                let rawScores = composedScoreSheet(queryChunk)
                 let biasedScores = rawScores - tieBreak
-                if allowRadixSelection,
-                   let fused = Qwen4ExpQSAVerifyRadixSelection.call(
+                if let fused = Qwen4ExpQSAVerifyRadixSelection.call(
                     scores: biasedScores,
                     visibleBlockCounts: (start..<end).map {
                         min(completeBlocks, (previousOffset + $0 + 1) / compressRatio)
@@ -2158,9 +2317,20 @@ final class Qwen4ExpQSAIndexer: Module {
             chunks.append(sorted(withSentinel, axis: -1))
         }
 
-        return chunks.count == 1
+        let result = chunks.count == 1
             ? chunks[0]
             : concatenated(chunks, axis: 1)
+        if Self.profileQSA {
+            let started = Date.timeIntervalSinceReferenceDate
+            eval(result)
+            let elapsed = (Date.timeIntervalSinceReferenceDate - started) * 1_000
+            let formattedElapsed = String(format: "%.2f", elapsed)
+            print(
+                "[qwen4-qsa-prof] select S=\(length) kv=\(totalLength) "
+                    + "blocks=\(completeBlocks) chunks=\(chunks.count) "
+                    + "ms=\(formattedElapsed)")
+        }
+        return result
     }
 }
 
@@ -4786,6 +4956,11 @@ private final class Qwen4ExpModelInner: Module {
         ProcessInfo.processInfo.environment["AFM_QWEN_VERIFY_DEFER_HC"] == "1"
     private static let deferInterLayerHyperConnectionWriteDecode =
         ProcessInfo.processInfo.environment["AFM_QWEN_DEFER_HC_WRITE"] != "0"
+    /// Controlled long-prefill experiment: carry a completed layer's final HC
+    /// write into the next layer, whose grouped normalization can consume it
+    /// in one Metal pass. Decode remains enabled by default independently.
+    private static let deferInterLayerHyperConnectionWritePrefill =
+        ProcessInfo.processInfo.environment["AFM_QWEN_PREFILL_DEFER_HC"] == "1"
 
     /// Decode-side submission ladder. A completed layer prefix is
     /// handed to MLX while Swift continues constructing the rest of the token
@@ -4910,6 +5085,8 @@ private final class Qwen4ExpModelInner: Module {
         }
         let deferInterLayerWrite = (Self.deferInterLayerHyperConnectionWriteDecode
             && verificationPolicy == nil && hidden.dim(1) == 1)
+            || (Self.deferInterLayerHyperConnectionWritePrefill
+                && verificationPolicy == nil && hidden.dim(1) >= 128)
             || qwen4ExpCanFuseVerificationHC(
                 hidden, policy: verificationPolicy, enabled: Self.deferVerificationHC)
         let decodeAsyncLadderStride = Self.decodeAsyncLadderStride
