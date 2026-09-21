@@ -830,7 +830,7 @@ actor BatchScheduler {
         self.qwenMTPReplayBackoffOnMiss = ProcessInfo.processInfo.environment[
             "AFM_QWEN_MTP_REPLAY_BACKOFF_ON_MISS"] == "1"
         self.qwenARReplayBackoffTokens = model is Qwen4ExpModel && enablePrefixCaching
-            ? Self.qwenMTPReplayBackoffTokenCount(
+            ? Self.qwenARReplayBackoffTokenCount(
                 ProcessInfo.processInfo.environment["AFM_QWEN_PREFIX_REPLAY_BACKOFF"]) : 0
         self.glmMTPPromptReplayCache = glmMTPPromptReplayCache
         self.glmMTPReplayModelID = Self.glmMTPReplayModelID(
@@ -1618,6 +1618,18 @@ actor BatchScheduler {
     /// Default-off earlier complete-state snapshot; does not expand cache budgets.
     static func qwenMTPReplayBackoffTokenCount(_ value: String?) -> Int {
         min(maximumQwenMTPReplayBackoffTokens, max(0, Int(value ?? "0") ?? 0))
+    }
+
+    /// Qwen Next's recurrent PLE state is expensive to snapshot. Keep one
+    /// near-end boundary by default instead of materializing the generic
+    /// eight-checkpoint grid during every concurrent prefill. The 31-token
+    /// policy corresponds to the reference scheduler's 30-token prefill
+    /// backoff because `MLXReplayPrefill` plans against prompt-minus-one.
+    /// An explicit zero remains available for controlled comparisons.
+    static func qwenARReplayBackoffTokenCount(_ value: String?) -> Int {
+        guard let value else { return 31 }
+        guard let parsed = Int(value) else { return 31 }
+        return min(maximumQwenMTPReplayBackoffTokens, max(0, parsed))
     }
 
     /// Optional two-stage admission within the SAME replay budget: misses seed
