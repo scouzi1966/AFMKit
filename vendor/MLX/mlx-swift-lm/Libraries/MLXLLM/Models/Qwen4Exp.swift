@@ -2025,11 +2025,10 @@ final class Qwen4ExpQSAIndexer: Module {
         let blockIDs = MLX.arange(visibleBlocks, dtype: .int32)
         let biasedScores = scores
             - blockIDs.asType(.float32) * Self.tieBreakScale
-        // Reuse the exact radix selector already qualified for bounded MTP
-        // verification.  A decode request is the same selection problem with
+        // Reuse the exact radix selector qualified for bounded MTP
+        // verification. A decode request is the same selection problem with
         // one row: scores are runtime-width data, ties prefer the lower block
-        // index, and the result is emitted in cache order.  Keep this behind
-        // the existing selector opt-in until the long-context A/B completes.
+        // index, and the result is emitted in cache order.
         if let fused = Qwen4ExpQSAVerifyRadixSelection.call(
             scores: biasedScores.expandedDimensions(axis: 0),
             visibleBlockCounts: Array(

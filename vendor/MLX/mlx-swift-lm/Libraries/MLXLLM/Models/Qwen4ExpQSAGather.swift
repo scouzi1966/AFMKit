@@ -35,9 +35,10 @@ import MLXFast
 /// lower index deterministically. Bounds and block count remain runtime data;
 /// growing context never creates a new Metal specialization.
 enum Qwen4ExpQSAVerifyRadixSelection {
-    static let enabled = ProcessInfo.processInfo.environment[
-        "AFM_QWEN_VERIFY_QSA_RADIX"
-    ] == "1"
+    // Qualified against the stable arg-partition oracle from 17 through
+    // 1,061 blocks and across the complete 8K-64K production context curve.
+    // This path is deterministic and is part of the default Qwen Next runtime.
+    static let enabled = true
 
     private static let kernel = MLXFast.metalKernel(
         name: "qwen4_exp_qsa_verify_radix_select",
