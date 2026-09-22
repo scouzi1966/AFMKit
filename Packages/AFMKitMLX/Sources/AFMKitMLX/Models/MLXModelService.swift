@@ -5556,22 +5556,41 @@ public final class MLXModelService:
     }
 
     static func usesModelOwnedToolTemplate(parser: String?) -> Bool {
-        parser == nil || parser == "qwen3_xml"
+        // Match the compatibility-template selection in buildUserInput.
+        // Other parser choices leave the checkpoint template in place.
+        switch parser {
+        case "afm_adaptive_xml", "hermes", "llama3_json", "mistral":
+            return false
+        default:
+            return true
+        }
     }
 
     static func usesNativeQwenToolHistory(canonicalModelType: String?, parser: String?) -> Bool {
-        // The qualified Next and dense 27B templates both render structured
-        // calls and wrap results. Do not add a second generic text envelope.
-        (canonicalModelType == "qwen4_exp" || canonicalModelType == "qwen3_5")
-            && usesModelOwnedToolTemplate(parser: parser)
+        // These native templates render structured calls and wrap results.
+        // All share Qwen3VLProcessor; do not duplicate its restored metadata
+        // in generic fallback text. Both XML and JSON dialects are covered.
+        switch canonicalModelType {
+        case "qwen4_exp", "qwen3_5", "qwen3_5_moe", "qwen3_vl":
+            return usesModelOwnedToolTemplate(parser: parser)
+        default:
+            return false
+        }
     }
 
-    static func templateOwnsToolHistory(canonicalModelType: String?, parser: String?) -> Bool {
+    static func templateOwnsToolHistory(
+        canonicalModelType: String?, parser: String?, hasCurrentTools: Bool = true,
+        hasBuiltinTemplate: Bool = false
+    ) -> Bool {
+        // Compatibility template overrides are applied only with current
+        // callable tools. History-only requests keep the native template,
+        // and built-in model templates win after compatibility overrides.
+        let parser = hasCurrentTools && !hasBuiltinTemplate ? parser : nil
         if canonicalModelType == "apertus" { return true }
         if canonicalModelType == "glm5_next" || canonicalModelType == "glm5_next_text" {
             // GLM renders structured calls and wraps results itself. Generic
             // JSON fallback calls in content teach a second, invalid dialect.
-            return parser == nil
+            return usesModelOwnedToolTemplate(parser: parser)
         }
         return usesNativeQwenToolHistory(canonicalModelType: canonicalModelType, parser: parser)
     }
@@ -8106,6 +8125,7 @@ public final class MLXModelService:
         let historyModelType = withStateLock {
             currentModelArchitecture?.canonicalModelType
         }
+        let hasTools = tools != nil && !tools!.isEmpty
         let usesApertusTemplate = historyModelType == "apertus"
         // Native templates render structured calls and wrap tool
         // results itself. A text fallback here duplicates calls and injects
@@ -8113,7 +8133,8 @@ public final class MLXModelService:
         // parser behavior unchanged pending their independent qualification.
         let templateOwnsToolHistory = Self.templateOwnsToolHistory(
             canonicalModelType: historyModelType,
-            parser: resolvedChatTemplateToolCallParser(logBypass: false))
+            parser: resolvedChatTemplateToolCallParser(logBypass: false),
+            hasCurrentTools: hasTools, hasBuiltinTemplate: builtinChatTemplate != nil)
         func flushSystemParts() {
             guard !pendingSystemParts.isEmpty else { return }
             hasSystemMessage = true
@@ -8270,7 +8291,6 @@ public final class MLXModelService:
         }
 
         var input = UserInput(chat: chatMessages, processing: .init(resize: .init(width: 1024, height: 1024)), tools: tools)
-        let hasTools = tools != nil && !tools!.isEmpty
         var appliedChatTemplateOverride = false
 
         // Compatibility parsers can override the chat template. Native Qwen XML
@@ -9267,14 +9287,17 @@ public final class MLXModelService:
             {%- endif %}
             {{- '<|eot_id|>' }}
         {%- elif 'tool_calls' in message %}
-            {%- set tool_call = message.tool_calls[0].function %}
             {{- '<|start_header_id|>assistant<|end_header_id|>\\n\\n' -}}
+            {%- for history_call in message.tool_calls %}
+            {%- set tool_call = history_call.function %}
+            {%- if not loop.first %}{{- '\\n' }}{%- endif %}
             {{- '<tool_call>\\n' }}
             {{- '{"name": "' + tool_call.name + '", ' }}
             {{- '"arguments": ' }}
             {{- tool_call.arguments | tojson }}
             {{- '}\\n' }}
             {{- '</tool_call>' }}
+            {%- endfor %}
             {{- "<|eot_id|>" }}
         {%- elif message.role == "tool" or message.role == "ipython" %}
             {{- "<|start_header_id|>ipython<|end_header_id|>\\n\\n" }}

@@ -9,8 +9,12 @@ final class GLMToolHistoryTests: XCTestCase {
         for model in ["glm5_next", "glm5_next_text"] {
             XCTAssertTrue(MLXModelService.templateOwnsToolHistory(
                 canonicalModelType: model, parser: nil))
-            for parser in ["afm_adaptive_xml", "hermes", "llama3_json", "mistral", "qwen3_xml"] {
+            for parser in ["afm_adaptive_xml", "hermes", "llama3_json", "mistral"] {
                 XCTAssertFalse(MLXModelService.templateOwnsToolHistory(
+                    canonicalModelType: model, parser: parser))
+            }
+            for parser in ["qwen3_xml", "gemma", "deepseek_dsml"] {
+                XCTAssertTrue(MLXModelService.templateOwnsToolHistory(
                     canonicalModelType: model, parser: parser))
             }
         }

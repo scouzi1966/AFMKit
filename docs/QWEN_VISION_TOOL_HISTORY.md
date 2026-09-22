@@ -31,17 +31,36 @@ An adapter-only repair revealed a second interaction: the dense checkpoint's
 both generic JSON history in content and native XML history from metadata, and
 its results were wrapped twice. The production-policy composition test failed
 16 assertions for that architecture while the original four adapter tests
-passed. Native ownership now covers the verified `qwen4_exp` and `qwen3_5`
-paths, only for the existing automatic / `qwen3_xml` parser policy.
+passed. Native ownership covers the verified `qwen4_exp`, `qwen3_5`,
+`qwen3_5_moe`, and `qwen3_vl` paths. The older shared-processor families also
+render both content and structured calls; their actual XML and JSON templates
+are frozen in `QwenSharedProcessorTemplateFixtures` with source hashes.
+
+For AFM-managed native, built-in and compatibility selection paths, ownership
+follows the winning template, not just the configured parser.
+Compatibility overrides are inactive without current tools, so history-only
+requests retain native ownership. A built-in template applied last likewise
+owns history when it wins (notably GLM's numeric-index compatibility patch).
+Actual template selection and precedence remain unchanged.
+Parser choices that do not install a template (such as `gemma` and
+`deepseek_dsml`) likewise retain native ownership. Caller-supplied arbitrary
+`chatTemplateOverride` kwargs are outside this qualification.
+
+The explicit `llama3_json` compatibility template now serializes all historical
+parallel calls, in order, rather than only element zero. It retains a single
+assistant header/terminator and the original per-call envelope. The restored
+metadata must not activate a branch that silently drops the second call.
 
 ## Scope and performance
 
-Only message adaptation and the narrow ownership predicate change. The
+Only message adaptation, the narrow ownership predicate, and the
+`llama3_json` historical-call loop change. The
 generator preserves the common implementation's `name`, `tool_calls`, and
 `tool_responses`, replacing only `content` with the existing image/video/text
 array. Shared GLM processors also retain metadata; their native template
-ownership rule already exists. Forced-parser ownership remains unchanged and
-has a separate assistant-rendering control.
+ownership rule already exists. Active compatibility-template ownership remains
+unchanged and has a separate assistant-rendering control; native history is
+not duplicated when that override is absent or superseded by a built-in.
 
 This work adds dictionary handling during prompt construction, not per-token
 GPU execution. Kernels, weights, quantization, sampling, prefix-cache policy,
