@@ -2041,6 +2041,23 @@ final class QwenNextMTPPipelineTests: XCTestCase {
         }
     }
 
+    func testFusedQSAMaskAcceptsConstantAndDeviceBlockInputs() throws {
+        for (width, capacity) in [(2, 1), (7, 1), (4, 2)] {
+            let ids: [Int32] = (0..<(width * capacity)).map { index in
+                index < capacity ? Int32.max : Int32((index % capacity) * 2)
+            }
+            let blocks = MLXArray(ids).reshaped(1, width, capacity)
+            let expected = Qwen4ExpQSAGather.maskFromBlocks(
+                blocks, keyLength: 37, compressionRatio: 4)
+            let actual = try XCTUnwrap(Qwen4ExpQSAVerifyMask.call(
+                sortedBlocks: blocks, keyLength: 37, compressionRatio: 4,
+                forceEnabledForTesting: true))
+            eval(actual, expected)
+            XCTAssertEqual(actual.asArray(Bool.self), expected.asArray(Bool.self),
+                "width=\(width), capacity=\(capacity)")
+        }
+    }
+
     func testFusedQSAExpansionAtProductionCapacity() throws {
         for capacity in [512, 1024] {
             let width = 8, keyLength = 8199
@@ -2328,7 +2345,9 @@ final class QwenNextMTPPipelineTests: XCTestCase {
     func testVerifyRadixSelectionMatchesStableTopKAndCausalTail() throws {
         // Alternating block lengths reuses one specialization across growing
         // contexts. Include ties, signed zeros, negative values and NaNs.
-        for blocks in [17, 533, 1061, 533] {
+        // MLX uses constant input pointers below eight elements and device
+        // pointers at/above eight. Exercise both with identical selection math.
+        for blocks in [1, 7, 8, 17, 533, 1061, 533] {
             for width in [1, 2, 4, 7] {
                 let bounds = width == 1
                     ? [blocks]

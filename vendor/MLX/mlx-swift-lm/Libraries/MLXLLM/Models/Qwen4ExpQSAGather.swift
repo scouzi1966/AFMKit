@@ -73,7 +73,9 @@ enum Qwen4ExpQSAVerifyRadixSelection {
             const uint nb = (uint)scores_shape[2];
             const int  vbi = bounds[row];
             const uint vb  = (vbi > 0) ? (uint)vbi : 0u;
-            const device float* sc = scores + (ulong)row * (ulong)nb;
+            // MLX binds inputs smaller than eight elements as constant, not
+            // device memory. Infer that address space; selection is unchanged.
+            const auto* sc = scores + (ulong)row * (ulong)nb;
             device int* outp = ids + (ulong)row * (ulong)KTOP;
 
             if (vb <= KTOP) {
@@ -286,7 +288,7 @@ enum Qwen4ExpQSAVerifyMask {
                     visible = true;
                 } else {
                     const int wanted = int(token / uint(RATIO));
-                    const device int* ids = blocks + (batch * rows + row) * count;
+                    const auto* ids = blocks + (batch * rows + row) * count;
                     uint lo = 0, hi = count;
                     while (lo < hi) {
                         const uint mid = lo + (hi - lo) / 2;
