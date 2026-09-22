@@ -1786,9 +1786,10 @@ public struct Qwen3VLMessageGenerator: MessageGenerator {
             ["type": "video"]
         }
 
-        return [
-            "role": message.role.rawValue,
-            "content": imageContent + videoContent + textContent,
-        ]
+        // Keep structured tool history and names while adapting only the
+        // multimodal content shape expected by the Qwen/GLM templates.
+        var result = DefaultMessageGenerator().generate(message: message)
+        result["content"] = imageContent + videoContent + textContent
+        return result
     }
 }

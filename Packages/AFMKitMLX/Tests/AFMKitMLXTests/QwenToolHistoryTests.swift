@@ -11,13 +11,15 @@ final class QwenToolHistoryTests: XCTestCase {
     }
 
     func testNativeHistoryPolicyDoesNotChangeLegacyOrForcedTemplates() {
-        for parser in [nil, "qwen3_xml"] {
-            XCTAssertTrue(MLXModelService.usesNativeQwenToolHistory(
-                canonicalModelType: "qwen4_exp", parser: parser))
-        }
-        for parser in ["afm_adaptive_xml", "hermes", "llama3_json", "mistral"] {
-            XCTAssertFalse(MLXModelService.usesNativeQwenToolHistory(
-                canonicalModelType: "qwen4_exp", parser: parser))
+        for model in ["qwen4_exp", "qwen3_5"] {
+            for parser in [nil, "qwen3_xml"] {
+                XCTAssertTrue(MLXModelService.usesNativeQwenToolHistory(
+                    canonicalModelType: model, parser: parser))
+            }
+            for parser in ["afm_adaptive_xml", "hermes", "llama3_json", "mistral"] {
+                XCTAssertFalse(MLXModelService.usesNativeQwenToolHistory(
+                    canonicalModelType: model, parser: parser))
+            }
         }
         XCTAssertFalse(MLXModelService.usesNativeQwenToolHistory(
             canonicalModelType: "legacy", parser: nil))

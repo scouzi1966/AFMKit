@@ -5560,7 +5560,10 @@ public final class MLXModelService:
     }
 
     static func usesNativeQwenToolHistory(canonicalModelType: String?, parser: String?) -> Bool {
-        canonicalModelType == "qwen4_exp" && usesModelOwnedToolTemplate(parser: parser)
+        // The qualified Next and dense 27B templates both render structured
+        // calls and wrap results. Do not add a second generic text envelope.
+        (canonicalModelType == "qwen4_exp" || canonicalModelType == "qwen3_5")
+            && usesModelOwnedToolTemplate(parser: parser)
     }
 
     static func templateOwnsToolHistory(canonicalModelType: String?, parser: String?) -> Bool {

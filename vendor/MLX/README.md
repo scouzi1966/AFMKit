@@ -11,6 +11,7 @@ repositories or submodules.
 | `mlx-swift` | `ml-explore/mlx-swift` | `0bb916c67f4b9e5c682cbe02a42c701c93ab5021` | `6000b7b26b70be2713c74e9ec2adeb89be07b9e5` |
 | `mlx-swift-lm` | `ml-explore/mlx-swift-lm` plus AFM model adaptations | — | `e0d7fa71bc5e422a416f191c297264f698391561` |
 | `mlx-swift-lm/Libraries/MLXLMCommon/Tool/ToolCallEnvelopeScanner.swift` and JSON/XML parser framing | AFM-authored incremental lexical framing | Existing AFM serial tool processor | This AFMKit revision; preserve literal delimiters across serial/batch chunk boundaries, covered by `ToolEnvelopeLiteralTests` |
+| `mlx-swift-lm/Libraries/MLXVLM/Models/Qwen3VL.swift` message adaptation | AFM-authored metadata preservation using `DefaultMessageGenerator` | Existing Qwen/GLM multimodal message generator | This AFMKit revision; retain structured tool history while adapting content, covered by `QwenVisionToolHistoryTests` |
 | `mlx-swift-lm/Libraries/MLXLLM/Models/Qwen4Exp.swift` final-prefill preparation | AFM-authored adaptation using the existing `LanguageModel.prepare` contract | Existing AFM Qwen4Exp model snapshot | This AFMKit revision; opt-in final-row LM-head projection |
 | `mlx-swift-lm/Libraries/MLXLLM/Models/Qwen4ExpBatchedQuantizedProjection.swift` | `ddalcu/mlx-serve` plain-SIMD verify QMM, derived from MTPLX | `1ec580a8b7f5f051daef892310660bb62b2ece6c` | This AFMKit revision; experimental Qwen Next batched verification only |
 
