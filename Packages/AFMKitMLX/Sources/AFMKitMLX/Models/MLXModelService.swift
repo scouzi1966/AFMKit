@@ -5479,6 +5479,16 @@ public final class MLXModelService:
         canonicalModelType == "qwen4_exp" && usesModelOwnedToolTemplate(parser: parser)
     }
 
+    static func templateOwnsToolHistory(canonicalModelType: String?, parser: String?) -> Bool {
+        if canonicalModelType == "apertus" { return true }
+        if canonicalModelType == "glm5_next" || canonicalModelType == "glm5_next_text" {
+            // GLM renders structured calls and wraps results itself. Generic
+            // JSON fallback calls in content teach a second, invalid dialect.
+            return parser == nil
+        }
+        return usesNativeQwenToolHistory(canonicalModelType: canonicalModelType, parser: parser)
+    }
+
     static func assistantToolHistoryContent(
         _ message: AFMOpenAICompat.Message, templateOwnsHistory: Bool
     ) -> String {
@@ -7961,11 +7971,11 @@ public final class MLXModelService:
             currentModelArchitecture?.canonicalModelType
         }
         let usesApertusTemplate = historyModelType == "apertus"
-        // Qwen's native template renders structured calls and wraps tool
+        // Native templates render structured calls and wrap tool
         // results itself. A text fallback here duplicates calls and injects
         // JSON-like braces into returned source files. Keep legacy and forced
         // parser behavior unchanged pending their independent qualification.
-        let templateOwnsToolHistory = usesApertusTemplate || Self.usesNativeQwenToolHistory(
+        let templateOwnsToolHistory = Self.templateOwnsToolHistory(
             canonicalModelType: historyModelType,
             parser: resolvedChatTemplateToolCallParser(logBypass: false))
         func flushSystemParts() {
