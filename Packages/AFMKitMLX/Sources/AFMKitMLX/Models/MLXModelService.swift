@@ -3279,6 +3279,9 @@ public final class MLXModelService:
         let mtpBinding = runtime.mtpBinding
 
         let rawPrompt = AFMMLXPromptContext.rawPrompt
+        let outputReasoning = MLXOutputReasoningPolicy.tags(
+            responseFormat: responseFormat, isRawPrompt: rawPrompt != nil,
+            start: self.thinkStartTag, end: self.thinkEndTag)
         let promptText = rawPrompt ?? buildPrompt(from: messages)
         let toolSpecs = convertToToolSpecs(tools, includePythonJSON: shouldUseNativePythonToolJSONTemplate(for: tools))
         let (userInput, mediaTempFiles): (UserInput, [URL])
@@ -3478,7 +3481,7 @@ public final class MLXModelService:
             let input = try await container.prepare(input: scratch.userInput)
             let inputTokens = self.extractTokenArray(input)
             let tokenizer = await container.tokenizer
-            let thinkStart = self.thinkStartTag
+            let thinkStart = outputReasoning.start
             let tokens = input.text.tokens
             let ndim = tokens.ndim
             let seqLen = tokens.dim(ndim - 1)
@@ -3492,7 +3495,7 @@ public final class MLXModelService:
                 if Self.promptSuffixOpensThink(
                     decoded,
                     startTag: thinkStart,
-                    endTag: self.thinkEndTag
+                    endTag: outputReasoning.end
                 ) {
                     generated = thinkStart
                     templateInjectedThink = true
@@ -3529,10 +3532,10 @@ public final class MLXModelService:
                     }
                     if case .chunk(let text) = piece {
                         if let ts = thinkStart, text.contains(ts) { insideThink = true }
-                        if let te = self.thinkEndTag, text.contains(te) { insideThink = false }
+                        if let te = outputReasoning.end, text.contains(te) { insideThink = false }
                         generated += text
                         if !insideThink && visibleContentStart == nil {
-                            if let te = self.thinkEndTag, let thinkEnd = generated.range(of: te) {
+                            if let te = outputReasoning.end, let thinkEnd = generated.range(of: te) {
                                 visibleContentStart = thinkEnd.upperBound
                             } else {
                                 visibleContentStart = generated.startIndex
@@ -3725,7 +3728,7 @@ public final class MLXModelService:
             }
 
             // If the chat template appended a think start tag, prepend it so extractors can detect it
-            let thinkStart = self.thinkStartTag
+            let thinkStart = outputReasoning.start
             let tokens = input.text.tokens
             let ndim = tokens.ndim
             let seqLen = tokens.dim(ndim - 1)
@@ -3739,7 +3742,7 @@ public final class MLXModelService:
                 if Self.promptSuffixOpensThink(
                     decoded,
                     startTag: thinkStart,
-                    endTag: self.thinkEndTag
+                    endTag: outputReasoning.end
                 ) {
                     out = thinkStart
                     templateInjectedThink = true
@@ -3771,9 +3774,10 @@ public final class MLXModelService:
                 let tLookup0 = Date.timeIntervalSinceReferenceDate
                 let requiresExactBoundary = MLXPrefixReplayPolicy
                     .requiresExactBoundaryRestore(generationCache)
-                let match = requiresExactBoundary
+                let candidateMatch = requiresExactBoundary
                     ? radix.findExactBoundaryMatch(inputTokens)
                     : radix.findPrefixMatch(inputTokens)
+                let match = MLXPrefixReplayPolicy.validatedRestoreMatch(candidateMatch, cache: generationCache)
                 let prefixLen = match.prefixLen
                 let layerStates = match.layerStates
                 let layerMetaStates = match.layerMetaStates
@@ -3810,7 +3814,8 @@ public final class MLXModelService:
                         }
                     }
                     for i in 0..<generationCache.count where i < restoredStates.count {
-                        generationCache[i].state = restoredStates[i]
+                        MLXPrefixReplayPolicy.installLayerState(restoredStates[i], into: &generationCache[i],
+                            sourceBoundary: match.sourceTokenCount)
                         let savedMetaState = layerMetaStates.flatMap { i < $0.count ? $0[i] : nil }
                         if let adjustedMetaState = self.restoredMetaState(
                             for: generationCache[i],
@@ -4019,11 +4024,11 @@ public final class MLXModelService:
                         if firstTokenTime == nil { firstTokenTime = Date() }
                         // Track think boundaries — stop sequences only apply outside
                         if let ts = thinkStart, text.contains(ts) { insideThink = true }
-                        if let te = self.thinkEndTag, text.contains(te) { insideThink = false }
+                        if let te = outputReasoning.end, text.contains(te) { insideThink = false }
                         out += text
                         // Record where visible content starts (after think end tag)
                         if !insideThink && visibleContentStart == nil {
-                            if let te = self.thinkEndTag, let thinkEnd = out.range(of: te) {
+                            if let te = outputReasoning.end, let thinkEnd = out.range(of: te) {
                                 visibleContentStart = thinkEnd.upperBound
                             } else {
                                 visibleContentStart = out.startIndex
@@ -4333,6 +4338,9 @@ public final class MLXModelService:
         let mtpBinding = runtime.mtpBinding
 
         let rawPrompt = AFMMLXPromptContext.rawPrompt
+        let outputReasoning = MLXOutputReasoningPolicy.tags(
+            responseFormat: responseFormat, isRawPrompt: rawPrompt != nil,
+            start: self.thinkStartTag, end: self.thinkEndTag)
         let promptText = rawPrompt ?? buildPrompt(from: messages)
         let toolSpecs = convertToToolSpecs(tools, includePythonJSON: shouldUseNativePythonToolJSONTemplate(for: tools))
         // -VV: Log tool schemas as sent to model's Jinja template
@@ -4474,8 +4482,7 @@ public final class MLXModelService:
             // leading chunk so the controller's reasoning extractor latches
             // on. Mirrors the serial-streaming path at line ~2061. (#99)
             let templateOpenedThink: Bool = {
-                guard rawPrompt == nil else { return false }
-                guard let thinkStart = self.thinkStartTag else { return false }
+                guard let thinkStart = outputReasoning.start else { return false }
                 let tokens = input.text.tokens
                 let ndim = tokens.ndim
                 let seqLen = tokens.dim(ndim - 1)
@@ -4487,7 +4494,7 @@ public final class MLXModelService:
                 return Self.promptSuffixOpensThink(
                     decoded,
                     startTag: thinkStart,
-                    endTag: self.thinkEndTag
+                    endTag: outputReasoning.end
                 )
             }()
 
@@ -4504,15 +4511,15 @@ public final class MLXModelService:
                         )
                     },
                     stopSequences: (stop ?? []) + self.implicitStopSequences,
-                    thinkStartTag: rawPrompt == nil ? self.thinkStartTag : nil,
-                    thinkEndTag: rawPrompt == nil ? self.thinkEndTag : nil,
+                    thinkStartTag: outputReasoning.start,
+                    thinkEndTag: outputReasoning.end,
                     requestId: reqId,
                     usesGLMMTP: schedulerOwnsGLMMTP,
                     usesQwenMTP: schedulerOwnsQwenMTP
                 )
             }
             let effectiveStream: AsyncThrowingStream<StreamChunk, Error>
-            if templateOpenedThink, let thinkStart = self.thinkStartTag {
+            if templateOpenedThink, let thinkStart = outputReasoning.start {
                 effectiveStream = AsyncThrowingStream { continuation in
                     let task = Task {
                         continuation.yield(StreamChunk(syntheticText: thinkStart))
@@ -4549,7 +4556,7 @@ public final class MLXModelService:
                 effectiveStream,
                 onFinish: { [weak self] in self?.endOperation() })
             endOperationOnExit = false
-            return (modelID, operationOwningStream, preparedPromptTokens, toolTags?.0, toolTags?.1, self.thinkStartTag, self.thinkEndTag)
+            return (modelID, operationOwningStream, preparedPromptTokens, toolTags?.0, toolTags?.1, outputReasoning.start, outputReasoning.end)
         }
 
         // --- Speculative streaming (serial, text-only; Qwen Next also samples) ---
@@ -4584,12 +4591,12 @@ public final class MLXModelService:
                 let ids = self.extractTokenArray(lmInput)
                 if ids.isEmpty { return nil }
                 var opened = false
-                if let ts = self.thinkStartTag, !ids.isEmpty {
+                if let ts = outputReasoning.start, !ids.isEmpty {
                     let decoded = context.tokenizer.decode(tokens: Array(ids.suffix(8)))
                     opened = Self.promptSuffixOpensThink(
                         decoded,
                         startTag: ts,
-                        endTag: self.thinkEndTag
+                        endTag: outputReasoning.end
                     )
                 }
                 return (ids, opened)
@@ -4601,7 +4608,7 @@ public final class MLXModelService:
                 let useEagle3 = !useDSpark && eagle3StreamEligible
                 let maxTok = effectiveMaxTokens
                 let dbg = debugLogging
-                let thinkStartTag = self.thinkStartTag
+                let thinkStartTag = outputReasoning.start
                 let stream = AsyncThrowingStream<StreamChunk, Error> { continuation in
                     let task = Task {
                         defer { self.cleanupTempFiles(mediaTempFiles) }
@@ -4711,7 +4718,7 @@ public final class MLXModelService:
                 }
                 streamOwnsTempFiles = true
                 endOperationOnExit = false
-                return (modelID, stream, promptTokens, nil, nil, self.thinkStartTag, self.thinkEndTag)
+                return (modelID, stream, promptTokens, nil, nil, outputReasoning.start, outputReasoning.end)
             }
         }
 
@@ -4767,8 +4774,8 @@ public final class MLXModelService:
 
                         // If the chat template appended a think tag, inject it
                         // into the stream so the reasoning extractor can detect it.
-                        let thinkStart = rawPrompt == nil ? self.thinkStartTag : nil
-                        let thinkEnd = rawPrompt == nil ? self.thinkEndTag : nil
+                        let thinkStart = outputReasoning.start
+                        let thinkEnd = outputReasoning.end
                         var templateInjectedThink = false
                         let tokens = input.text.tokens
                         let ndim = tokens.ndim
@@ -4814,9 +4821,10 @@ public final class MLXModelService:
                             let tLookup0 = Date.timeIntervalSinceReferenceDate
                             let requiresExactBoundary = MLXPrefixReplayPolicy
                                 .requiresExactBoundaryRestore(generationCache)
-                            let match = requiresExactBoundary
+                            let candidateMatch = requiresExactBoundary
                                 ? radix.findExactBoundaryMatch(inputTokens)
                                 : radix.findPrefixMatch(inputTokens)
+                            let match = MLXPrefixReplayPolicy.validatedRestoreMatch(candidateMatch, cache: generationCache)
                             let prefixLen = match.prefixLen
                             let layerStates = match.layerStates
                             let layerMetaStates = match.layerMetaStates
@@ -4846,7 +4854,8 @@ public final class MLXModelService:
                                 )
                                 // Restore KV cache from radix tree state
                                 for i in 0..<generationCache.count where i < restoredStates.count {
-                                    generationCache[i].state = restoredStates[i]
+                                    MLXPrefixReplayPolicy.installLayerState(restoredStates[i], into: &generationCache[i],
+                                        sourceBoundary: match.sourceTokenCount)
                                     let savedMetaState = layerMetaStates.flatMap {
                                         i < $0.count ? $0[i] : nil
                                     }
@@ -5362,7 +5371,7 @@ public final class MLXModelService:
 
         streamOwnsTempFiles = true
         endOperationOnExit = false
-        return (modelID, stream, promptTokens, toolTags?.start, toolTags?.end, self.thinkStartTag, self.thinkEndTag)
+        return (modelID, stream, promptTokens, toolTags?.start, toolTags?.end, outputReasoning.start, outputReasoning.end)
     }
 
     public func shutdownAndReleaseResources(verbose: Bool = false, timeoutSeconds: TimeInterval = 30) async {

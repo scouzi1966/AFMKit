@@ -1921,9 +1921,10 @@ actor BatchScheduler {
         if !isMultimodal, let radix = radixCache {
             let tLookup0 = Date.timeIntervalSinceReferenceDate
             let recurrent = Self.requiresReplayBoundarySnapshot(cache)
-            let match = recurrent
+            let candidateMatch = recurrent
                 ? radix.findExactBoundaryMatch(inputTokens)
                 : radix.findPrefixMatch(inputTokens)
+            let match = MLXPrefixReplayPolicy.validatedRestoreMatch(candidateMatch, cache: cache)
             let prefixLen = match.prefixLen
             let layerStates = match.layerStates
             let layerMetaStates = match.layerMetaStates
@@ -1960,7 +1961,8 @@ actor BatchScheduler {
                     cache: cache
                 )
                 for i in 0..<cache.count where i < restoredStates.count {
-                    cache[i].state = restoredStates[i]
+                    MLXPrefixReplayPolicy.installLayerState(restoredStates[i], into: &cache[i],
+                        sourceBoundary: match.sourceTokenCount)
                     let savedMetaState = layerMetaStates.flatMap { i < $0.count ? $0[i] : nil }
                     if let adjustedMetaState = restoredMetaState(
                         for: cache[i],

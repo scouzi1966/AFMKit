@@ -106,6 +106,64 @@ enum MLXPrefixReplayPolicy {
         return restored
     }
 
+    /// Fresh CacheList children have no tensors, so its generic setter cannot
+    /// infer the boundaries of flattened K/V pairs. Validate before accepting
+    /// saved logits: otherwise token one hides a missing attention history.
+    static func validatedRestoreMatch(_ match: RadixPrefixMatch, cache: [KVCache]) -> RadixPrefixMatch {
+        guard match.prefixLen > 0 else { return match }
+        guard let states = match.layerStates, states.count == cache.count,
+              zip(states, cache).allSatisfy({
+                  canInstallLayerState($0.0, into: $0.1, sourceBoundary: match.sourceTokenCount)
+              })
+        else {
+            return RadixPrefixMatch(prefixLen: 0, sourceTokenCount: nil,
+                layerStates: nil, layerMetaStates: nil, promptLogits: nil)
+        }
+        return match
+    }
+
+    static func canInstallLayerState(
+        _ state: [MLXArray], into cache: KVCache, sourceBoundary: Int?
+    ) -> Bool {
+        guard let composite = cache as? CacheList,
+              composite.caches.allSatisfy({ $0 is KVCacheSimple }) else { return true }
+        guard let sourceBoundary, sourceBoundary > 0,
+              state.count == composite.count * 2 else { return false }
+        for index in composite.caches.indices {
+            let keys = state[index * 2]
+            let values = state[index * 2 + 1]
+            guard keys.ndim == 4, values.ndim == 4,
+                  keys.dim(0) == values.dim(0), keys.dim(1) == values.dim(1),
+                  keys.dim(2) == values.dim(2),
+                  keys.dim(2) == sourceBoundary else { return false }
+        }
+        return true
+    }
+
+    static func installLayerState(
+        _ state: [MLXArray], into cache: inout KVCache, sourceBoundary: Int? = nil
+    ) {
+        if let composite = cache as? CacheList,
+           composite.caches.allSatisfy({ $0 is KVCacheSimple }) {
+            precondition(canInstallLayerState(state, into: cache, sourceBoundary: sourceBoundary))
+            for index in composite.caches.indices {
+                // KVCacheSimple restores its offset from the K sequence axis;
+                // zero-width V is valid for a key-only sparse-attention indexer.
+                (composite.caches[index] as! KVCacheSimple).state =
+                    Array(state[index * 2 ..< index * 2 + 2])
+            }
+        } else {
+            cache.state = state
+            if type(of: cache) == ArraysCache.self,
+               let arrays = cache as? ArraysCache, let sourceBoundary {
+                // Plain ArraysCache has empty metadata; its recurrent offset
+                // is the exact token boundary captured with the snapshot.
+                // Subclasses retain their own offset/metadata contracts.
+                arrays.offset = sourceBoundary
+            }
+        }
+    }
+
     static func replayInput(from input: LMInput, effectivePrefix: Int) -> LMInput {
         precondition(effectivePrefix >= 0, "effectivePrefix must not be negative")
 
