@@ -4559,6 +4559,7 @@ public final class MLXModelService:
                     stopSequences: (stop ?? []) + self.implicitStopSequences,
                     thinkStartTag: outputReasoning.start,
                     thinkEndTag: outputReasoning.end,
+                    templateOpenedThink: templateOpenedThink,
                     jsonStopFilter: structuredJSON && !((stop ?? []) + self.implicitStopSequences).isEmpty
                         ? MLXJSONStopFilter(
                             startTag: outputReasoning.start, endTag: outputReasoning.end,

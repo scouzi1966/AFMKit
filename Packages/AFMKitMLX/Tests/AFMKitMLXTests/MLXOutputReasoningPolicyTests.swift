@@ -84,6 +84,7 @@ final class MLXOutputReasoningPolicyTests: XCTestCase {
                 start: "<think>", end: "</think>")
             for split in 0...output.count {
                 var stopBuffer = ""
+                var reasoningBuffer = ""
                 var insideThink = false
                 var collected = ""
                 var stopped = false
@@ -91,6 +92,7 @@ final class MLXOutputReasoningPolicyTests: XCTestCase {
                 for text in [String(output[..<boundary]), String(output[boundary...])] {
                     let result = BatchScheduler.stopChunksToEmit(
                         from: text, stopBuffer: &stopBuffer,
+                        reasoningBuffer: &reasoningBuffer,
                         activeStops: ["[STOP]"], maxStopLength: 6,
                         insideThink: &insideThink,
                         thinkStartTag: tags.start, thinkEndTag: tags.end)

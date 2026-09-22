@@ -327,10 +327,12 @@ final class ToolEnvelopeLiteralTests: XCTestCase {
                 ? MLXJSONStopFilter(startTag: "<think>", endTag: "</think>", insideReasoning: false, stopSequences: ["STOP"])
                 : nil
             var buffer = ""
+            var reasoningBuffer = ""
             var insideThink = false
             var stopped = false
             let chunks = BatchScheduler.finishTextChunks(pendingText: runtime.finishPendingText(),
-                jsonStopFilter: &jsonFilter, stopBuffer: &buffer, activeStops: ["STOP"], maxStopLength: 4,
+                jsonStopFilter: &jsonFilter, stopBuffer: &buffer, reasoningBuffer: &reasoningBuffer,
+                activeStops: ["STOP"], maxStopLength: 4,
                 insideThink: &insideThink, thinkStartTag: "<think>", thinkEndTag: "</think>", stoppedBySequence: &stopped)
             XCTAssertEqual(chunks.map(\.text).joined(), "before")
             XCTAssertTrue(stopped)

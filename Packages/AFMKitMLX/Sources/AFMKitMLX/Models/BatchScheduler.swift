@@ -281,6 +281,7 @@ actor BatchScheduler {
         let thinkStartTag: String?
         let thinkEndTag: String?
         var stopBuffer = ""
+        var reasoningBuffer = ""
         var insideThink = false
         var jsonStopFilter: MLXJSONStopFilter?
         var stoppedBySequence = false
@@ -313,6 +314,7 @@ actor BatchScheduler {
             activeStops: [String],
             thinkStartTag: String?,
             thinkEndTag: String?,
+            templateOpenedThink: Bool = false,
             jsonStopFilter: MLXJSONStopFilter? = nil,
             computeLogprobs: Bool = false,
             topLogprobsCount: Int = 0,
@@ -352,6 +354,7 @@ actor BatchScheduler {
             self.maxStopLength = activeStops.map(\.count).max() ?? 0
             self.thinkStartTag = thinkStartTag
             self.thinkEndTag = thinkEndTag
+            self.insideThink = templateOpenedThink
             self.jsonStopFilter = jsonStopFilter
             self.computeLogprobs = computeLogprobs
             self.topLogprobsCount = topLogprobsCount
@@ -626,6 +629,7 @@ actor BatchScheduler {
         let stopSequences: [String]
         let thinkStartTag: String?
         let thinkEndTag: String?
+        let templateOpenedThink: Bool
         let jsonStopFilter: MLXJSONStopFilter?
         let continuation: AsyncThrowingStream<StreamChunk, Error>.Continuation
         let usesGLMMTP: Bool
@@ -924,6 +928,7 @@ actor BatchScheduler {
         stopSequences: [String] = [],
         thinkStartTag: String? = nil,
         thinkEndTag: String? = nil,
+        templateOpenedThink: Bool = false,
         jsonStopFilter: MLXJSONStopFilter? = nil,
         requestId: String = "",
         usesGLMMTP: Bool = false,
@@ -956,6 +961,7 @@ actor BatchScheduler {
                 stopSequences: stopSequences,
                 thinkStartTag: thinkStartTag,
                 thinkEndTag: thinkEndTag,
+                templateOpenedThink: templateOpenedThink,
                 jsonStopFilter: jsonStopFilter,
                 continuation: continuation,
                 usesGLMMTP: usesGLMMTP,
@@ -1851,6 +1857,7 @@ actor BatchScheduler {
             activeStops: req.stopSequences,
             thinkStartTag: req.thinkStartTag,
             thinkEndTag: req.thinkEndTag,
+            templateOpenedThink: req.templateOpenedThink,
             jsonStopFilter: req.jsonStopFilter,
             computeLogprobs: false,
             topLogprobsCount: 0,
@@ -2239,6 +2246,7 @@ actor BatchScheduler {
             activeStops: req.stopSequences,
             thinkStartTag: req.thinkStartTag,
             thinkEndTag: req.thinkEndTag,
+            templateOpenedThink: req.templateOpenedThink,
             jsonStopFilter: req.jsonStopFilter,
             computeLogprobs: req.parameters.computeLogprobs,
             topLogprobsCount: req.parameters.topLogprobsCount,
@@ -2794,6 +2802,7 @@ actor BatchScheduler {
                 activeStops: req.stopSequences,
                 thinkStartTag: req.thinkStartTag,
                 thinkEndTag: req.thinkEndTag,
+                templateOpenedThink: req.templateOpenedThink,
                 jsonStopFilter: req.jsonStopFilter,
                 computeLogprobs: req.parameters.computeLogprobs,
                 topLogprobsCount: req.parameters.topLogprobsCount,
@@ -3003,6 +3012,7 @@ actor BatchScheduler {
             pendingText: slot.toolRuntime?.finishPendingText() ?? "",
             jsonStopFilter: &slot.jsonStopFilter,
             stopBuffer: &slot.stopBuffer,
+            reasoningBuffer: &slot.reasoningBuffer,
             activeStops: slot.activeStops,
             maxStopLength: slot.maxStopLength,
             insideThink: &slot.insideThink,
@@ -3336,6 +3346,7 @@ actor BatchScheduler {
         return Self.stopChunksToEmit(
             from: text,
             stopBuffer: &slot.stopBuffer,
+            reasoningBuffer: &slot.reasoningBuffer,
             activeStops: slot.activeStops,
             maxStopLength: slot.maxStopLength,
             insideThink: &slot.insideThink,
@@ -3396,6 +3407,7 @@ actor BatchScheduler {
         pendingText: String,
         jsonStopFilter: inout MLXJSONStopFilter?,
         stopBuffer: inout String,
+        reasoningBuffer: inout String,
         activeStops: [String],
         maxStopLength: Int,
         insideThink: inout Bool,
@@ -3410,6 +3422,7 @@ actor BatchScheduler {
                 stoppedBySequence = jsonStopFilter?.stopped == true
             } else {
                 let result = stopChunksToEmit(from: pendingText, stopBuffer: &stopBuffer,
+                    reasoningBuffer: &reasoningBuffer,
                     activeStops: activeStops, maxStopLength: maxStopLength,
                     insideThink: &insideThink, thinkStartTag: thinkStartTag, thinkEndTag: thinkEndTag)
                 chunks += result.chunks
@@ -3420,16 +3433,38 @@ actor BatchScheduler {
             chunks += tail
             stoppedBySequence = stoppedBySequence || jsonStopFilter?.stopped == true
         }
+        if !reasoningBuffer.isEmpty, !stoppedBySequence {
+            // EOF resolves an incomplete delimiter as ordinary text in its
+            // current channel. It must still pass through visible stop matching.
+            let tail = reasoningBuffer
+            reasoningBuffer = ""
+            let result = stopChunksToEmit(from: tail, stopBuffer: &stopBuffer,
+                reasoningBuffer: &reasoningBuffer,
+                activeStops: activeStops, maxStopLength: maxStopLength,
+                insideThink: &insideThink, thinkStartTag: nil, thinkEndTag: nil)
+            chunks += result.chunks
+            stoppedBySequence = result.stopped
+        }
         if !activeStops.isEmpty, !stopBuffer.isEmpty, !stoppedBySequence {
+            if insideThink, let thinkEndTag, !thinkEndTag.isEmpty {
+                // Reasoning can end at the token cap without a closing tag.
+                // The held prefix was visible *before* that block: close only
+                // its transport framing, with zero generated-token credit,
+                // rather than misclassifying the prefix as more reasoning.
+                chunks.append(StreamChunk(syntheticText: thinkEndTag))
+                insideThink = false
+            }
             chunks.append(StreamChunk(text: stopBuffer))
         }
         stopBuffer = ""
+        reasoningBuffer = ""
         return chunks
     }
 
     static func stopChunksToEmit(
         from text: String,
         stopBuffer: inout String,
+        reasoningBuffer: inout String,
         activeStops: [String],
         maxStopLength: Int,
         insideThink: inout Bool,
@@ -3441,39 +3476,57 @@ actor BatchScheduler {
         }
 
         var chunks = [StreamChunk]()
-        let wasInsideThink = insideThink
-        if let thinkStartTag, text.contains(thinkStartTag) {
-            insideThink = true
-        }
-        if let thinkEndTag, text.contains(thinkEndTag) {
-            insideThink = false
-        }
-
-        if !insideThink {
-            if wasInsideThink, let thinkEndTag, let range = text.range(of: thinkEndTag) {
-                let afterThink = String(text[range.upperBound...])
-                if !afterThink.isEmpty {
-                    stopBuffer += afterThink
+        // Framing and visible stops have separate bounded buffers. A possible
+        // delimiter is not searched for stops, and held visible text can match
+        // a stop across an intervening reasoning block without leaking a prefix.
+        reasoningBuffer += text
+        while !reasoningBuffer.isEmpty {
+            let delimiter = insideThink ? thinkEndTag : thinkStartTag
+            let boundary = delimiter.flatMap { tag in
+                tag.isEmpty ? nil : reasoningBuffer.range(of: tag)
+            }
+            let retained = delimiter.flatMap { tag in
+                guard tag.count > 1 else { return nil as Int? }
+                return (1..<tag.count).reversed().first {
+                    reasoningBuffer.hasSuffix(String(tag.prefix($0)))
                 }
+            } ?? 0
+            let segmentEnd = boundary?.lowerBound
+                ?? reasoningBuffer.index(reasoningBuffer.endIndex, offsetBy: -retained)
+            let segment = String(reasoningBuffer[..<segmentEnd])
+            if insideThink {
+                if !segment.isEmpty { chunks.append(StreamChunk(text: segment)) }
             } else {
-                stopBuffer += text
+                stopBuffer += segment
+                var earliest: Range<String.Index>?
+                for stop in activeStops where !stop.isEmpty {
+                    if let match = stopBuffer.range(of: stop),
+                       earliest == nil || match.lowerBound < earliest!.lowerBound {
+                        earliest = match
+                    }
+                }
+                if let earliest {
+                    chunks.append(StreamChunk(
+                        text: String(stopBuffer[..<earliest.lowerBound]), stoppedBySequence: true))
+                    stopBuffer = ""
+                    reasoningBuffer = ""
+                    return (chunks, true)
+                }
+                if stopBuffer.count > maxStopLength {
+                    let flushEnd = stopBuffer.index(stopBuffer.endIndex, offsetBy: -maxStopLength)
+                    chunks.append(StreamChunk(text: String(stopBuffer[..<flushEnd])))
+                    stopBuffer = String(stopBuffer[flushEnd...])
+                }
             }
-
-            if let match = activeStops.first(where: { stopBuffer.contains($0) }),
-               let range = stopBuffer.range(of: match) {
-                let before = String(stopBuffer[..<range.lowerBound])
-                chunks.append(StreamChunk(text: before, stoppedBySequence: true))
-                return (chunks, true)
+            if let boundary, let delimiter {
+                // Both tags must reach the downstream reasoning translator.
+                chunks.append(StreamChunk(text: delimiter))
+                reasoningBuffer = String(reasoningBuffer[boundary.upperBound...])
+                insideThink.toggle()
+                continue
             }
-
-            if stopBuffer.count > maxStopLength {
-                let flushEnd = stopBuffer.index(stopBuffer.endIndex, offsetBy: -maxStopLength)
-                let flushText = String(stopBuffer[..<flushEnd])
-                stopBuffer = String(stopBuffer[flushEnd...])
-                chunks.append(StreamChunk(text: flushText))
-            }
-        } else {
-            chunks.append(StreamChunk(text: text))
+            reasoningBuffer = String(reasoningBuffer[segmentEnd...])
+            break
         }
 
         return (chunks, false)
