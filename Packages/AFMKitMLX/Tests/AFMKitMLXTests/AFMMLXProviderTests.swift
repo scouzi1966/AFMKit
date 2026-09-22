@@ -1113,6 +1113,76 @@ final class AFMMLXProviderTests: XCTestCase {
         )
     }
 
+    func testRequiredToolPolicyPreservesReasoningOnlyTokenLimitAndUsage() throws {
+        for named in [false, true] {
+            var request = requiredToolRequest()
+            if named { request.metadata["requiredToolName"] = .string("weather") }
+            var translator = MLXStreamEventTranslator(
+                thinkStartTag: "<think>",
+                thinkEndTag: "</think>",
+                maximumResponseTokens: 2
+            )
+            var events = translator.consume(.init(
+                text: "<think>unfinished plan",
+                promptTokens: 10,
+                completionTokens: 2
+            ))
+            let finalEvents = translator.finish()
+            let reason = try XCTUnwrap(finalEvents.compactMap { event -> AFMFinishReason? in
+                guard case .completed(let reason) = event else { return nil }
+                return reason
+            }.last)
+
+            XCTAssertEqual(reason, .length)
+            XCTAssertNoThrow(try AFMMLXToolPolicy.validateCompletedToolCalls(
+                [], for: request, finishReason: reason
+            ))
+            events += finalEvents
+            let usage = try XCTUnwrap(events.compactMap { event -> AFMUsage? in
+                guard case .usage(let usage) = event else { return nil }
+                return usage
+            }.last)
+            XCTAssertEqual(usage.inputTokens, 10)
+            XCTAssertEqual(usage.outputTokens, 2)
+            XCTAssertFalse(events.contains { event in
+                if case .toolCall(_, .completed) = event { return true }
+                return false
+            })
+        }
+    }
+
+    func testRequiredToolPolicyRejectsMissingToolsEvenAtTokenLimit() {
+        let request = AFMRequest(messages: [], metadata: ["toolCallingMode": .string("required")])
+        XCTAssertThrowsError(try AFMMLXToolPolicy.validateCompletedToolCalls(
+            [], for: request, finishReason: .length
+        )) { error in
+            XCTAssertEqual(error as? AFMError, .invalidRequest(
+                "Tool calling is required, but no tools are enabled."
+            ))
+        }
+    }
+
+    func testRequiredToolPolicyRejectsExplicitStopEvenAtTokenLimit() throws {
+        var translator = MLXStreamEventTranslator(
+            thinkStartTag: nil, thinkEndTag: nil, maximumResponseTokens: 2
+        )
+        _ = translator.consume(.init(
+            text: "plain text", promptTokens: 10, completionTokens: 2, stoppedBySequence: true
+        ))
+        let reason = try XCTUnwrap(translator.finish().compactMap { event -> AFMFinishReason? in
+            guard case .completed(let reason) = event else { return nil }
+            return reason
+        }.last)
+        XCTAssertEqual(reason, .stop)
+        XCTAssertThrowsError(try AFMMLXToolPolicy.validateCompletedToolCalls(
+            [], for: requiredToolRequest(), finishReason: reason
+        )) { error in
+            XCTAssertEqual(error as? AFMError, .generationFailed(
+                "The model returned no tool call while tool calling was required."
+            ))
+        }
+    }
+
     func testRequiredToolRequestAddsToolOnlySystemInstruction() throws {
         let messages = try requiredToolRequest().openAIMessages()
 

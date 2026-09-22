@@ -645,14 +645,19 @@ public final class AFMMLXModel: AFMModel, AFMTextTokenizing, AFMPrewarmableModel
                         }
                     }
                     let finalEvents = translator.finish().map(Self.sanitizedToolCallEvent)
+                    var finishReason: AFMFinishReason = .stop
                     for event in finalEvents {
                         if case .toolCall(let call, .completed) = event {
                             completedToolCalls.append(call)
                         }
+                        if case .completed(let reason) = event {
+                            finishReason = reason
+                        }
                     }
                     try AFMMLXToolPolicy.validateCompletedToolCalls(
                         completedToolCalls,
-                        for: request
+                        for: request,
+                        finishReason: finishReason
                     )
                     for event in finalEvents {
                         telemetry.observe(event)
@@ -1005,7 +1010,8 @@ struct AFMMLXRawToolStreamFallback {
 enum AFMMLXToolPolicy {
     static func validateCompletedToolCalls(
         _ calls: [AFMToolCall],
-        for request: AFMRequest
+        for request: AFMRequest,
+        finishReason: AFMFinishReason = .stop
     ) throws {
         guard request.requiresToolCall else { return }
         guard !request.tools.isEmpty else {
@@ -1013,6 +1019,11 @@ enum AFMMLXToolPolicy {
                 "Tool calling is required, but no tools are enabled."
             )
         }
+        // A valid request can spend its budget before completing a tool call.
+        // Preserve the finalized length/usage response instead of reclassifying
+        // that truncation as a request failure. Explicit stop still rejects an
+        // absent required call, even when its token count equals the budget.
+        guard finishReason != .length else { return }
         guard !calls.isEmpty else {
             throw AFMError.generationFailed(
                 "The model returned no tool call while tool calling was required."
