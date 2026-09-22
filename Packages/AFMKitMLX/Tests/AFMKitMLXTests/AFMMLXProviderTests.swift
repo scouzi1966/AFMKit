@@ -93,7 +93,7 @@ final class AFMMLXProviderTests: XCTestCase {
         XCTAssertTrue(erased.descriptor.capabilities.contains(.vision))
     }
 
-    func testOpenAIToolsPreserveExplicitStrictnessAndDefaultNilToStrict() throws {
+    func testOpenAIToolsPreserveExplicitAndOmittedStrictness() throws {
         let schema: AFMJSONValue = .object(["type": .string("object")])
         let request = AFMRequest(
             messages: [],
@@ -106,7 +106,27 @@ final class AFMMLXProviderTests: XCTestCase {
 
         let tools = try XCTUnwrap(request.openAITools())
 
-        XCTAssertEqual(tools.map(\.function.strict), [true, false, true])
+        XCTAssertEqual(tools.map(\.function.strict), [true, false, nil])
+    }
+
+    func testOmittedToolStrictnessDoesNotMutatePromptOrEnableGrammar() throws {
+        let schema: AFMJSONValue = .object([
+            "type": .string("object"), "properties": .object([:]),
+            "additionalProperties": .bool(false)
+        ])
+        let request = AFMRequest(messages: [], tools: [
+            AFMToolDefinition(name: "list_files", inputSchema: schema)
+        ])
+        let tools = try XCTUnwrap(request.openAITools())
+        XCTAssertFalse(AFMMLXGrammarPolicy.hasStrictTools(tools))
+        XCTAssertFalse(MLXModelService.pythonStyleToolJSON(tools[0]).contains("\"strict\""))
+        XCTAssertTrue(MLXModelService.pythonStyleToolJSON(tools[0]).contains("\"additionalProperties\": false"))
+
+        var explicit = request
+        explicit.tools[0].strict = true
+        let strictTools = try XCTUnwrap(explicit.openAITools())
+        XCTAssertTrue(AFMMLXGrammarPolicy.hasStrictTools(strictTools))
+        XCTAssertTrue(MLXModelService.pythonStyleToolJSON(strictTools[0]).contains("\"strict\": true"))
     }
 
     func testTypedReasoningOptionMapsToChatTemplateKwarg() throws {

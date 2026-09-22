@@ -1,9 +1,30 @@
 import AFMKitCore
+import MLXLMCommon
 import XCTest
 
 @testable import AFMKitMLX
 
 final class RawTextGenerationContractTests: XCTestCase {
+    func testRawGenerationPreservesToolMarkupWithoutMutatingChatConfiguration() {
+        let formats: [ToolCallFormat?] = [nil, .xmlFunction, .json, .glm4, .apertus]
+        for format in formats {
+            let chat = ModelConfiguration(id: "test/model", toolCallFormat: format)
+            let raw = MLXModelService.generationConfiguration(chat, rawPrompt: "")
+            XCTAssertEqual(raw.toolCallFormat, ToolCallFormat.none)
+            XCTAssertEqual(chat.toolCallFormat, format)
+            XCTAssertEqual(
+                MLXModelService.generationConfiguration(chat, rawPrompt: nil), chat)
+
+            let processor = ToolCallProcessor(format: raw.toolCallFormat ?? .json)
+            let chunks = ["</think>\n", "<tool_", "call>\n<function=read_file>",
+                "<parameter=path>src/user.js</parameter></function></tool_call>"]
+            var emitted = chunks.compactMap { processor.processChunk($0) }.joined()
+            emitted += processor.finishPendingText() ?? ""
+            XCTAssertEqual(emitted, chunks.joined())
+            XCTAssertTrue(processor.drainToolCalls(stopAfterFirst: false).isEmpty)
+        }
+    }
+
     private struct PlainModel: AFMModel {
         let descriptor = AFMModelDescriptor(
             providerID: "test",

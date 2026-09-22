@@ -568,6 +568,19 @@ public final class MLXModelService:
         isToolCallParserDisabled(configuredParser) ? ToolCallFormat.none : detectedFormat
     }
 
+    /// Raw completions return the generated text verbatim, including tool
+    /// markup. Override a value copy: concurrent chat requests must retain the
+    /// loaded model's parser, and nil would select the default JSON parser.
+    static func generationConfiguration(
+        _ configuration: ModelConfiguration,
+        rawPrompt: String?
+    ) -> ModelConfiguration {
+        guard rawPrompt != nil else { return configuration }
+        var rawConfiguration = configuration
+        rawConfiguration.toolCallFormat = ToolCallFormat.none
+        return rawConfiguration
+    }
+
     static func requiresSerialGeneration(canonicalModelType: String) -> Bool {
         switch canonicalModelType {
         case "cohere2_moe", "muse_glimmer":
@@ -3984,7 +3997,8 @@ public final class MLXModelService:
             )
             let (generationStream, generationTask) = MLXLMCommon.generateTask(
                 promptTokenCount: generateInput.text.tokens.size,
-                modelConfiguration: context.configuration,
+                modelConfiguration: Self.generationConfiguration(
+                    context.configuration, rawPrompt: rawPrompt),
                 tokenizer: context.tokenizer,
                 iterator: generationIterator,
                 stopAfterToolCall: params.stopAfterToolCall
@@ -5031,7 +5045,8 @@ public final class MLXModelService:
                         }
                         let (generationStream, generationTask) = MLXLMCommon.generateTask(
                             promptTokenCount: generateInput.text.tokens.size,
-                            modelConfiguration: context.configuration,
+                            modelConfiguration: Self.generationConfiguration(
+                                context.configuration, rawPrompt: rawPrompt),
                             tokenizer: context.tokenizer,
                             iterator: generationIterator,
                             stopAfterToolCall: params.stopAfterToolCall,
@@ -5447,6 +5462,29 @@ public final class MLXModelService:
 
     static func usesModelOwnedToolTemplate(parser: String?) -> Bool {
         parser == nil || parser == "qwen3_xml"
+    }
+
+    static func usesNativeQwenToolHistory(canonicalModelType: String?, parser: String?) -> Bool {
+        canonicalModelType == "qwen4_exp" && usesModelOwnedToolTemplate(parser: parser)
+    }
+
+    static func assistantToolHistoryContent(
+        _ message: AFMOpenAICompat.Message, templateOwnsHistory: Bool
+    ) -> String {
+        let text = message.textContent
+        guard !templateOwnsHistory else { return text }
+        var parts = text.isEmpty ? [] : [text]
+        for call in message.toolCalls ?? [] {
+            parts.append("<tool_call>\n{\"name\": \"\(call.function.name)\", \"arguments\": \(call.function.arguments)}\n</tool_call>")
+        }
+        return parts.joined(separator: "\n")
+    }
+
+    static func toolResultHistoryContent(
+        _ text: String, name: String?, templateOwnsHistory: Bool
+    ) -> String {
+        guard !templateOwnsHistory, let name else { return text }
+        return "<tool_response>\n{\"name\": \"\(name)\", \"content\": \(text)}\n</tool_response>"
     }
 
     private static func nativeToolJSONChatTemplate(directory: URL) -> String? {
@@ -7908,9 +7946,17 @@ public final class MLXModelService:
         // (e.g. Qwen3.5). The OpenAI API allows multiple system messages, so
         // we consolidate them here for broader compatibility.
         var pendingSystemParts: [String] = []
-        let usesApertusTemplate = withStateLock {
-            currentModelArchitecture?.canonicalModelType == "apertus"
+        let historyModelType = withStateLock {
+            currentModelArchitecture?.canonicalModelType
         }
+        let usesApertusTemplate = historyModelType == "apertus"
+        // Qwen's native template renders structured calls and wraps tool
+        // results itself. A text fallback here duplicates calls and injects
+        // JSON-like braces into returned source files. Keep legacy and forced
+        // parser behavior unchanged pending their independent qualification.
+        let templateOwnsToolHistory = usesApertusTemplate || Self.usesNativeQwenToolHistory(
+            canonicalModelType: historyModelType,
+            parser: resolvedChatTemplateToolCallParser(logBypass: false))
         func flushSystemParts() {
             guard !pendingSystemParts.isEmpty else { return }
             hasSystemMessage = true
@@ -7929,10 +7975,8 @@ public final class MLXModelService:
                 if let toolCalls = m.toolCalls, !toolCalls.isEmpty {
                     // Pass structured tool calls for templates that check message['tool_calls']
                     // (e.g. Gemma 4 uses native <|tool_call>...<tool_call|> format).
-                    // Also include text fallback for templates that only read content.
+                    // Only legacy templates need an additional content fallback.
                     var structuredCalls: [[String: Any]] = []
-                    var textParts: [String] = []
-                    if !text.isEmpty { textParts.append(text) }
                     for tc in toolCalls {
                         // Parse arguments string into dict if possible
                         var argsValue: Any = tc.function.arguments
@@ -7951,12 +7995,12 @@ public final class MLXModelService:
                             structuredCalls.append([
                                 "function": ["name": tc.function.name, "arguments": argsValue]
                             ])
-                            textParts.append("<tool_call>\n{\"name\": \"\(tc.function.name)\", \"arguments\": \(tc.function.arguments)}\n</tool_call>")
                         }
                     }
-                    var msg = Chat.Message(
+                    let msg = Chat.Message(
                         role: .assistant,
-                        content: textParts.joined(separator: "\n"),
+                        content: Self.assistantToolHistoryContent(
+                            m, templateOwnsHistory: templateOwnsToolHistory),
                         toolCalls: structuredCalls
                     )
                     chatMessages.append(msg)
@@ -8000,12 +8044,11 @@ public final class MLXModelService:
                     } else {
                         toolContent = String(decoding: try JSONEncoder().encode(text), as: UTF8.self)
                     }
-                } else if let name = resolvedName {
-                    toolContent = "<tool_response>\n{\"name\": \"\(name)\", \"content\": \(text)}\n</tool_response>"
                 } else {
-                    toolContent = text
+                    toolContent = Self.toolResultHistoryContent(
+                        text, name: resolvedName, templateOwnsHistory: templateOwnsToolHistory)
                 }
-                var msg = Chat.Message(role: .tool, content: toolContent, name: resolvedName, toolResponses: toolResponses)
+                let msg = Chat.Message(role: .tool, content: toolContent, name: resolvedName, toolResponses: toolResponses)
                 chatMessages.append(msg)
             default:
                 flushSystemParts()

@@ -1277,7 +1277,10 @@ extension AFMRequest {
                     name: $0.name,
                     description: $0.description,
                     parameters: AnyCodable($0.inputSchema.foundationValue),
-                    strict: $0.strict ?? true
+                    // Preserve omission as well as explicit true/false. Adding
+                    // strict here changes both the model's prompt and the
+                    // request's grammar-constraint opt-in at the HTTP boundary.
+                    strict: $0.strict
                 )
             )
         }
