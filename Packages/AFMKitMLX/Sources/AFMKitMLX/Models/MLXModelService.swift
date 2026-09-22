@@ -6215,6 +6215,22 @@ public final class MLXModelService:
     /// and <tool_call>{"name":"func","arguments":{...}}</tool_call> patterns.
     /// Returns extracted ToolCalls and remaining non-tool-call content.
     static func extractToolCallsFallback(from text: String, tools: [RequestTool]? = nil, allowMalformedRepair: Bool = false) -> ([ToolCall], String) {
+        let trimmedInput = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmedInput.hasPrefix("{"),
+           let data = trimmedInput.data(using: .utf8),
+           (try? JSONSerialization.jsonObject(with: data)) != nil {
+            // A complete JSON object is never an envelope-search surface:
+            // embedded XML/GLM examples belong to its argument strings.
+            guard let call = parseJSONToolCall(trimmedInput),
+                  tools == nil || tools?.contains(where: { $0.function.name == call.function.name }) == true
+            else { return ([], text) }
+            return ([call], "")
+        }
+        if trimmedInput.hasPrefix("<function=") {
+            // A bare function owns its parameter bodies just as a wrapped one
+            // does. Never promote literal inner <tool_call> examples to calls.
+            return extractBareXMLToolCalls(from: text, allowMalformedRepair: allowMalformedRepair)
+        }
         if text.contains("<|tools_prefix|>") {
             // Batch/raw-text generation must recognize the same complete native
             // envelopes as serial streaming, preserving malformed or partial text.
@@ -6252,27 +6268,28 @@ public final class MLXModelService:
             }
         }
 
-        // Match <tool_call>...</tool_call> blocks (dotMatchesLineSeparators for multiline)
-        let toolCallRegex = try! NSRegularExpression(
-            pattern: #"<tool_call>\s*(.*?)\s*</tool_call>"#,
-            options: [.dotMatchesLineSeparators]
-        )
-        let matches = toolCallRegex.matches(in: text, range: NSRange(text.startIndex..., in: text))
+        // Recognize envelope ends outside JSON strings and XML parameters.
+        let toolCallText = remaining
+        let matches = fallbackToolCallEnvelopes(in: toolCallText, allowMalformedRepair: allowMalformedRepair)
 
         if debugLogging && !matches.isEmpty {
             print("[\(ts())] [ToolCallParser] extractToolCallsFallback: found \(matches.count) <tool_call> block(s)")
         }
 
         for match in matches.reversed() {
-            guard let innerRange = Range(match.range(at: 1), in: text) else { continue }
-            let inner = String(text[innerRange])
+            let inner = String(toolCallText[match.bodyRange])
+
+            // Do not reinterpret XML examples embedded in valid JSON strings.
+            if let tc = parseJSONToolCall(inner) {
+                toolCalls.insert(tc, at: 0)
+                remaining.removeSubrange(match.range)
+                continue
+            }
 
             // Try XML function format: <function=name><parameter=key>value</parameter></function>
             if let tc = parseXMLFunction(inner) {
                 toolCalls.insert(tc, at: 0)
-                if let fullRange = Range(match.range, in: remaining) {
-                    remaining.removeSubrange(fullRange)
-                }
+                remaining.removeSubrange(match.range)
                 continue
             }
 
@@ -6287,9 +6304,7 @@ public final class MLXModelService:
             if inner.contains("<arg_key>") || knownNoArgumentGLMCall,
                let tc = GLM4ToolCallParser().parse(content: inner, tools: toolSpecs) {
                 toolCalls.insert(tc, at: 0)
-                if let fullRange = Range(match.range, in: remaining) {
-                    remaining.removeSubrange(fullRange)
-                }
+                remaining.removeSubrange(match.range)
                 continue
             }
 
@@ -6300,21 +6315,7 @@ public final class MLXModelService:
                     print("[\(ts())] [ToolCallParser] XML+embedded-JSON: \(tc.function.name)(\(tc.function.arguments.keys.joined(separator: ", ")))")
                 }
                 toolCalls.insert(tc, at: 0)
-                if let fullRange = Range(match.range, in: remaining) {
-                    remaining.removeSubrange(fullRange)
-                }
-                continue
-            }
-
-            // Try JSON format: {"name":"func","arguments":{...}}
-            if let tc = parseJSONToolCall(inner) {
-                if debugLogging {
-                    print("[\(ts())] [ToolCallParser] JSON-in-XML: \(tc.function.name)(\(tc.function.arguments.keys.joined(separator: ", ")))")
-                }
-                toolCalls.insert(tc, at: 0)
-                if let fullRange = Range(match.range, in: remaining) {
-                    remaining.removeSubrange(fullRange)
-                }
+                remaining.removeSubrange(match.range)
                 continue
             }
 
@@ -6327,9 +6328,7 @@ public final class MLXModelService:
                     print("[\(ts())] [ToolCallParser] Qwen malformed hybrid: \(tc.function.name)(\(tc.function.arguments.keys.joined(separator: ", ")))")
                 }
                 toolCalls.insert(tc, at: 0)
-                if let fullRange = Range(match.range, in: remaining) {
-                    remaining.removeSubrange(fullRange)
-                }
+                remaining.removeSubrange(match.range)
             }
         }
 
@@ -6417,45 +6416,7 @@ public final class MLXModelService:
         // Some models (e.g. Qwen3-Coder-Next) emit the XML function block directly,
         // sometimes with a trailing </tool_call> but no opening <tool_call>.
         if toolCalls.isEmpty {
-            let funcRegex = try! NSRegularExpression(
-                pattern: #"<function=([^>]+)>(.*?)</function>"#,
-                options: [.dotMatchesLineSeparators]
-            )
-            let funcMatches = funcRegex.matches(in: remaining, range: NSRange(remaining.startIndex..., in: remaining))
-            for match in funcMatches.reversed() {
-                let fullContent = String(remaining[Range(match.range, in: remaining)!])
-                if let tc = parseXMLFunction(fullContent) {
-                    if debugLogging {
-                        print("[\(ts())] [ToolCallParser] Bare XML function: \(tc.function.name)(\(tc.function.arguments.keys.joined(separator: ", ")))")
-                    }
-                    toolCalls.insert(tc, at: 0)
-                    if let fullRange = Range(match.range, in: remaining) {
-                        remaining.removeSubrange(fullRange)
-                    }
-                }
-            }
-            // Clean up orphaned </tool_call> tags
-            if !toolCalls.isEmpty {
-                remaining = remaining.replacingOccurrences(of: "</tool_call>", with: "")
-            }
-        }
-
-        // Fallback: bare JSON tool call (no wrapper tags)
-        // e.g. {"name":"get_weather","arguments":{"city":"Tokyo"}} or with "parameters"
-        if toolCalls.isEmpty {
-            let trimmed = remaining.trimmingCharacters(in: .whitespacesAndNewlines)
-            if trimmed.hasPrefix("{") && trimmed.hasSuffix("}") {
-                if let tc = parseJSONToolCall(trimmed),
-                   tools == nil || tools?.contains(where: {
-                       $0.function.name == tc.function.name
-                   }) == true {
-                    if debugLogging {
-                        print("[\(ts())] [ToolCallParser] Bare JSON: \(tc.function.name)(\(tc.function.arguments.keys.joined(separator: ", ")))")
-                    }
-                    toolCalls.append(tc)
-                    remaining = ""
-                }
-            }
+            (toolCalls, remaining) = extractBareXMLToolCalls(from: remaining, allowMalformedRepair: allowMalformedRepair)
         }
 
         if toolCalls.isEmpty {
@@ -6478,6 +6439,86 @@ public final class MLXModelService:
         }
 
         return (toolCalls, remaining)
+    }
+
+    /// Native envelopes use lexical framing. Explicit adaptive mode may also
+    /// recover its recognized malformed opener families, but only after a
+    /// complete candidate actually passes the compatibility parser. Iterate in
+    /// source order so valid and repaired adjacent calls cannot mask each other.
+    private static func fallbackToolCallEnvelopes(
+        in text: String, allowMalformedRepair: Bool
+    ) -> [(range: Range<String.Index>, bodyRange: Range<String.Index>)] {
+        guard allowMalformedRepair else {
+            return ToolCallEnvelopeScanner.envelopes(in: text).map { ($0.range, $0.bodyRange) }
+        }
+        var result: [(range: Range<String.Index>, bodyRange: Range<String.Index>)] = []
+        var cursor = text.startIndex
+        while let start = text.range(of: "<tool_call>", range: cursor..<text.endIndex) {
+            var end: Range<String.Index>?
+            if hasRepairableQwenOpener(text[start.upperBound...]) {
+                var candidateStart = start.upperBound
+                while let candidate = text.range(of: "</tool_call>", range: candidateStart..<text.endIndex) {
+                    if parseQwenMalformedToolCall(String(text[start.upperBound..<candidate.lowerBound])) != nil {
+                        end = candidate
+                        break
+                    }
+                    candidateStart = candidate.upperBound
+                }
+            }
+            if end == nil {
+                var scanner = ToolCallEnvelopeScanner()
+                end = scanner.closingTagRange(in: text, endTag: "</tool_call>", from: start.upperBound)
+            }
+            if end == nil, text[start.upperBound...].drop(while: { $0.isWhitespace }).hasPrefix("<function=") {
+                // Completed-text/EOF compatibility only: retain the existing
+                // salvage of a parameter missing its closing tag. Valid XML
+                // always uses the structural boundary above.
+                var candidateStart = start.upperBound
+                while let candidate = text.range(of: "</tool_call>", range: candidateStart..<text.endIndex) {
+                    if parseXMLFunction(String(text[start.upperBound..<candidate.lowerBound]), repairArguments: true) != nil {
+                        end = candidate
+                        break
+                    }
+                    candidateStart = candidate.upperBound
+                }
+            }
+            guard let end else { break }
+            result.append((start.lowerBound..<end.upperBound, start.upperBound..<end.lowerBound))
+            cursor = end.upperBound
+        }
+        return result
+    }
+
+    private static func extractBareXMLToolCalls(
+        from text: String, allowMalformedRepair: Bool
+    ) -> ([ToolCall], String) {
+        var ranges = ToolCallEnvelopeScanner.envelopes(
+            in: text, startTag: "<function=", endTag: "</function>", syntax: .xmlFunction).map(\.range)
+        if ranges.isEmpty, allowMalformedRepair {
+            let regex = try! NSRegularExpression(pattern: #"<function=[^>]+>[\s\S]*?</function>"#)
+            ranges = regex.matches(in: text, range: NSRange(text.startIndex..., in: text))
+                .compactMap { Range($0.range, in: text) }
+        }
+        var remaining = text
+        var calls: [ToolCall] = []
+        for range in ranges.reversed() {
+            if let call = parseXMLFunction(String(text[range]), repairArguments: allowMalformedRepair) {
+                calls.insert(call, at: 0)
+                remaining.removeSubrange(range)
+            }
+        }
+        if !calls.isEmpty {
+            remaining = remaining.replacingOccurrences(of: "</tool_call>", with: "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return (calls, remaining)
+    }
+
+    static func hasRepairableQwenOpener(_ text: Substring) -> Bool {
+        var body = text.drop(while: { $0.isWhitespace })
+        guard body.first == "{" else { return false }
+        body = body.dropFirst().drop(while: { $0.isWhitespace })
+        return body.hasPrefix("\"name=") || body.hasPrefix("\"function=") || body.hasPrefix("\"function>")
     }
 
     /// Parse <function=name><parameter=key>value</parameter></function> via regex.
@@ -6606,14 +6647,13 @@ public final class MLXModelService:
         funcName: String,
         repairArguments: Bool = true
     ) -> ToolCall? {
-        let funcRegex = try! NSRegularExpression(
-            pattern: #"<function=([^>]+)>(.*?)</function>"#,
-            options: [.dotMatchesLineSeparators]
-        )
-        guard let funcMatch = funcRegex.firstMatch(in: content, range: NSRange(content.startIndex..., in: content)),
-              let bodyRange = Range(funcMatch.range(at: 2), in: content) else {
-            return nil
-        }
+        guard let header = content.range(of: #"<function=[^>]+>"#, options: .regularExpression)
+        else { return nil }
+        var scanner = ToolCallEnvelopeScanner(syntax: .xmlFunction)
+        guard let end = scanner.closingTagRange(in: content, endTag: "</function>", from: header.upperBound)
+            ?? (repairArguments ? content.range(of: "</function>", range: header.upperBound..<content.endIndex) : nil)
+        else { return nil }
+        let bodyRange = header.upperBound..<end.lowerBound
         let body = String(content[bodyRange])
         // -VV: Log raw XML body exactly as model generated it
         if traceLogging {

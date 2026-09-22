@@ -31,6 +31,7 @@ public class ToolCallProcessor {
     private var state = State.normal
     private var toolCallBuffer = ""
     private var activeEndTag: String?
+    private var envelopeScanner = ToolCallEnvelopeScanner()
 
     /// The tool calls extracted during processing.
     public var toolCalls: [ToolCall] = []
@@ -117,6 +118,7 @@ public class ToolCallProcessor {
         let pending = toolCallBuffer
         state = .normal
         activeEndTag = nil
+        envelopeScanner = ToolCallEnvelopeScanner()
         toolCallBuffer = ""
         if let apertus = parser as? ApertusToolCallParser {
             let calls = apertus.parseCalls(content: pending)
@@ -167,6 +169,8 @@ public class ToolCallProcessor {
             let leadingText = String(input[..<match.range.lowerBound])
             toolCallBuffer = String(input[match.range.lowerBound...])
             activeEndTag = match.pair.end
+            envelopeScanner = ToolCallEnvelopeScanner(
+                syntax: parser is JSONToolCallParser ? .json : .xmlFunction)
             state = .collectingToolCall
 
             let completedText = finishTaggedCallIfComplete() ?? ""
@@ -185,11 +189,16 @@ public class ToolCallProcessor {
     }
 
     private func finishTaggedCallIfComplete() -> String? {
-        guard let endTag = activeEndTag,
-            let endRange = parser is GLM4ToolCallParser
-                ? GLM4ToolCallParser.closingTagRange(in: toolCallBuffer)
-                : toolCallBuffer.range(of: endTag)
-        else { return nil }
+        guard let endTag = activeEndTag else { return nil }
+        let endRange: Range<String.Index>?
+        if parser is GLM4ToolCallParser {
+            endRange = GLM4ToolCallParser.closingTagRange(in: toolCallBuffer)
+        } else if parser is JSONToolCallParser || parser is XMLFunctionParser {
+            endRange = envelopeScanner.closingTagRange(in: toolCallBuffer, endTag: endTag)
+        } else {
+            endRange = toolCallBuffer.range(of: endTag)
+        }
+        guard let endRange else { return nil }
 
         let captured = String(toolCallBuffer[..<endRange.upperBound])
         let trailingText = String(toolCallBuffer[endRange.upperBound...])

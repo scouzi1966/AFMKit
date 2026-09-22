@@ -2999,16 +2999,19 @@ actor BatchScheduler {
         if let trailingEvents = slot.toolRuntime?.finishIncompleteToolCall(), !trailingEvents.isEmpty {
             yieldToolRuntimeEvents(trailingEvents, to: slot)
         }
-        if let tail = slot.jsonStopFilter?.finish() {
-            for chunk in tail { slot.continuation.yield(chunk) }
-            slot.stoppedBySequence = slot.jsonStopFilter?.stopped == true
-        }
-        if !slot.activeStops.isEmpty && !slot.stopBuffer.isEmpty && !slot.stoppedBySequence {
-            slot.continuation.yield(StreamChunk(text: slot.stopBuffer))
-            slot.stopBuffer = ""
-        }
-        if let pending = slot.toolRuntime?.finishPendingText(), !pending.isEmpty, !slot.stoppedBySequence {
-            slot.continuation.yield(StreamChunk(text: pending))
+        let tail = Self.finishTextChunks(
+            pendingText: slot.toolRuntime?.finishPendingText() ?? "",
+            jsonStopFilter: &slot.jsonStopFilter,
+            stopBuffer: &slot.stopBuffer,
+            activeStops: slot.activeStops,
+            maxStopLength: slot.maxStopLength,
+            insideThink: &slot.insideThink,
+            thinkStartTag: slot.thinkStartTag,
+            thinkEndTag: slot.thinkEndTag,
+            stoppedBySequence: &slot.stoppedBySequence
+        )
+        for chunk in tail {
+            slot.continuation.yield(chunk)
         }
 
         // Save prompt KV state to prefix cache before removal.
@@ -3384,6 +3387,44 @@ actor BatchScheduler {
             }
         }
         return emitted
+    }
+
+    /// EOF recovery is still visible response text. Apply the same stop policy
+    /// before flushing, including a stop split between the old buffer and EOF.
+    /// Tool arguments are emitted separately and never enter this text filter.
+    static func finishTextChunks(
+        pendingText: String,
+        jsonStopFilter: inout MLXJSONStopFilter?,
+        stopBuffer: inout String,
+        activeStops: [String],
+        maxStopLength: Int,
+        insideThink: inout Bool,
+        thinkStartTag: String?,
+        thinkEndTag: String?,
+        stoppedBySequence: inout Bool
+    ) -> [StreamChunk] {
+        var chunks: [StreamChunk] = []
+        if !pendingText.isEmpty, !stoppedBySequence {
+            if let filtered = jsonStopFilter?.consume(pendingText) {
+                chunks += filtered
+                stoppedBySequence = jsonStopFilter?.stopped == true
+            } else {
+                let result = stopChunksToEmit(from: pendingText, stopBuffer: &stopBuffer,
+                    activeStops: activeStops, maxStopLength: maxStopLength,
+                    insideThink: &insideThink, thinkStartTag: thinkStartTag, thinkEndTag: thinkEndTag)
+                chunks += result.chunks
+                stoppedBySequence = result.stopped
+            }
+        }
+        if let tail = jsonStopFilter?.finish() {
+            chunks += tail
+            stoppedBySequence = stoppedBySequence || jsonStopFilter?.stopped == true
+        }
+        if !activeStops.isEmpty, !stopBuffer.isEmpty, !stoppedBySequence {
+            chunks.append(StreamChunk(text: stopBuffer))
+        }
+        stopBuffer = ""
+        return chunks
     }
 
     static func stopChunksToEmit(

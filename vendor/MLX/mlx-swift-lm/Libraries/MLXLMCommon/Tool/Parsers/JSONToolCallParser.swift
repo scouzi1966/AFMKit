@@ -17,13 +17,14 @@ public struct JSONToolCallParser: ToolCallParser, Sendable {
         guard let start = startTag, let end = endTag else { return nil }
 
         // Find the JSON content between tags
-        var text = content
+        var text = content.trimmingCharacters(in: .whitespacesAndNewlines)
 
         // Strip tags if present
-        if let startRange = text.range(of: start) {
-            text = String(text[startRange.upperBound...])
+        if text.hasPrefix(start) {
+            text = String(text.dropFirst(start.count))
         }
-        if let endRange = text.range(of: end) {
+        var scanner = ToolCallEnvelopeScanner(syntax: .json)
+        if let endRange = scanner.closingTagRange(in: text, endTag: end) {
             text = String(text[..<endRange.lowerBound])
         }
 
