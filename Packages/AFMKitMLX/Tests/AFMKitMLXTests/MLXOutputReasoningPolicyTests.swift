@@ -4,10 +4,11 @@ import AFMOpenAICompat
 import XCTest
 
 final class MLXOutputReasoningPolicyTests: XCTestCase {
-    func testJSONDoesNotAcquireTemplateOpenedReasoning() {
+    func testGrammarConstrainedJSONDoesNotAcquireTemplateOpenedReasoning() {
         for format in ["json_object", "json_schema"] {
             let tags = MLXOutputReasoningPolicy.tags(
                 responseFormat: .init(type: format), isRawPrompt: false,
+                hasJSONGrammar: true,
                 start: "<think>", end: "</think>")
             // GLM can retain this prompt suffix even when thinking is reduced.
             // A JSON grammar emits JSON directly; the prefix is not generated.
@@ -18,6 +19,18 @@ final class MLXOutputReasoningPolicyTests: XCTestCase {
             XCTAssertFalse(opensReasoning, format)
             XCTAssertNil(tags.start, format)
             XCTAssertNil(tags.end, format)
+        }
+    }
+
+    func testPromptedJSONAndDowngradedSchemasRetainLeadingReasoningFraming() {
+        for format in ["json_object", "json_schema"] {
+            let tags = MLXOutputReasoningPolicy.tags(
+                responseFormat: .init(type: format), isRawPrompt: false,
+                hasJSONGrammar: false, start: "<think>", end: "</think>")
+            XCTAssertEqual(tags.start, "<think>", format)
+            XCTAssertEqual(tags.end, "</think>", format)
+            XCTAssertTrue(MLXModelService.promptSuffixOpensThink(
+                "[gMASK]<think>\n", startTag: tags.start!, endTag: tags.end), format)
         }
     }
 
@@ -61,12 +74,13 @@ final class MLXOutputReasoningPolicyTests: XCTestCase {
         XCTAssertNil(tags.end)
     }
 
-    func testBatchStopsPreserveJSONMarkerDataAtEverySplit() {
+    func testBatchStopsPreserveGrammarConstrainedJSONMarkerDataAtEverySplit() {
         let json = #"{"note":"<think>kept</think> <|channel|>final <tool_call>literal</tool_call>"}"#
         let output = json + "[STOP]discarded"
         for format in ["json_object", "json_schema"] {
             let tags = MLXOutputReasoningPolicy.tags(
                 responseFormat: .init(type: format), isRawPrompt: false,
+                hasJSONGrammar: true,
                 start: "<think>", end: "</think>")
             for split in 0...output.count {
                 var stopBuffer = ""

@@ -369,6 +369,15 @@ public struct TopKProcessor: LogitProcessor {
         let vocabSize = logits.dim(-1)
         guard k > 0, k < vocabSize else { return logits }
 
+        // A single candidate must remain deterministic even when quantized
+        // logits tie. Threshold masking otherwise retains every tied maximum
+        // and temperature sampling can choose different tokens. Argmax also
+        // avoids sorting the entire vocabulary for this common greedy control.
+        if k == 1 {
+            let winner = argMax(logits, axis: -1, keepDims: true)
+            return MLX.where(MLX.arange(vocabSize) .== winner, logits, MLXArray(-Float.infinity))
+        }
+
         // Sort ascending along the last axis to find the k-th largest value
         let sorted = MLX.sorted(logits, axis: -1)
         // k-th largest is at index [vocabSize - k] in ascending-sorted array
@@ -1377,7 +1386,8 @@ public func generateTask(
     tokenizer: Tokenizer,
     iterator: consuming TokenIterator,
     stopAfterToolCall: Bool = false,
-    ignoreEndOfSequence: Bool = false
+    ignoreEndOfSequence: Bool = false,
+    tools: [[String: any Sendable]]? = nil
 ) -> (AsyncStream<Generation>, Task<Void, Never>) {
 
     let (stream, continuation) = AsyncStream<Generation>.makeStream()
@@ -1396,7 +1406,7 @@ public func generateTask(
         var tokenCount = 0
         var detokenizer = NaiveStreamingDetokenizer(tokenizer: tokenizer)
         let toolCallProcessor = ToolCallProcessor(
-            format: modelConfiguration.toolCallFormat ?? .json
+            format: modelConfiguration.toolCallFormat ?? .json, tools: tools
         )
         var pendingLogprobs = [TokenLogprobData]()
         var consecutiveSuppressedEndOfSequenceTokens = 0

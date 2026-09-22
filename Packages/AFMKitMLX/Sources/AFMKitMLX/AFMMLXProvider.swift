@@ -993,9 +993,12 @@ struct AFMMLXRawToolStreamFallback {
 
     mutating func finish() -> [StreamChunk] {
         guard let runtime else { return [] }
-        return BatchScheduler.streamChunksToEmit(
+        var chunks = BatchScheduler.streamChunksToEmit(
             from: runtime.finishIncompleteToolCall()
         )
+        let pending = runtime.finishPendingText()
+        if !pending.isEmpty { chunks.append(StreamChunk(text: pending)) }
+        return chunks
     }
 }
 

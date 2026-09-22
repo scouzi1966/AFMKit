@@ -50,6 +50,7 @@ public final class ToolCallStreamingRuntime {
     private var collectedCount = 0
     private var pendingStartProbe = ""
     private var finalizedCurrentToolCall = false
+    private var unfinishedNativeText = ""
 
     public init(
         toolCallStartTag: String,
@@ -161,6 +162,15 @@ public final class ToolCallStreamingRuntime {
 
         defer { resetState() }
 
+        if toolCallParser == "glm4"
+            || (toolCallParser == nil && GLM4ToolCallParser.isNativeBody(currentToolText)) {
+            // An unfinished native envelope is not a completed invocation. In
+            // particular, a literal tool end inside an unfinished arg_value
+            // must not cause a fabricated empty/partial argument dictionary.
+            unfinishedNativeText = toolCallStartTag + currentToolText
+            return []
+        }
+
         if incrementalEmittedFirst {
             var events = [ToolCallStreamingEvent]()
             if let salvaged = salvageUnclosedParameterFragment() {
@@ -192,11 +202,20 @@ public final class ToolCallStreamingRuntime {
         return emitParsedToolCalls(from: currentToolText)
     }
 
+    func finishPendingText() -> String {
+        defer { unfinishedNativeText = ""; pendingStartProbe = "" }
+        return unfinishedNativeText + pendingStartProbe
+    }
+
     private func consumeToolBodyFragment(_ fragment: String, prependStarted: Bool) -> ToolCallStreamingOutput {
         var events = prependStarted ? [ToolCallStreamingEvent.started] : []
         currentToolText += fragment
 
-        if let endRange = currentToolText.range(of: toolCallEndTag) {
+        let endRange = toolCallParser == "glm4"
+            || (toolCallParser == nil && GLM4ToolCallParser.isNativeBody(currentToolText))
+            ? GLM4ToolCallParser.closingTagRange(in: currentToolText)
+            : currentToolText.range(of: toolCallEndTag)
+        if let endRange {
             let beforeEnd = String(currentToolText[..<endRange.lowerBound])
             let afterEnd = String(currentToolText[endRange.upperBound...])
             currentToolText = beforeEnd

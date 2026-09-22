@@ -4,6 +4,43 @@ import AFMOpenAICompat
 import XCTest
 
 final class MLXStreamEventTranslatorTests: XCTestCase {
+    func testPromptedJSONSeparatesInitialReasoningAndPreservesLiteralMarkersAtEverySplit() {
+        let json = #"{"note":"<think>kept</think> <tool_call>literal</tool_call>"}"#
+        let raw = "private {draft}</think>\n" + json
+        for split in 0...raw.count {
+            var translator = MLXStreamEventTranslator(
+                thinkStartTag: "<think>", thinkEndTag: "</think>",
+                maximumResponseTokens: 256, preserveReasoningMarkers: true)
+            let boundary = raw.index(raw.startIndex, offsetBy: split)
+            let events = [
+                translator.consume(.init(syntheticText: "<think>")),
+                translator.consume(.init(text: String(raw[..<boundary]))),
+                translator.consume(.init(text: String(raw[boundary...]))),
+                translator.finish()
+            ].flatMap { $0 }
+            XCTAssertEqual(text(from: events), "\n" + json, "split \(split)")
+            XCTAssertEqual(reasoning(from: events), "private {draft}", "split \(split)")
+            XCTAssertEqual(tokenCount(from: events), split == 0 || split == raw.count ? 1 : 2)
+        }
+    }
+
+    func testGeneratedReasoningBeforeJSONArrayPreservesMarkersAndStopsParsingAfterJSONBegins() {
+        let raw = "<think>private</think>\n[\"<think>literal</think>\"]"
+        for split in 0...raw.count {
+            var translator = MLXStreamEventTranslator(
+                thinkStartTag: "<think>", thinkEndTag: "</think>",
+                maximumResponseTokens: 256, preserveReasoningMarkers: true)
+            let boundary = raw.index(raw.startIndex, offsetBy: split)
+            let events = [
+                translator.consume(.init(text: String(raw[..<boundary]))),
+                translator.consume(.init(text: String(raw[boundary...]))),
+                translator.finish()
+            ].flatMap { $0 }
+            XCTAssertEqual(text(from: events), "\n[\"<think>literal</think>\"]", "split \(split)")
+            XCTAssertEqual(reasoning(from: events), "private", "split \(split)")
+        }
+    }
+
     func testStructuredOutputPreservesLiteralReasoningMarkersAtEverySplit() {
         let raw = #"{"note":"<think>kept</think> </think:opensource> <|channel>thought <|content_thinking|> <tool_call>literal</tool_call>"}"#
         for split in 0...raw.count {

@@ -282,6 +282,7 @@ actor BatchScheduler {
         let thinkEndTag: String?
         var stopBuffer = ""
         var insideThink = false
+        var jsonStopFilter: MLXJSONStopFilter?
         var stoppedBySequence = false
         let speculativeSession: SpeculativeSession?
 
@@ -312,6 +313,7 @@ actor BatchScheduler {
             activeStops: [String],
             thinkStartTag: String?,
             thinkEndTag: String?,
+            jsonStopFilter: MLXJSONStopFilter? = nil,
             computeLogprobs: Bool = false,
             topLogprobsCount: Int = 0,
             temperatureForLogprobs: Float = 1.0,
@@ -350,6 +352,7 @@ actor BatchScheduler {
             self.maxStopLength = activeStops.map(\.count).max() ?? 0
             self.thinkStartTag = thinkStartTag
             self.thinkEndTag = thinkEndTag
+            self.jsonStopFilter = jsonStopFilter
             self.computeLogprobs = computeLogprobs
             self.topLogprobsCount = topLogprobsCount
             self.temperatureForLogprobs = temperatureForLogprobs
@@ -623,6 +626,7 @@ actor BatchScheduler {
         let stopSequences: [String]
         let thinkStartTag: String?
         let thinkEndTag: String?
+        let jsonStopFilter: MLXJSONStopFilter?
         let continuation: AsyncThrowingStream<StreamChunk, Error>.Continuation
         let usesGLMMTP: Bool
         let usesQwenMTP: Bool
@@ -920,6 +924,7 @@ actor BatchScheduler {
         stopSequences: [String] = [],
         thinkStartTag: String? = nil,
         thinkEndTag: String? = nil,
+        jsonStopFilter: MLXJSONStopFilter? = nil,
         requestId: String = "",
         usesGLMMTP: Bool = false,
         usesQwenMTP: Bool = false
@@ -951,6 +956,7 @@ actor BatchScheduler {
                 stopSequences: stopSequences,
                 thinkStartTag: thinkStartTag,
                 thinkEndTag: thinkEndTag,
+                jsonStopFilter: jsonStopFilter,
                 continuation: continuation,
                 usesGLMMTP: usesGLMMTP,
                 usesQwenMTP: usesQwenMTP
@@ -1845,6 +1851,7 @@ actor BatchScheduler {
             activeStops: req.stopSequences,
             thinkStartTag: req.thinkStartTag,
             thinkEndTag: req.thinkEndTag,
+            jsonStopFilter: req.jsonStopFilter,
             computeLogprobs: false,
             topLogprobsCount: 0,
             temperatureForLogprobs: req.parameters.temperature,
@@ -2232,6 +2239,7 @@ actor BatchScheduler {
             activeStops: req.stopSequences,
             thinkStartTag: req.thinkStartTag,
             thinkEndTag: req.thinkEndTag,
+            jsonStopFilter: req.jsonStopFilter,
             computeLogprobs: req.parameters.computeLogprobs,
             topLogprobsCount: req.parameters.topLogprobsCount,
             temperatureForLogprobs: req.parameters.temperature
@@ -2786,6 +2794,7 @@ actor BatchScheduler {
                 activeStops: req.stopSequences,
                 thinkStartTag: req.thinkStartTag,
                 thinkEndTag: req.thinkEndTag,
+                jsonStopFilter: req.jsonStopFilter,
                 computeLogprobs: req.parameters.computeLogprobs,
                 topLogprobsCount: req.parameters.topLogprobsCount,
                 temperatureForLogprobs: req.parameters.temperature
@@ -2990,9 +2999,16 @@ actor BatchScheduler {
         if let trailingEvents = slot.toolRuntime?.finishIncompleteToolCall(), !trailingEvents.isEmpty {
             yieldToolRuntimeEvents(trailingEvents, to: slot)
         }
+        if let tail = slot.jsonStopFilter?.finish() {
+            for chunk in tail { slot.continuation.yield(chunk) }
+            slot.stoppedBySequence = slot.jsonStopFilter?.stopped == true
+        }
         if !slot.activeStops.isEmpty && !slot.stopBuffer.isEmpty && !slot.stoppedBySequence {
             slot.continuation.yield(StreamChunk(text: slot.stopBuffer))
             slot.stopBuffer = ""
+        }
+        if let pending = slot.toolRuntime?.finishPendingText(), !pending.isEmpty, !slot.stoppedBySequence {
+            slot.continuation.yield(StreamChunk(text: pending))
         }
 
         // Save prompt KV state to prefix cache before removal.
@@ -3287,15 +3303,7 @@ actor BatchScheduler {
             let output = toolRuntime.process(piece: chunk)
             if output.handled {
                 if let passthroughText = output.passthroughText, !passthroughText.isEmpty {
-                    let stopResult = Self.stopChunksToEmit(
-                        from: passthroughText,
-                        stopBuffer: &slot.stopBuffer,
-                        activeStops: slot.activeStops,
-                        maxStopLength: slot.maxStopLength,
-                        insideThink: &slot.insideThink,
-                        thinkStartTag: slot.thinkStartTag,
-                        thinkEndTag: slot.thinkEndTag
-                    )
+                    let stopResult = stopChunksToEmit(from: passthroughText, for: slot)
                     for emit in stopResult.chunks {
                         slot.continuation.yield(emit)
                     }
@@ -3308,15 +3316,7 @@ actor BatchScheduler {
                 return false
             }
         }
-        let stopResult = Self.stopChunksToEmit(
-            from: chunk,
-            stopBuffer: &slot.stopBuffer,
-            activeStops: slot.activeStops,
-            maxStopLength: slot.maxStopLength,
-            insideThink: &slot.insideThink,
-            thinkStartTag: slot.thinkStartTag,
-            thinkEndTag: slot.thinkEndTag
-        )
+        let stopResult = stopChunksToEmit(from: chunk, for: slot)
         for emit in stopResult.chunks {
             slot.continuation.yield(emit)
         }
@@ -3324,6 +3324,21 @@ actor BatchScheduler {
             slot.stoppedBySequence = true
         }
         return stopResult.stopped
+    }
+
+    private func stopChunksToEmit(from text: String, for slot: SlotState) -> (chunks: [StreamChunk], stopped: Bool) {
+        if let chunks = slot.jsonStopFilter?.consume(text) {
+            return (chunks, slot.jsonStopFilter?.stopped == true)
+        }
+        return Self.stopChunksToEmit(
+            from: text,
+            stopBuffer: &slot.stopBuffer,
+            activeStops: slot.activeStops,
+            maxStopLength: slot.maxStopLength,
+            insideThink: &slot.insideThink,
+            thinkStartTag: slot.thinkStartTag,
+            thinkEndTag: slot.thinkEndTag
+        )
     }
 
     private func yieldToolRuntimeEvents(_ events: [ToolCallStreamingEvent], to slot: SlotState) {

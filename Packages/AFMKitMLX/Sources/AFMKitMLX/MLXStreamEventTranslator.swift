@@ -18,6 +18,7 @@ public struct MLXStreamEventTranslator {
     private let thinkEndTag: String?
     private let maximumResponseTokens: Int?
     private let requestTools: [RequestTool]?
+    private var jsonFramer: MLXJSONReasoningFramer?
     private var textBuffer = ""
     private var bufferedTokenCount = 0
     private var insideReasoning = false
@@ -33,8 +34,10 @@ public struct MLXStreamEventTranslator {
         tools: [RequestTool]? = nil,
         preserveReasoningMarkers: Bool = false
     ) {
-        self.thinkStartTag = preserveReasoningMarkers ? nil : thinkStartTag
-        self.thinkEndTag = preserveReasoningMarkers ? nil : thinkEndTag
+        self.thinkStartTag = thinkStartTag
+        self.thinkEndTag = thinkEndTag
+        self.jsonFramer = preserveReasoningMarkers
+            ? .init(startTag: thinkStartTag, endTag: thinkEndTag) : nil
         self.maximumResponseTokens = maximumResponseTokens
         self.requestTools = tools
     }
@@ -101,6 +104,11 @@ public struct MLXStreamEventTranslator {
 
     public mutating func finish() -> [AFMGenerationEvent] {
         var events = flushTextBuffer()
+        if let segments = jsonFramer?.finish() {
+            for segment in segments where !segment.isDelimiter {
+                append(segment.text, to: &events, reasoning: segment.isReasoning)
+            }
+        }
         let reason: AFMFinishReason
         if tools.values.contains(where: \.completed) {
             reason = .toolCalls
@@ -120,6 +128,14 @@ public struct MLXStreamEventTranslator {
         guard !chunk.text.isEmpty else { return [] }
         let tokenCount = chunk.generatedTokenCountOverride
             ?? max(1, chunk.logprobs?.count ?? 1)
+        if let segments = jsonFramer?.consume(chunk.text) {
+            bufferedTokenCount += tokenCount
+            var events: [AFMGenerationEvent] = []
+            for segment in segments where !segment.isDelimiter {
+                append(segment.text, to: &events, reasoning: segment.isReasoning)
+            }
+            return events
+        }
         guard let thinkStartTag, let thinkEndTag else {
             return [
                 .responseText(action: .append, text: chunk.text, tokenCount: tokenCount)
@@ -160,12 +176,13 @@ public struct MLXStreamEventTranslator {
 
     private mutating func append(
         _ text: String,
-        to events: inout [AFMGenerationEvent]
+        to events: inout [AFMGenerationEvent],
+        reasoning: Bool? = nil
     ) {
         guard !text.isEmpty else { return }
         let tokenCount = bufferedTokenCount
         bufferedTokenCount = 0
-        if insideReasoning {
+        if reasoning ?? insideReasoning {
             events.append(
                 .reasoningText(action: .append, text: text, tokenCount: tokenCount)
             )

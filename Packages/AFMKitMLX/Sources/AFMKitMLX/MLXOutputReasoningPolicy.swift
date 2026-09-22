@@ -1,16 +1,19 @@
 import AFMOpenAICompat
 
-/// Output framing is request-local: marker-shaped text in JSON is application
-/// data, and raw completions do not acquire synthetic chat-template delimiters.
+/// Only an active JSON grammar excludes leading reasoning. Prompt-only JSON
+/// (including a failed/downgraded schema grammar) still needs reasoning framing.
+/// Raw completions never acquire synthetic chat-template delimiters.
 enum MLXOutputReasoningPolicy {
     static func tags(
         responseFormat: ResponseFormat?,
         isRawPrompt: Bool,
+        hasJSONGrammar: Bool = false,
         start: String?,
         end: String?
     ) -> (start: String?, end: String?) {
         guard !isRawPrompt,
-              !OpenAIResponseFormatPolicy.requiresStructuredOutputSanitization(responseFormat)
+              !(hasJSONGrammar
+                && OpenAIResponseFormatPolicy.requiresStructuredOutputSanitization(responseFormat))
         else { return (nil, nil) }
         return (start, end)
     }

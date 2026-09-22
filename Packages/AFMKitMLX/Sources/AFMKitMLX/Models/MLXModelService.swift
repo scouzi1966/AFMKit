@@ -446,6 +446,27 @@ public final class MLXModelService:
     }
 
     public var enableGrammarConstraints: Bool = false { didSet { grammarConstraintsActive = enableGrammarConstraints } }
+
+    public func reasoningRequestValidationError(chatTemplateKwargs: [String: AnyCodable]?) -> String? {
+        // Avoid even the state-lock acquisition on ordinary requests.
+        guard let effort = Self.explicitReasoningOff(chatTemplateKwargs) else { return nil }
+        return Self.reasoningRequestValidationError(
+            effort: effort, canonicalModelType: withStateLock { currentModelArchitecture?.canonicalModelType })
+    }
+
+    static func explicitReasoningOff(_ kwargs: [String: AnyCodable]?) -> String? {
+        guard case .string(let raw)? = kwargs?["reasoning_effort"]?.value else { return nil }
+        let effort = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return ["none", "off"].contains(effort) ? effort : nil
+    }
+
+    static func reasoningRequestValidationError(effort: String?, canonicalModelType: String?) -> String? {
+        guard canonicalModelType == "glm5_next" || canonicalModelType == "glm5_next_text",
+              let effort,
+              ["none", "off"].contains(effort.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+        else { return nil }
+        return "This GLM checkpoint cannot disable reasoning. reasoning_effort accepts low, high, or max; use low to reduce reasoning."
+    }
     public var trace: Bool = false { didSet { traceLogging = trace } }
     public var supportsStrictToolGrammar: Bool {
         if let parser = resolvedToolCallParser(logBypass: false) {
@@ -628,6 +649,11 @@ public final class MLXModelService:
         let format = withStateLock({ currentToolCallFormat })
         if let format {
             switch format {
+            case .glm4:
+                return .init(
+                    startTag: "<tool_call>", endTag: "</tool_call>",
+                    parser: resolvedToolCallParser(logBypass: false) ?? "glm4",
+                    tools: tools, repairToolArguments: fixToolArgs)
             case .xmlFunction:
                 return .init(
                     startTag: "<tool_call>",
@@ -3696,6 +3722,10 @@ public final class MLXModelService:
                 tokenizer: context.tokenizer,
                 tools: tools
             )
+            let outputReasoning = MLXOutputReasoningPolicy.tags(
+                responseFormat: responseFormat, isRawPrompt: rawPrompt != nil,
+                hasJSONGrammar: constrainedDecoding?.mode == "json_schema",
+                start: self.thinkStartTag, end: self.thinkEndTag)
             defer {
                 constrainedDecoding?.matcherHandle?.release()
             }
@@ -3928,6 +3958,10 @@ public final class MLXModelService:
             let activeStops = ((stop ?? []) + self.implicitStopSequences).filter { !$0.isEmpty }
             var insideThink = templateInjectedThink
             var visibleContentStart: String.Index? = nil  // Index where content after </think> begins
+            let structuredJSON = responseFormat?.type == "json_object" || responseFormat?.type == "json_schema"
+            var jsonStopFilter = structuredJSON && !activeStops.isEmpty
+                ? MLXJSONStopFilter(startTag: thinkStart, endTag: outputReasoning.end,
+                    insideReasoning: templateInjectedThink, stopSequences: activeStops) : nil
             let genStart = Date()
             var firstTokenTime: Date?
             // INSTRUMENT: Dump cache state right before generation starts
@@ -4007,7 +4041,8 @@ public final class MLXModelService:
                     context.configuration, rawPrompt: rawPrompt),
                 tokenizer: context.tokenizer,
                 iterator: generationIterator,
-                stopAfterToolCall: params.stopAfterToolCall
+                stopAfterToolCall: params.stopAfterToolCall,
+                tools: toolSpecs
             )
             do {
                 for await piece in generationStream {
@@ -4022,6 +4057,11 @@ public final class MLXModelService:
                     }
                     if case .chunk(let text) = piece {
                         if firstTokenTime == nil { firstTokenTime = Date() }
+                        if let chunks = jsonStopFilter?.consume(text) {
+                            out += chunks.map(\.text).joined()
+                            if jsonStopFilter?.stopped == true { stoppedBySequence = true; break }
+                            continue
+                        }
                         // Track think boundaries — stop sequences only apply outside
                         if let ts = thinkStart, text.contains(ts) { insideThink = true }
                         if let te = outputReasoning.end, text.contains(te) { insideThink = false }
@@ -4073,6 +4113,7 @@ public final class MLXModelService:
                 throw error
             }
 
+            if let tail = jsonStopFilter?.finish() { out += tail.map(\.text).joined() }
             Stream.gpu.synchronize()
             // Optional per-request GPU memory cleanup (gated to avoid throughput hit).
             // Enable with AFM_CLEAR_GPU_CACHE=1 if you see memory-related crashes.
@@ -4382,6 +4423,7 @@ public final class MLXModelService:
         // requestStarted/observe calls happen ONLY in the serial-path
         // task below (the batch path's stats are owned by BatchScheduler).
         let streamQueuedAt = Date()
+        let structuredJSON = responseFormat?.type == "json_object" || responseFormat?.type == "json_schema"
 
         let baseParameters = GenerateParameters(
             maxTokens: effectiveMaxTokens,
@@ -4458,6 +4500,10 @@ public final class MLXModelService:
                 tokenizer: scheduler.tokenizer,
                 tools: tools
             )
+            let outputReasoning = MLXOutputReasoningPolicy.tags(
+                responseFormat: responseFormat, isRawPrompt: rawPrompt != nil,
+                hasJSONGrammar: constrainedDecoding?.mode == "json_schema",
+                start: self.thinkStartTag, end: self.thinkEndTag)
             if let constrainedDecoding {
                 params.extraProcessor = constrainedDecoding.processor
             }
@@ -4513,6 +4559,11 @@ public final class MLXModelService:
                     stopSequences: (stop ?? []) + self.implicitStopSequences,
                     thinkStartTag: outputReasoning.start,
                     thinkEndTag: outputReasoning.end,
+                    jsonStopFilter: structuredJSON && !((stop ?? []) + self.implicitStopSequences).isEmpty
+                        ? MLXJSONStopFilter(
+                            startTag: outputReasoning.start, endTag: outputReasoning.end,
+                            insideReasoning: templateOpenedThink,
+                            stopSequences: (stop ?? []) + self.implicitStopSequences) : nil,
                     requestId: reqId,
                     usesGLMMTP: schedulerOwnsGLMMTP,
                     usesQwenMTP: schedulerOwnsQwenMTP
@@ -4729,6 +4780,24 @@ public final class MLXModelService:
         let streamTracing = beginGPUTraceIfNeeded()
         let streamGpuProfile = gpuProfile
         if streamGpuProfile { printGPUProfileHeader() }
+        // Resolve grammar framing before returning stream metadata. Suppression
+        // depends on an actual matcher, not merely a requested response format;
+        // prompt-only JSON still needs its leading reasoning separated. Ordinary
+        // requests do not add a tokenizer/actor read.
+        let serialConstraint: ConstrainedDecodingSetup?
+        if responseFormat != nil || !(tools?.isEmpty ?? true) {
+            serialConstraint = await container.perform { context in
+                self.setupConstrainedDecodingProcessor(
+                    modelID: modelID, responseFormat: responseFormat,
+                    tokenizer: context.tokenizer, tools: tools)
+            }
+        } else {
+            serialConstraint = nil
+        }
+        let serialOutputReasoning = MLXOutputReasoningPolicy.tags(
+            responseFormat: responseFormat, isRawPrompt: rawPrompt != nil,
+            hasJSONGrammar: serialConstraint?.mode == "json_schema",
+            start: self.thinkStartTag, end: self.thinkEndTag)
         let stream = AsyncThrowingStream<StreamChunk, Error> { continuation in
             // /metrics: serial-streaming counters. Captured here (after the
             // batch-path branch has been ruled out) so we don't double-count
@@ -4749,12 +4818,8 @@ public final class MLXModelService:
                         // @Sendable closure free of captured-var mutation).
                         var params = baseParameters
                         // Grammar constraint setup — see non-streaming path for details.
-                        let constrainedDecoding = self.setupConstrainedDecodingProcessor(
-                            modelID: modelID,
-                            responseFormat: responseFormat,
-                            tokenizer: context.tokenizer,
-                            tools: tools
-                        )
+                        let constrainedDecoding = serialConstraint
+                        let outputReasoning = serialOutputReasoning
                         defer {
                             constrainedDecoding?.matcherHandle?.release()
                         }
@@ -4966,6 +5031,9 @@ public final class MLXModelService:
                         // and stop strings like "3." or "\n" commonly appear in reasoning.
                         var stopBuffer = MLXStreamingStopBuffer(stopSequences: activeStops)
                         var insideThink = templateInjectedThink
+                        var jsonStopFilter = structuredJSON && !activeStops.isEmpty
+                            ? MLXJSONStopFilter(startTag: thinkStart, endTag: thinkEnd,
+                                insideReasoning: templateInjectedThink, stopSequences: activeStops) : nil
                         let genStart = Date()
                         var firstTokenTime: Date?
                         var observedGenerationTokenCount = 0
@@ -5061,7 +5129,8 @@ public final class MLXModelService:
                             tokenizer: context.tokenizer,
                             iterator: generationIterator,
                             stopAfterToolCall: params.stopAfterToolCall,
-                            ignoreEndOfSequence: params.ignoreEndOfSequence
+                            ignoreEndOfSequence: params.ignoreEndOfSequence,
+                            tools: toolSpecs
                         )
                         var generationWasCancelled = false
                         do {
@@ -5100,6 +5169,18 @@ public final class MLXModelService:
                                         }
                                         return t
                                     }()
+
+                                    if let chunks = jsonStopFilter?.consume(text, logprobs: resolved) {
+                                        for chunk in chunks {
+                                            continuation.yield(chunk)
+                                        }
+                                        pendingLogprobs = nil
+                                        if jsonStopFilter?.stopped == true {
+                                            streamScratch.streamStatStoppedBySequence = true
+                                            break
+                                        }
+                                        continue
+                                    }
 
                                     // Track think boundaries for stop sequence scoping
                                     let wasInsideThink = insideThink
@@ -5212,6 +5293,9 @@ public final class MLXModelService:
                                 generateTime: fallbackGenerateTime,
                                 stoppedBySequence: streamScratch.streamStatStoppedBySequence ? true : nil
                             ))
+                        }
+                        if let tail = jsonStopFilter?.finish() {
+                            for chunk in tail { continuation.yield(chunk) }
                         }
                         // Flush any remaining buffered text (no stop match found)
                         let remainingStopBuffer = stopBuffer.finish()
@@ -5371,7 +5455,7 @@ public final class MLXModelService:
 
         streamOwnsTempFiles = true
         endOperationOnExit = false
-        return (modelID, stream, promptTokens, toolTags?.start, toolTags?.end, outputReasoning.start, outputReasoning.end)
+        return (modelID, stream, promptTokens, toolTags?.start, toolTags?.end, serialOutputReasoning.start, serialOutputReasoning.end)
     }
 
     public func shutdownAndReleaseResources(verbose: Bool = false, timeoutSeconds: TimeInterval = 30) async {
@@ -6148,6 +6232,15 @@ public final class MLXModelService:
             var funcDict: [String: any Sendable] = ["name": t.function.name]
             if let params = t.function.parameters { funcDict["parameters"] = params.toSendable() }
             return ["type": t.type, "function": funcDict] as [String: any Sendable]
+        }
+        if let start = text.range(of: "<tool_call>"),
+           GLM4ToolCallParser.isNativeBody(String(text[start.upperBound...])) {
+            // The generic non-greedy regex cannot distinguish a literal closing
+            // tool tag inside a GLM arg_value from the envelope boundary.
+            let processor = ToolCallProcessor(format: .glm4, tools: toolSpecs)
+            let visible = (processor.processChunk(text) ?? "")
+                + (processor.finishPendingText() ?? "")
+            return (processor.toolCalls, visible.trimmingCharacters(in: .whitespacesAndNewlines))
         }
         let gemma4Matches = Self.gemma4WrappedToolCallRegex.matches(in: text, range: NSRange(text.startIndex..., in: text))
         for match in gemma4Matches.reversed() {

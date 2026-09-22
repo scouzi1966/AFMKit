@@ -186,7 +186,9 @@ public class ToolCallProcessor {
 
     private func finishTaggedCallIfComplete() -> String? {
         guard let endTag = activeEndTag,
-            let endRange = toolCallBuffer.range(of: endTag)
+            let endRange = parser is GLM4ToolCallParser
+                ? GLM4ToolCallParser.closingTagRange(in: toolCallBuffer)
+                : toolCallBuffer.range(of: endTag)
         else { return nil }
 
         let captured = String(toolCallBuffer[..<endRange.upperBound])
