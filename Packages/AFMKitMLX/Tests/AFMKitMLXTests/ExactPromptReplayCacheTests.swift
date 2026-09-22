@@ -196,6 +196,16 @@ final class ExactPromptReplayCacheTests: XCTestCase {
         }
     }
 
+    func testQwenARReplayBackoffDefaultsToNearEndSnapshotAndAllowsOverride() {
+        for value: String? in [nil, "", "invalid", "99999999999999999999999999999"] {
+            XCTAssertEqual(BatchScheduler.qwenARReplayBackoffTokenCount(value), 31)
+        }
+        for (value, expected) in [("-1", 0), ("0", 0), ("1", 1), ("31", 31),
+                                  ("256", 256), ("257", 256), (String(Int.max), 256)] {
+            XCTAssertEqual(BatchScheduler.qwenARReplayBackoffTokenCount(value), expected)
+        }
+    }
+
     func testEarlierBoundaryOnMissPolicyDoesNotExpandOrInventState() {
         for hit in [false, true] {
             XCTAssertEqual(BatchScheduler.qwenMTPReplayCaptureBackoff(31,

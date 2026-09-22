@@ -434,7 +434,8 @@ var targets: [Target] = [
         name: "AFMKitMLXTests",
         dependencies: [
             "AFMKitMLX", "AFMKitCore", "AFMKitServices", "AFMOpenAICompat",
-            "MLXLMCommon", "MLXLLM", "MLXVLM", "MLX", "MLXNN"
+            "MLXLMCommon", "MLXLLM", "MLXVLM", "MLX", "MLXNN",
+            .product(name: "Jinja", package: "swift-jinja")
         ],
         path: "Packages/AFMKitMLX/Tests/AFMKitMLXTests"
     ),

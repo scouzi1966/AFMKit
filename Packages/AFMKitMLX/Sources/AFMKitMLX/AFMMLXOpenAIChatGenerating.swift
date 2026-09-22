@@ -108,6 +108,9 @@ public protocol AFMMLXOpenAIChatServing:
 
     /// Resolve effective response format: per-request format wins, falls back to server default.
     func effectiveResponseFormat(requestFormat: ResponseFormat?) -> ResponseFormat?
+    /// Request-only preflight, before admission or response streaming. Defaults
+    /// and CLI best-effort settings are not explicit API requests.
+    func reasoningRequestValidationError(chatTemplateKwargs: [String: AnyCodable]?) -> String?
 }
 
 /// Optional capability for MLX chat runtimes that validate and resolve media
@@ -131,6 +134,8 @@ public extension AFMMLXOpenAIChatServing {
     var defaultGuidedJsonSchema: ResponseFormat? { nil }
 
     func resetRequestPeakMemory() {}
+
+    func reasoningRequestValidationError(chatTemplateKwargs: [String: AnyCodable]?) -> String? { nil }
 
     func currentRequestPeakMemoryGib() -> Double? { nil }
 

@@ -50,6 +50,9 @@ public final class ToolCallStreamingRuntime {
     private var collectedCount = 0
     private var pendingStartProbe = ""
     private var finalizedCurrentToolCall = false
+    private var unfinishedNativeText = ""
+    private var envelopeScanner = ToolCallEnvelopeScanner()
+    private var isIncrementalXMLBody: Bool?
 
     public init(
         toolCallStartTag: String,
@@ -161,6 +164,25 @@ public final class ToolCallStreamingRuntime {
 
         defer { resetState() }
 
+        if toolCallParser == "afm_adaptive_xml",
+           MLXModelService.hasRepairableQwenOpener(currentToolText[...]) {
+            // Parse the actual held stream, without inventing an end tag. Both
+            // visible suffixes and failed repairs must reach the consumer.
+            let (calls, remaining) = Self.parseCompletedToolCalls(
+                from: toolCallStartTag + currentToolText, toolCallParser: toolCallParser, tools: tools)
+            unfinishedNativeText = remaining
+            return emitParsedToolCalls(calls)
+        }
+
+        if toolCallParser == "glm4"
+            || (toolCallParser == nil && GLM4ToolCallParser.isNativeBody(currentToolText)) {
+            // An unfinished native envelope is not a completed invocation. In
+            // particular, a literal tool end inside an unfinished arg_value
+            // must not cause a fabricated empty/partial argument dictionary.
+            unfinishedNativeText = toolCallStartTag + currentToolText
+            return []
+        }
+
         if incrementalEmittedFirst {
             var events = [ToolCallStreamingEvent]()
             if let salvaged = salvageUnclosedParameterFragment() {
@@ -192,15 +214,42 @@ public final class ToolCallStreamingRuntime {
         return emitParsedToolCalls(from: currentToolText)
     }
 
+    func finishPendingText() -> String {
+        defer { unfinishedNativeText = ""; pendingStartProbe = "" }
+        return unfinishedNativeText + pendingStartProbe
+    }
+
     private func consumeToolBodyFragment(_ fragment: String, prependStarted: Bool) -> ToolCallStreamingOutput {
         var events = prependStarted ? [ToolCallStreamingEvent.started] : []
         currentToolText += fragment
 
-        if let endRange = currentToolText.range(of: toolCallEndTag) {
+        if toolCallParser == "afm_adaptive_xml",
+           MLXModelService.hasRepairableQwenOpener(currentToolText[...]) {
+            // Broken quote grammar cannot be framed as JSON. Retain it until
+            // EOF and let the explicit compatibility parser validate each
+            // repaired envelope, including any following well-formed calls.
+            return ToolCallStreamingOutput(handled: true, events: events)
+        }
+
+        let endRange: Range<String.Index>?
+        if toolCallParser == "glm4"
+            || (toolCallParser == nil && GLM4ToolCallParser.isNativeBody(currentToolText)) {
+            endRange = GLM4ToolCallParser.closingTagRange(in: currentToolText)
+        } else if toolCallStartTag == "<tool_call>" || toolCallStartTag == "<|tool_call_start|>" {
+            endRange = envelopeScanner.closingTagRange(in: currentToolText, endTag: toolCallEndTag)
+        } else {
+            // DSML/ATEM raw strings do not follow JSON quote rules. Keep their
+            // own existing framing, not the JSON/Qwen lexical scanner.
+            endRange = currentToolText.range(of: toolCallEndTag)
+        }
+        if let endRange {
             let beforeEnd = String(currentToolText[..<endRange.lowerBound])
             let afterEnd = String(currentToolText[endRange.upperBound...])
             currentToolText = beforeEnd
             finalizedCurrentToolCall = true
+            // A chunk may close more parameters as well as the envelope. Emit
+            // those final deltas before closing the already-started JSON stream.
+            if incrementalEmittedFirst { events += scanIncrementalMarkers() }
             events.append(contentsOf: finalizeCurrentToolCall())
 
             guard !afterEnd.isEmpty else {
@@ -274,7 +323,10 @@ public final class ToolCallStreamingRuntime {
     }
 
     private func emitParsedToolCalls(from body: String) -> [ToolCallStreamingEvent] {
-        let parsed = parseToolCalls(from: body)
+        emitParsedToolCalls(parseToolCalls(from: body))
+    }
+
+    private func emitParsedToolCalls(_ parsed: [ToolCall]) -> [ToolCallStreamingEvent] {
         var events = [ToolCallStreamingEvent]()
         for tc in parsed {
             hasToolCalls = true
@@ -328,6 +380,16 @@ public final class ToolCallStreamingRuntime {
 
     private func scanIncrementalMarkers() -> [ToolCallStreamingEvent] {
         var events = [ToolCallStreamingEvent]()
+
+        // XML-looking argument strings in a JSON call are data, not a second
+        // invocation. Incremental XML mode requires an actual XML body.
+        if isIncrementalXMLBody == nil {
+            let body = currentToolText.drop(while: { $0.isWhitespace })
+            if body.hasPrefix("<function=") { isIncrementalXMLBody = true }
+            else if "<function=".hasPrefix(body) { return events }
+            else { isIncrementalXMLBody = false }
+        }
+        guard isIncrementalXMLBody == true else { return events }
 
         if !incrementalEmittedFirst,
            let funcRange = currentToolText.range(of: #"<function=([^>]+)>"#, options: .regularExpression) {
@@ -510,6 +572,12 @@ public final class ToolCallStreamingRuntime {
 
         let key = String(fragment[keyRange])
         var value = String(fragment[valueRange])
+        if toolCallParser == "afm_adaptive_xml" {
+            // Explicit EOF compatibility repair: incomplete native data stays
+            // literal, while this mode retains its legacy closing-tag salvage.
+            if value.hasSuffix(toolCallEndTag) { value.removeLast(toolCallEndTag.count) }
+            if value.hasSuffix("</function>") { value.removeLast("</function>".count) }
+        }
         if value.hasPrefix("\n") { value = String(value.dropFirst()) }
         if value.hasSuffix("\n") { value = String(value.dropLast()) }
         guard !value.isEmpty else { return nil }
@@ -527,6 +595,8 @@ public final class ToolCallStreamingRuntime {
         incrementalArgumentPrefix = ""
         incrementalEmittedKeys = Set<String>()
         finalizedCurrentToolCall = false
+        envelopeScanner = ToolCallEnvelopeScanner()
+        isIncrementalXMLBody = nil
     }
 
     private var needsIncrementalArgumentClose: Bool {
@@ -695,35 +765,20 @@ public final class ToolCallStreamingRuntime {
     private static func parseQwen3NativeXMLToolCalls(
         from text: String
     ) -> ([ToolCall], String) {
-        guard let envelopeRegex = try? NSRegularExpression(
-            pattern: #"<tool_call>\s*(.*?)\s*</tool_call>"#,
-            options: [.dotMatchesLineSeparators]
-        ),
-        let functionRegex = try? NSRegularExpression(
-            pattern: #"<function=([^>]+)>[\s\S]*?</function>"#,
-            options: [.dotMatchesLineSeparators]
-        ) else { return ([], text) }
-
-        let source = text as NSString
-        let envelopes = envelopeRegex.matches(
-            in: text,
-            range: NSRange(location: 0, length: source.length)
-        )
+        let envelopes = ToolCallEnvelopeScanner.envelopes(in: text)
         guard !envelopes.isEmpty else { return ([], text) }
 
         var calls: [ToolCall] = []
-        var consumedEnvelopes: [NSTextCheckingResult] = []
+        var consumedEnvelopes: [Range<String.Index>] = []
         for envelope in envelopes {
-            guard let bodyRange = Range(envelope.range(at: 1), in: text) else { continue }
-            let body = String(text[bodyRange])
-            let bodySource = body as NSString
-            let functions = functionRegex.matches(
-                in: body,
-                range: NSRange(location: 0, length: bodySource.length)
-            )
+            let body = String(text[envelope.bodyRange])
+            guard body.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("<function=")
+            else { continue }
+            let functions = ToolCallEnvelopeScanner.envelopes(
+                in: body, startTag: "<function=", endTag: "</function>", syntax: .xmlFunction)
             var parsedEnvelope = false
             for function in functions {
-                let functionText = bodySource.substring(with: function.range)
+                let functionText = String(body[function.range])
                 if let call = MLXModelService.parseXMLFunction(
                     functionText,
                     repairArguments: false
@@ -732,13 +787,13 @@ public final class ToolCallStreamingRuntime {
                     parsedEnvelope = true
                 }
             }
-            if parsedEnvelope { consumedEnvelopes.append(envelope) }
+            if parsedEnvelope { consumedEnvelopes.append(envelope.range) }
         }
         guard !calls.isEmpty else { return ([], text) }
 
-        let remaining = NSMutableString(string: text)
+        var remaining = text
         for envelope in consumedEnvelopes.reversed() {
-            remaining.replaceCharacters(in: envelope.range, with: "")
+            remaining.removeSubrange(envelope)
         }
         return (calls, remaining.trimmingCharacters(in: .whitespacesAndNewlines))
     }
@@ -833,15 +888,9 @@ public final class ToolCallStreamingRuntime {
         tools: [RequestTool]?
     ) -> ([ToolCall], String)? {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let regex = try? NSRegularExpression(
-            pattern: #"<tool_call>\s*(.*?)\s*</tool_call>"#,
-            options: [.dotMatchesLineSeparators]
-        ),
-        let match = regex.firstMatch(in: trimmed, range: NSRange(trimmed.startIndex..., in: trimmed)),
-        match.range.location == 0,
-        match.range.length == (trimmed as NSString).length,
-        let innerRange = Range(match.range(at: 1), in: trimmed),
-        let toolCall = parseAdaptiveJSONToolCallBody(String(trimmed[innerRange]), tools: tools) else {
+        guard let envelope = ToolCallEnvelopeScanner.envelopes(in: trimmed).first,
+        envelope.range == trimmed.startIndex..<trimmed.endIndex,
+        let toolCall = parseAdaptiveJSONToolCallBody(String(trimmed[envelope.bodyRange]), tools: tools) else {
             return nil
         }
         return ([toolCall], "")

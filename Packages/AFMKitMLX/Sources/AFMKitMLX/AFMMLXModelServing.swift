@@ -93,6 +93,10 @@ public extension AFMMLXModel {
         concreteService.effectiveResponseFormat(requestFormat: requestFormat)
     }
 
+    func reasoningRequestValidationError(chatTemplateKwargs: [String: AnyCodable]?) -> String? {
+        concreteService.reasoningRequestValidationError(chatTemplateKwargs: chatTemplateKwargs)
+    }
+
     func generate(
         model: String,
         messages: [Message],

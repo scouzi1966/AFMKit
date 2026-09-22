@@ -384,6 +384,15 @@
     },
     {
       "kind": "memberOf",
+      "source": "s:9AFMKitMLX11AFMMLXModelC31reasoningRequestValidationError18chatTemplateKwargsSSSgSDySS15AFMOpenAICompat10AnyCodableVGSg_tF",
+      "sourceOrigin": {
+        "displayName": "AFMMLXOpenAIChatServing.reasoningRequestValidationError(chatTemplateKwargs:)",
+        "identifier": "s:9AFMKitMLX23AFMMLXOpenAIChatServingP31reasoningRequestValidationError18chatTemplateKwargsSSSgSDySS15AFMOpenAICompat10AnyCodableVGSg_tF"
+      },
+      "target": "s:9AFMKitMLX11AFMMLXModelC"
+    },
+    {
+      "kind": "memberOf",
       "source": "s:9AFMKitMLX11AFMMLXModelC32validateMediaRequestCapabilities5model8messagesySS_Say15AFMOpenAICompat7MessageVGtKF",
       "sourceOrigin": {
         "displayName": "AFMMLXMediaRequestServing.validateMediaRequestCapabilities(model:messages:)",
@@ -1236,6 +1245,15 @@
     {
       "kind": "memberOf",
       "source": "s:9AFMKitMLX15MLXModelServiceC30remapResponseToolCallArguments_5tools15AFMOpenAICompat0fgH0VAH_SayAF07RequestG0VGSgtFZ",
+      "target": "s:9AFMKitMLX15MLXModelServiceC"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX15MLXModelServiceC31reasoningRequestValidationError18chatTemplateKwargsSSSgSDySS15AFMOpenAICompat10AnyCodableVGSg_tF",
+      "sourceOrigin": {
+        "displayName": "AFMMLXOpenAIChatServing.reasoningRequestValidationError(chatTemplateKwargs:)",
+        "identifier": "s:9AFMKitMLX23AFMMLXOpenAIChatServingP31reasoningRequestValidationError18chatTemplateKwargsSSSgSDySS15AFMOpenAICompat10AnyCodableVGSg_tF"
+      },
       "target": "s:9AFMKitMLX15MLXModelServiceC"
     },
     {
@@ -4321,6 +4339,11 @@
       "target": "s:9AFMKitMLX23AFMMLXOpenAIChatServingP"
     },
     {
+      "kind": "requirementOf",
+      "source": "s:9AFMKitMLX23AFMMLXOpenAIChatServingP31reasoningRequestValidationError18chatTemplateKwargsSSSgSDySS15AFMOpenAICompat10AnyCodableVGSg_tF",
+      "target": "s:9AFMKitMLX23AFMMLXOpenAIChatServingP"
+    },
+    {
       "kind": "defaultImplementationOf",
       "source": "s:9AFMKitMLX23AFMMLXOpenAIChatServingPAAE22resetRequestPeakMemoryyyF",
       "sourceOrigin": {
@@ -4347,6 +4370,15 @@
       "kind": "defaultImplementationOf",
       "source": "s:9AFMKitMLX23AFMMLXOpenAIChatServingPAAE27currentRequestPeakMemoryGibSdSgyF",
       "target": "s:9AFMKitMLX23AFMMLXOpenAIChatServingP27currentRequestPeakMemoryGibSdSgyF"
+    },
+    {
+      "kind": "defaultImplementationOf",
+      "source": "s:9AFMKitMLX23AFMMLXOpenAIChatServingPAAE31reasoningRequestValidationError18chatTemplateKwargsSSSgSDySS15AFMOpenAICompat10AnyCodableVGSg_tF",
+      "sourceOrigin": {
+        "displayName": "AFMMLXOpenAIChatServing.reasoningRequestValidationError(chatTemplateKwargs:)",
+        "identifier": "s:9AFMKitMLX23AFMMLXOpenAIChatServingP31reasoningRequestValidationError18chatTemplateKwargsSSSgSDySS15AFMOpenAICompat10AnyCodableVGSg_tF"
+      },
+      "target": "s:9AFMKitMLX23AFMMLXOpenAIChatServingP31reasoningRequestValidationError18chatTemplateKwargsSSSgSDySS15AFMOpenAICompat10AnyCodableVGSg_tF"
     },
     {
       "kind": "memberOf",
@@ -5083,6 +5115,11 @@
       "kind": "memberOf",
       "source": "s:9AFMKitMLX24AFMMLXToolModelListEntryV8isVisionSbSgvp",
       "target": "s:9AFMKitMLX24AFMMLXToolModelListEntryV"
+    },
+    {
+      "kind": "memberOf",
+      "source": "s:9AFMKitMLX24MLXStreamEventTranslatorV13thinkStartTag0f3EndH021maximumResponseTokens5tools24preserveReasoningMarkersACSSSg_AISiSgSay15AFMOpenAICompat11RequestToolVGSgSbtcfc",
+      "target": "s:9AFMKitMLX24MLXStreamEventTranslatorV"
     },
     {
       "kind": "memberOf",
@@ -15100,6 +15137,180 @@
             "name": "Result"
           }
         ]
+      }
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "func"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "reasoningRequestValidationError"
+        },
+        {
+          "kind": "text",
+          "spelling": "("
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "chatTemplateKwargs"
+        },
+        {
+          "kind": "text",
+          "spelling": ": ["
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:SS",
+          "spelling": "String"
+        },
+        {
+          "kind": "text",
+          "spelling": " : "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:15AFMOpenAICompat10AnyCodableV",
+          "spelling": "AnyCodable"
+        },
+        {
+          "kind": "text",
+          "spelling": "]?) -> "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:SS",
+          "spelling": "String"
+        },
+        {
+          "kind": "text",
+          "spelling": "?"
+        }
+      ],
+      "functionSignature": {
+        "parameters": [
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "chatTemplateKwargs"
+              },
+              {
+                "kind": "text",
+                "spelling": ": ["
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:SS",
+                "spelling": "String"
+              },
+              {
+                "kind": "text",
+                "spelling": " : "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:15AFMOpenAICompat10AnyCodableV",
+                "spelling": "AnyCodable"
+              },
+              {
+                "kind": "text",
+                "spelling": "]?"
+              }
+            ],
+            "name": "chatTemplateKwargs"
+          }
+        ],
+        "returns": [
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:SS",
+            "spelling": "String"
+          },
+          {
+            "kind": "text",
+            "spelling": "?"
+          }
+        ]
+      },
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX11AFMMLXModelC31reasoningRequestValidationError18chatTemplateKwargsSSSgSDySS15AFMOpenAICompat10AnyCodableVGSg_tF"
+      },
+      "kind": {
+        "displayName": "Instance Method",
+        "identifier": "swift.method"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "func"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "reasoningRequestValidationError"
+          },
+          {
+            "kind": "text",
+            "spelling": "("
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "chatTemplateKwargs"
+          },
+          {
+            "kind": "text",
+            "spelling": ": ["
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:SS",
+            "spelling": "String"
+          },
+          {
+            "kind": "text",
+            "spelling": " : "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:15AFMOpenAICompat10AnyCodableV",
+            "spelling": "AnyCodable"
+          },
+          {
+            "kind": "text",
+            "spelling": "]?) -> "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:SS",
+            "spelling": "String"
+          },
+          {
+            "kind": "text",
+            "spelling": "?"
+          }
+        ],
+        "title": "reasoningRequestValidationError(chatTemplateKwargs:)"
+      },
+      "pathComponents": [
+        "AFMMLXModel",
+        "reasoningRequestValidationError(chatTemplateKwargs:)"
+      ],
+      "swiftExtension": {
+        "extendedModule": "AFMKitMLX",
+        "typeKind": "swift.class"
       }
     },
     {
@@ -32311,6 +32522,176 @@
       "pathComponents": [
         "MLXModelService",
         "remapResponseToolCallArguments(_:tools:)"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "func"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "reasoningRequestValidationError"
+        },
+        {
+          "kind": "text",
+          "spelling": "("
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "chatTemplateKwargs"
+        },
+        {
+          "kind": "text",
+          "spelling": ": ["
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:SS",
+          "spelling": "String"
+        },
+        {
+          "kind": "text",
+          "spelling": " : "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:15AFMOpenAICompat10AnyCodableV",
+          "spelling": "AnyCodable"
+        },
+        {
+          "kind": "text",
+          "spelling": "]?) -> "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:SS",
+          "spelling": "String"
+        },
+        {
+          "kind": "text",
+          "spelling": "?"
+        }
+      ],
+      "functionSignature": {
+        "parameters": [
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "chatTemplateKwargs"
+              },
+              {
+                "kind": "text",
+                "spelling": ": ["
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:SS",
+                "spelling": "String"
+              },
+              {
+                "kind": "text",
+                "spelling": " : "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:15AFMOpenAICompat10AnyCodableV",
+                "spelling": "AnyCodable"
+              },
+              {
+                "kind": "text",
+                "spelling": "]?"
+              }
+            ],
+            "name": "chatTemplateKwargs"
+          }
+        ],
+        "returns": [
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:SS",
+            "spelling": "String"
+          },
+          {
+            "kind": "text",
+            "spelling": "?"
+          }
+        ]
+      },
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX15MLXModelServiceC31reasoningRequestValidationError18chatTemplateKwargsSSSgSDySS15AFMOpenAICompat10AnyCodableVGSg_tF"
+      },
+      "kind": {
+        "displayName": "Instance Method",
+        "identifier": "swift.method"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "func"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "reasoningRequestValidationError"
+          },
+          {
+            "kind": "text",
+            "spelling": "("
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "chatTemplateKwargs"
+          },
+          {
+            "kind": "text",
+            "spelling": ": ["
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:SS",
+            "spelling": "String"
+          },
+          {
+            "kind": "text",
+            "spelling": " : "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:15AFMOpenAICompat10AnyCodableV",
+            "spelling": "AnyCodable"
+          },
+          {
+            "kind": "text",
+            "spelling": "]?) -> "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:SS",
+            "spelling": "String"
+          },
+          {
+            "kind": "text",
+            "spelling": "?"
+          }
+        ],
+        "title": "reasoningRequestValidationError(chatTemplateKwargs:)"
+      },
+      "pathComponents": [
+        "MLXModelService",
+        "reasoningRequestValidationError(chatTemplateKwargs:)"
       ]
     },
     {
@@ -88180,6 +88561,187 @@
         },
         {
           "kind": "identifier",
+          "spelling": "reasoningRequestValidationError"
+        },
+        {
+          "kind": "text",
+          "spelling": "("
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "chatTemplateKwargs"
+        },
+        {
+          "kind": "text",
+          "spelling": ": ["
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:SS",
+          "spelling": "String"
+        },
+        {
+          "kind": "text",
+          "spelling": " : "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:15AFMOpenAICompat10AnyCodableV",
+          "spelling": "AnyCodable"
+        },
+        {
+          "kind": "text",
+          "spelling": "]?) -> "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:SS",
+          "spelling": "String"
+        },
+        {
+          "kind": "text",
+          "spelling": "?"
+        }
+      ],
+      "docComment": {
+        "lines": [
+          {
+            "text": "Request-only preflight, before admission or response streaming. Defaults"
+          },
+          {
+            "text": "and CLI best-effort settings are not explicit API requests."
+          }
+        ],
+        "module": "AFMKitMLX"
+      },
+      "functionSignature": {
+        "parameters": [
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "chatTemplateKwargs"
+              },
+              {
+                "kind": "text",
+                "spelling": ": ["
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:SS",
+                "spelling": "String"
+              },
+              {
+                "kind": "text",
+                "spelling": " : "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:15AFMOpenAICompat10AnyCodableV",
+                "spelling": "AnyCodable"
+              },
+              {
+                "kind": "text",
+                "spelling": "]?"
+              }
+            ],
+            "name": "chatTemplateKwargs"
+          }
+        ],
+        "returns": [
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:SS",
+            "spelling": "String"
+          },
+          {
+            "kind": "text",
+            "spelling": "?"
+          }
+        ]
+      },
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX23AFMMLXOpenAIChatServingP31reasoningRequestValidationError18chatTemplateKwargsSSSgSDySS15AFMOpenAICompat10AnyCodableVGSg_tF"
+      },
+      "kind": {
+        "displayName": "Instance Method",
+        "identifier": "swift.method"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "func"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "reasoningRequestValidationError"
+          },
+          {
+            "kind": "text",
+            "spelling": "("
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "chatTemplateKwargs"
+          },
+          {
+            "kind": "text",
+            "spelling": ": ["
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:SS",
+            "spelling": "String"
+          },
+          {
+            "kind": "text",
+            "spelling": " : "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:15AFMOpenAICompat10AnyCodableV",
+            "spelling": "AnyCodable"
+          },
+          {
+            "kind": "text",
+            "spelling": "]?) -> "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:SS",
+            "spelling": "String"
+          },
+          {
+            "kind": "text",
+            "spelling": "?"
+          }
+        ],
+        "title": "reasoningRequestValidationError(chatTemplateKwargs:)"
+      },
+      "pathComponents": [
+        "AFMMLXOpenAIChatServing",
+        "reasoningRequestValidationError(chatTemplateKwargs:)"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "func"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
           "spelling": "resetRequestPeakMemory"
         },
         {
@@ -88547,6 +89109,180 @@
       "pathComponents": [
         "AFMMLXOpenAIChatServing",
         "currentRequestPeakMemoryGib()"
+      ],
+      "swiftExtension": {
+        "extendedModule": "AFMKitMLX",
+        "typeKind": "swift.protocol"
+      }
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "func"
+        },
+        {
+          "kind": "text",
+          "spelling": " "
+        },
+        {
+          "kind": "identifier",
+          "spelling": "reasoningRequestValidationError"
+        },
+        {
+          "kind": "text",
+          "spelling": "("
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "chatTemplateKwargs"
+        },
+        {
+          "kind": "text",
+          "spelling": ": ["
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:SS",
+          "spelling": "String"
+        },
+        {
+          "kind": "text",
+          "spelling": " : "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:15AFMOpenAICompat10AnyCodableV",
+          "spelling": "AnyCodable"
+        },
+        {
+          "kind": "text",
+          "spelling": "]?) -> "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:SS",
+          "spelling": "String"
+        },
+        {
+          "kind": "text",
+          "spelling": "?"
+        }
+      ],
+      "functionSignature": {
+        "parameters": [
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "chatTemplateKwargs"
+              },
+              {
+                "kind": "text",
+                "spelling": ": ["
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:SS",
+                "spelling": "String"
+              },
+              {
+                "kind": "text",
+                "spelling": " : "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:15AFMOpenAICompat10AnyCodableV",
+                "spelling": "AnyCodable"
+              },
+              {
+                "kind": "text",
+                "spelling": "]?"
+              }
+            ],
+            "name": "chatTemplateKwargs"
+          }
+        ],
+        "returns": [
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:SS",
+            "spelling": "String"
+          },
+          {
+            "kind": "text",
+            "spelling": "?"
+          }
+        ]
+      },
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX23AFMMLXOpenAIChatServingPAAE31reasoningRequestValidationError18chatTemplateKwargsSSSgSDySS15AFMOpenAICompat10AnyCodableVGSg_tF"
+      },
+      "kind": {
+        "displayName": "Instance Method",
+        "identifier": "swift.method"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "func"
+          },
+          {
+            "kind": "text",
+            "spelling": " "
+          },
+          {
+            "kind": "identifier",
+            "spelling": "reasoningRequestValidationError"
+          },
+          {
+            "kind": "text",
+            "spelling": "("
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "chatTemplateKwargs"
+          },
+          {
+            "kind": "text",
+            "spelling": ": ["
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:SS",
+            "spelling": "String"
+          },
+          {
+            "kind": "text",
+            "spelling": " : "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:15AFMOpenAICompat10AnyCodableV",
+            "spelling": "AnyCodable"
+          },
+          {
+            "kind": "text",
+            "spelling": "]?) -> "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:SS",
+            "spelling": "String"
+          },
+          {
+            "kind": "text",
+            "spelling": "?"
+          }
+        ],
+        "title": "reasoningRequestValidationError(chatTemplateKwargs:)"
+      },
+      "pathComponents": [
+        "AFMMLXOpenAIChatServing",
+        "reasoningRequestValidationError(chatTemplateKwargs:)"
       ],
       "swiftExtension": {
         "extendedModule": "AFMKitMLX",
@@ -100447,6 +101183,324 @@
       },
       "pathComponents": [
         "MLXStreamEventTranslator"
+      ]
+    },
+    {
+      "accessLevel": "public",
+      "declarationFragments": [
+        {
+          "kind": "keyword",
+          "spelling": "init"
+        },
+        {
+          "kind": "text",
+          "spelling": "("
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "thinkStartTag"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:SS",
+          "spelling": "String"
+        },
+        {
+          "kind": "text",
+          "spelling": "?, "
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "thinkEndTag"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:SS",
+          "spelling": "String"
+        },
+        {
+          "kind": "text",
+          "spelling": "?, "
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "maximumResponseTokens"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Si",
+          "spelling": "Int"
+        },
+        {
+          "kind": "text",
+          "spelling": "?, "
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "tools"
+        },
+        {
+          "kind": "text",
+          "spelling": ": ["
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:15AFMOpenAICompat11RequestToolV",
+          "spelling": "RequestTool"
+        },
+        {
+          "kind": "text",
+          "spelling": "]? = nil, "
+        },
+        {
+          "kind": "externalParam",
+          "spelling": "preserveReasoningMarkers"
+        },
+        {
+          "kind": "text",
+          "spelling": ": "
+        },
+        {
+          "kind": "typeIdentifier",
+          "preciseIdentifier": "s:Sb",
+          "spelling": "Bool"
+        },
+        {
+          "kind": "text",
+          "spelling": ")"
+        }
+      ],
+      "functionSignature": {
+        "parameters": [
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "thinkStartTag"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:SS",
+                "spelling": "String"
+              },
+              {
+                "kind": "text",
+                "spelling": "?"
+              }
+            ],
+            "name": "thinkStartTag"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "thinkEndTag"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:SS",
+                "spelling": "String"
+              },
+              {
+                "kind": "text",
+                "spelling": "?"
+              }
+            ],
+            "name": "thinkEndTag"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "maximumResponseTokens"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:Si",
+                "spelling": "Int"
+              },
+              {
+                "kind": "text",
+                "spelling": "?"
+              }
+            ],
+            "name": "maximumResponseTokens"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "tools"
+              },
+              {
+                "kind": "text",
+                "spelling": ": ["
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:15AFMOpenAICompat11RequestToolV",
+                "spelling": "RequestTool"
+              },
+              {
+                "kind": "text",
+                "spelling": "]?"
+              }
+            ],
+            "name": "tools"
+          },
+          {
+            "declarationFragments": [
+              {
+                "kind": "identifier",
+                "spelling": "preserveReasoningMarkers"
+              },
+              {
+                "kind": "text",
+                "spelling": ": "
+              },
+              {
+                "kind": "typeIdentifier",
+                "preciseIdentifier": "s:Sb",
+                "spelling": "Bool"
+              }
+            ],
+            "name": "preserveReasoningMarkers"
+          }
+        ]
+      },
+      "identifier": {
+        "interfaceLanguage": "swift",
+        "precise": "s:9AFMKitMLX24MLXStreamEventTranslatorV13thinkStartTag0f3EndH021maximumResponseTokens5tools24preserveReasoningMarkersACSSSg_AISiSgSay15AFMOpenAICompat11RequestToolVGSgSbtcfc"
+      },
+      "kind": {
+        "displayName": "Initializer",
+        "identifier": "swift.init"
+      },
+      "names": {
+        "subHeading": [
+          {
+            "kind": "keyword",
+            "spelling": "init"
+          },
+          {
+            "kind": "text",
+            "spelling": "("
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "thinkStartTag"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:SS",
+            "spelling": "String"
+          },
+          {
+            "kind": "text",
+            "spelling": "?, "
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "thinkEndTag"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:SS",
+            "spelling": "String"
+          },
+          {
+            "kind": "text",
+            "spelling": "?, "
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "maximumResponseTokens"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Si",
+            "spelling": "Int"
+          },
+          {
+            "kind": "text",
+            "spelling": "?, "
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "tools"
+          },
+          {
+            "kind": "text",
+            "spelling": ": ["
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:15AFMOpenAICompat11RequestToolV",
+            "spelling": "RequestTool"
+          },
+          {
+            "kind": "text",
+            "spelling": "]?, "
+          },
+          {
+            "kind": "externalParam",
+            "spelling": "preserveReasoningMarkers"
+          },
+          {
+            "kind": "text",
+            "spelling": ": "
+          },
+          {
+            "kind": "typeIdentifier",
+            "preciseIdentifier": "s:Sb",
+            "spelling": "Bool"
+          },
+          {
+            "kind": "text",
+            "spelling": ")"
+          }
+        ],
+        "title": "init(thinkStartTag:thinkEndTag:maximumResponseTokens:tools:preserveReasoningMarkers:)"
+      },
+      "pathComponents": [
+        "MLXStreamEventTranslator",
+        "init(thinkStartTag:thinkEndTag:maximumResponseTokens:tools:preserveReasoningMarkers:)"
       ]
     },
     {

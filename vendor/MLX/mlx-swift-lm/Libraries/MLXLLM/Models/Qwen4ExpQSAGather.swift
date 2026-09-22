@@ -35,9 +35,16 @@ import MLXFast
 /// lower index deterministically. Bounds and block count remain runtime data;
 /// growing context never creates a new Metal specialization.
 enum Qwen4ExpQSAVerifyRadixSelection {
-    static let enabled = ProcessInfo.processInfo.environment[
-        "AFM_QWEN_VERIFY_QSA_RADIX"
-    ] == "1"
+    private static let narrowRowUpperBound = 63
+    private static let mediumRowUpperBound = 255
+    private static let narrowThreadGroupWidth = 1_024
+    private static let mediumThreadGroupWidth = 512
+    private static let wideThreadGroupWidth = 256
+
+    // Qualified against the stable arg-partition oracle from 17 through
+    // 1,061 blocks and across the complete 8K-64K production context curve.
+    // This path is deterministic and is part of the default Qwen Next runtime.
+    static let enabled = true
 
     private static let kernel = MLXFast.metalKernel(
         name: "qwen4_exp_qsa_verify_radix_select",
@@ -66,7 +73,9 @@ enum Qwen4ExpQSAVerifyRadixSelection {
             const uint nb = (uint)scores_shape[2];
             const int  vbi = bounds[row];
             const uint vb  = (vbi > 0) ? (uint)vbi : 0u;
-            const device float* sc = scores + (ulong)row * (ulong)nb;
+            // MLX binds inputs smaller than eight elements as constant, not
+            // device memory. Infer that address space; selection is unchanged.
+            const auto* sc = scores + (ulong)row * (ulong)nb;
             device int* outp = ids + (ulong)row * (ulong)KTOP;
 
             if (vb <= KTOP) {
@@ -222,18 +231,29 @@ enum Qwen4ExpQSAVerifyRadixSelection {
         guard enabled || forceEnabledForTesting,
               Device.defaultDevice().deviceType == .gpu,
               scores.ndim == 3, scores.dtype == .float32,
-              scores.dim(0) == 1, scores.dim(1) > 1,
-              scores.dim(1) <= 8, scores.dim(2) > 0,
+              scores.dim(0) == 1, scores.dim(1) > 0,
+              scores.dim(2) > 0,
               visibleBlockCounts.count == scores.dim(1),
               visibleBlockCounts.allSatisfy({ $0 >= 0 && $0 <= scores.dim(2) }),
               topK > 0, topK <= scores.dim(2)
         else { return nil }
+        let rows = scores.dim(1)
+        // Wider prefill sheets have enough independent rows to trade per-row
+        // occupancy for more resident selector threadgroups. This follows the
+        // adaptive schedule in ddalcu/mlx-serve's MIT-licensed QSA selector.
+        let threadGroupWidth = if rows <= narrowRowUpperBound {
+            narrowThreadGroupWidth
+        } else if rows <= mediumRowUpperBound {
+            mediumThreadGroupWidth
+        } else {
+            wideThreadGroupWidth
+        }
         let bounds = MLXArray(visibleBlockCounts.map(Int32.init))
         return kernel(
             [scores, bounds],
-            template: [("TGS", 1024), ("K", topK)],
-            grid: (1024, scores.dim(1), 1),
-            threadGroup: (1024, 1, 1),
+            template: [("TGS", threadGroupWidth), ("K", topK)],
+            grid: (threadGroupWidth, rows, 1),
+            threadGroup: (threadGroupWidth, 1, 1),
             outputShapes: [[1, scores.dim(1), topK]],
             outputDTypes: [.int32],
             cacheConfiguration: true)[0]
@@ -268,7 +288,7 @@ enum Qwen4ExpQSAVerifyMask {
                     visible = true;
                 } else {
                     const int wanted = int(token / uint(RATIO));
-                    const device int* ids = blocks + (batch * rows + row) * count;
+                    const auto* ids = blocks + (batch * rows + row) * count;
                     uint lo = 0, hi = count;
                     while (lo < hi) {
                         const uint mid = lo + (hi - lo) / 2;
@@ -317,6 +337,8 @@ enum Qwen4ExpQSAGather {
     private static let minimumQueryLength = 16
     private static let minimumKeyLength = 8_192
     private static let maximumGQAHeads = 64
+    private static let profileQSA =
+        ProcessInfo.processInfo.environment["AFM_QWEN_PROFILE_QSA"] == "1"
 
     static let enabled =
         ProcessInfo.processInfo.environment["AFM_QWEN_QSA_GATHER"] != "0"
@@ -325,10 +347,7 @@ enum Qwen4ExpQSAGather {
         batch: Int,
         queryLength: Int,
         keyLength: Int,
-        dtype: DType,
-        queryHeads: Int,
-        keyHeads: Int,
-        headDimension: Int
+        dtype: DType
     ) -> Bool {
         enabled
             && Device.defaultDevice().deviceType == .gpu
@@ -336,10 +355,6 @@ enum Qwen4ExpQSAGather {
             && queryLength >= minimumQueryLength
             && keyLength >= minimumKeyLength
             && dtype == .bfloat16
-            && headDimension == Self.headDimension
-            && keyHeads > 0
-            && queryHeads.isMultiple(of: keyHeads)
-            && queryHeads / keyHeads <= maximumGQAHeads
     }
 
     /// Expand a block selection into the exact dense boolean mask used by the
@@ -665,6 +680,15 @@ enum Qwen4ExpQSAGather {
         selectedBlocks: MLXArray,
         compressionRatio: Int
     ) -> MLXArray? {
+        if profileQSA {
+            print(
+                "[qwen4-qsa-prof] gather-candidate "
+                    + "q=\(queries.shape):\(queries.dtype) "
+                    + "k=\(keys.shape):\(keys.dtype) "
+                    + "v=\(values.shape):\(values.dtype) "
+                    + "blocks=\(selectedBlocks.shape):\(selectedBlocks.dtype) "
+                    + "ratio=\(compressionRatio) enabled=\(enabled)")
+        }
         guard enabled,
               Device.defaultDevice().deviceType == .gpu,
               queries.ndim == 4,
@@ -710,7 +734,18 @@ enum Qwen4ExpQSAGather {
             outputShapes: [queries.shape],
             outputDTypes: [queries.dtype],
             cacheConfiguration: true)
-        return outputs[0]
+        let output = outputs[0]
+        if profileQSA {
+            let started = Date.timeIntervalSinceReferenceDate
+            eval(output)
+            let elapsed = (Date.timeIntervalSinceReferenceDate - started) * 1_000
+            let formattedElapsed = String(format: "%.2f", elapsed)
+            print(
+                "[qwen4-qsa-prof] gather S=\(queries.dim(2)) kv=\(keys.dim(2)) "
+                    + "blocks=\(selectedBlocks.dim(2)) "
+                    + "ms=\(formattedElapsed)")
+        }
+        return output
     }
 }
 

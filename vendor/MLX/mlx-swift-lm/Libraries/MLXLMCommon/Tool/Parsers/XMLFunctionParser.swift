@@ -18,13 +18,10 @@ public struct XMLFunctionParser: ToolCallParser, Sendable {
     public func parse(content: String, tools: [[String: any Sendable]]?) -> ToolCall? {
         // Pattern: <function=name>...</function>. Keep the function name strict:
         // malformed XML should remain text instead of becoming a bogus tool call.
-        guard
-            let funcMatch = content.range(
-                of: #"<function=[A-Za-z_][A-Za-z0-9_]*>[\s\S]*?</function>"#,
-                options: .regularExpression)
-        else { return nil }
-
-        let funcContent = String(content[funcMatch])
+        guard let function = ToolCallEnvelopeScanner.envelopes(
+            in: content, startTag: "<function=", endTag: "</function>", syntax: .xmlFunction
+        ).first else { return nil }
+        let funcContent = String(content[function.range])
 
         // Extract function name (everything between <function= and first >)
         guard let nameStart = funcContent.range(of: "<function="),

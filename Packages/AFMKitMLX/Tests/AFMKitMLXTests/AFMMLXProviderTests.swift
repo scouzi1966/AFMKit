@@ -93,7 +93,7 @@ final class AFMMLXProviderTests: XCTestCase {
         XCTAssertTrue(erased.descriptor.capabilities.contains(.vision))
     }
 
-    func testOpenAIToolsPreserveExplicitStrictnessAndDefaultNilToStrict() throws {
+    func testOpenAIToolsPreserveExplicitAndOmittedStrictness() throws {
         let schema: AFMJSONValue = .object(["type": .string("object")])
         let request = AFMRequest(
             messages: [],
@@ -106,7 +106,27 @@ final class AFMMLXProviderTests: XCTestCase {
 
         let tools = try XCTUnwrap(request.openAITools())
 
-        XCTAssertEqual(tools.map(\.function.strict), [true, false, true])
+        XCTAssertEqual(tools.map(\.function.strict), [true, false, nil])
+    }
+
+    func testOmittedToolStrictnessDoesNotMutatePromptOrEnableGrammar() throws {
+        let schema: AFMJSONValue = .object([
+            "type": .string("object"), "properties": .object([:]),
+            "additionalProperties": .bool(false)
+        ])
+        let request = AFMRequest(messages: [], tools: [
+            AFMToolDefinition(name: "list_files", inputSchema: schema)
+        ])
+        let tools = try XCTUnwrap(request.openAITools())
+        XCTAssertFalse(AFMMLXGrammarPolicy.hasStrictTools(tools))
+        XCTAssertFalse(MLXModelService.pythonStyleToolJSON(tools[0]).contains("\"strict\""))
+        XCTAssertTrue(MLXModelService.pythonStyleToolJSON(tools[0]).contains("\"additionalProperties\": false"))
+
+        var explicit = request
+        explicit.tools[0].strict = true
+        let strictTools = try XCTUnwrap(explicit.openAITools())
+        XCTAssertTrue(AFMMLXGrammarPolicy.hasStrictTools(strictTools))
+        XCTAssertTrue(MLXModelService.pythonStyleToolJSON(strictTools[0]).contains("\"strict\": true"))
     }
 
     func testTypedReasoningOptionMapsToChatTemplateKwarg() throws {
@@ -1091,6 +1111,76 @@ final class AFMMLXProviderTests: XCTestCase {
             ],
             for: requiredToolRequest()
         )
+    }
+
+    func testRequiredToolPolicyPreservesReasoningOnlyTokenLimitAndUsage() throws {
+        for named in [false, true] {
+            var request = requiredToolRequest()
+            if named { request.metadata["requiredToolName"] = .string("weather") }
+            var translator = MLXStreamEventTranslator(
+                thinkStartTag: "<think>",
+                thinkEndTag: "</think>",
+                maximumResponseTokens: 2
+            )
+            var events = translator.consume(.init(
+                text: "<think>unfinished plan",
+                promptTokens: 10,
+                completionTokens: 2
+            ))
+            let finalEvents = translator.finish()
+            let reason = try XCTUnwrap(finalEvents.compactMap { event -> AFMFinishReason? in
+                guard case .completed(let reason) = event else { return nil }
+                return reason
+            }.last)
+
+            XCTAssertEqual(reason, .length)
+            XCTAssertNoThrow(try AFMMLXToolPolicy.validateCompletedToolCalls(
+                [], for: request, finishReason: reason
+            ))
+            events += finalEvents
+            let usage = try XCTUnwrap(events.compactMap { event -> AFMUsage? in
+                guard case .usage(let usage) = event else { return nil }
+                return usage
+            }.last)
+            XCTAssertEqual(usage.inputTokens, 10)
+            XCTAssertEqual(usage.outputTokens, 2)
+            XCTAssertFalse(events.contains { event in
+                if case .toolCall(_, .completed) = event { return true }
+                return false
+            })
+        }
+    }
+
+    func testRequiredToolPolicyRejectsMissingToolsEvenAtTokenLimit() {
+        let request = AFMRequest(messages: [], metadata: ["toolCallingMode": .string("required")])
+        XCTAssertThrowsError(try AFMMLXToolPolicy.validateCompletedToolCalls(
+            [], for: request, finishReason: .length
+        )) { error in
+            XCTAssertEqual(error as? AFMError, .invalidRequest(
+                "Tool calling is required, but no tools are enabled."
+            ))
+        }
+    }
+
+    func testRequiredToolPolicyRejectsExplicitStopEvenAtTokenLimit() throws {
+        var translator = MLXStreamEventTranslator(
+            thinkStartTag: nil, thinkEndTag: nil, maximumResponseTokens: 2
+        )
+        _ = translator.consume(.init(
+            text: "plain text", promptTokens: 10, completionTokens: 2, stoppedBySequence: true
+        ))
+        let reason = try XCTUnwrap(translator.finish().compactMap { event -> AFMFinishReason? in
+            guard case .completed(let reason) = event else { return nil }
+            return reason
+        }.last)
+        XCTAssertEqual(reason, .stop)
+        XCTAssertThrowsError(try AFMMLXToolPolicy.validateCompletedToolCalls(
+            [], for: requiredToolRequest(), finishReason: reason
+        )) { error in
+            XCTAssertEqual(error as? AFMError, .generationFailed(
+                "The model returned no tool call while tool calling was required."
+            ))
+        }
     }
 
     func testRequiredToolRequestAddsToolOnlySystemInstruction() throws {

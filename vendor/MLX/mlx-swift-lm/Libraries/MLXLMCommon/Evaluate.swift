@@ -369,6 +369,15 @@ public struct TopKProcessor: LogitProcessor {
         let vocabSize = logits.dim(-1)
         guard k > 0, k < vocabSize else { return logits }
 
+        // A single candidate must remain deterministic even when quantized
+        // logits tie. Threshold masking otherwise retains every tied maximum
+        // and temperature sampling can choose different tokens. Argmax also
+        // avoids sorting the entire vocabulary for this common greedy control.
+        if k == 1 {
+            let winner = argMax(logits, axis: -1, keepDims: true)
+            return MLX.where(MLX.arange(vocabSize) .== winner, logits, MLXArray(-Float.infinity))
+        }
+
         // Sort ascending along the last axis to find the k-th largest value
         let sorted = MLX.sorted(logits, axis: -1)
         // k-th largest is at index [vocabSize - k] in ascending-sorted array
@@ -652,11 +661,14 @@ public struct TokenIterator: Sequence, IteratorProtocol {
     ///   - processorPrompt: complete prompt for logit processors when input is a cached suffix
     ///   - preparedPrefill: optional caller-owned prefill that updates this iterator's cache
     ///     and returns final-position logits; caller must preserve model.prepare semantics
+    ///   - promptBoundaryObserver: observes the raw final prompt output and fully updated
+    ///     cache before the first generated token mutates either state
     public init(
         input: LMInput, model: any LanguageModel, cache: [KVCache]? = nil,
         parameters: GenerateParameters,
         processorPrompt: MLXArray? = nil,
-        preparedPrefill: (([KVCache]) throws -> LMOutput)? = nil
+        preparedPrefill: (([KVCache]) throws -> LMOutput)? = nil,
+        promptBoundaryObserver: ((LMOutput, [KVCache]) -> Void)? = nil
     ) throws {
         self.model = model
         self.y = input.text
@@ -680,11 +692,13 @@ public struct TokenIterator: Sequence, IteratorProtocol {
                 processor?.prompt(processorPrompt ?? input.text.tokens)
                 let result = try preparedPrefill(self.cache)
                 state = result.state
+                promptBoundaryObserver?(result, self.cache)
                 y = .init(tokens: convertToToken(logits: result.logits))
                 if let y { asyncEval(y.tokens) }
             } else {
                 try prepare(input: input, windowSize: parameters.prefillStepSize,
-                            processorPrompt: processorPrompt)
+                            processorPrompt: processorPrompt,
+                            promptBoundaryObserver: promptBoundaryObserver)
             }
         }
     }
@@ -728,7 +742,8 @@ public struct TokenIterator: Sequence, IteratorProtocol {
     }
 
     mutating func prepare(
-        input: LMInput, windowSize: Int? = nil, processorPrompt: MLXArray? = nil
+        input: LMInput, windowSize: Int? = nil, processorPrompt: MLXArray? = nil,
+        promptBoundaryObserver: ((LMOutput, [KVCache]) -> Void)? = nil
     ) throws {
         processor?.prompt(processorPrompt ?? input.text.tokens)
 
@@ -737,12 +752,15 @@ public struct TokenIterator: Sequence, IteratorProtocol {
             y = tokens
 
             // evaluate the remainder of the prompt -- this primes the pump
-            let token = step(previous: tokens)
+            let token = step(
+                previous: tokens,
+                promptBoundaryObserver: promptBoundaryObserver)
             y = .init(tokens: token)
             asyncEval(token)
 
         case .logits(let result):
             state = result.state
+            promptBoundaryObserver?(result, cache)
             y = .init(tokens: convertToToken(logits: result.logits))
             if let y {
                 asyncEval(y.tokens)
@@ -809,7 +827,8 @@ public struct TokenIterator: Sequence, IteratorProtocol {
     /// Evaluate the next token and return the new token (y), updating cache state
     mutating func step(
         previous: LMInput.Text,
-        hostTokenIDs: [Int]? = nil
+        hostTokenIDs: [Int]? = nil,
+        promptBoundaryObserver: ((LMOutput, [KVCache]) -> Void)? = nil
     ) -> MLXArray {
         let t0: UInt64 = Self.perfEnabled ? DispatchTime.now().uptimeNanoseconds : 0
 
@@ -832,6 +851,8 @@ public struct TokenIterator: Sequence, IteratorProtocol {
                 quantizedKVStart: quantizedKVStart
             )
         }
+
+        promptBoundaryObserver?(result, cache)
 
         let token = convertToToken(logits: logits)
 
@@ -1365,7 +1386,8 @@ public func generateTask(
     tokenizer: Tokenizer,
     iterator: consuming TokenIterator,
     stopAfterToolCall: Bool = false,
-    ignoreEndOfSequence: Bool = false
+    ignoreEndOfSequence: Bool = false,
+    tools: [[String: any Sendable]]? = nil
 ) -> (AsyncStream<Generation>, Task<Void, Never>) {
 
     let (stream, continuation) = AsyncStream<Generation>.makeStream()
@@ -1384,7 +1406,7 @@ public func generateTask(
         var tokenCount = 0
         var detokenizer = NaiveStreamingDetokenizer(tokenizer: tokenizer)
         let toolCallProcessor = ToolCallProcessor(
-            format: modelConfiguration.toolCallFormat ?? .json
+            format: modelConfiguration.toolCallFormat ?? .json, tools: tools
         )
         var pendingLogprobs = [TokenLogprobData]()
         var consecutiveSuppressedEndOfSequenceTokens = 0

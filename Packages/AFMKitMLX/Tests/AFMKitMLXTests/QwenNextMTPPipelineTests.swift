@@ -1354,6 +1354,28 @@ final class QwenNextMTPPipelineTests: XCTestCase {
         XCTAssertEqual(states.map { $0.map { $0.asArray(Float.self) } }, frozen)
     }
 
+    func testReplayPrefillCanSkipRedundantFinalCheckpoint() async throws {
+        let model = try await makeModel(indexerBudget: 4)
+        eval(model)
+        let prompt = (0..<289).map { $0 % 25 + 1 }
+        var checkpoints: [Int] = []
+
+        let prepared = try MLXReplayPrefill.prepareWithSnapshot(
+            model: model,
+            cache: model.newCache(parameters: nil),
+            inputTokens: prompt,
+            restoredPrefix: 0,
+            prefillStepSize: 32,
+            captureFinalSnapshot: false,
+            captureFinalCheckpoint: false,
+            checkpoint: { boundary, _, _ in checkpoints.append(boundary) }
+        )
+        eval(prepared.output.logits)
+
+        XCTAssertEqual(checkpoints, [256])
+        XCTAssertNil(prepared.finalSnapshot)
+    }
+
     func testSchedulerReplayExecutorChecksCancellationBetweenChunks() async throws {
         let model = try await makeModel()
         eval(model)
@@ -2019,6 +2041,23 @@ final class QwenNextMTPPipelineTests: XCTestCase {
         }
     }
 
+    func testFusedQSAMaskAcceptsConstantAndDeviceBlockInputs() throws {
+        for (width, capacity) in [(2, 1), (7, 1), (4, 2)] {
+            let ids: [Int32] = (0..<(width * capacity)).map { index in
+                index < capacity ? Int32.max : Int32((index % capacity) * 2)
+            }
+            let blocks = MLXArray(ids).reshaped(1, width, capacity)
+            let expected = Qwen4ExpQSAGather.maskFromBlocks(
+                blocks, keyLength: 37, compressionRatio: 4)
+            let actual = try XCTUnwrap(Qwen4ExpQSAVerifyMask.call(
+                sortedBlocks: blocks, keyLength: 37, compressionRatio: 4,
+                forceEnabledForTesting: true))
+            eval(actual, expected)
+            XCTAssertEqual(actual.asArray(Bool.self), expected.asArray(Bool.self),
+                "width=\(width), capacity=\(capacity)")
+        }
+    }
+
     func testFusedQSAExpansionAtProductionCapacity() throws {
         for capacity in [512, 1024] {
             let width = 8, keyLength = 8199
@@ -2103,6 +2142,106 @@ final class QwenNextMTPPipelineTests: XCTestCase {
             XCTAssertEqual(positions.asArray(Int32.self),
                            Array(0..<Int32(length + 3)) + Array(0..<Int32(length + 3)))
         }
+    }
+
+    func testQwenAttentionCapacityCacheMatchesLegacyAcrossGrowthTrimAndRewrite() {
+        func exercise(usesCapacityStorage: Bool) -> Qwen4ExpAttentionCache {
+            let cache = Qwen4ExpAttentionCache(
+                indexerCompressRatio: 2,
+                usesCapacityStorage: usesCapacityStorage)
+            _ = cache.update(
+                keys: MLXArray((0..<12).map(Float.init)).reshaped(1, 1, 3, 4),
+                values: MLXArray((100..<112).map(Float.init)).reshaped(1, 1, 3, 4))
+            _ = cache.updateIndexKeys(
+                MLXArray((200..<212).map(Float.init)).reshaped(1, 3, 4),
+                positionIDs: nil)
+            _ = cache.ensureSequentialIndexPositionIDs(batchSize: 1)
+            _ = cache.appendPooledIndexKeys(
+                MLXArray((300..<304).map(Float.init)).reshaped(1, 1, 4))
+
+            _ = cache.update(
+                keys: MLXArray((12..<20).map(Float.init)).reshaped(1, 1, 2, 4),
+                values: MLXArray((112..<120).map(Float.init)).reshaped(1, 1, 2, 4))
+            _ = cache.updateIndexKeys(
+                MLXArray((212..<220).map(Float.init)).reshaped(1, 2, 4),
+                positionIDs: nil)
+            _ = cache.appendPooledIndexKeys(
+                MLXArray((304..<308).map(Float.init)).reshaped(1, 1, 4))
+
+            XCTAssertEqual(cache.trim(2), 2)
+            _ = cache.update(
+                keys: MLXArray((40..<44).map(Float.init)).reshaped(1, 1, 1, 4),
+                values: MLXArray((140..<144).map(Float.init)).reshaped(1, 1, 1, 4))
+            _ = cache.updateIndexKeys(
+                MLXArray((240..<244).map(Float.init)).reshaped(1, 1, 4),
+                positionIDs: nil)
+            _ = cache.appendPooledIndexKeys(
+                MLXArray((340..<344).map(Float.init)).reshaped(1, 1, 4))
+            return cache
+        }
+
+        let legacy = exercise(usesCapacityStorage: false)
+        let capacity = exercise(usesCapacityStorage: true)
+        let legacyState = legacy.state
+        let capacityState = capacity.state
+        eval(legacyState + capacityState)
+
+        XCTAssertEqual(legacy.offset, 4)
+        XCTAssertEqual(capacity.offset, legacy.offset)
+        XCTAssertEqual(capacityState.map(\.shape), legacyState.map(\.shape))
+        XCTAssertEqual(capacityState.count, 5)
+        for index in [0, 1, 2, 4] {
+            XCTAssertEqual(
+                capacityState[index].asArray(Float.self),
+                legacyState[index].asArray(Float.self))
+        }
+        XCTAssertEqual(
+            capacityState[3].asArray(Int32.self),
+            legacyState[3].asArray(Int32.self))
+        XCTAssertEqual(capacityState[3].asArray(Int32.self), [0, 1, 2, 3])
+
+        capacity.truncateToOffset()
+        let truncated = capacity.state
+        eval(truncated)
+        XCTAssertEqual(truncated.map(\.shape), legacyState.map(\.shape))
+    }
+
+    func testQwenAttentionCapacityCachePreservesCopyOnWriteSnapshots() {
+        let cache = Qwen4ExpAttentionCache(indexerCompressRatio: 2)
+        _ = cache.update(
+            keys: MLXArray((0..<12).map(Float.init)).reshaped(1, 1, 3, 4),
+            values: MLXArray((100..<112).map(Float.init)).reshaped(1, 1, 3, 4))
+        _ = cache.updateIndexKeys(
+            MLXArray((200..<212).map(Float.init)).reshaped(1, 3, 4),
+            positionIDs: nil)
+        _ = cache.ensureSequentialIndexPositionIDs(batchSize: 1)
+        _ = cache.appendPooledIndexKeys(
+            MLXArray((300..<304).map(Float.init)).reshaped(1, 1, 4))
+        let snapshot = cache.state
+
+        _ = cache.update(
+            keys: MLXArray((40..<44).map(Float.init)).reshaped(1, 1, 1, 4),
+            values: MLXArray((140..<144).map(Float.init)).reshaped(1, 1, 1, 4))
+        _ = cache.updateIndexKeys(
+            MLXArray((240..<244).map(Float.init)).reshaped(1, 1, 4),
+            positionIDs: nil)
+        _ = cache.appendPooledIndexKeys(
+            MLXArray((340..<344).map(Float.init)).reshaped(1, 1, 4))
+        let extended = cache.state
+        eval(snapshot + extended)
+
+        XCTAssertEqual(snapshot.map(\.shape), [
+            [1, 1, 3, 4], [1, 1, 3, 4], [1, 3, 4], [1, 3], [1, 1, 4],
+        ])
+        XCTAssertEqual(snapshot[0].asArray(Float.self), (0..<12).map(Float.init))
+        XCTAssertEqual(snapshot[1].asArray(Float.self), (100..<112).map(Float.init))
+        XCTAssertEqual(snapshot[2].asArray(Float.self), (200..<212).map(Float.init))
+        XCTAssertEqual(snapshot[3].asArray(Int32.self), [0, 1, 2])
+        XCTAssertEqual(snapshot[4].asArray(Float.self), (300..<304).map(Float.init))
+        XCTAssertEqual(extended[0].shape, [1, 1, 4, 4])
+        XCTAssertEqual(extended[2].shape, [1, 4, 4])
+        XCTAssertEqual(extended[3].asArray(Int32.self), [0, 1, 2, 3])
+        XCTAssertEqual(extended[4].shape, [1, 2, 4])
     }
 
     func testVerifyRouterMatchesIndependentDecodeRows() throws {
@@ -2206,9 +2345,13 @@ final class QwenNextMTPPipelineTests: XCTestCase {
     func testVerifyRadixSelectionMatchesStableTopKAndCausalTail() throws {
         // Alternating block lengths reuses one specialization across growing
         // contexts. Include ties, signed zeros, negative values and NaNs.
-        for blocks in [17, 533, 1061, 533] {
-            for width in [2, 4, 7] {
-                let bounds = (0..<width).map { min(blocks, $0 * blocks / (width - 1)) }
+        // MLX uses constant input pointers below eight elements and device
+        // pointers at/above eight. Exercise both with identical selection math.
+        for blocks in [1, 7, 8, 17, 533, 1061, 533] {
+            for width in [1, 2, 4, 7] {
+                let bounds = width == 1
+                    ? [blocks]
+                    : (0..<width).map { min(blocks, $0 * blocks / (width - 1)) }
                 let values: [Float] = (0..<(width * blocks)).map { index in
                     switch index % 19 {
                     case 0: return .nan

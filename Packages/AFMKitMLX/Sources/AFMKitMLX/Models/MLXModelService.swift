@@ -446,6 +446,27 @@ public final class MLXModelService:
     }
 
     public var enableGrammarConstraints: Bool = false { didSet { grammarConstraintsActive = enableGrammarConstraints } }
+
+    public func reasoningRequestValidationError(chatTemplateKwargs: [String: AnyCodable]?) -> String? {
+        // Avoid even the state-lock acquisition on ordinary requests.
+        guard let effort = Self.explicitReasoningOff(chatTemplateKwargs) else { return nil }
+        return Self.reasoningRequestValidationError(
+            effort: effort, canonicalModelType: withStateLock { currentModelArchitecture?.canonicalModelType })
+    }
+
+    static func explicitReasoningOff(_ kwargs: [String: AnyCodable]?) -> String? {
+        guard case .string(let raw)? = kwargs?["reasoning_effort"]?.value else { return nil }
+        let effort = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return ["none", "off"].contains(effort) ? effort : nil
+    }
+
+    static func reasoningRequestValidationError(effort: String?, canonicalModelType: String?) -> String? {
+        guard canonicalModelType == "glm5_next" || canonicalModelType == "glm5_next_text",
+              let effort,
+              ["none", "off"].contains(effort.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+        else { return nil }
+        return "This GLM checkpoint cannot disable reasoning. reasoning_effort accepts low, high, or max; use low to reduce reasoning."
+    }
     public var trace: Bool = false { didSet { traceLogging = trace } }
     public var supportsStrictToolGrammar: Bool {
         if let parser = resolvedToolCallParser(logBypass: false) {
@@ -568,6 +589,19 @@ public final class MLXModelService:
         isToolCallParserDisabled(configuredParser) ? ToolCallFormat.none : detectedFormat
     }
 
+    /// Raw completions return the generated text verbatim, including tool
+    /// markup. Override a value copy: concurrent chat requests must retain the
+    /// loaded model's parser, and nil would select the default JSON parser.
+    static func generationConfiguration(
+        _ configuration: ModelConfiguration,
+        rawPrompt: String?
+    ) -> ModelConfiguration {
+        guard rawPrompt != nil else { return configuration }
+        var rawConfiguration = configuration
+        rawConfiguration.toolCallFormat = ToolCallFormat.none
+        return rawConfiguration
+    }
+
     static func requiresSerialGeneration(canonicalModelType: String) -> Bool {
         switch canonicalModelType {
         case "cohere2_moe", "muse_glimmer":
@@ -615,6 +649,11 @@ public final class MLXModelService:
         let format = withStateLock({ currentToolCallFormat })
         if let format {
             switch format {
+            case .glm4:
+                return .init(
+                    startTag: "<tool_call>", endTag: "</tool_call>",
+                    parser: resolvedToolCallParser(logBypass: false) ?? "glm4",
+                    tools: tools, repairToolArguments: fixToolArgs)
             case .xmlFunction:
                 return .init(
                     startTag: "<tool_call>",
@@ -3266,6 +3305,9 @@ public final class MLXModelService:
         let mtpBinding = runtime.mtpBinding
 
         let rawPrompt = AFMMLXPromptContext.rawPrompt
+        let outputReasoning = MLXOutputReasoningPolicy.tags(
+            responseFormat: responseFormat, isRawPrompt: rawPrompt != nil,
+            start: self.thinkStartTag, end: self.thinkEndTag)
         let promptText = rawPrompt ?? buildPrompt(from: messages)
         let toolSpecs = convertToToolSpecs(tools, includePythonJSON: shouldUseNativePythonToolJSONTemplate(for: tools))
         let (userInput, mediaTempFiles): (UserInput, [URL])
@@ -3465,7 +3507,7 @@ public final class MLXModelService:
             let input = try await container.prepare(input: scratch.userInput)
             let inputTokens = self.extractTokenArray(input)
             let tokenizer = await container.tokenizer
-            let thinkStart = self.thinkStartTag
+            let thinkStart = outputReasoning.start
             let tokens = input.text.tokens
             let ndim = tokens.ndim
             let seqLen = tokens.dim(ndim - 1)
@@ -3479,7 +3521,7 @@ public final class MLXModelService:
                 if Self.promptSuffixOpensThink(
                     decoded,
                     startTag: thinkStart,
-                    endTag: self.thinkEndTag
+                    endTag: outputReasoning.end
                 ) {
                     generated = thinkStart
                     templateInjectedThink = true
@@ -3516,10 +3558,10 @@ public final class MLXModelService:
                     }
                     if case .chunk(let text) = piece {
                         if let ts = thinkStart, text.contains(ts) { insideThink = true }
-                        if let te = self.thinkEndTag, text.contains(te) { insideThink = false }
+                        if let te = outputReasoning.end, text.contains(te) { insideThink = false }
                         generated += text
                         if !insideThink && visibleContentStart == nil {
-                            if let te = self.thinkEndTag, let thinkEnd = generated.range(of: te) {
+                            if let te = outputReasoning.end, let thinkEnd = generated.range(of: te) {
                                 visibleContentStart = thinkEnd.upperBound
                             } else {
                                 visibleContentStart = generated.startIndex
@@ -3680,6 +3722,10 @@ public final class MLXModelService:
                 tokenizer: context.tokenizer,
                 tools: tools
             )
+            let outputReasoning = MLXOutputReasoningPolicy.tags(
+                responseFormat: responseFormat, isRawPrompt: rawPrompt != nil,
+                hasJSONGrammar: constrainedDecoding?.mode == "json_schema",
+                start: self.thinkStartTag, end: self.thinkEndTag)
             defer {
                 constrainedDecoding?.matcherHandle?.release()
             }
@@ -3712,7 +3758,7 @@ public final class MLXModelService:
             }
 
             // If the chat template appended a think start tag, prepend it so extractors can detect it
-            let thinkStart = self.thinkStartTag
+            let thinkStart = outputReasoning.start
             let tokens = input.text.tokens
             let ndim = tokens.ndim
             let seqLen = tokens.dim(ndim - 1)
@@ -3726,7 +3772,7 @@ public final class MLXModelService:
                 if Self.promptSuffixOpensThink(
                     decoded,
                     startTag: thinkStart,
-                    endTag: self.thinkEndTag
+                    endTag: outputReasoning.end
                 ) {
                     out = thinkStart
                     templateInjectedThink = true
@@ -3745,6 +3791,7 @@ public final class MLXModelService:
             }
             var generationCache = context.model.newCache(parameters: params)
             var generateInput: LMInput
+            var cachedPromptOutput: LMOutput?
 
             cacheOutcome = useCache ? "disabled" : "multimodal-skip"
             cacheLookupTime = nil
@@ -3757,24 +3804,37 @@ public final class MLXModelService:
                 let tLookup0 = Date.timeIntervalSinceReferenceDate
                 let requiresExactBoundary = MLXPrefixReplayPolicy
                     .requiresExactBoundaryRestore(generationCache)
-                let match = requiresExactBoundary
+                let candidateMatch = requiresExactBoundary
                     ? radix.findExactBoundaryMatch(inputTokens)
                     : radix.findPrefixMatch(inputTokens)
+                let match = MLXPrefixReplayPolicy.validatedRestoreMatch(candidateMatch, cache: generationCache)
                 let prefixLen = match.prefixLen
                 let layerStates = match.layerStates
                 let layerMetaStates = match.layerMetaStates
                 let tLookup1 = Date.timeIntervalSinceReferenceDate
                 cacheLookupTime = tLookup1 - tLookup0
-                let effectivePrefix = self.effectiveCachedPrefix(
-                    prefixLen: prefixLen,
+                let exactReplayLogits = MLXPrefixReplayPolicy.exactReplayLogits(
+                    from: match,
                     inputTokenCount: inputTokens.count,
-                    requiresExactBoundary: requiresExactBoundary,
-                    sourceTokenCount: match.sourceTokenCount
+                    requiresExactBoundary: requiresExactBoundary
                 )
+                let effectivePrefix = exactReplayLogits == nil
+                    ? self.effectiveCachedPrefix(
+                        prefixLen: prefixLen,
+                        inputTokenCount: inputTokens.count,
+                        requiresExactBoundary: requiresExactBoundary,
+                        sourceTokenCount: match.sourceTokenCount,
+                        modelType: type(of: context.model)
+                    )
+                    : inputTokens.count
                 let bypassExactReplay = prefixLen == inputTokens.count && effectivePrefix == 0 && prefixLen > 0
 
                 if effectivePrefix > 0, let states = layerStates {
                     let tRestore0 = Date.timeIntervalSinceReferenceDate
+                    let restoredStates = MLXPrefixReplayPolicy.restoredLayerStates(
+                        states,
+                        cache: generationCache
+                    )
                     // Restore KV cache from radix tree state
                     if debugLogging {
                         print("[\(ts())] [PrefixCache] RESTORE-BEGIN: prefixLen=\(prefixLen), effectivePrefix=\(effectivePrefix), inputTokens=\(inputTokens.count)")
@@ -3783,8 +3843,9 @@ public final class MLXModelService:
                             print("[\(ts())] [PrefixCache] STORED layer[\(i)]: \(states[i].count) arrays, shapes=[\(shapes)]")
                         }
                     }
-                    for i in 0..<generationCache.count where i < states.count {
-                        generationCache[i].state = states[i]
+                    for i in 0..<generationCache.count where i < restoredStates.count {
+                        MLXPrefixReplayPolicy.installLayerState(restoredStates[i], into: &generationCache[i],
+                            sourceBoundary: match.sourceTokenCount)
                         let savedMetaState = layerMetaStates.flatMap { i < $0.count ? $0[i] : nil }
                         if let adjustedMetaState = self.restoredMetaState(
                             for: generationCache[i],
@@ -3822,10 +3883,15 @@ public final class MLXModelService:
                     }
                     let tRoundtrip = Date.timeIntervalSinceReferenceDate
                     let suffixTokens = Array(inputTokens[effectivePrefix...])
-                    generateInput = MLXPrefixReplayPolicy.replayInput(
-                        from: input,
-                        effectivePrefix: effectivePrefix
-                    )
+                    if let exactReplayLogits {
+                        cachedPromptOutput = LMOutput(logits: exactReplayLogits)
+                        generateInput = input
+                    } else {
+                        generateInput = MLXPrefixReplayPolicy.replayInput(
+                            from: input,
+                            effectivePrefix: effectivePrefix
+                        )
+                    }
                     cachedTokenCount = effectivePrefix
                     cacheOutcome = "hit"
                     StatsAggregator.shared.cacheHit()  // /metrics: afm:radix_cache_hits_total
@@ -3892,6 +3958,10 @@ public final class MLXModelService:
             let activeStops = ((stop ?? []) + self.implicitStopSequences).filter { !$0.isEmpty }
             var insideThink = templateInjectedThink
             var visibleContentStart: String.Index? = nil  // Index where content after </think> begins
+            let structuredJSON = responseFormat?.type == "json_object" || responseFormat?.type == "json_schema"
+            var jsonStopFilter = structuredJSON && !activeStops.isEmpty
+                ? MLXJSONStopFilter(startTag: thinkStart, endTag: outputReasoning.end,
+                    insideReasoning: templateInjectedThink, stopSequences: activeStops) : nil
             let genStart = Date()
             var firstTokenTime: Date?
             // INSTRUMENT: Dump cache state right before generation starts
@@ -3907,27 +3977,72 @@ public final class MLXModelService:
                 fflush(stdout)
             }
             try Task.checkCancellation()
-            let capturesReplayBoundaries = self.shouldCaptureSerialReplayBoundaries(
-                model: context.model, input: input, cache: generationCache, parameters: params)
+            let capturesPromptBoundary = self.shouldCaptureSerialPromptBoundary(
+                input: input, cache: generationCache, parameters: params)
+            let promptBoundaryObserver: ((LMOutput, [KVCache]) -> Void)? =
+                capturesPromptBoundary && cachedPromptOutput == nil
+                ? { output, cache in
+                    guard output.state == nil, let radix = self.radixCache else { return }
+                    let tSave0 = Date.timeIntervalSinceReferenceDate
+                    let states = MLXPrefixReplayPolicy.snapshotLayerStates(cache)
+                    radix.insert(
+                        tokens: inputTokens,
+                        layerStates: states,
+                        layerMetaStates: cache.map { $0.metaState },
+                        promptLogits: MLXPrefixReplayPolicy.promptBoundaryLogits(output.logits),
+                        statesAreIndependentSnapshots: true
+                    )
+                    let tSave1 = Date.timeIntervalSinceReferenceDate
+                    saveInsertTime = tSave1 - tSave0
+                    self.logCacheSave(
+                        mode: "non-streaming",
+                        inputTokenCount: inputTokens.count,
+                        radixEntryCount: radix.count,
+                        cache: cache,
+                        insertTime: saveInsertTime
+                    )
+                } : nil
+            var preparedPrefill: (([KVCache]) throws -> LMOutput)? = cachedPromptOutput.map {
+                output in { _ in output }
+            }
+            let replayBackoff = BatchScheduler.qwenARReplayBackoffTokenCount(
+                ProcessInfo.processInfo.environment["AFM_QWEN_PREFIX_REPLAY_BACKOFF"])
+            // A growing chat can rewrite the template's final assistant header.
+            // Reuse the batching policy to capture an actual earlier recurrent
+            // state; a final-only snapshot cannot safely be trimmed to that point.
+            // Exact repeats still use saved logits without prefilling again.
+            if preparedPrefill == nil, capturesPromptBoundary,
+               context.model is Qwen4ExpModel, replayBackoff > 0 {
+                preparedPrefill = { cache in
+                    try MLXReplayPrefill.prepareWithSnapshot(
+                        model: context.model, cache: cache, inputTokens: inputTokens,
+                        restoredPrefix: cachedTokenCount, prefillStepSize: params.prefillStepSize,
+                        promptSnapshotBackoffTokens: replayBackoff,
+                        captureFinalCheckpoint: false,
+                        checkpoint: { boundary, states, metadata in
+                            self.radixCache?.insert(tokens: Array(inputTokens.prefix(boundary)),
+                                layerStates: states, layerMetaStates: metadata,
+                                statesAreIndependentSnapshots: true)
+                        }).output
+                }
+            }
             let generationIterator = try TokenIterator(
                 input: generateInput,
                 model: context.model,
                 cache: generationCache,
                 parameters: params,
-                processorPrompt: capturesReplayBoundaries ? MLXArray(inputTokens) : nil,
-                preparedPrefill: capturesReplayBoundaries ? { cache in
-                    try MLXReplayPrefill.prepare(
-                        model: context.model, cache: cache, inputTokens: inputTokens,
-                        restoredPrefix: inputTokens.count - generateInput.text.tokens.size,
-                        radix: self.radixCache!, prefillStepSize: params.prefillStepSize)
-                } : nil
+                processorPrompt: cachedTokenCount > 0 ? MLXArray(inputTokens) : nil,
+                preparedPrefill: preparedPrefill,
+                promptBoundaryObserver: promptBoundaryObserver
             )
             let (generationStream, generationTask) = MLXLMCommon.generateTask(
                 promptTokenCount: generateInput.text.tokens.size,
-                modelConfiguration: context.configuration,
+                modelConfiguration: Self.generationConfiguration(
+                    context.configuration, rawPrompt: rawPrompt),
                 tokenizer: context.tokenizer,
                 iterator: generationIterator,
-                stopAfterToolCall: params.stopAfterToolCall
+                stopAfterToolCall: params.stopAfterToolCall,
+                tools: toolSpecs
             )
             do {
                 for await piece in generationStream {
@@ -3942,13 +4057,18 @@ public final class MLXModelService:
                     }
                     if case .chunk(let text) = piece {
                         if firstTokenTime == nil { firstTokenTime = Date() }
+                        if let chunks = jsonStopFilter?.consume(text) {
+                            out += chunks.map(\.text).joined()
+                            if jsonStopFilter?.stopped == true { stoppedBySequence = true; break }
+                            continue
+                        }
                         // Track think boundaries — stop sequences only apply outside
                         if let ts = thinkStart, text.contains(ts) { insideThink = true }
-                        if let te = self.thinkEndTag, text.contains(te) { insideThink = false }
+                        if let te = outputReasoning.end, text.contains(te) { insideThink = false }
                         out += text
                         // Record where visible content starts (after think end tag)
                         if !insideThink && visibleContentStart == nil {
-                            if let te = self.thinkEndTag, let thinkEnd = out.range(of: te) {
+                            if let te = outputReasoning.end, let thinkEnd = out.range(of: te) {
                                 visibleContentStart = thinkEnd.upperBound
                             } else {
                                 visibleContentStart = out.startIndex
@@ -3993,6 +4113,7 @@ public final class MLXModelService:
                 throw error
             }
 
+            if let tail = jsonStopFilter?.finish() { out += tail.map(\.text).joined() }
             Stream.gpu.synchronize()
             // Optional per-request GPU memory cleanup (gated to avoid throughput hit).
             // Enable with AFM_CLEAR_GPU_CACHE=1 if you see memory-related crashes.
@@ -4010,7 +4131,7 @@ public final class MLXModelService:
             // Save prompt cache state into radix tree.
             // Skip save when RotatingKVCache has wrapped past maxCacheSize (#94).
             if useCache, let radix = self.radixCache, !inputTokens.isEmpty,
-               !capturesReplayBoundaries,
+               !capturesPromptBoundary,
                !self.hasWrappedRotatingCache(generationCache) {
                 let promptLen = inputTokens.count
                 let tSave0 = Date.timeIntervalSinceReferenceDate
@@ -4258,6 +4379,9 @@ public final class MLXModelService:
         let mtpBinding = runtime.mtpBinding
 
         let rawPrompt = AFMMLXPromptContext.rawPrompt
+        let outputReasoning = MLXOutputReasoningPolicy.tags(
+            responseFormat: responseFormat, isRawPrompt: rawPrompt != nil,
+            start: self.thinkStartTag, end: self.thinkEndTag)
         let promptText = rawPrompt ?? buildPrompt(from: messages)
         let toolSpecs = convertToToolSpecs(tools, includePythonJSON: shouldUseNativePythonToolJSONTemplate(for: tools))
         // -VV: Log tool schemas as sent to model's Jinja template
@@ -4299,6 +4423,7 @@ public final class MLXModelService:
         // requestStarted/observe calls happen ONLY in the serial-path
         // task below (the batch path's stats are owned by BatchScheduler).
         let streamQueuedAt = Date()
+        let structuredJSON = responseFormat?.type == "json_object" || responseFormat?.type == "json_schema"
 
         let baseParameters = GenerateParameters(
             maxTokens: effectiveMaxTokens,
@@ -4375,6 +4500,10 @@ public final class MLXModelService:
                 tokenizer: scheduler.tokenizer,
                 tools: tools
             )
+            let outputReasoning = MLXOutputReasoningPolicy.tags(
+                responseFormat: responseFormat, isRawPrompt: rawPrompt != nil,
+                hasJSONGrammar: constrainedDecoding?.mode == "json_schema",
+                start: self.thinkStartTag, end: self.thinkEndTag)
             if let constrainedDecoding {
                 params.extraProcessor = constrainedDecoding.processor
             }
@@ -4399,8 +4528,7 @@ public final class MLXModelService:
             // leading chunk so the controller's reasoning extractor latches
             // on. Mirrors the serial-streaming path at line ~2061. (#99)
             let templateOpenedThink: Bool = {
-                guard rawPrompt == nil else { return false }
-                guard let thinkStart = self.thinkStartTag else { return false }
+                guard let thinkStart = outputReasoning.start else { return false }
                 let tokens = input.text.tokens
                 let ndim = tokens.ndim
                 let seqLen = tokens.dim(ndim - 1)
@@ -4412,7 +4540,7 @@ public final class MLXModelService:
                 return Self.promptSuffixOpensThink(
                     decoded,
                     startTag: thinkStart,
-                    endTag: self.thinkEndTag
+                    endTag: outputReasoning.end
                 )
             }()
 
@@ -4429,15 +4557,21 @@ public final class MLXModelService:
                         )
                     },
                     stopSequences: (stop ?? []) + self.implicitStopSequences,
-                    thinkStartTag: rawPrompt == nil ? self.thinkStartTag : nil,
-                    thinkEndTag: rawPrompt == nil ? self.thinkEndTag : nil,
+                    thinkStartTag: outputReasoning.start,
+                    thinkEndTag: outputReasoning.end,
+                    templateOpenedThink: templateOpenedThink,
+                    jsonStopFilter: structuredJSON && !((stop ?? []) + self.implicitStopSequences).isEmpty
+                        ? MLXJSONStopFilter(
+                            startTag: outputReasoning.start, endTag: outputReasoning.end,
+                            insideReasoning: templateOpenedThink,
+                            stopSequences: (stop ?? []) + self.implicitStopSequences) : nil,
                     requestId: reqId,
                     usesGLMMTP: schedulerOwnsGLMMTP,
                     usesQwenMTP: schedulerOwnsQwenMTP
                 )
             }
             let effectiveStream: AsyncThrowingStream<StreamChunk, Error>
-            if templateOpenedThink, let thinkStart = self.thinkStartTag {
+            if templateOpenedThink, let thinkStart = outputReasoning.start {
                 effectiveStream = AsyncThrowingStream { continuation in
                     let task = Task {
                         continuation.yield(StreamChunk(syntheticText: thinkStart))
@@ -4474,7 +4608,7 @@ public final class MLXModelService:
                 effectiveStream,
                 onFinish: { [weak self] in self?.endOperation() })
             endOperationOnExit = false
-            return (modelID, operationOwningStream, preparedPromptTokens, toolTags?.0, toolTags?.1, self.thinkStartTag, self.thinkEndTag)
+            return (modelID, operationOwningStream, preparedPromptTokens, toolTags?.0, toolTags?.1, outputReasoning.start, outputReasoning.end)
         }
 
         // --- Speculative streaming (serial, text-only; Qwen Next also samples) ---
@@ -4509,12 +4643,12 @@ public final class MLXModelService:
                 let ids = self.extractTokenArray(lmInput)
                 if ids.isEmpty { return nil }
                 var opened = false
-                if let ts = self.thinkStartTag, !ids.isEmpty {
+                if let ts = outputReasoning.start, !ids.isEmpty {
                     let decoded = context.tokenizer.decode(tokens: Array(ids.suffix(8)))
                     opened = Self.promptSuffixOpensThink(
                         decoded,
                         startTag: ts,
-                        endTag: self.thinkEndTag
+                        endTag: outputReasoning.end
                     )
                 }
                 return (ids, opened)
@@ -4526,7 +4660,7 @@ public final class MLXModelService:
                 let useEagle3 = !useDSpark && eagle3StreamEligible
                 let maxTok = effectiveMaxTokens
                 let dbg = debugLogging
-                let thinkStartTag = self.thinkStartTag
+                let thinkStartTag = outputReasoning.start
                 let stream = AsyncThrowingStream<StreamChunk, Error> { continuation in
                     let task = Task {
                         defer { self.cleanupTempFiles(mediaTempFiles) }
@@ -4636,7 +4770,7 @@ public final class MLXModelService:
                 }
                 streamOwnsTempFiles = true
                 endOperationOnExit = false
-                return (modelID, stream, promptTokens, nil, nil, self.thinkStartTag, self.thinkEndTag)
+                return (modelID, stream, promptTokens, nil, nil, outputReasoning.start, outputReasoning.end)
             }
         }
 
@@ -4647,6 +4781,24 @@ public final class MLXModelService:
         let streamTracing = beginGPUTraceIfNeeded()
         let streamGpuProfile = gpuProfile
         if streamGpuProfile { printGPUProfileHeader() }
+        // Resolve grammar framing before returning stream metadata. Suppression
+        // depends on an actual matcher, not merely a requested response format;
+        // prompt-only JSON still needs its leading reasoning separated. Ordinary
+        // requests do not add a tokenizer/actor read.
+        let serialConstraint: ConstrainedDecodingSetup?
+        if responseFormat != nil || !(tools?.isEmpty ?? true) {
+            serialConstraint = await container.perform { context in
+                self.setupConstrainedDecodingProcessor(
+                    modelID: modelID, responseFormat: responseFormat,
+                    tokenizer: context.tokenizer, tools: tools)
+            }
+        } else {
+            serialConstraint = nil
+        }
+        let serialOutputReasoning = MLXOutputReasoningPolicy.tags(
+            responseFormat: responseFormat, isRawPrompt: rawPrompt != nil,
+            hasJSONGrammar: serialConstraint?.mode == "json_schema",
+            start: self.thinkStartTag, end: self.thinkEndTag)
         let stream = AsyncThrowingStream<StreamChunk, Error> { continuation in
             // /metrics: serial-streaming counters. Captured here (after the
             // batch-path branch has been ruled out) so we don't double-count
@@ -4667,12 +4819,8 @@ public final class MLXModelService:
                         // @Sendable closure free of captured-var mutation).
                         var params = baseParameters
                         // Grammar constraint setup — see non-streaming path for details.
-                        let constrainedDecoding = self.setupConstrainedDecodingProcessor(
-                            modelID: modelID,
-                            responseFormat: responseFormat,
-                            tokenizer: context.tokenizer,
-                            tools: tools
-                        )
+                        let constrainedDecoding = serialConstraint
+                        let outputReasoning = serialOutputReasoning
                         defer {
                             constrainedDecoding?.matcherHandle?.release()
                         }
@@ -4692,8 +4840,8 @@ public final class MLXModelService:
 
                         // If the chat template appended a think tag, inject it
                         // into the stream so the reasoning extractor can detect it.
-                        let thinkStart = rawPrompt == nil ? self.thinkStartTag : nil
-                        let thinkEnd = rawPrompt == nil ? self.thinkEndTag : nil
+                        let thinkStart = outputReasoning.start
+                        let thinkEnd = outputReasoning.end
                         var templateInjectedThink = false
                         let tokens = input.text.tokens
                         let ndim = tokens.ndim
@@ -4727,6 +4875,7 @@ public final class MLXModelService:
                         var generationCache = context.model.newCache(parameters: params)
                         var generateInput: LMInput
                         var streamCachedTokens = 0
+                        var cachedPromptOutput: LMOutput?
 
                         var cacheOutcome = useCache ? "disabled" : "multimodal-skip"
                         var cacheLookupTime: Double? = nil
@@ -4738,27 +4887,41 @@ public final class MLXModelService:
                             let tLookup0 = Date.timeIntervalSinceReferenceDate
                             let requiresExactBoundary = MLXPrefixReplayPolicy
                                 .requiresExactBoundaryRestore(generationCache)
-                            let match = requiresExactBoundary
+                            let candidateMatch = requiresExactBoundary
                                 ? radix.findExactBoundaryMatch(inputTokens)
                                 : radix.findPrefixMatch(inputTokens)
+                            let match = MLXPrefixReplayPolicy.validatedRestoreMatch(candidateMatch, cache: generationCache)
                             let prefixLen = match.prefixLen
                             let layerStates = match.layerStates
                             let layerMetaStates = match.layerMetaStates
                             let tLookup1 = Date.timeIntervalSinceReferenceDate
                             cacheLookupTime = tLookup1 - tLookup0
-                            let effectivePrefix = self.effectiveCachedPrefix(
-                                prefixLen: prefixLen,
+                            let exactReplayLogits = MLXPrefixReplayPolicy.exactReplayLogits(
+                                from: match,
                                 inputTokenCount: inputTokens.count,
-                                requiresExactBoundary: requiresExactBoundary,
-                                sourceTokenCount: match.sourceTokenCount
+                                requiresExactBoundary: requiresExactBoundary
                             )
+                            let effectivePrefix = exactReplayLogits == nil
+                                ? self.effectiveCachedPrefix(
+                                    prefixLen: prefixLen,
+                                    inputTokenCount: inputTokens.count,
+                                    requiresExactBoundary: requiresExactBoundary,
+                                    sourceTokenCount: match.sourceTokenCount,
+                                    modelType: type(of: context.model)
+                                )
+                                : inputTokens.count
                             let bypassExactReplay = prefixLen == inputTokens.count && effectivePrefix == 0 && prefixLen > 0
 
                             if effectivePrefix > 0, let states = layerStates {
                                 let tRestore0 = Date.timeIntervalSinceReferenceDate
+                                let restoredStates = MLXPrefixReplayPolicy.restoredLayerStates(
+                                    states,
+                                    cache: generationCache
+                                )
                                 // Restore KV cache from radix tree state
-                                for i in 0..<generationCache.count where i < states.count {
-                                    generationCache[i].state = states[i]
+                                for i in 0..<generationCache.count where i < restoredStates.count {
+                                    MLXPrefixReplayPolicy.installLayerState(restoredStates[i], into: &generationCache[i],
+                                        sourceBoundary: match.sourceTokenCount)
                                     let savedMetaState = layerMetaStates.flatMap {
                                         i < $0.count ? $0[i] : nil
                                     }
@@ -4786,10 +4949,15 @@ public final class MLXModelService:
                                 }
                                 let tRoundtrip = Date.timeIntervalSinceReferenceDate
                                 let suffixTokens = Array(inputTokens[effectivePrefix...])
-                                generateInput = MLXPrefixReplayPolicy.replayInput(
-                                    from: input,
-                                    effectivePrefix: effectivePrefix
-                                )
+                                if let exactReplayLogits {
+                                    cachedPromptOutput = LMOutput(logits: exactReplayLogits)
+                                    generateInput = input
+                                } else {
+                                    generateInput = MLXPrefixReplayPolicy.replayInput(
+                                        from: input,
+                                        effectivePrefix: effectivePrefix
+                                    )
+                                }
                                 streamCachedTokens = effectivePrefix
                                 cacheOutcome = "hit"
                                 StatsAggregator.shared.cacheHit()  // /metrics: afm:radix_cache_hits_total
@@ -4864,6 +5032,9 @@ public final class MLXModelService:
                         // and stop strings like "3." or "\n" commonly appear in reasoning.
                         var stopBuffer = MLXStreamingStopBuffer(stopSequences: activeStops)
                         var insideThink = templateInjectedThink
+                        var jsonStopFilter = structuredJSON && !activeStops.isEmpty
+                            ? MLXJSONStopFilter(startTag: thinkStart, endTag: thinkEnd,
+                                insideReasoning: templateInjectedThink, stopSequences: activeStops) : nil
                         let genStart = Date()
                         var firstTokenTime: Date?
                         var observedGenerationTokenCount = 0
@@ -4872,6 +5043,9 @@ public final class MLXModelService:
 
                         var pendingLogprobs: [TokenLogprobData]? = nil
                         var nextToolCallIndex = 0
+                        var saveTrimTime: Double? = nil
+                        var saveTruncateTime: Double? = nil
+                        var saveInsertTime: Double? = nil
                         // INSTRUMENT: Dump cache state right before generation starts (streaming)
                         if debugLogging || self.trace {
                             print("[\(ts())] [PREFLIGHT-STREAM] About to generate. Cache layers: \(generationCache.count), input shape: \(generateInput.text.tokens.shape)")
@@ -4885,21 +5059,62 @@ public final class MLXModelService:
                             fflush(stdout)
                         }
                         let generationIterator: TokenIterator
-                        let capturesReplayBoundaries = self.shouldCaptureSerialReplayBoundaries(
-                            model: context.model, input: input, cache: generationCache, parameters: params)
+                        let capturesPromptBoundary = self.shouldCaptureSerialPromptBoundary(
+                            input: input, cache: generationCache, parameters: params)
+                        let promptBoundaryObserver: ((LMOutput, [KVCache]) -> Void)? =
+                            capturesPromptBoundary && cachedPromptOutput == nil
+                            ? { output, cache in
+                                guard output.state == nil, let radix = self.radixCache else { return }
+                                let tSave0 = Date.timeIntervalSinceReferenceDate
+                                let states = MLXPrefixReplayPolicy.snapshotLayerStates(cache)
+                                radix.insert(
+                                    tokens: inputTokens,
+                                    layerStates: states,
+                                    layerMetaStates: cache.map { $0.metaState },
+                                    promptLogits: MLXPrefixReplayPolicy.promptBoundaryLogits(output.logits),
+                                    statesAreIndependentSnapshots: true
+                                )
+                                let tSave1 = Date.timeIntervalSinceReferenceDate
+                                saveInsertTime = tSave1 - tSave0
+                                self.logCacheSave(
+                                    mode: "streaming",
+                                    inputTokenCount: inputTokens.count,
+                                    radixEntryCount: radix.count,
+                                    cache: cache,
+                                    insertTime: saveInsertTime
+                                )
+                            } : nil
+                        var preparedPrefill: (([KVCache]) throws -> LMOutput)? =
+                            cachedPromptOutput.map { output in { _ in output } }
+                        let replayBackoff = BatchScheduler.qwenARReplayBackoffTokenCount(
+                            ProcessInfo.processInfo.environment["AFM_QWEN_PREFIX_REPLAY_BACKOFF"])
+                        // Keep serial HTTP streaming and non-streaming on the
+                        // same exact-boundary snapshot policy as batch admission.
+                        if preparedPrefill == nil, capturesPromptBoundary,
+                           context.model is Qwen4ExpModel, replayBackoff > 0 {
+                            preparedPrefill = { cache in
+                                try MLXReplayPrefill.prepareWithSnapshot(
+                                    model: context.model, cache: cache, inputTokens: inputTokens,
+                                    restoredPrefix: streamCachedTokens,
+                                    prefillStepSize: params.prefillStepSize,
+                                    promptSnapshotBackoffTokens: replayBackoff,
+                                    captureFinalCheckpoint: false,
+                                    checkpoint: { boundary, states, metadata in
+                                        self.radixCache?.insert(tokens: Array(inputTokens.prefix(boundary)),
+                                            layerStates: states, layerMetaStates: metadata,
+                                            statesAreIndependentSnapshots: true)
+                                    }).output
+                            }
+                        }
                         do {
                             generationIterator = try TokenIterator(
                                 input: generateInput,
                                 model: context.model,
                                 cache: generationCache,
                                 parameters: params,
-                                processorPrompt: capturesReplayBoundaries ? MLXArray(inputTokens) : nil,
-                                preparedPrefill: capturesReplayBoundaries ? { cache in
-                                    try MLXReplayPrefill.prepare(
-                                        model: context.model, cache: cache, inputTokens: inputTokens,
-                                        restoredPrefix: streamCachedTokens,
-                                        radix: self.radixCache!, prefillStepSize: params.prefillStepSize)
-                                } : nil
+                                processorPrompt: streamCachedTokens > 0 ? MLXArray(inputTokens) : nil,
+                                preparedPrefill: preparedPrefill,
+                                promptBoundaryObserver: promptBoundaryObserver
                             )
                         } catch {
                             if debugLogging {
@@ -4910,11 +5125,13 @@ public final class MLXModelService:
                         }
                         let (generationStream, generationTask) = MLXLMCommon.generateTask(
                             promptTokenCount: generateInput.text.tokens.size,
-                            modelConfiguration: context.configuration,
+                            modelConfiguration: Self.generationConfiguration(
+                                context.configuration, rawPrompt: rawPrompt),
                             tokenizer: context.tokenizer,
                             iterator: generationIterator,
                             stopAfterToolCall: params.stopAfterToolCall,
-                            ignoreEndOfSequence: params.ignoreEndOfSequence
+                            ignoreEndOfSequence: params.ignoreEndOfSequence,
+                            tools: toolSpecs
                         )
                         var generationWasCancelled = false
                         do {
@@ -4953,6 +5170,18 @@ public final class MLXModelService:
                                         }
                                         return t
                                     }()
+
+                                    if let chunks = jsonStopFilter?.consume(text, logprobs: resolved) {
+                                        for chunk in chunks {
+                                            continuation.yield(chunk)
+                                        }
+                                        pendingLogprobs = nil
+                                        if jsonStopFilter?.stopped == true {
+                                            streamScratch.streamStatStoppedBySequence = true
+                                            break
+                                        }
+                                        continue
+                                    }
 
                                     // Track think boundaries for stop sequence scoping
                                     let wasInsideThink = insideThink
@@ -5066,6 +5295,9 @@ public final class MLXModelService:
                                 stoppedBySequence: streamScratch.streamStatStoppedBySequence ? true : nil
                             ))
                         }
+                        if let tail = jsonStopFilter?.finish() {
+                            for chunk in tail { continuation.yield(chunk) }
+                        }
                         // Flush any remaining buffered text (no stop match found)
                         let remainingStopBuffer = stopBuffer.finish()
                         if !remainingStopBuffer.isEmpty {
@@ -5097,14 +5329,10 @@ public final class MLXModelService:
                             print("[\(ts())] [KVCache] Timing: TTFT=\(String(format: "%.3f", ttft))s total=\(String(format: "%.3f", total))s (streaming)")
                         }
 
-                        var saveTrimTime: Double? = nil
-                        var saveTruncateTime: Double? = nil
-                        var saveInsertTime: Double? = nil
-
                         // Save prompt cache state into radix tree.
                         // Skip when RotatingKVCache has wrapped (#94).
                         if useCache, let radix = self.radixCache, !inputTokens.isEmpty, !Task.isCancelled,
-                           !capturesReplayBoundaries,
+                           !capturesPromptBoundary,
                            !self.hasWrappedRotatingCache(generationCache) {
                             let promptLen = inputTokens.count
                             let tSave0 = Date.timeIntervalSinceReferenceDate
@@ -5228,7 +5456,7 @@ public final class MLXModelService:
 
         streamOwnsTempFiles = true
         endOperationOnExit = false
-        return (modelID, stream, promptTokens, toolTags?.start, toolTags?.end, self.thinkStartTag, self.thinkEndTag)
+        return (modelID, stream, promptTokens, toolTags?.start, toolTags?.end, serialOutputReasoning.start, serialOutputReasoning.end)
     }
 
     public func shutdownAndReleaseResources(verbose: Bool = false, timeoutSeconds: TimeInterval = 30) async {
@@ -5329,7 +5557,62 @@ public final class MLXModelService:
     }
 
     static func usesModelOwnedToolTemplate(parser: String?) -> Bool {
-        parser == nil || parser == "qwen3_xml"
+        // Match the compatibility-template selection in buildUserInput.
+        // Other parser choices leave the checkpoint template in place.
+        switch parser {
+        case "afm_adaptive_xml", "hermes", "llama3_json", "mistral":
+            return false
+        default:
+            return true
+        }
+    }
+
+    static func usesNativeQwenToolHistory(canonicalModelType: String?, parser: String?) -> Bool {
+        // These native templates render structured calls and wrap results.
+        // All share Qwen3VLProcessor; do not duplicate its restored metadata
+        // in generic fallback text. Both XML and JSON dialects are covered.
+        switch canonicalModelType {
+        case "qwen4_exp", "qwen3_5", "qwen3_5_moe", "qwen3_vl":
+            return usesModelOwnedToolTemplate(parser: parser)
+        default:
+            return false
+        }
+    }
+
+    static func templateOwnsToolHistory(
+        canonicalModelType: String?, parser: String?, hasCurrentTools: Bool = true,
+        hasBuiltinTemplate: Bool = false
+    ) -> Bool {
+        // Compatibility template overrides are applied only with current
+        // callable tools. History-only requests keep the native template,
+        // and built-in model templates win after compatibility overrides.
+        let parser = hasCurrentTools && !hasBuiltinTemplate ? parser : nil
+        if canonicalModelType == "apertus" { return true }
+        if canonicalModelType == "glm5_next" || canonicalModelType == "glm5_next_text" {
+            // GLM renders structured calls and wraps results itself. Generic
+            // JSON fallback calls in content teach a second, invalid dialect.
+            return usesModelOwnedToolTemplate(parser: parser)
+        }
+        return usesNativeQwenToolHistory(canonicalModelType: canonicalModelType, parser: parser)
+    }
+
+    static func assistantToolHistoryContent(
+        _ message: AFMOpenAICompat.Message, templateOwnsHistory: Bool
+    ) -> String {
+        let text = message.textContent
+        guard !templateOwnsHistory else { return text }
+        var parts = text.isEmpty ? [] : [text]
+        for call in message.toolCalls ?? [] {
+            parts.append("<tool_call>\n{\"name\": \"\(call.function.name)\", \"arguments\": \(call.function.arguments)}\n</tool_call>")
+        }
+        return parts.joined(separator: "\n")
+    }
+
+    static func toolResultHistoryContent(
+        _ text: String, name: String?, templateOwnsHistory: Bool
+    ) -> String {
+        guard !templateOwnsHistory, let name else { return text }
+        return "<tool_response>\n{\"name\": \"\(name)\", \"content\": \(text)}\n</tool_response>"
     }
 
     private static func nativeToolJSONChatTemplate(directory: URL) -> String? {
@@ -5955,6 +6238,22 @@ public final class MLXModelService:
     /// and <tool_call>{"name":"func","arguments":{...}}</tool_call> patterns.
     /// Returns extracted ToolCalls and remaining non-tool-call content.
     static func extractToolCallsFallback(from text: String, tools: [RequestTool]? = nil, allowMalformedRepair: Bool = false) -> ([ToolCall], String) {
+        let trimmedInput = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmedInput.hasPrefix("{"),
+           let data = trimmedInput.data(using: .utf8),
+           (try? JSONSerialization.jsonObject(with: data)) != nil {
+            // A complete JSON object is never an envelope-search surface:
+            // embedded XML/GLM examples belong to its argument strings.
+            guard let call = parseJSONToolCall(trimmedInput),
+                  tools == nil || tools?.contains(where: { $0.function.name == call.function.name }) == true
+            else { return ([], text) }
+            return ([call], "")
+        }
+        if trimmedInput.hasPrefix("<function=") {
+            // A bare function owns its parameter bodies just as a wrapped one
+            // does. Never promote literal inner <tool_call> examples to calls.
+            return extractBareXMLToolCalls(from: text, allowMalformedRepair: allowMalformedRepair)
+        }
         if text.contains("<|tools_prefix|>") {
             // Batch/raw-text generation must recognize the same complete native
             // envelopes as serial streaming, preserving malformed or partial text.
@@ -5973,6 +6272,15 @@ public final class MLXModelService:
             if let params = t.function.parameters { funcDict["parameters"] = params.toSendable() }
             return ["type": t.type, "function": funcDict] as [String: any Sendable]
         }
+        if let start = text.range(of: "<tool_call>"),
+           GLM4ToolCallParser.isNativeBody(String(text[start.upperBound...])) {
+            // The generic non-greedy regex cannot distinguish a literal closing
+            // tool tag inside a GLM arg_value from the envelope boundary.
+            let processor = ToolCallProcessor(format: .glm4, tools: toolSpecs)
+            let visible = (processor.processChunk(text) ?? "")
+                + (processor.finishPendingText() ?? "")
+            return (processor.toolCalls, visible.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
         let gemma4Matches = Self.gemma4WrappedToolCallRegex.matches(in: text, range: NSRange(text.startIndex..., in: text))
         for match in gemma4Matches.reversed() {
             guard let fullRange = Range(match.range, in: remaining) else { continue }
@@ -5983,27 +6291,28 @@ public final class MLXModelService:
             }
         }
 
-        // Match <tool_call>...</tool_call> blocks (dotMatchesLineSeparators for multiline)
-        let toolCallRegex = try! NSRegularExpression(
-            pattern: #"<tool_call>\s*(.*?)\s*</tool_call>"#,
-            options: [.dotMatchesLineSeparators]
-        )
-        let matches = toolCallRegex.matches(in: text, range: NSRange(text.startIndex..., in: text))
+        // Recognize envelope ends outside JSON strings and XML parameters.
+        let toolCallText = remaining
+        let matches = fallbackToolCallEnvelopes(in: toolCallText, allowMalformedRepair: allowMalformedRepair)
 
         if debugLogging && !matches.isEmpty {
             print("[\(ts())] [ToolCallParser] extractToolCallsFallback: found \(matches.count) <tool_call> block(s)")
         }
 
         for match in matches.reversed() {
-            guard let innerRange = Range(match.range(at: 1), in: text) else { continue }
-            let inner = String(text[innerRange])
+            let inner = String(toolCallText[match.bodyRange])
+
+            // Do not reinterpret XML examples embedded in valid JSON strings.
+            if let tc = parseJSONToolCall(inner) {
+                toolCalls.insert(tc, at: 0)
+                remaining.removeSubrange(match.range)
+                continue
+            }
 
             // Try XML function format: <function=name><parameter=key>value</parameter></function>
             if let tc = parseXMLFunction(inner) {
                 toolCalls.insert(tc, at: 0)
-                if let fullRange = Range(match.range, in: remaining) {
-                    remaining.removeSubrange(fullRange)
-                }
+                remaining.removeSubrange(match.range)
                 continue
             }
 
@@ -6018,9 +6327,7 @@ public final class MLXModelService:
             if inner.contains("<arg_key>") || knownNoArgumentGLMCall,
                let tc = GLM4ToolCallParser().parse(content: inner, tools: toolSpecs) {
                 toolCalls.insert(tc, at: 0)
-                if let fullRange = Range(match.range, in: remaining) {
-                    remaining.removeSubrange(fullRange)
-                }
+                remaining.removeSubrange(match.range)
                 continue
             }
 
@@ -6031,21 +6338,7 @@ public final class MLXModelService:
                     print("[\(ts())] [ToolCallParser] XML+embedded-JSON: \(tc.function.name)(\(tc.function.arguments.keys.joined(separator: ", ")))")
                 }
                 toolCalls.insert(tc, at: 0)
-                if let fullRange = Range(match.range, in: remaining) {
-                    remaining.removeSubrange(fullRange)
-                }
-                continue
-            }
-
-            // Try JSON format: {"name":"func","arguments":{...}}
-            if let tc = parseJSONToolCall(inner) {
-                if debugLogging {
-                    print("[\(ts())] [ToolCallParser] JSON-in-XML: \(tc.function.name)(\(tc.function.arguments.keys.joined(separator: ", ")))")
-                }
-                toolCalls.insert(tc, at: 0)
-                if let fullRange = Range(match.range, in: remaining) {
-                    remaining.removeSubrange(fullRange)
-                }
+                remaining.removeSubrange(match.range)
                 continue
             }
 
@@ -6058,9 +6351,7 @@ public final class MLXModelService:
                     print("[\(ts())] [ToolCallParser] Qwen malformed hybrid: \(tc.function.name)(\(tc.function.arguments.keys.joined(separator: ", ")))")
                 }
                 toolCalls.insert(tc, at: 0)
-                if let fullRange = Range(match.range, in: remaining) {
-                    remaining.removeSubrange(fullRange)
-                }
+                remaining.removeSubrange(match.range)
             }
         }
 
@@ -6148,45 +6439,7 @@ public final class MLXModelService:
         // Some models (e.g. Qwen3-Coder-Next) emit the XML function block directly,
         // sometimes with a trailing </tool_call> but no opening <tool_call>.
         if toolCalls.isEmpty {
-            let funcRegex = try! NSRegularExpression(
-                pattern: #"<function=([^>]+)>(.*?)</function>"#,
-                options: [.dotMatchesLineSeparators]
-            )
-            let funcMatches = funcRegex.matches(in: remaining, range: NSRange(remaining.startIndex..., in: remaining))
-            for match in funcMatches.reversed() {
-                let fullContent = String(remaining[Range(match.range, in: remaining)!])
-                if let tc = parseXMLFunction(fullContent) {
-                    if debugLogging {
-                        print("[\(ts())] [ToolCallParser] Bare XML function: \(tc.function.name)(\(tc.function.arguments.keys.joined(separator: ", ")))")
-                    }
-                    toolCalls.insert(tc, at: 0)
-                    if let fullRange = Range(match.range, in: remaining) {
-                        remaining.removeSubrange(fullRange)
-                    }
-                }
-            }
-            // Clean up orphaned </tool_call> tags
-            if !toolCalls.isEmpty {
-                remaining = remaining.replacingOccurrences(of: "</tool_call>", with: "")
-            }
-        }
-
-        // Fallback: bare JSON tool call (no wrapper tags)
-        // e.g. {"name":"get_weather","arguments":{"city":"Tokyo"}} or with "parameters"
-        if toolCalls.isEmpty {
-            let trimmed = remaining.trimmingCharacters(in: .whitespacesAndNewlines)
-            if trimmed.hasPrefix("{") && trimmed.hasSuffix("}") {
-                if let tc = parseJSONToolCall(trimmed),
-                   tools == nil || tools?.contains(where: {
-                       $0.function.name == tc.function.name
-                   }) == true {
-                    if debugLogging {
-                        print("[\(ts())] [ToolCallParser] Bare JSON: \(tc.function.name)(\(tc.function.arguments.keys.joined(separator: ", ")))")
-                    }
-                    toolCalls.append(tc)
-                    remaining = ""
-                }
-            }
+            (toolCalls, remaining) = extractBareXMLToolCalls(from: remaining, allowMalformedRepair: allowMalformedRepair)
         }
 
         if toolCalls.isEmpty {
@@ -6209,6 +6462,86 @@ public final class MLXModelService:
         }
 
         return (toolCalls, remaining)
+    }
+
+    /// Native envelopes use lexical framing. Explicit adaptive mode may also
+    /// recover its recognized malformed opener families, but only after a
+    /// complete candidate actually passes the compatibility parser. Iterate in
+    /// source order so valid and repaired adjacent calls cannot mask each other.
+    private static func fallbackToolCallEnvelopes(
+        in text: String, allowMalformedRepair: Bool
+    ) -> [(range: Range<String.Index>, bodyRange: Range<String.Index>)] {
+        guard allowMalformedRepair else {
+            return ToolCallEnvelopeScanner.envelopes(in: text).map { ($0.range, $0.bodyRange) }
+        }
+        var result: [(range: Range<String.Index>, bodyRange: Range<String.Index>)] = []
+        var cursor = text.startIndex
+        while let start = text.range(of: "<tool_call>", range: cursor..<text.endIndex) {
+            var end: Range<String.Index>?
+            if hasRepairableQwenOpener(text[start.upperBound...]) {
+                var candidateStart = start.upperBound
+                while let candidate = text.range(of: "</tool_call>", range: candidateStart..<text.endIndex) {
+                    if parseQwenMalformedToolCall(String(text[start.upperBound..<candidate.lowerBound])) != nil {
+                        end = candidate
+                        break
+                    }
+                    candidateStart = candidate.upperBound
+                }
+            }
+            if end == nil {
+                var scanner = ToolCallEnvelopeScanner()
+                end = scanner.closingTagRange(in: text, endTag: "</tool_call>", from: start.upperBound)
+            }
+            if end == nil, text[start.upperBound...].drop(while: { $0.isWhitespace }).hasPrefix("<function=") {
+                // Completed-text/EOF compatibility only: retain the existing
+                // salvage of a parameter missing its closing tag. Valid XML
+                // always uses the structural boundary above.
+                var candidateStart = start.upperBound
+                while let candidate = text.range(of: "</tool_call>", range: candidateStart..<text.endIndex) {
+                    if parseXMLFunction(String(text[start.upperBound..<candidate.lowerBound]), repairArguments: true) != nil {
+                        end = candidate
+                        break
+                    }
+                    candidateStart = candidate.upperBound
+                }
+            }
+            guard let end else { break }
+            result.append((start.lowerBound..<end.upperBound, start.upperBound..<end.lowerBound))
+            cursor = end.upperBound
+        }
+        return result
+    }
+
+    private static func extractBareXMLToolCalls(
+        from text: String, allowMalformedRepair: Bool
+    ) -> ([ToolCall], String) {
+        var ranges = ToolCallEnvelopeScanner.envelopes(
+            in: text, startTag: "<function=", endTag: "</function>", syntax: .xmlFunction).map(\.range)
+        if ranges.isEmpty, allowMalformedRepair {
+            let regex = try! NSRegularExpression(pattern: #"<function=[^>]+>[\s\S]*?</function>"#)
+            ranges = regex.matches(in: text, range: NSRange(text.startIndex..., in: text))
+                .compactMap { Range($0.range, in: text) }
+        }
+        var remaining = text
+        var calls: [ToolCall] = []
+        for range in ranges.reversed() {
+            if let call = parseXMLFunction(String(text[range]), repairArguments: allowMalformedRepair) {
+                calls.insert(call, at: 0)
+                remaining.removeSubrange(range)
+            }
+        }
+        if !calls.isEmpty {
+            remaining = remaining.replacingOccurrences(of: "</tool_call>", with: "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return (calls, remaining)
+    }
+
+    static func hasRepairableQwenOpener(_ text: Substring) -> Bool {
+        var body = text.drop(while: { $0.isWhitespace })
+        guard body.first == "{" else { return false }
+        body = body.dropFirst().drop(while: { $0.isWhitespace })
+        return body.hasPrefix("\"name=") || body.hasPrefix("\"function=") || body.hasPrefix("\"function>")
     }
 
     /// Parse <function=name><parameter=key>value</parameter></function> via regex.
@@ -6337,14 +6670,13 @@ public final class MLXModelService:
         funcName: String,
         repairArguments: Bool = true
     ) -> ToolCall? {
-        let funcRegex = try! NSRegularExpression(
-            pattern: #"<function=([^>]+)>(.*?)</function>"#,
-            options: [.dotMatchesLineSeparators]
-        )
-        guard let funcMatch = funcRegex.firstMatch(in: content, range: NSRange(content.startIndex..., in: content)),
-              let bodyRange = Range(funcMatch.range(at: 2), in: content) else {
-            return nil
-        }
+        guard let header = content.range(of: #"<function=[^>]+>"#, options: .regularExpression)
+        else { return nil }
+        var scanner = ToolCallEnvelopeScanner(syntax: .xmlFunction)
+        guard let end = scanner.closingTagRange(in: content, endTag: "</function>", from: header.upperBound)
+            ?? (repairArguments ? content.range(of: "</function>", range: header.upperBound..<content.endIndex) : nil)
+        else { return nil }
+        let bodyRange = header.upperBound..<end.lowerBound
         let body = String(content[bodyRange])
         // -VV: Log raw XML body exactly as model generated it
         if traceLogging {
@@ -7791,9 +8123,19 @@ public final class MLXModelService:
         // (e.g. Qwen3.5). The OpenAI API allows multiple system messages, so
         // we consolidate them here for broader compatibility.
         var pendingSystemParts: [String] = []
-        let usesApertusTemplate = withStateLock {
-            currentModelArchitecture?.canonicalModelType == "apertus"
+        let historyModelType = withStateLock {
+            currentModelArchitecture?.canonicalModelType
         }
+        let hasTools = tools != nil && !tools!.isEmpty
+        let usesApertusTemplate = historyModelType == "apertus"
+        // Native templates render structured calls and wrap tool
+        // results itself. A text fallback here duplicates calls and injects
+        // JSON-like braces into returned source files. Keep legacy and forced
+        // parser behavior unchanged pending their independent qualification.
+        let templateOwnsToolHistory = Self.templateOwnsToolHistory(
+            canonicalModelType: historyModelType,
+            parser: resolvedChatTemplateToolCallParser(logBypass: false),
+            hasCurrentTools: hasTools, hasBuiltinTemplate: builtinChatTemplate != nil)
         func flushSystemParts() {
             guard !pendingSystemParts.isEmpty else { return }
             hasSystemMessage = true
@@ -7812,10 +8154,8 @@ public final class MLXModelService:
                 if let toolCalls = m.toolCalls, !toolCalls.isEmpty {
                     // Pass structured tool calls for templates that check message['tool_calls']
                     // (e.g. Gemma 4 uses native <|tool_call>...<tool_call|> format).
-                    // Also include text fallback for templates that only read content.
+                    // Only legacy templates need an additional content fallback.
                     var structuredCalls: [[String: Any]] = []
-                    var textParts: [String] = []
-                    if !text.isEmpty { textParts.append(text) }
                     for tc in toolCalls {
                         // Parse arguments string into dict if possible
                         var argsValue: Any = tc.function.arguments
@@ -7834,12 +8174,12 @@ public final class MLXModelService:
                             structuredCalls.append([
                                 "function": ["name": tc.function.name, "arguments": argsValue]
                             ])
-                            textParts.append("<tool_call>\n{\"name\": \"\(tc.function.name)\", \"arguments\": \(tc.function.arguments)}\n</tool_call>")
                         }
                     }
-                    var msg = Chat.Message(
+                    let msg = Chat.Message(
                         role: .assistant,
-                        content: textParts.joined(separator: "\n"),
+                        content: Self.assistantToolHistoryContent(
+                            m, templateOwnsHistory: templateOwnsToolHistory),
                         toolCalls: structuredCalls
                     )
                     chatMessages.append(msg)
@@ -7883,12 +8223,11 @@ public final class MLXModelService:
                     } else {
                         toolContent = String(decoding: try JSONEncoder().encode(text), as: UTF8.self)
                     }
-                } else if let name = resolvedName {
-                    toolContent = "<tool_response>\n{\"name\": \"\(name)\", \"content\": \(text)}\n</tool_response>"
                 } else {
-                    toolContent = text
+                    toolContent = Self.toolResultHistoryContent(
+                        text, name: resolvedName, templateOwnsHistory: templateOwnsToolHistory)
                 }
-                var msg = Chat.Message(role: .tool, content: toolContent, name: resolvedName, toolResponses: toolResponses)
+                let msg = Chat.Message(role: .tool, content: toolContent, name: resolvedName, toolResponses: toolResponses)
                 chatMessages.append(msg)
             default:
                 flushSystemParts()
@@ -7953,7 +8292,6 @@ public final class MLXModelService:
         }
 
         var input = UserInput(chat: chatMessages, processing: .init(resize: .init(width: 1024, height: 1024)), tools: tools)
-        let hasTools = tools != nil && !tools!.isEmpty
         var appliedChatTemplateOverride = false
 
         // Compatibility parsers can override the chat template. Native Qwen XML
@@ -8443,19 +8781,14 @@ public final class MLXModelService:
         !(cache is RotatingKVCache)
     }
 
-    /// Experimental shared replay capture. Kept opt-in until cold-prefill cost
-    /// and restore equivalence are qualified for each architecture.
-    private func shouldCaptureSerialReplayBoundaries(
-        model: any LanguageModel, input: LMInput, cache: [KVCache], parameters: GenerateParameters
+    /// Hybrid/recurrent state cannot be reconstructed by trimming a later cache.
+    /// Capture its exact prompt boundary before decode mutates it. The matching
+    /// raw logits are persisted with the state, so exact replay does not need an
+    /// empty model call or an architecture-specific prefill implementation.
+    private func shouldCaptureSerialPromptBoundary(
+        input: LMInput, cache: [KVCache], parameters: GenerateParameters
     ) -> Bool {
-        ProcessInfo.processInfo.environment["AFM_PREFIX_REPLAY_BOUNDARIES"] == "1"
-            // The helper is reusable, but bypassing model.prepare requires
-            // architecture qualification. Do not activate other adapters yet.
-            // The VL wrapper additionally creates positionDeltas in prepare,
-            // even for text input. Its continuation state needs a separate
-            // replay adapter; do not bypass that preparation here.
-            && model is Qwen4ExpModel
-            && radixCache != nil && !isMultimodalInput(input)
+        radixCache != nil && !isMultimodalInput(input)
             && parameters.kvBits == nil && input.text.tokens.size > 0
             && MLXPrefixReplayPolicy.requiresExactBoundaryRestore(cache)
     }
@@ -8484,14 +8817,16 @@ public final class MLXModelService:
         prefixLen: Int,
         inputTokenCount: Int,
         requiresExactBoundary: Bool,
-        sourceTokenCount: Int?
+        sourceTokenCount: Int?,
+        modelType: any LanguageModel.Type
     ) -> Int {
         MLXPrefixReplayPolicy.effectivePrefixLength(
             matchedPrefix: prefixLen,
             inputTokenCount: inputTokenCount,
             requiresExactBoundary: requiresExactBoundary,
             forcedSuffix: unsafeExactReplaySuffix(),
-            sourceTokenCount: sourceTokenCount
+            sourceTokenCount: sourceTokenCount,
+            allowsSingletonExtension: MLXPrefixReplayPolicy.allowsSingletonPrefixExtension(modelType: modelType)
         )
     }
 
@@ -8953,14 +9288,17 @@ public final class MLXModelService:
             {%- endif %}
             {{- '<|eot_id|>' }}
         {%- elif 'tool_calls' in message %}
-            {%- set tool_call = message.tool_calls[0].function %}
             {{- '<|start_header_id|>assistant<|end_header_id|>\\n\\n' -}}
+            {%- for history_call in message.tool_calls %}
+            {%- set tool_call = history_call.function %}
+            {%- if not loop.first %}{{- '\\n' }}{%- endif %}
             {{- '<tool_call>\\n' }}
             {{- '{"name": "' + tool_call.name + '", ' }}
             {{- '"arguments": ' }}
             {{- tool_call.arguments | tojson }}
             {{- '}\\n' }}
             {{- '</tool_call>' }}
+            {%- endfor %}
             {{- "<|eot_id|>" }}
         {%- elif message.role == "tool" or message.role == "ipython" %}
             {{- "<|start_header_id|>ipython<|end_header_id|>\\n\\n" }}

@@ -23,6 +23,24 @@ enum Qwen4ExpHyperConnectionFusion {
             "AFM_QWEN_FUSED_HC_PREFILL_NORM"
         ] != "0"
 
+    /// Avoid materializing sigmoid(up), its elementwise product with every HC
+    /// stream, and the HC reduction as three separate graph operations. Live
+    /// API/cache qualification and graph-equivalence tests cover the default;
+    /// retain `0` only as a diagnostic and recovery escape hatch.
+    private static let prefillMixEnabled =
+        ProcessInfo.processInfo.environment[
+            "AFM_QWEN_FUSED_HC_PREFILL_MIX"
+        ] != "0"
+
+    /// Assign four hidden values to each thread for grouped prefill
+    /// normalization (640 threads at Qwen Next's hidden size 2,560). This
+    /// matches the qualified reference launch geometry; retain `0` as a
+    /// diagnostic fallback.
+    private static let prefillReferenceNormGeometryEnabled =
+        ProcessInfo.processInfo.environment[
+            "AFM_QWEN_HC_PREFILL_REFERENCE_NORM_GEOMETRY"
+        ] != "0"
+
     private static let enabled =
         ProcessInfo.processInfo.environment["AFM_QWEN_FUSED_HYPER_CONNECTION"] != "0"
 
@@ -106,8 +124,8 @@ enum Qwen4ExpHyperConnectionFusion {
             const uint simd_group = simdgroup_index_in_threadgroup;
             const uint stream = threadgroup_position_in_grid.x;
             const uint row = threadgroup_position_in_grid.y;
-            threadgroup float sums[8];
-            constexpr int elements_per_thread = HIDDEN / 256;
+            threadgroup float sums[THREADS / 32];
+            constexpr int elements_per_thread = HIDDEN / THREADS;
             const int stream_base = int(stream) * HIDDEN;
             const device T* input = x_in + size_t(row) * size_t(HC * HIDDEN);
             device T* output = normalized + size_t(row) * size_t(HC * HIDDEN);
@@ -115,7 +133,7 @@ enum Qwen4ExpHyperConnectionFusion {
             float values[elements_per_thread];
             float sum = 0.0f;
             for (int element = 0; element < elements_per_thread; ++element) {
-                const int index = stream_base + int(tid) + 256 * element;
+                const int index = stream_base + int(tid) + THREADS * element;
                 const float value = float(input[index]);
                 values[element] = value;
                 sum += value * value;
@@ -124,16 +142,107 @@ enum Qwen4ExpHyperConnectionFusion {
             if (lane == 0) sums[simd_group] = sum;
             threadgroup_barrier(mem_flags::mem_threadgroup);
             float total = 0.0f;
-            for (int group = 0; group < 8; ++group) total += sums[group];
+            for (int group = 0; group < THREADS / 32; ++group) total += sums[group];
             const float inverse_rms = precise::rsqrt(
                 total / float(HIDDEN) + epsilon);
 
             for (int element = 0; element < elements_per_thread; ++element) {
-                const int index = stream_base + int(tid) + 256 * element;
+                const int index = stream_base + int(tid) + THREADS * element;
                 output[index] = T(values[element] * inverse_rms
                     * (float(norm_weight[index]) + 1.0f));
             }
         """)
+
+    /// Long-prefill layer-boundary fusion. The ordinary graph materializes
+    /// `stream + output * weights` and then launches grouped RMSNorm. Folding
+    /// the pending write into normalization removes one full-width read/write
+    /// of the HC stream without changing the projection or MoE graphs.
+    ///
+    /// The scheduling idea and two-rounding pending-write contract follow
+    /// ddalcu/mlx-serve's `hc_prefill_norm.metal` (MIT licensed). The norm
+    /// itself deliberately preserves AFM's qualified single final rounding.
+    private static let prefillNormalizePendingKernel = MLXFast.metalKernel(
+        name: "qwen4_exp_hc_prefill_normalize_pending",
+        inputNames: [
+            "x_in", "norm_weight", "epsilon", "pending_output", "pending_weights",
+        ],
+        outputNames: ["normalized", "next_stream"],
+        source: """
+            const uint tid = thread_index_in_threadgroup;
+            const uint lane = thread_index_in_simdgroup;
+            const uint simd_group = simdgroup_index_in_threadgroup;
+            const uint stream = threadgroup_position_in_grid.x;
+            const uint row = threadgroup_position_in_grid.y;
+            threadgroup float sums[THREADS / 32];
+            constexpr int elements_per_thread = HIDDEN / THREADS;
+            const int stream_base = int(stream) * HIDDEN;
+            const device T* input = x_in + size_t(row) * size_t(HC * HIDDEN);
+            const device T* pending = pending_output + size_t(row) * size_t(HIDDEN);
+            const float gate = float(
+                pending_weights[size_t(row) * size_t(HC) + stream]);
+            device T* output = normalized + size_t(row) * size_t(HC * HIDDEN);
+            device T* written = next_stream + size_t(row) * size_t(HC * HIDDEN);
+
+            float values[elements_per_thread];
+            float sum = 0.0f;
+            for (int element = 0; element < elements_per_thread; ++element) {
+                const int index = stream_base + int(tid) + THREADS * element;
+                const T delta = T(float(pending[index - stream_base]) * gate);
+                const T value = T(float(input[index]) + float(delta));
+                written[index] = value;
+                values[element] = float(value);
+                sum += float(value) * float(value);
+            }
+            sum = simd_sum(sum);
+            if (lane == 0) sums[simd_group] = sum;
+            threadgroup_barrier(mem_flags::mem_threadgroup);
+            float total = 0.0f;
+            for (int group = 0; group < THREADS / 32; ++group) total += sums[group];
+            const float inverse_rms = precise::rsqrt(
+                total / float(HIDDEN) + epsilon);
+
+            for (int element = 0; element < elements_per_thread; ++element) {
+                const int index = stream_base + int(tid) + THREADS * element;
+                output[index] = T(values[element] * inverse_rms
+                    * (float(norm_weight[index]) + 1.0f));
+            }
+        """)
+
+    /// Long-prefill HC mixer adapted from ddalcu/mlx-serve's
+    /// `hc_prefill_mix.metal` (MIT licensed). A BF16 sigmoid lookup table keeps
+    /// the same rounded sigmoid values as MLX while one pass performs the
+    /// multiply and HC mean, eliminating two full-width intermediates.
+    private static let prefillMixKernel = MLXFast.metalKernel(
+        name: "qwen4_exp_hc_prefill_mix",
+        inputNames: ["up", "normalized", "sigmoid_table"],
+        outputNames: ["mixed"],
+        source: """
+            const uint index = thread_position_in_grid.x;
+            if (index >= uint(ROWS * HIDDEN)) return;
+            const uint row = index / HIDDEN;
+            const uint column = index - row * HIDDEN;
+            T value = T(0.0f);
+            for (int stream = 0; stream < HC; ++stream) {
+                const size_t offset = (size_t(row) * size_t(HC) + stream)
+                    * size_t(HIDDEN) + column;
+                const T sigmoid_value = sigmoid_table[as_type<ushort>(up[offset])];
+                const T product = T(float(sigmoid_value) * float(normalized[offset]));
+                value = stream == 0 ? product : T(float(product) + float(value));
+            }
+            // Match MLX mean: materialize the reciprocal in T before multiply.
+            mixed[index] = T(float(value) * float(T(1.0f / float(HC))));
+        """)
+
+    // Materialized once on first use. Every UInt16 bit pattern is represented
+    // by the corresponding BF16 value before MLX computes the lookup result.
+    nonisolated(unsafe) private static let sigmoidTableBF16: MLXArray = {
+        let values = (0 ..< (1 << 16)).map { index in
+            Float(bitPattern: UInt32(index) << 16)
+        }
+        let table = MLX.sigmoid(MLXArray(values).asType(.bfloat16))
+        MLX.eval(table)
+        return table
+    }()
 
     static func normalizeGroupedPrefill(
         input: MLXArray,
@@ -153,8 +262,13 @@ enum Qwen4ExpHyperConnectionFusion {
 
         let hcCount = input.dim(-1) / groupSize
         let rows = input.size / input.dim(-1)
+        let threadCount = prefillReferenceNormGeometryEnabled
+            ? groupSize / 4 : 256
         guard rows >= 128,
               hcCount > 1, hcCount <= 8,
+              threadCount >= 32, threadCount <= 1_024,
+              threadCount.isMultiple(of: 32),
+              groupSize.isMultiple(of: threadCount),
               normWeight.shape == [input.dim(-1)]
         else { return nil }
 
@@ -163,12 +277,106 @@ enum Qwen4ExpHyperConnectionFusion {
             [input, normWeight, epsilonArray],
             template: [
                 ("T", input.dtype), ("HC", hcCount), ("HIDDEN", groupSize),
+                ("THREADS", threadCount),
             ],
-            grid: (256 * hcCount, rows, 1),
-            threadGroup: (256, 1, 1),
+            grid: (threadCount * hcCount, rows, 1),
+            threadGroup: (threadCount, 1, 1),
             outputShapes: [[rows, hcCount * groupSize]],
             outputDTypes: [input.dtype],
             cacheConfiguration: true)[0].reshaped(input.shape)
+    }
+
+    static func normalizeGroupedPrefillAfterInjection(
+        input: MLXArray,
+        normWeight: MLXArray,
+        output: MLXArray,
+        weights: MLXArray,
+        groupSize: Int,
+        epsilon: Float
+    ) -> (normalized: MLXArray, stream: MLXArray)? {
+        guard prefillNormalizationEnabled,
+              Device.defaultDevice().deviceType == .gpu,
+              input.ndim == 3,
+              input.dtype == .bfloat16 || input.dtype == .float16,
+              normWeight.dtype == input.dtype,
+              output.dtype == input.dtype,
+              weights.dtype == input.dtype,
+              input.dim(-1).isMultiple(of: groupSize),
+              groupSize.isMultiple(of: 256),
+              groupSize > 0
+        else { return nil }
+
+        let hcCount = input.dim(-1) / groupSize
+        let rows = input.size / input.dim(-1)
+        let threadCount = prefillReferenceNormGeometryEnabled
+            ? groupSize / 4 : 256
+        // Match the reference's qualified long-prefill envelope. Decode and
+        // speculative widths retain their separately qualified kernels.
+        guard rows >= 128, rows <= 8_447,
+              hcCount > 1, hcCount <= 8,
+              threadCount >= 32, threadCount <= 1_024,
+              threadCount.isMultiple(of: 32),
+              groupSize.isMultiple(of: threadCount),
+              normWeight.shape == [input.dim(-1)],
+              output.size == rows * groupSize,
+              weights.size == rows * hcCount
+        else { return nil }
+
+        let epsilonArray = MLXArray(epsilon)
+        let result = prefillNormalizePendingKernel(
+            [input, normWeight, epsilonArray, output, weights],
+            template: [
+                ("T", input.dtype), ("HC", hcCount), ("HIDDEN", groupSize),
+                ("THREADS", threadCount),
+            ],
+            grid: (threadCount * hcCount, rows, 1),
+            threadGroup: (threadCount, 1, 1),
+            outputShapes: [
+                [rows, hcCount * groupSize],
+                [rows, hcCount * groupSize],
+            ],
+            outputDTypes: [input.dtype, input.dtype],
+            cacheConfiguration: true)
+        return (
+            result[0].reshaped(input.shape),
+            result[1].reshaped(input.shape))
+    }
+
+    static func mixGroupedPrefill(
+        up: MLXArray,
+        normalized: MLXArray,
+        groupSize: Int,
+        forceEnabledForTesting: Bool = false
+    ) -> MLXArray? {
+        guard (prefillMixEnabled || forceEnabledForTesting),
+              Device.defaultDevice().deviceType == .gpu,
+              up.ndim >= 2,
+              up.dtype == .bfloat16,
+              normalized.dtype == up.dtype,
+              normalized.shape == up.shape,
+              up.dim(-1).isMultiple(of: groupSize),
+              groupSize.isMultiple(of: 256),
+              groupSize > 0
+        else { return nil }
+
+        let hcCount = up.dim(-1) / groupSize
+        let rows = up.size / up.dim(-1)
+        guard rows >= 128, rows <= 8_447,
+              hcCount > 1, hcCount <= 8
+        else { return nil }
+
+        let mixed = prefillMixKernel(
+            [up, normalized, sigmoidTableBF16],
+            template: [
+                ("T", up.dtype), ("HC", hcCount), ("HIDDEN", groupSize),
+                ("ROWS", rows),
+            ],
+            grid: (rows * groupSize, 1, 1),
+            threadGroup: (256, 1, 1),
+            outputShapes: [[rows, groupSize]],
+            outputDTypes: [up.dtype],
+            cacheConfiguration: true)[0]
+        return mixed.reshaped(Array(up.shape.dropLast()) + [groupSize])
     }
 
     private static let normalizeKernel = MLXFast.metalKernel(

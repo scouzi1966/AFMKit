@@ -79,6 +79,12 @@ public protocol KVCache: Evaluatable, Updatable {
     ) -> MLXFast.ScaledDotProductAttentionMaskMode
 }
 
+/// Marker for caches whose state tensors are replaced, rather than mutated in
+/// place, when generation advances. A retained state snapshot may safely share
+/// already-contiguous buffers with these caches because subsequent updates
+/// rebind the cache to new arrays.
+public protocol CopyOnWriteKVCacheState: KVCache {}
+
 /// A model-owned cache whose batch dimension can be combined only when every
 /// sequence has the same logical offset. Hybrid recurrent models use this
 /// contract to preserve their concrete cache types while still enabling a

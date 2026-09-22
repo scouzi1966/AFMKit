@@ -557,6 +557,11 @@ public final class AFMMLXModel: AFMModel, AFMTextTokenizing, AFMPrewarmableModel
                         throw AFMError.generationFailed("MLX service is unavailable.")
                     }
                     let tools = request.effectiveOpenAITools()
+                    let responseFormat = request.openAIResponseFormat()
+                    // In JSON output, marker strings are data, not reasoning delimiters.
+                    // Match the HTTP streaming path at both the token and event boundaries.
+                    let preserveJSONMarkers = responseFormat?.type == "json_object"
+                        || responseFormat?.type == "json_schema"
                     let result = try await AFMGenerationContext.$requestedMaximumOutputTokens
                         .withValue(request.options.maximumResponseTokens) {
                             try await AFMGenerationContext.$ignoreEndOfSequence.withValue(
@@ -578,8 +583,9 @@ public final class AFMMLXModel: AFMModel, AFMTextTokenizing, AFMPrewarmableModel
                                     tools: tools,
                                     parallelToolCalls: request.parallelToolCalls,
                                     stop: request.options.stopSequences,
-                                    responseFormat: request.openAIResponseFormat(),
+                                    responseFormat: responseFormat,
                                     chatTemplateKwargs: request.chatTemplateKwargs(),
+                                    preserveStructuralTags: preserveJSONMarkers,
                                     requestId: requestID
                                 )
                             }
@@ -588,7 +594,8 @@ public final class AFMMLXModel: AFMModel, AFMTextTokenizing, AFMPrewarmableModel
                         thinkStartTag: result.thinkStartTag,
                         thinkEndTag: result.thinkEndTag,
                         maximumResponseTokens: request.options.maximumResponseTokens,
-                        tools: tools
+                        tools: tools,
+                        preserveReasoningMarkers: preserveJSONMarkers
                     )
                     let streamService = service
                     var rawToolFallback = AFMMLXRawToolStreamFallback(
@@ -638,14 +645,19 @@ public final class AFMMLXModel: AFMModel, AFMTextTokenizing, AFMPrewarmableModel
                         }
                     }
                     let finalEvents = translator.finish().map(Self.sanitizedToolCallEvent)
+                    var finishReason: AFMFinishReason = .stop
                     for event in finalEvents {
                         if case .toolCall(let call, .completed) = event {
                             completedToolCalls.append(call)
                         }
+                        if case .completed(let reason) = event {
+                            finishReason = reason
+                        }
                     }
                     try AFMMLXToolPolicy.validateCompletedToolCalls(
                         completedToolCalls,
-                        for: request
+                        for: request,
+                        finishReason: finishReason
                     )
                     for event in finalEvents {
                         telemetry.observe(event)
@@ -986,16 +998,20 @@ struct AFMMLXRawToolStreamFallback {
 
     mutating func finish() -> [StreamChunk] {
         guard let runtime else { return [] }
-        return BatchScheduler.streamChunksToEmit(
+        var chunks = BatchScheduler.streamChunksToEmit(
             from: runtime.finishIncompleteToolCall()
         )
+        let pending = runtime.finishPendingText()
+        if !pending.isEmpty { chunks.append(StreamChunk(text: pending)) }
+        return chunks
     }
 }
 
 enum AFMMLXToolPolicy {
     static func validateCompletedToolCalls(
         _ calls: [AFMToolCall],
-        for request: AFMRequest
+        for request: AFMRequest,
+        finishReason: AFMFinishReason = .stop
     ) throws {
         guard request.requiresToolCall else { return }
         guard !request.tools.isEmpty else {
@@ -1003,6 +1019,11 @@ enum AFMMLXToolPolicy {
                 "Tool calling is required, but no tools are enabled."
             )
         }
+        // A valid request can spend its budget before completing a tool call.
+        // Preserve the finalized length/usage response instead of reclassifying
+        // that truncation as a request failure. Explicit stop still rejects an
+        // absent required call, even when its token count equals the budget.
+        guard finishReason != .length else { return }
         guard !calls.isEmpty else {
             throw AFMError.generationFailed(
                 "The model returned no tool call while tool calling was required."
@@ -1270,7 +1291,10 @@ extension AFMRequest {
                     name: $0.name,
                     description: $0.description,
                     parameters: AnyCodable($0.inputSchema.foundationValue),
-                    strict: $0.strict ?? true
+                    // Preserve omission as well as explicit true/false. Adding
+                    // strict here changes both the model's prompt and the
+                    // request's grammar-constraint opt-in at the HTTP boundary.
+                    strict: $0.strict
                 )
             )
         }

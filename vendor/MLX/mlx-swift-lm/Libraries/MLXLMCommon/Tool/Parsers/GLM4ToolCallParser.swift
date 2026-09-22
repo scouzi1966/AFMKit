@@ -10,14 +10,39 @@ public struct GLM4ToolCallParser: ToolCallParser, Sendable {
 
     public init() {}
 
-    public func parse(content: String, tools: [[String: any Sendable]]?) -> ToolCall? {
-        // Strip tags if present
-        var text = content
-        if let start = startTag {
-            text = text.replacingOccurrences(of: start, with: "")
+    public static func isNativeBody(_ body: String) -> Bool {
+        let body = body.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let key = body.range(of: "<arg_key>") else { return false }
+        let name = body[..<key.lowerBound].trimmingCharacters(in: .whitespacesAndNewlines)
+        return !name.isEmpty && name.allSatisfy { $0.isLetter || $0.isNumber || "_.-".contains($0) }
+    }
+
+    /// Locate the envelope end, not a delimiter quoted inside an argument.
+    /// An incomplete arg_value must stay buffered even if it contains a full
+    /// tool end marker. Shared by serial generation and AFM's batch adapter.
+    public static func closingTagRange(in text: String, from start: String.Index? = nil) -> Range<String.Index>? {
+        var cursor = start ?? text.startIndex
+        while cursor < text.endIndex {
+            let remaining = cursor..<text.endIndex
+            let end = text.range(of: "</tool_call>", range: remaining)
+            guard let value = text.range(of: "<arg_value>", range: remaining),
+                  end == nil || value.lowerBound < end!.lowerBound else { return end }
+            guard let valueEnd = text.range(of: "</arg_value>", range: value.upperBound..<text.endIndex)
+            else { return nil }
+            cursor = valueEnd.upperBound
         }
-        if let end = endTag {
-            text = text.replacingOccurrences(of: end, with: "")
+        return nil
+    }
+
+    public func parse(content: String, tools: [[String: any Sendable]]?) -> ToolCall? {
+        // Remove only the outer envelope. Marker-shaped argument data is not
+        // framing and must survive byte-for-byte.
+        var text = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let start = startTag, text.hasPrefix(start) {
+            text = String(text.dropFirst(start.count))
+        }
+        if let end = endTag, text.hasSuffix(end) {
+            text = String(text.dropLast(end.count))
         }
         text = text.trimmingCharacters(in: .whitespacesAndNewlines)
 
@@ -61,11 +86,10 @@ public struct GLM4ToolCallParser: ToolCallParser, Sendable {
             else { break }
 
             let value = String(text[valueStart.upperBound ..< valueEnd.lowerBound])
-                .trimmingCharacters(in: .whitespacesAndNewlines)
 
             // GLM4: deserialize if NOT a string type in schema
             if !isStringType(funcName: funcName, argName: key, tools: tools) {
-                arguments[key] = deserialize(value)
+                arguments[key] = deserialize(value.trimmingCharacters(in: .whitespacesAndNewlines))
             } else {
                 arguments[key] = value
             }

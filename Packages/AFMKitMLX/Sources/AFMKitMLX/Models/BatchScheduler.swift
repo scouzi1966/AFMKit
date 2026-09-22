@@ -281,7 +281,9 @@ actor BatchScheduler {
         let thinkStartTag: String?
         let thinkEndTag: String?
         var stopBuffer = ""
+        var reasoningBuffer = ""
         var insideThink = false
+        var jsonStopFilter: MLXJSONStopFilter?
         var stoppedBySequence = false
         let speculativeSession: SpeculativeSession?
 
@@ -312,6 +314,8 @@ actor BatchScheduler {
             activeStops: [String],
             thinkStartTag: String?,
             thinkEndTag: String?,
+            templateOpenedThink: Bool = false,
+            jsonStopFilter: MLXJSONStopFilter? = nil,
             computeLogprobs: Bool = false,
             topLogprobsCount: Int = 0,
             temperatureForLogprobs: Float = 1.0,
@@ -350,6 +354,8 @@ actor BatchScheduler {
             self.maxStopLength = activeStops.map(\.count).max() ?? 0
             self.thinkStartTag = thinkStartTag
             self.thinkEndTag = thinkEndTag
+            self.insideThink = templateOpenedThink
+            self.jsonStopFilter = jsonStopFilter
             self.computeLogprobs = computeLogprobs
             self.topLogprobsCount = topLogprobsCount
             self.temperatureForLogprobs = temperatureForLogprobs
@@ -623,6 +629,8 @@ actor BatchScheduler {
         let stopSequences: [String]
         let thinkStartTag: String?
         let thinkEndTag: String?
+        let templateOpenedThink: Bool
+        let jsonStopFilter: MLXJSONStopFilter?
         let continuation: AsyncThrowingStream<StreamChunk, Error>.Continuation
         let usesGLMMTP: Bool
         let usesQwenMTP: Bool
@@ -830,7 +838,7 @@ actor BatchScheduler {
         self.qwenMTPReplayBackoffOnMiss = ProcessInfo.processInfo.environment[
             "AFM_QWEN_MTP_REPLAY_BACKOFF_ON_MISS"] == "1"
         self.qwenARReplayBackoffTokens = model is Qwen4ExpModel && enablePrefixCaching
-            ? Self.qwenMTPReplayBackoffTokenCount(
+            ? Self.qwenARReplayBackoffTokenCount(
                 ProcessInfo.processInfo.environment["AFM_QWEN_PREFIX_REPLAY_BACKOFF"]) : 0
         self.glmMTPPromptReplayCache = glmMTPPromptReplayCache
         self.glmMTPReplayModelID = Self.glmMTPReplayModelID(
@@ -920,6 +928,8 @@ actor BatchScheduler {
         stopSequences: [String] = [],
         thinkStartTag: String? = nil,
         thinkEndTag: String? = nil,
+        templateOpenedThink: Bool = false,
+        jsonStopFilter: MLXJSONStopFilter? = nil,
         requestId: String = "",
         usesGLMMTP: Bool = false,
         usesQwenMTP: Bool = false
@@ -951,6 +961,8 @@ actor BatchScheduler {
                 stopSequences: stopSequences,
                 thinkStartTag: thinkStartTag,
                 thinkEndTag: thinkEndTag,
+                templateOpenedThink: templateOpenedThink,
+                jsonStopFilter: jsonStopFilter,
                 continuation: continuation,
                 usesGLMMTP: usesGLMMTP,
                 usesQwenMTP: usesQwenMTP
@@ -1561,10 +1573,15 @@ actor BatchScheduler {
         let ids = req.input.text.tokens.reshaped(-1).asArray(Int.self)
         let match = radix.findExactBoundaryMatch(ids)
         guard match.prefixLen > 0, match.layerStates != nil else { return max(1, count) }
+        if MLXPrefixReplayPolicy.exactReplayLogits(
+            from: match, inputTokenCount: count, requiresExactBoundary: true) != nil {
+            return 1
+        }
         let prefix = Self.effectiveCachedPrefixLength(
             matchedPrefix: match.prefixLen, inputTokenCount: count,
             hasRecurrentLayers: true, forcedSuffix: unsafeExactReplaySuffix(),
-            sourceTokenCount: match.sourceTokenCount)
+            sourceTokenCount: match.sourceTokenCount,
+            allowsSingletonExtension: MLXPrefixReplayPolicy.allowsSingletonPrefixExtension(modelType: type(of: model)))
         return max(1, count - prefix)
     }
 
@@ -1575,14 +1592,16 @@ actor BatchScheduler {
         inputTokenCount: Int,
         hasRecurrentLayers: Bool,
         forcedSuffix: Int?,
-        sourceTokenCount: Int? = nil
+        sourceTokenCount: Int? = nil,
+        allowsSingletonExtension: Bool = true
     ) -> Int {
         MLXPrefixReplayPolicy.effectivePrefixLength(
             matchedPrefix: matchedPrefix,
             inputTokenCount: inputTokenCount,
             requiresExactBoundary: hasRecurrentLayers,
             forcedSuffix: forcedSuffix,
-            sourceTokenCount: sourceTokenCount
+            sourceTokenCount: sourceTokenCount,
+            allowsSingletonExtension: allowsSingletonExtension
         )
     }
 
@@ -1614,6 +1633,18 @@ actor BatchScheduler {
     /// Default-off earlier complete-state snapshot; does not expand cache budgets.
     static func qwenMTPReplayBackoffTokenCount(_ value: String?) -> Int {
         min(maximumQwenMTPReplayBackoffTokens, max(0, Int(value ?? "0") ?? 0))
+    }
+
+    /// Qwen Next's recurrent PLE state is expensive to snapshot. Keep one
+    /// near-end boundary by default instead of materializing the generic
+    /// eight-checkpoint grid during every concurrent prefill. The 31-token
+    /// policy corresponds to the reference scheduler's 30-token prefill
+    /// backoff because `MLXReplayPrefill` plans against prompt-minus-one.
+    /// An explicit zero remains available for controlled comparisons.
+    static func qwenARReplayBackoffTokenCount(_ value: String?) -> Int {
+        guard let value else { return 31 }
+        guard let parsed = Int(value) else { return 31 }
+        return min(maximumQwenMTPReplayBackoffTokens, max(0, parsed))
     }
 
     /// Optional two-stage admission within the SAME replay budget: misses seed
@@ -1658,12 +1689,20 @@ actor BatchScheduler {
             ? radix.findExactBoundaryMatch(inputTokens)
             : radix.findPrefixMatch(inputTokens)
         guard match.prefixLen > 0, match.layerStates != nil else { return false }
+        if MLXPrefixReplayPolicy.exactReplayLogits(
+            from: match,
+            inputTokenCount: inputTokens.count,
+            requiresExactBoundary: recurrent
+        ) != nil {
+            return true
+        }
         return Self.effectiveCachedPrefixLength(
             matchedPrefix: match.prefixLen,
             inputTokenCount: inputTokens.count,
             hasRecurrentLayers: recurrent,
             forcedSuffix: unsafeExactReplaySuffix(),
-            sourceTokenCount: match.sourceTokenCount
+            sourceTokenCount: match.sourceTokenCount,
+            allowsSingletonExtension: MLXPrefixReplayPolicy.allowsSingletonPrefixExtension(modelType: type(of: model))
         ) > 0
     }
 
@@ -1818,6 +1857,8 @@ actor BatchScheduler {
             activeStops: req.stopSequences,
             thinkStartTag: req.thinkStartTag,
             thinkEndTag: req.thinkEndTag,
+            templateOpenedThink: req.templateOpenedThink,
+            jsonStopFilter: req.jsonStopFilter,
             computeLogprobs: false,
             topLogprobsCount: 0,
             temperatureForLogprobs: req.parameters.temperature,
@@ -1881,6 +1922,7 @@ actor BatchScheduler {
         var cacheRestoreTime: Double? = nil
         var cacheTrimTime: Double? = nil
         var cacheTruncateTime: Double? = nil
+        var cachedPromptOutput: LMOutput?
 
         // Extract token array for prefix cache lookup
         let inputTokens = req.input.text.tokens.reshaped(-1).asArray(Int.self)
@@ -1893,33 +1935,48 @@ actor BatchScheduler {
         if !isMultimodal, let radix = radixCache {
             let tLookup0 = Date.timeIntervalSinceReferenceDate
             let recurrent = Self.requiresReplayBoundarySnapshot(cache)
-            let match = recurrent
+            let candidateMatch = recurrent
                 ? radix.findExactBoundaryMatch(inputTokens)
                 : radix.findPrefixMatch(inputTokens)
+            let match = MLXPrefixReplayPolicy.validatedRestoreMatch(candidateMatch, cache: cache)
             let prefixLen = match.prefixLen
             let layerStates = match.layerStates
             let layerMetaStates = match.layerMetaStates
             let tLookup1 = Date.timeIntervalSinceReferenceDate
             cacheLookupTime = tLookup1 - tLookup0
             let forcedSuffix = unsafeExactReplaySuffix()
+            let exactReplayLogits = MLXPrefixReplayPolicy.exactReplayLogits(
+                from: match,
+                inputTokenCount: inputTokens.count,
+                requiresExactBoundary: recurrent
+            )
             // Inlined hasRecurrentLayers(cache): an actor-isolated call would make
             // the compiler treat the non-Sendable `cache` as "sent", conflicting
             // with its later in-actor uses. Inlining keeps it in one region.
-            let effectivePrefix = Self.effectiveCachedPrefixLength(
-                matchedPrefix: prefixLen,
-                inputTokenCount: inputTokens.count,
-                hasRecurrentLayers: recurrent,
-                forcedSuffix: forcedSuffix,
-                sourceTokenCount: match.sourceTokenCount
-            )
-            if prefixLen == inputTokens.count && recurrent && forcedSuffix == nil && prefixLen > 0 {
+            let effectivePrefix = exactReplayLogits == nil
+                ? Self.effectiveCachedPrefixLength(
+                    matchedPrefix: prefixLen,
+                    inputTokenCount: inputTokens.count,
+                    hasRecurrentLayers: recurrent,
+                    forcedSuffix: forcedSuffix,
+                    sourceTokenCount: match.sourceTokenCount,
+                    allowsSingletonExtension: MLXPrefixReplayPolicy.allowsSingletonPrefixExtension(modelType: type(of: model))
+                )
+                : inputTokens.count
+            if prefixLen == inputTokens.count && recurrent && forcedSuffix == nil
+                && exactReplayLogits == nil && prefixLen > 0 {
                 cacheOutcome = "exact-replay-bypass"
             }
 
             if effectivePrefix > 0, let states = layerStates {
                 let tRestore0 = Date.timeIntervalSinceReferenceDate
-                for i in 0..<cache.count where i < states.count {
-                    cache[i].state = states[i]
+                let restoredStates = MLXPrefixReplayPolicy.restoredLayerStates(
+                    states,
+                    cache: cache
+                )
+                for i in 0..<cache.count where i < restoredStates.count {
+                    MLXPrefixReplayPolicy.installLayerState(restoredStates[i], into: &cache[i],
+                        sourceBoundary: match.sourceTokenCount)
                     let savedMetaState = layerMetaStates.flatMap { i < $0.count ? $0[i] : nil }
                     if let adjustedMetaState = restoredMetaState(
                         for: cache[i],
@@ -1946,10 +2003,15 @@ actor BatchScheduler {
                 }
                 let tRoundtrip = Date.timeIntervalSinceReferenceDate
                 let suffixTokens = Array(inputTokens[effectivePrefix...])
-                generateInput = MLXPrefixReplayPolicy.replayInput(
-                    from: req.input,
-                    effectivePrefix: effectivePrefix
-                )
+                if let exactReplayLogits {
+                    cachedPromptOutput = LMOutput(logits: exactReplayLogits)
+                    generateInput = req.input
+                } else {
+                    generateInput = MLXPrefixReplayPolicy.replayInput(
+                        from: req.input,
+                        effectivePrefix: effectivePrefix
+                    )
+                }
                 cachedTokens = effectivePrefix
                 cacheOutcome = "hit"
                 cacheRestoreTime = tRestore1 - tRestore0
@@ -1973,9 +2035,9 @@ actor BatchScheduler {
 
         // Hybrid recurrent state (DeepSeek compressor/indexer, Mamba, and
         // GatedDeltaNet) is not safely rewindable from a longer snapshot.
-        // Persist the exact prompt-minus-one boundary instead: restore that
-        // state later and evaluate the final prompt token to reproduce the
-        // original next-token logits.
+        // Interior boundaries remain useful for changed suffixes. The complete
+        // prompt boundary is captured once, together with its raw logits,
+        // after prefill below; do not also copy the prompt-minus-one boundary.
         let shouldCaptureReplayBoundary = Self.shouldCaptureReplayBoundary(
             prefixCacheEnabled: radixCache != nil,
             hasRecurrentLayers: Self.requiresReplayBoundarySnapshot(cache),
@@ -1990,13 +2052,20 @@ actor BatchScheduler {
         // peers unnecessarily destroys their equal-position batch eligibility.
         let interleave = enablesPrefillInterleave && forceIndependentCaches && !isMultimodal
             && allowDecodeInterleave && !slots.isEmpty && !inputTokens.isEmpty
-        if shouldCaptureReplayBoundary || interleave {
+        if let cachedPromptOutput {
+            result = cachedPromptOutput
+            // The restored radix entry already owns an immutable snapshot.
+            // Avoid copying the same prompt state again when this slot finishes.
+            prefixCacheStates = []
+            prefixCacheMetaStates = []
+        } else if shouldCaptureReplayBoundary || interleave {
             let finalBoundary = inputTokens.count - 1
             let capture: ((Int, [[MLXArray]], [[String]]) -> Void)? = shouldCaptureReplayBoundary
                 ? { boundary, states, metadata in
                     if boundary < finalBoundary {
                         self.radixCache?.insert(tokens: Array(inputTokens.prefix(boundary)),
-                            layerStates: states, layerMetaStates: metadata)
+                            layerStates: states, layerMetaStates: metadata,
+                            statesAreIndependentSnapshots: true)
                     }
                 } : nil
             // The prefilling request is reserved but is not in `slots` until
@@ -2014,7 +2083,9 @@ actor BatchScheduler {
                     model: model, cache: cache, inputTokens: inputTokens,
                     restoredPrefix: cachedTokens, prefillStepSize: req.parameters.prefillStepSize,
                     promptSnapshotBackoffTokens: qwenARReplayBackoffTokens,
-                    captureFinalSnapshot: shouldCaptureReplayBoundary, checkpoint: capture,
+                    captureFinalSnapshot: false,
+                    captureFinalCheckpoint: !shouldCaptureReplayBoundary,
+                    checkpoint: capture,
                     checkCancellation: {
                         if self.isCancellationRequested(req.id) || self._isShutdown.withLock({ $0 }) {
                             throw CancellationError()
@@ -2022,11 +2093,6 @@ actor BatchScheduler {
                     },
                     didCompleteChunk: afterChunk)
                 result = prepared.output
-                if let snapshot = prepared.finalSnapshot {
-                    prefixCacheTokens = Array(inputTokens.prefix(snapshot.boundary))
-                    prefixCacheStates = snapshot.states
-                    prefixCacheMetaStates = snapshot.metadata
-                }
                 // Unknown extra continuation state cannot be stored in radix.
                 if result.state != nil { prefixCacheTokens = [] }
             } catch {
@@ -2056,6 +2122,25 @@ actor BatchScheduler {
                 failPendingRequest(req, error: error)
                 return
             }
+        }
+
+        if shouldCaptureReplayBoundary && cachedPromptOutput == nil && result.state == nil {
+            // Capture the state after the complete prompt, before the sampled
+            // token is fed back into the model. Pair it with final-position raw
+            // logits so exact replay can recover the same first-token decision.
+            // Publish now so later admissions can reuse it while this request
+            // is still decoding; RadixTreeCache snapshots all supplied arrays.
+            let states = MLXPrefixReplayPolicy.snapshotLayerStates(cache)
+            radixCache?.insert(
+                tokens: inputTokens,
+                layerStates: states,
+                layerMetaStates: cache.map { $0.metaState },
+                promptLogits: MLXPrefixReplayPolicy.promptBoundaryLogits(result.logits),
+                statesAreIndependentSnapshots: true
+            )
+            prefixCacheTokens = []
+            prefixCacheStates = []
+            prefixCacheMetaStates = []
         }
 
         // Extract last-position logits and sample first token.
@@ -2161,6 +2246,8 @@ actor BatchScheduler {
             activeStops: req.stopSequences,
             thinkStartTag: req.thinkStartTag,
             thinkEndTag: req.thinkEndTag,
+            templateOpenedThink: req.templateOpenedThink,
+            jsonStopFilter: req.jsonStopFilter,
             computeLogprobs: req.parameters.computeLogprobs,
             topLogprobsCount: req.parameters.topLogprobsCount,
             temperatureForLogprobs: req.parameters.temperature
@@ -2715,6 +2802,8 @@ actor BatchScheduler {
                 activeStops: req.stopSequences,
                 thinkStartTag: req.thinkStartTag,
                 thinkEndTag: req.thinkEndTag,
+                templateOpenedThink: req.templateOpenedThink,
+                jsonStopFilter: req.jsonStopFilter,
                 computeLogprobs: req.parameters.computeLogprobs,
                 topLogprobsCount: req.parameters.topLogprobsCount,
                 temperatureForLogprobs: req.parameters.temperature
@@ -2919,9 +3008,20 @@ actor BatchScheduler {
         if let trailingEvents = slot.toolRuntime?.finishIncompleteToolCall(), !trailingEvents.isEmpty {
             yieldToolRuntimeEvents(trailingEvents, to: slot)
         }
-        if !slot.activeStops.isEmpty && !slot.stopBuffer.isEmpty && !slot.stoppedBySequence {
-            slot.continuation.yield(StreamChunk(text: slot.stopBuffer))
-            slot.stopBuffer = ""
+        let tail = Self.finishTextChunks(
+            pendingText: slot.toolRuntime?.finishPendingText() ?? "",
+            jsonStopFilter: &slot.jsonStopFilter,
+            stopBuffer: &slot.stopBuffer,
+            reasoningBuffer: &slot.reasoningBuffer,
+            activeStops: slot.activeStops,
+            maxStopLength: slot.maxStopLength,
+            insideThink: &slot.insideThink,
+            thinkStartTag: slot.thinkStartTag,
+            thinkEndTag: slot.thinkEndTag,
+            stoppedBySequence: &slot.stoppedBySequence
+        )
+        for chunk in tail {
+            slot.continuation.yield(chunk)
         }
 
         // Save prompt KV state to prefix cache before removal.
@@ -3216,15 +3316,7 @@ actor BatchScheduler {
             let output = toolRuntime.process(piece: chunk)
             if output.handled {
                 if let passthroughText = output.passthroughText, !passthroughText.isEmpty {
-                    let stopResult = Self.stopChunksToEmit(
-                        from: passthroughText,
-                        stopBuffer: &slot.stopBuffer,
-                        activeStops: slot.activeStops,
-                        maxStopLength: slot.maxStopLength,
-                        insideThink: &slot.insideThink,
-                        thinkStartTag: slot.thinkStartTag,
-                        thinkEndTag: slot.thinkEndTag
-                    )
+                    let stopResult = stopChunksToEmit(from: passthroughText, for: slot)
                     for emit in stopResult.chunks {
                         slot.continuation.yield(emit)
                     }
@@ -3237,15 +3329,7 @@ actor BatchScheduler {
                 return false
             }
         }
-        let stopResult = Self.stopChunksToEmit(
-            from: chunk,
-            stopBuffer: &slot.stopBuffer,
-            activeStops: slot.activeStops,
-            maxStopLength: slot.maxStopLength,
-            insideThink: &slot.insideThink,
-            thinkStartTag: slot.thinkStartTag,
-            thinkEndTag: slot.thinkEndTag
-        )
+        let stopResult = stopChunksToEmit(from: chunk, for: slot)
         for emit in stopResult.chunks {
             slot.continuation.yield(emit)
         }
@@ -3253,6 +3337,22 @@ actor BatchScheduler {
             slot.stoppedBySequence = true
         }
         return stopResult.stopped
+    }
+
+    private func stopChunksToEmit(from text: String, for slot: SlotState) -> (chunks: [StreamChunk], stopped: Bool) {
+        if let chunks = slot.jsonStopFilter?.consume(text) {
+            return (chunks, slot.jsonStopFilter?.stopped == true)
+        }
+        return Self.stopChunksToEmit(
+            from: text,
+            stopBuffer: &slot.stopBuffer,
+            reasoningBuffer: &slot.reasoningBuffer,
+            activeStops: slot.activeStops,
+            maxStopLength: slot.maxStopLength,
+            insideThink: &slot.insideThink,
+            thinkStartTag: slot.thinkStartTag,
+            thinkEndTag: slot.thinkEndTag
+        )
     }
 
     private func yieldToolRuntimeEvents(_ events: [ToolCallStreamingEvent], to slot: SlotState) {
@@ -3300,9 +3400,71 @@ actor BatchScheduler {
         return emitted
     }
 
+    /// EOF recovery is still visible response text. Apply the same stop policy
+    /// before flushing, including a stop split between the old buffer and EOF.
+    /// Tool arguments are emitted separately and never enter this text filter.
+    static func finishTextChunks(
+        pendingText: String,
+        jsonStopFilter: inout MLXJSONStopFilter?,
+        stopBuffer: inout String,
+        reasoningBuffer: inout String,
+        activeStops: [String],
+        maxStopLength: Int,
+        insideThink: inout Bool,
+        thinkStartTag: String?,
+        thinkEndTag: String?,
+        stoppedBySequence: inout Bool
+    ) -> [StreamChunk] {
+        var chunks: [StreamChunk] = []
+        if !pendingText.isEmpty, !stoppedBySequence {
+            if let filtered = jsonStopFilter?.consume(pendingText) {
+                chunks += filtered
+                stoppedBySequence = jsonStopFilter?.stopped == true
+            } else {
+                let result = stopChunksToEmit(from: pendingText, stopBuffer: &stopBuffer,
+                    reasoningBuffer: &reasoningBuffer,
+                    activeStops: activeStops, maxStopLength: maxStopLength,
+                    insideThink: &insideThink, thinkStartTag: thinkStartTag, thinkEndTag: thinkEndTag)
+                chunks += result.chunks
+                stoppedBySequence = result.stopped
+            }
+        }
+        if let tail = jsonStopFilter?.finish() {
+            chunks += tail
+            stoppedBySequence = stoppedBySequence || jsonStopFilter?.stopped == true
+        }
+        if !reasoningBuffer.isEmpty, !stoppedBySequence {
+            // EOF resolves an incomplete delimiter as ordinary text in its
+            // current channel. It must still pass through visible stop matching.
+            let tail = reasoningBuffer
+            reasoningBuffer = ""
+            let result = stopChunksToEmit(from: tail, stopBuffer: &stopBuffer,
+                reasoningBuffer: &reasoningBuffer,
+                activeStops: activeStops, maxStopLength: maxStopLength,
+                insideThink: &insideThink, thinkStartTag: nil, thinkEndTag: nil)
+            chunks += result.chunks
+            stoppedBySequence = result.stopped
+        }
+        if !activeStops.isEmpty, !stopBuffer.isEmpty, !stoppedBySequence {
+            if insideThink, let thinkEndTag, !thinkEndTag.isEmpty {
+                // Reasoning can end at the token cap without a closing tag.
+                // The held prefix was visible *before* that block: close only
+                // its transport framing, with zero generated-token credit,
+                // rather than misclassifying the prefix as more reasoning.
+                chunks.append(StreamChunk(syntheticText: thinkEndTag))
+                insideThink = false
+            }
+            chunks.append(StreamChunk(text: stopBuffer))
+        }
+        stopBuffer = ""
+        reasoningBuffer = ""
+        return chunks
+    }
+
     static func stopChunksToEmit(
         from text: String,
         stopBuffer: inout String,
+        reasoningBuffer: inout String,
         activeStops: [String],
         maxStopLength: Int,
         insideThink: inout Bool,
@@ -3314,39 +3476,57 @@ actor BatchScheduler {
         }
 
         var chunks = [StreamChunk]()
-        let wasInsideThink = insideThink
-        if let thinkStartTag, text.contains(thinkStartTag) {
-            insideThink = true
-        }
-        if let thinkEndTag, text.contains(thinkEndTag) {
-            insideThink = false
-        }
-
-        if !insideThink {
-            if wasInsideThink, let thinkEndTag, let range = text.range(of: thinkEndTag) {
-                let afterThink = String(text[range.upperBound...])
-                if !afterThink.isEmpty {
-                    stopBuffer += afterThink
+        // Framing and visible stops have separate bounded buffers. A possible
+        // delimiter is not searched for stops, and held visible text can match
+        // a stop across an intervening reasoning block without leaking a prefix.
+        reasoningBuffer += text
+        while !reasoningBuffer.isEmpty {
+            let delimiter = insideThink ? thinkEndTag : thinkStartTag
+            let boundary = delimiter.flatMap { tag in
+                tag.isEmpty ? nil : reasoningBuffer.range(of: tag)
+            }
+            let retained = delimiter.flatMap { tag in
+                guard tag.count > 1 else { return nil as Int? }
+                return (1..<tag.count).reversed().first {
+                    reasoningBuffer.hasSuffix(String(tag.prefix($0)))
                 }
+            } ?? 0
+            let segmentEnd = boundary?.lowerBound
+                ?? reasoningBuffer.index(reasoningBuffer.endIndex, offsetBy: -retained)
+            let segment = String(reasoningBuffer[..<segmentEnd])
+            if insideThink {
+                if !segment.isEmpty { chunks.append(StreamChunk(text: segment)) }
             } else {
-                stopBuffer += text
+                stopBuffer += segment
+                var earliest: Range<String.Index>?
+                for stop in activeStops where !stop.isEmpty {
+                    if let match = stopBuffer.range(of: stop),
+                       earliest == nil || match.lowerBound < earliest!.lowerBound {
+                        earliest = match
+                    }
+                }
+                if let earliest {
+                    chunks.append(StreamChunk(
+                        text: String(stopBuffer[..<earliest.lowerBound]), stoppedBySequence: true))
+                    stopBuffer = ""
+                    reasoningBuffer = ""
+                    return (chunks, true)
+                }
+                if stopBuffer.count > maxStopLength {
+                    let flushEnd = stopBuffer.index(stopBuffer.endIndex, offsetBy: -maxStopLength)
+                    chunks.append(StreamChunk(text: String(stopBuffer[..<flushEnd])))
+                    stopBuffer = String(stopBuffer[flushEnd...])
+                }
             }
-
-            if let match = activeStops.first(where: { stopBuffer.contains($0) }),
-               let range = stopBuffer.range(of: match) {
-                let before = String(stopBuffer[..<range.lowerBound])
-                chunks.append(StreamChunk(text: before, stoppedBySequence: true))
-                return (chunks, true)
+            if let boundary, let delimiter {
+                // Both tags must reach the downstream reasoning translator.
+                chunks.append(StreamChunk(text: delimiter))
+                reasoningBuffer = String(reasoningBuffer[boundary.upperBound...])
+                insideThink.toggle()
+                continue
             }
-
-            if stopBuffer.count > maxStopLength {
-                let flushEnd = stopBuffer.index(stopBuffer.endIndex, offsetBy: -maxStopLength)
-                let flushText = String(stopBuffer[..<flushEnd])
-                stopBuffer = String(stopBuffer[flushEnd...])
-                chunks.append(StreamChunk(text: flushText))
-            }
-        } else {
-            chunks.append(StreamChunk(text: text))
+            reasoningBuffer = String(reasoningBuffer[segmentEnd...])
+            break
         }
 
         return (chunks, false)
