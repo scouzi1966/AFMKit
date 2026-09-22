@@ -1,5 +1,6 @@
 import MLXLLM
 import MLXLMCommon
+import MLXVLM
 import MLX
 @testable import AFMKitMLX
 import XCTest
@@ -74,6 +75,44 @@ final class MLXPrefixReplayPolicyTests: XCTestCase {
             ),
             13
         )
+    }
+
+    func testDecodeWidthSnapshotCannotSeedQwenBulkPrefill() {
+        for count in [2, 32, 776, 4096] {
+            XCTAssertEqual(MLXPrefixReplayPolicy.effectivePrefixLength(
+                matchedPrefix: 1, inputTokenCount: count,
+                requiresExactBoundary: true, forcedSuffix: nil,
+                sourceTokenCount: 1, allowsSingletonExtension: false), 0)
+            XCTAssertEqual(BatchScheduler.effectiveCachedPrefixLength(
+                matchedPrefix: 1, inputTokenCount: count,
+                hasRecurrentLayers: true, forcedSuffix: nil,
+                sourceTokenCount: 1, allowsSingletonExtension: false), 0)
+        }
+    }
+
+    func testSingletonGuardPreservesOtherModelsAndLongerPrefixes() {
+        XCTAssertFalse(MLXPrefixReplayPolicy.allowsSingletonPrefixExtension(modelType: Qwen4ExpModel.self))
+        XCTAssertFalse(MLXPrefixReplayPolicy.allowsSingletonPrefixExtension(modelType: Qwen4ExpVL.self))
+        XCTAssertTrue(MLXPrefixReplayPolicy.allowsSingletonPrefixExtension(modelType: LlamaModel.self))
+        XCTAssertEqual(MLXPrefixReplayPolicy.effectivePrefixLength(
+            matchedPrefix: 1, inputTokenCount: 100,
+            requiresExactBoundary: true, forcedSuffix: nil,
+            sourceTokenCount: 1), 1)
+        for prefix in [2, 13, 745] {
+            XCTAssertEqual(MLXPrefixReplayPolicy.effectivePrefixLength(
+                matchedPrefix: prefix, inputTokenCount: 776,
+                requiresExactBoundary: true, forcedSuffix: nil,
+                sourceTokenCount: prefix, allowsSingletonExtension: false), prefix)
+        }
+    }
+
+    func testSingletonExactRepeatStillReusesSavedLogits() throws {
+        let radix = RadixTreeCache(modelID: "singleton-repeat", maxEntries: 2)
+        radix.insert(tokens: [11], layerStates: [[MLXArray([Float(1)])]],
+                     promptLogits: MLXArray([Float(1), 2]).reshaped(1, 1, 2))
+        let match = radix.findExactBoundaryMatch([11])
+        XCTAssertEqual(try XCTUnwrap(MLXPrefixReplayPolicy.exactReplayLogits(
+            from: match, inputTokenCount: 1, requiresExactBoundary: true)).asArray(Float.self), [1, 2])
     }
 
     func testRecurrentExactReplayWithoutSavedLogitsFallsBackToColdPrefill() {

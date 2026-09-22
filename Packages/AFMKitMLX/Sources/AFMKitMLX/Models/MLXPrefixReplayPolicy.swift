@@ -1,5 +1,6 @@
 import MLXLLM
 import MLXLMCommon
+import MLXVLM
 import MLX
 
 /// Shared replay-safety rules for serial and batched MLX prefix caching.
@@ -9,6 +10,16 @@ import MLX
 /// at the exact token boundary where it was captured, so they must never use
 /// that optimization.
 enum MLXPrefixReplayPolicy {
+    /// Qwen Next's single-row HC and quantized projections use decode
+    /// reductions, not the bulk-prefill reductions. Extending that snapshot
+    /// can seed a different recurrent trajectory even when persistence is
+    /// exact. Recompute the one token with the new prefill.
+    /// This is not a general minimum-prefix tuning knob: longer prefixes and
+    /// exact repeats (which replay their saved logits) keep their fast paths.
+    static func allowsSingletonPrefixExtension(modelType: any LanguageModel.Type) -> Bool {
+        modelType != Qwen4ExpModel.self && modelType != Qwen4ExpVL.self
+    }
+
     static func requiresExactBoundaryRestore(_ cache: [KVCache]) -> Bool {
         cache.contains {
             $0 is ArraysCache || $0 is CacheList || $0 is DeepseekV4Cache
@@ -20,8 +31,12 @@ enum MLXPrefixReplayPolicy {
         inputTokenCount: Int,
         requiresExactBoundary: Bool,
         forcedSuffix: Int?,
-        sourceTokenCount: Int? = nil
+        sourceTokenCount: Int? = nil,
+        allowsSingletonExtension: Bool = true
     ) -> Int {
+        if !allowsSingletonExtension && matchedPrefix == 1 && inputTokenCount > 1 {
+            return 0
+        }
         if matchedPrefix == inputTokenCount, let forcedSuffix {
             return max(0, inputTokenCount - forcedSuffix)
         }

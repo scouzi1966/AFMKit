@@ -3789,7 +3789,8 @@ public final class MLXModelService:
                         prefixLen: prefixLen,
                         inputTokenCount: inputTokens.count,
                         requiresExactBoundary: requiresExactBoundary,
-                        sourceTokenCount: match.sourceTokenCount
+                        sourceTokenCount: match.sourceTokenCount,
+                        modelType: type(of: context.model)
                     )
                     : inputTokens.count
                 let bypassExactReplay = prefixLen == inputTokens.count && effectivePrefix == 0 && prefixLen > 0
@@ -4831,7 +4832,8 @@ public final class MLXModelService:
                                     prefixLen: prefixLen,
                                     inputTokenCount: inputTokens.count,
                                     requiresExactBoundary: requiresExactBoundary,
-                                    sourceTokenCount: match.sourceTokenCount
+                                    sourceTokenCount: match.sourceTokenCount,
+                                    modelType: type(of: context.model)
                                 )
                                 : inputTokens.count
                             let bypassExactReplay = prefixLen == inputTokens.count && effectivePrefix == 0 && prefixLen > 0
@@ -8639,14 +8641,16 @@ public final class MLXModelService:
         prefixLen: Int,
         inputTokenCount: Int,
         requiresExactBoundary: Bool,
-        sourceTokenCount: Int?
+        sourceTokenCount: Int?,
+        modelType: any LanguageModel.Type
     ) -> Int {
         MLXPrefixReplayPolicy.effectivePrefixLength(
             matchedPrefix: prefixLen,
             inputTokenCount: inputTokenCount,
             requiresExactBoundary: requiresExactBoundary,
             forcedSuffix: unsafeExactReplaySuffix(),
-            sourceTokenCount: sourceTokenCount
+            sourceTokenCount: sourceTokenCount,
+            allowsSingletonExtension: MLXPrefixReplayPolicy.allowsSingletonPrefixExtension(modelType: modelType)
         )
     }
 

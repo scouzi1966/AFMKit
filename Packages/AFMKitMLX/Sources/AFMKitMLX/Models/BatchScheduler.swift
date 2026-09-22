@@ -1568,7 +1568,8 @@ actor BatchScheduler {
         let prefix = Self.effectiveCachedPrefixLength(
             matchedPrefix: match.prefixLen, inputTokenCount: count,
             hasRecurrentLayers: true, forcedSuffix: unsafeExactReplaySuffix(),
-            sourceTokenCount: match.sourceTokenCount)
+            sourceTokenCount: match.sourceTokenCount,
+            allowsSingletonExtension: MLXPrefixReplayPolicy.allowsSingletonPrefixExtension(modelType: type(of: model)))
         return max(1, count - prefix)
     }
 
@@ -1579,14 +1580,16 @@ actor BatchScheduler {
         inputTokenCount: Int,
         hasRecurrentLayers: Bool,
         forcedSuffix: Int?,
-        sourceTokenCount: Int? = nil
+        sourceTokenCount: Int? = nil,
+        allowsSingletonExtension: Bool = true
     ) -> Int {
         MLXPrefixReplayPolicy.effectivePrefixLength(
             matchedPrefix: matchedPrefix,
             inputTokenCount: inputTokenCount,
             requiresExactBoundary: hasRecurrentLayers,
             forcedSuffix: forcedSuffix,
-            sourceTokenCount: sourceTokenCount
+            sourceTokenCount: sourceTokenCount,
+            allowsSingletonExtension: allowsSingletonExtension
         )
     }
 
@@ -1686,7 +1689,8 @@ actor BatchScheduler {
             inputTokenCount: inputTokens.count,
             hasRecurrentLayers: recurrent,
             forcedSuffix: unsafeExactReplaySuffix(),
-            sourceTokenCount: match.sourceTokenCount
+            sourceTokenCount: match.sourceTokenCount,
+            allowsSingletonExtension: MLXPrefixReplayPolicy.allowsSingletonPrefixExtension(modelType: type(of: model))
         ) > 0
     }
 
@@ -1940,7 +1944,8 @@ actor BatchScheduler {
                     inputTokenCount: inputTokens.count,
                     hasRecurrentLayers: recurrent,
                     forcedSuffix: forcedSuffix,
-                    sourceTokenCount: match.sourceTokenCount
+                    sourceTokenCount: match.sourceTokenCount,
+                    allowsSingletonExtension: MLXPrefixReplayPolicy.allowsSingletonPrefixExtension(modelType: type(of: model))
                 )
                 : inputTokens.count
             if prefixLen == inputTokens.count && recurrent && forcedSuffix == nil
