@@ -32,7 +32,7 @@ public struct MLXStreamEventTranslator {
         thinkEndTag: String?,
         maximumResponseTokens: Int?,
         tools: [RequestTool]? = nil,
-        preserveReasoningMarkers: Bool = false
+        preserveReasoningMarkers: Bool
     ) {
         self.thinkStartTag = thinkStartTag
         self.thinkEndTag = thinkEndTag
@@ -40,6 +40,23 @@ public struct MLXStreamEventTranslator {
             ? .init(startTag: thinkStartTag, endTag: thinkEndTag) : nil
         self.maximumResponseTokens = maximumResponseTokens
         self.requestTools = tools
+    }
+
+    // Keep the original initializer available, including references to its
+    // four-argument function signature in downstream clients.
+    public init(
+        thinkStartTag: String?,
+        thinkEndTag: String?,
+        maximumResponseTokens: Int?,
+        tools: [RequestTool]? = nil
+    ) {
+        self.init(
+            thinkStartTag: thinkStartTag,
+            thinkEndTag: thinkEndTag,
+            maximumResponseTokens: maximumResponseTokens,
+            tools: tools,
+            preserveReasoningMarkers: false
+        )
     }
 
     public mutating func consume(_ chunk: StreamChunk) -> [AFMGenerationEvent] {

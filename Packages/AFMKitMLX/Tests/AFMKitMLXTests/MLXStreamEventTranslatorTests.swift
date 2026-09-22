@@ -4,6 +4,20 @@ import AFMOpenAICompat
 import XCTest
 
 final class MLXStreamEventTranslatorTests: XCTestCase {
+    func testOriginalInitializerFunctionReferencePreservesDefaultTranslation() {
+        let makeTranslator: (String?, String?, Int?, [RequestTool]?) -> MLXStreamEventTranslator =
+            MLXStreamEventTranslator.init(thinkStartTag:thinkEndTag:maximumResponseTokens:tools:)
+        var translator = makeTranslator("<think>", "</think>", 100, nil)
+        let events = [
+            translator.consume(.init(text: "visible {draft}<think>private</think>answer")),
+            translator.finish()
+        ].flatMap { $0 }
+
+        XCTAssertEqual(text(from: events), "visible {draft}answer")
+        XCTAssertEqual(reasoning(from: events), "private")
+        XCTAssertEqual(completionReason(from: events), .stop)
+    }
+
     func testPromptedJSONSeparatesInitialReasoningAndPreservesLiteralMarkersAtEverySplit() {
         let json = #"{"note":"<think>kept</think> <tool_call>literal</tool_call>"}"#
         let raw = "private {draft}</think>\n" + json
