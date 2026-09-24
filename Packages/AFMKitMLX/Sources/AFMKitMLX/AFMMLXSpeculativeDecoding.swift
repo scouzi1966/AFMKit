@@ -319,9 +319,21 @@ public struct AFMMLXSpeculativeModelCompatibility: Equatable, Sendable {
         modelDirectory: URL,
         config: [String: Any]
     ) -> Bool {
+        hasCompleteEmbeddedQwenNextMTPLayout(
+            modelDirectory: modelDirectory, config: config, nativeLayout: false)
+            || hasCompleteEmbeddedQwenNextMTPLayout(
+                modelDirectory: modelDirectory, config: config, nativeLayout: true)
+    }
+
+    private static func hasCompleteEmbeddedQwenNextMTPLayout(
+        modelDirectory: URL,
+        config: [String: Any],
+        nativeLayout: Bool
+    ) -> Bool {
         guard hasEmbeddedMTPConfiguration(config) else { return false }
-        let prefixes = ["language_model.mtp.", "mtp."]
-        guard let expected = embeddedQwenNextMTPExpectedTensors(config: config) else {
+        let prefixes = nativeLayout ? ["mtp."] : ["language_model.mtp.", "mtp."]
+        guard let expected = embeddedQwenNextMTPExpectedTensors(
+            config: config, nativeLayout: nativeLayout) else {
             return false
         }
         let requiredSuffixes = expected.keys
@@ -408,7 +420,7 @@ public struct AFMMLXSpeculativeModelCompatibility: Equatable, Sendable {
     }()
 
     static func embeddedQwenNextMTPExpectedTensors(
-        config: [String: Any]
+        config: [String: Any], nativeLayout: Bool = false
     ) -> [String: (AFMSafetensorHeader.DType, [Int])]? {
         let text = config["text_config"] as? [String: Any] ?? config
         let quantization = config["quantization"] as? [String: Any]
@@ -438,6 +450,14 @@ public struct AFMMLXSpeculativeModelCompatibility: Equatable, Sendable {
         let hcWidth = hidden * hcCount
         var expected = [String: (AFMSafetensorHeader.DType, [Int])]()
         func affine(_ base: String, output: Int, input: Int, leading: [Int] = []) {
+            if nativeLayout,
+               !base.contains(".switch_mlp."),
+               !base.contains(".input_mix_weight_"),
+               !base.hasSuffix(".block_inject_weight")
+            {
+                expected[base + ".weight"] = (.bfloat16, leading + [output, input])
+                return
+            }
             guard input.isMultiple(of: groupSize), (input * bits).isMultiple(of: 32) else {
                 return
             }
@@ -486,7 +506,12 @@ public struct AFMMLXSpeculativeModelCompatibility: Equatable, Sendable {
             "pre_fc_norm_hidden.weight": [hcWidth],
         ]
         for (name, shape) in bf16 { expected[name] = (.bfloat16, shape) }
-        guard Set(expected.keys) == Set(embeddedQwenNextMTPRequiredSuffixes) else {
+        if nativeLayout {
+            for base in ["layers.0.attn_hyper_connection", "layers.0.mlp_hyper_connection"] {
+                affine(base + ".block_inject_weight", output: hcCount, input: hcWidth)
+            }
+        }
+        guard nativeLayout || Set(expected.keys) == Set(embeddedQwenNextMTPRequiredSuffixes) else {
             return nil
         }
         return expected

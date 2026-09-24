@@ -343,6 +343,24 @@ final class AFMMLXSpeculativeDecodingTests: XCTestCase {
                 .mtpCompatible)
     }
 
+    func testQwenNextNativeMixedPrecisionMTPRequiresCompleteValidWeights() throws {
+        let complete = try Self.makeEmbeddedQwenNextMTPDirectory(nativeLayout: true)
+        defer { try? FileManager.default.removeItem(at: complete) }
+        XCTAssertTrue(AFMMLXSpeculativeModelCompatibility.evaluate(
+            modelDirectory: complete).mtpCompatible)
+        let missing = try Self.makeEmbeddedQwenNextMTPDirectory(
+            omitting: "layers.0.attn_hyper_connection.block_inject_weight.scales",
+            nativeLayout: true)
+        defer { try? FileManager.default.removeItem(at: missing) }
+        XCTAssertFalse(AFMMLXSpeculativeModelCompatibility.evaluate(
+            modelDirectory: missing).mtpCompatible)
+        let malformed = try Self.makeEmbeddedQwenNextMTPDirectory(
+            malformed: "fc_embedding.weight", nativeLayout: true)
+        defer { try? FileManager.default.removeItem(at: malformed) }
+        XCTAssertFalse(AFMMLXSpeculativeModelCompatibility.evaluate(
+            modelDirectory: malformed).mtpCompatible)
+    }
+
     func testGLMEmbeddedMTPIsNotAdvertisedFromConfigAlone() {
         let config: [String: Any] = [
             "model_type": "glm5_next",
@@ -785,7 +803,8 @@ final class AFMMLXSpeculativeDecodingTests: XCTestCase {
 
     private static func makeEmbeddedQwenNextMTPDirectory(
         omitting omitted: String? = nil,
-        malformed: String? = nil
+        malformed: String? = nil,
+        nativeLayout: Bool = false
     ) throws -> URL {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -812,10 +831,10 @@ final class AFMMLXSpeculativeDecodingTests: XCTestCase {
         ]
         try JSONSerialization.data(withJSONObject: config).write(
             to: directory.appendingPathComponent("config.json"))
-        let prefix = "language_model.mtp."
+        let prefix = nativeLayout ? "mtp." : "language_model.mtp."
         let expected = try XCTUnwrap(
             AFMMLXSpeculativeModelCompatibility.embeddedQwenNextMTPExpectedTensors(
-                config: config))
+                config: config, nativeLayout: nativeLayout))
         let tensors = Dictionary(uniqueKeysWithValues: expected
             .filter { $0.key != omitted }
             .map { suffix, requirement in

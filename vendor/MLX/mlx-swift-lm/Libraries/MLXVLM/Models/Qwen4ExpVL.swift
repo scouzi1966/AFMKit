@@ -147,8 +147,20 @@ public final class Qwen4ExpVL: Module, VLMModel, KVCacheDimensionProvider {
     public func prepare(
         _ input: LMInput,
         cache: [KVCache],
-        windowSize _: Int?
+        windowSize: Int?
     ) throws -> PrepareResult {
+        // Text requests need no multimodal position deltas. Use the text
+        // model's offset-aware/chunked preparation so radix prompt snapshots
+        // remain replayable even when this checkpoint also has a vision tower.
+        if input.image == nil && input.video == nil,
+           input.text.tokens.ndim == 1
+            || (input.text.tokens.ndim == 2 && input.text.tokens.dim(0) == 1)
+        {
+            let textInput = LMInput(
+                tokens: input.text.tokens.reshaped(-1),
+                mask: input.text.mask?.reshaped(-1))
+            return try languageModel.prepare(textInput, cache: cache, windowSize: windowSize)
+        }
         let inputIDs = input.text.tokens
         let imageFrames = input.image?.frames
         let videoFrames = input.video?.frames
