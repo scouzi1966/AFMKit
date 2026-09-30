@@ -6252,7 +6252,7 @@ public final class MLXModelService:
         if trimmedInput.hasPrefix("<function=") {
             // A bare function owns its parameter bodies just as a wrapped one
             // does. Never promote literal inner <tool_call> examples to calls.
-            return extractBareXMLToolCalls(from: text, allowMalformedRepair: allowMalformedRepair)
+            return extractBareXMLToolCalls(from: text, allowMalformedRepair: allowMalformedRepair, tools: tools)
         }
         if text.contains("<|tools_prefix|>") {
             // Batch/raw-text generation must recognize the same complete native
@@ -6310,7 +6310,7 @@ public final class MLXModelService:
             }
 
             // Try XML function format: <function=name><parameter=key>value</parameter></function>
-            if let tc = parseXMLFunction(inner) {
+            if let tc = parseXMLFunction(inner, tools: tools) {
                 toolCalls.insert(tc, at: 0)
                 remaining.removeSubrange(match.range)
                 continue
@@ -6439,7 +6439,7 @@ public final class MLXModelService:
         // Some models (e.g. Qwen3-Coder-Next) emit the XML function block directly,
         // sometimes with a trailing </tool_call> but no opening <tool_call>.
         if toolCalls.isEmpty {
-            (toolCalls, remaining) = extractBareXMLToolCalls(from: remaining, allowMalformedRepair: allowMalformedRepair)
+            (toolCalls, remaining) = extractBareXMLToolCalls(from: remaining, allowMalformedRepair: allowMalformedRepair, tools: tools)
         }
 
         if toolCalls.isEmpty {
@@ -6513,7 +6513,7 @@ public final class MLXModelService:
     }
 
     private static func extractBareXMLToolCalls(
-        from text: String, allowMalformedRepair: Bool
+        from text: String, allowMalformedRepair: Bool, tools: [RequestTool]?
     ) -> ([ToolCall], String) {
         var ranges = ToolCallEnvelopeScanner.envelopes(
             in: text, startTag: "<function=", endTag: "</function>", syntax: .xmlFunction).map(\.range)
@@ -6525,7 +6525,7 @@ public final class MLXModelService:
         var remaining = text
         var calls: [ToolCall] = []
         for range in ranges.reversed() {
-            if let call = parseXMLFunction(String(text[range]), repairArguments: allowMalformedRepair) {
+            if let call = parseXMLFunction(String(text[range]), repairArguments: allowMalformedRepair, tools: tools) {
                 calls.insert(call, at: 0)
                 remaining.removeSubrange(range)
             }
@@ -6549,7 +6549,8 @@ public final class MLXModelService:
     /// so we go straight to regex which handles arbitrary content correctly.
     static func parseXMLFunction(
         _ content: String,
-        repairArguments: Bool = true
+        repairArguments: Bool = true,
+        tools: [RequestTool]? = nil
     ) -> ToolCall? {
         var funcName: String?
         var normalized = content
@@ -6599,7 +6600,8 @@ public final class MLXModelService:
         return parseXMLFunctionRegex(
             normalized,
             funcName: funcName,
-            repairArguments: repairArguments
+            repairArguments: repairArguments,
+            tools: tools
         )
     }
 
@@ -6664,11 +6666,37 @@ public final class MLXModelService:
         return String(wrapped.dropFirst().dropLast())
     }
 
+    static func xmlParameterIsString(
+        function name: String,
+        key: String,
+        tools: [RequestTool]?
+    ) -> Bool {
+        guard let tool = tools?.first(where: { $0.function.name == name }),
+              let parameters = tool.function.parameters?.toSendable() as? [String: Any],
+              let properties = parameters["properties"] as? [String: Any],
+              let schema = properties[key] as? [String: Any] else {
+            return false
+        }
+        return schema["type"] as? String == "string"
+    }
+
+    static func xmlStringValue(_ value: String) -> String {
+        // Valid JSON file contents may contain escaped newlines and quotes.
+        // Those escapes belong to the file, not the XML transport.
+        if (value.hasPrefix("{") || value.hasPrefix("[")),
+           let data = value.data(using: .utf8),
+           (try? JSONSerialization.jsonObject(with: data)) != nil {
+            return value
+        }
+        return decodeJSONEscapes(value)
+    }
+
     /// Regex-based XML function parser with entity decoding.
     private static func parseXMLFunctionRegex(
         _ content: String,
         funcName: String,
-        repairArguments: Bool = true
+        repairArguments: Bool = true,
+        tools: [RequestTool]? = nil
     ) -> ToolCall? {
         guard let header = content.range(of: #"<function=[^>]+>"#, options: .regularExpression)
         else { return nil }
@@ -6694,10 +6722,14 @@ public final class MLXModelService:
             guard let keyRange = Range(pm.range(at: 1), in: body),
                   let valRange = Range(pm.range(at: 2), in: body) else { continue }
             let key = String(body[keyRange])
-            let val = decodeJSONEscapes(decodeXMLEntities(String(body[valRange]).trimmingCharacters(in: .whitespacesAndNewlines)))
+            let rawVal = decodeXMLEntities(String(body[valRange]).trimmingCharacters(in: .whitespacesAndNewlines))
+            let isString = xmlParameterIsString(function: funcName, key: key, tools: tools)
+            let val = isString ? xmlStringValue(rawVal) : decodeJSONEscapes(rawVal)
             if !val.isEmpty, arguments[key] == nil {
-                // Preserve JSON arrays/objects as structured data
-                if let data = val.data(using: .utf8),
+                // JSON-looking file contents remain text when the tool requires a string.
+                if isString {
+                    arguments[key] = val
+                } else if let data = val.data(using: .utf8),
                    let parsed = try? JSONSerialization.jsonObject(with: data),
                    (parsed is [Any] || parsed is [String: Any]) {
                     arguments[key] = Self.asSendableJSON(parsed)
@@ -6722,9 +6754,13 @@ public final class MLXModelService:
                 if let funcEnd = val.range(of: "</function>") {
                     val = String(val[..<funcEnd.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
                 }
-                let decoded = decodeJSONEscapes(decodeXMLEntities(val))
+                let rawVal = decodeXMLEntities(val)
+                let isString = xmlParameterIsString(function: funcName, key: key, tools: tools)
+                let decoded = isString ? xmlStringValue(rawVal) : decodeJSONEscapes(rawVal)
                 if !decoded.isEmpty {
-                    if let data = decoded.data(using: .utf8),
+                    if isString {
+                        arguments[key] = decoded
+                    } else if let data = decoded.data(using: .utf8),
                        let parsed = try? JSONSerialization.jsonObject(with: data),
                        (parsed is [Any] || parsed is [String: Any]) {
                         arguments[key] = Self.asSendableJSON(parsed)
