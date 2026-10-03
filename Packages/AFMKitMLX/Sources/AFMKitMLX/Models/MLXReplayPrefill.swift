@@ -14,7 +14,9 @@ enum MLXReplayPrefill {
     struct Prepared {
         let output: LMOutput
         let finalSnapshot: Snapshot?
+        let inlineCheckpointCount: Int
     }
+    enum CaptureError: Error { case invalidSnapshot }
     static let minimumCheckpointStride = 256
     static let maximumCheckpoints = 8
 
@@ -22,7 +24,8 @@ enum MLXReplayPrefill {
         restoredPrefix: Int, finalBoundary: Int,
         minimumStride: Int = minimumCheckpointStride,
         maximumCheckpoints: Int = MLXReplayPrefill.maximumCheckpoints,
-        promptSnapshotBackoffTokens: Int = 0
+        promptSnapshotBackoffTokens: Int = 0,
+        retainCoarseAnchor: Bool = false
     ) -> [Int] {
         guard restoredPrefix >= 0, finalBoundary > restoredPrefix,
               minimumStride > 0, maximumCheckpoints > 0 else { return [] }
@@ -33,7 +36,18 @@ enum MLXReplayPrefill {
             // One earlier checkpoint replaces the coarse interior grid; the
             // caller still captures the final boundary for cheap exact repeats.
             let boundary = finalBoundary - (promptSnapshotBackoffTokens - 1)
-            return boundary > restoredPrefix && boundary < finalBoundary ? [boundary] : []
+            guard boundary > restoredPrefix && boundary < finalBoundary else { return [] }
+            // Bounded coverage experiment: keep only the last original grid
+            // boundary before the near-end snapshot. This is real captured
+            // recurrent state, never a trimmed descendant. Earlier divergences
+            // can still miss; this does not preserve the entire coarse grid.
+            if retainCoarseAnchor && maximumCheckpoints > 1,
+               let anchor = boundaries(restoredPrefix: restoredPrefix,
+                   finalBoundary: finalBoundary, minimumStride: minimumStride,
+                   maximumCheckpoints: maximumCheckpoints).last(where: { $0 < boundary }) {
+                return [anchor, boundary]
+            }
+            return [boundary]
         }
         let span = finalBoundary - restoredPrefix
         let roundedSpan = span / maximumCheckpoints + (span % maximumCheckpoints == 0 ? 0 : 1)
@@ -57,6 +71,8 @@ enum MLXReplayPrefill {
         model: any LanguageModel, cache: [KVCache], inputTokens: [Int],
         restoredPrefix: Int, radix: RadixTreeCache? = nil, prefillStepSize: Int = 512,
         promptSnapshotBackoffTokens: Int = 0,
+        retainCoarseAnchor: Bool = false,
+        captureCoarseAnchorInline: Bool = false,
         checkpoint: ((Int, [[MLXArray]], [[String]]) -> Void)? = nil,
         checkCancellation: (() throws -> Void)? = nil,
         didCompleteChunk: ((Range<Int>) -> Void)? = nil,
@@ -65,6 +81,8 @@ enum MLXReplayPrefill {
         try prepareWithSnapshot(model: model, cache: cache, inputTokens: inputTokens,
             restoredPrefix: restoredPrefix, radix: radix, prefillStepSize: prefillStepSize,
             promptSnapshotBackoffTokens: promptSnapshotBackoffTokens,
+            retainCoarseAnchor: retainCoarseAnchor,
+            captureCoarseAnchorInline: captureCoarseAnchorInline,
             checkpoint: checkpoint, checkCancellation: checkCancellation,
             didCompleteChunk: didCompleteChunk, isolation: isolation).output
     }
@@ -73,6 +91,8 @@ enum MLXReplayPrefill {
         model: any LanguageModel, cache: [KVCache], inputTokens: [Int],
         restoredPrefix: Int, radix: RadixTreeCache? = nil, prefillStepSize: Int = 512,
         promptSnapshotBackoffTokens: Int = 0,
+        retainCoarseAnchor: Bool = false,
+        captureCoarseAnchorInline: Bool = false,
         captureFinalSnapshot: Bool = false,
         captureFinalCheckpoint: Bool = true,
         checkpoint: ((Int, [[MLXArray]], [[String]]) -> Void)? = nil,
@@ -85,10 +105,17 @@ enum MLXReplayPrefill {
         var consumed = restoredPrefix
         var state: LMOutput.State?
         var finalSnapshot: Snapshot?
+        var inlineCheckpointCount = 0
         let checkpoints = radix != nil || checkpoint != nil
             ? boundaries(restoredPrefix: restoredPrefix, finalBoundary: finalBoundary,
-                         promptSnapshotBackoffTokens: promptSnapshotBackoffTokens) : []
-        for boundary in checkpoints
+                         promptSnapshotBackoffTokens: promptSnapshotBackoffTokens,
+                         retainCoarseAnchor: retainCoarseAnchor) : []
+        let adapter = captureCoarseAnchorInline ? model as? any InteriorPrefillCaptureModel : nil
+        let inlineAnchor = captureCoarseAnchorInline && retainCoarseAnchor
+            && checkpoints.count == 2 && adapter != nil ? checkpoints.first : nil
+        let scheduledCheckpoints = inlineAnchor.map { anchor in checkpoints.filter { $0 != anchor } }
+            ?? checkpoints
+        for boundary in scheduledCheckpoints
             + [finalBoundary] {
             try Task.checkCancellation()
             try checkCancellation?()
@@ -98,13 +125,45 @@ enum MLXReplayPrefill {
                 // Snapshot spacing must not override the caller's memory bound.
                 // In particular, long prompts must not grow each forward pass
                 // to promptLength / maximumCheckpoints.
-                let end = consumed + min(boundary - consumed, max(1, prefillStepSize))
+                var end = consumed + min(boundary - consumed, max(1, prefillStepSize))
+                var captured: InteriorPrefillCapture?
+                if let anchor = inlineAnchor, anchor > consumed, anchor < end {
+                    let chunk = Array(inputTokens[consumed..<end])
+                    captured = try adapter?.prefillCapturingBoundary(
+                        LMInput.Text(tokens: MLXArray(chunk)[.newAxis]), cache: cache, state: state,
+                        restoredPrefix: consumed, boundary: anchor - consumed,
+                        hostTokenIDs: model.consumesHostTokenIDs ? chunk : nil)
+                    // Nil promises no mutation. Preserve the old split path
+                    // and its anchor coverage for every unsupported input.
+                    if captured == nil { end = anchor }
+                }
                 let range = consumed..<end
-                let chunk = Array(inputTokens[range])
-                state = model(LMInput.Text(tokens: MLXArray(chunk)[.newAxis]),
-                              cache: cache, state: state,
-                              hostTokenIDs: model.consumesHostTokenIDs ? chunk : nil).state
+                if let captured {
+                    guard captured.output.state == nil,
+                          captured.states.count == cache.count,
+                          captured.metadata.count == cache.count else {
+                        throw CaptureError.invalidSnapshot
+                    }
+                    state = captured.output.state
+                    inlineCheckpointCount += 1
+                } else {
+                    let chunk = Array(inputTokens[range])
+                    state = model(LMInput.Text(tokens: MLXArray(chunk)[.newAxis]),
+                                  cache: cache, state: state,
+                                  hostTokenIDs: model.consumesHostTokenIDs ? chunk : nil).state
+                }
                 consumed = end
+                if let anchor = inlineAnchor, state == nil,
+                   captured != nil || consumed == anchor {
+                    try Task.checkCancellation()
+                    try checkCancellation?()
+                    let states = captured?.states ?? MLXPrefixReplayPolicy.snapshotLayerStates(cache)
+                    let metadata = captured?.metadata ?? cache.map { $0.metaState }
+                    radix?.insert(tokens: Array(inputTokens.prefix(anchor)),
+                        layerStates: states, layerMetaStates: metadata,
+                        statesAreIndependentSnapshots: true)
+                    checkpoint?(anchor, states, metadata)
+                }
                 // Complete all state before another request can use the model.
                 // The callback runs synchronously under the caller's GPU owner;
                 // it must not recursively admit or decode this prefilling row.
@@ -142,6 +201,7 @@ enum MLXReplayPrefill {
         let output = model(LMInput.Text(tokens: MLXArray([finalToken]).reshaped([1, 1])),
                      cache: cache, state: state,
                      hostTokenIDs: model.consumesHostTokenIDs ? [finalToken] : nil)
-        return Prepared(output: output, finalSnapshot: output.state == nil ? finalSnapshot : nil)
+        return Prepared(output: output, finalSnapshot: output.state == nil ? finalSnapshot : nil,
+            inlineCheckpointCount: inlineCheckpointCount)
     }
 }

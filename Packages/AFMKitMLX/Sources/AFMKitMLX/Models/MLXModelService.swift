@@ -371,6 +371,7 @@ public final class MLXModelService:
 
     private let resolver: MLXCacheResolver
     let telemetryObserver: any AFMInferenceTelemetryObserving
+    private let admissionTelemetry: MLXAdmissionTelemetry
     private let registry = MLXModelRegistry()
     private let visionAssetValidator = AFMMLXVisionAssetValidator()
     private let stateLock = NSLock()
@@ -731,7 +732,22 @@ public final class MLXModelService:
     private(set) var forceSerialGeneration = false
     private var xgrammarService: XGrammarService?
     /// Concurrent generation scheduler (nil = serial mode via container.perform).
-    private var scheduler: BatchScheduler?
+    private var scheduler: BatchScheduler? {
+        didSet {
+            // All installations/detachments hold stateLock. The bridge reads
+            // counters directly, never re-enters this service from a callback.
+            if let scheduler {
+                scheduler.connectAdmissionTelemetry(admissionTelemetry)
+                admissionTelemetry.installBatchReader { [weak scheduler] in
+                    guard let scheduler else { return (0, 0) }
+                    let pending = scheduler.pendingSlotCount
+                    return (max(0, scheduler.activeSlotCount - pending), pending)
+                }
+            } else {
+                admissionTelemetry.installBatchReader(nil)
+            }
+        }
+    }
     /// Exact GLM speculative replay entries; unlike `radixCache`, these include
     /// prompt hidden states required to reseed the embedded NextN head.
     private var glmMTPPromptReplayCache: GLM5NextMTPPromptReplayCache?
@@ -980,6 +996,12 @@ public final class MLXModelService:
         _ = Self.registerModelFactoriesOnce
         self.resolver = resolver
         self.telemetryObserver = AFMInferenceTelemetryRelay()
+        let serial = _serialAdmissionState
+        let waiting = _serialAdmissionWaiting
+        self.admissionTelemetry = MLXAdmissionTelemetry(
+            observer: self.telemetryObserver,
+            serial: { (serial.withLock { $0.running }, 0) },
+            admissionWaiters: { waiting.withLock { $0 } })
         self.resolver.applyEnvironment()
     }
 
@@ -990,6 +1012,12 @@ public final class MLXModelService:
         _ = Self.registerModelFactoriesOnce
         self.resolver = resolver
         self.telemetryObserver = telemetryObserver
+        let serial = _serialAdmissionState
+        let waiting = _serialAdmissionWaiting
+        self.admissionTelemetry = MLXAdmissionTelemetry(
+            observer: telemetryObserver,
+            serial: { (serial.withLock { $0.running }, 0) },
+            admissionWaiters: { waiting.withLock { $0 } })
         self.resolver.applyEnvironment()
     }
 
@@ -997,6 +1025,7 @@ public final class MLXModelService:
         to observer: any AFMInferenceTelemetryObserving
     ) {
         (telemetryObserver as? AFMInferenceTelemetryRelay)?.connect(to: observer)
+        admissionTelemetry.publish(force: true)
     }
 
     public func admitGeneration(timeout: Duration?) async throws -> AFMGenerationLease {
@@ -1115,20 +1144,12 @@ public final class MLXModelService:
     }
 
     private func publishAdmissionProviderState() {
-        let admissionRunning = _serialAdmissionState.withLock { $0.running }
-        let waiting = _serialAdmissionWaiting.withLock { $0 }
         let maximumWorkingSet = GPU.deviceInfo().maxRecommendedWorkingSetSize
         let memoryUsage: Double? = maximumWorkingSet > 0
             ? min(1, Double(Memory.activeMemory) / Double(maximumWorkingSet))
             : nil
-        telemetryObserver.updateProviderState(
-            AFMInferenceProviderState(
-                runningRequests: admissionRunning,
-                waitingRequests: waiting,
-                memoryCacheUsage: memoryUsage,
-                prefixCacheFill: radixCache?.usageFraction
-            )
-        )
+        admissionTelemetry.updateResources(
+            memoryCacheUsage: memoryUsage, prefixCacheFill: radixCache?.usageFraction)
     }
 
     /// Configure MLX GPU settings once, before first model load.

@@ -28,7 +28,7 @@ enum Qwen4ExpGatedDeltaPrework {
     static let batchEnabled =
         ProcessInfo.processInfo.environment["AFM_QWEN_BATCH_GDN_PREWORK"] == "1"
 
-    private static let enabled =
+    static let enabled =
         ProcessInfo.processInfo.environment["AFM_QWEN_FUSED_GDN_PREWORK"] != "0"
 
     private static let kernel = MLXFast.metalKernel(

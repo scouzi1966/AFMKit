@@ -137,6 +137,8 @@ actor BatchScheduler {
     private let qwenMTPReplayBackoffTokens: Int
     private let qwenMTPReplayBackoffOnMiss: Bool
     private let qwenARReplayBackoffTokens: Int
+    private let qwenARReplayCoarseAnchor: Bool
+    private let qwenARReplayInlineAnchor: Bool
     private static let maximumQwenMTPReplayBackoffTokens = 256
     /// Bounded independent graph submission, not cross-request verification.
     /// One preserves the existing submit/wait order and is the default.
@@ -144,6 +146,12 @@ actor BatchScheduler {
     private var qwenMTPPreparedCycles = 0
     private let qwenMTPSharedVerification: Bool
     private let qwenMTPIndependentAttention: Bool
+    /// Experimental phase alignment for continuous MTP arrivals. Off by default.
+    private let qwenMTPPhaseAlignment: Bool
+    private var qwenMTPHeldTokenTicks = 0
+    /// Experimental decoded-token service between pairs of MTP admissions.
+    private let qwenMTPAdmissionInterleave: Bool
+    private var qwenMTPAdmissionInterleavedTicks = 0
     private let qwenMTPSharedVocabulary: Bool
     private let qwenMTPSharedHead: Bool
     /// Delay mapped PLE's draft-ID host read until its existing private-leaf
@@ -168,8 +176,10 @@ actor BatchScheduler {
     /// execution path changes until its state contract is qualified.
     private let enablesUniformDecodeGroups: Bool
     private let enablesContinuousIndependentAdmission: Bool
+    private let enablesContinuousVLMTextAdmission: Bool
     private let enablesPrefillInterleave: Bool
     private let enablesRequestOwnedDecodeBatch: Bool
+    private let retainedRequestBatch: RetainedRequestBatchOwner?
     private var requestOwnedBatchRowsSeen: Set<Int> = []
     private let continuousPrefillTokenBudget: Int
     private let continuousYieldInterval: Int
@@ -384,9 +394,11 @@ actor BatchScheduler {
 
     nonisolated static func supportsPrefillInterleave(
         modelType: any LanguageModel.Type, continuousGroups: Bool,
-        ownsMTP: Bool, enabled: Bool
+        ownsMTP: Bool, enabled: Bool, permitsVLMTextAdmission: Bool = false
     ) -> Bool {
-        enabled && continuousGroups && !ownsMTP && modelType == Qwen4ExpModel.self
+        enabled && continuousGroups && !ownsMTP
+            && (modelType == Qwen4ExpModel.self
+                || (modelType == Qwen4ExpVL.self && permitsVLMTextAdmission))
     }
 
     /// Hybrid recurrent state cannot be trimmed to an arbitrary token offset.
@@ -462,6 +474,20 @@ actor BatchScheduler {
         return estimatedTokenCounts.count
     }
 
+    /// Collect a partial first MTP burst until one quiet admission window has
+    /// passed. Otherwise a 3+1 or 7+1 arrival split can remain out of phase
+    /// for the entire speculative decode, preventing shared verification.
+    /// Other models retain the existing singleton-only admission wait.
+    nonisolated static func shouldCollectInitialBurst(
+        requestCount: Int, maxConcurrent: Int, allRequestsUseQwenMTP: Bool,
+        admissionWindowNanoseconds: UInt64
+    ) -> Bool {
+        guard requestCount > 0, maxConcurrent > 1, admissionWindowNanoseconds > 0 else {
+            return false
+        }
+        return requestCount == 1 || (allRequestsUseQwenMTP && requestCount < maxConcurrent)
+    }
+
     /// Input preparation shares this actor. Shorter yield intervals improve
     /// admission latency but can fragment compatible batches. Preserve the
     /// existing schedule unless a controlled experiment requests otherwise.
@@ -471,10 +497,38 @@ actor BatchScheduler {
         stepCount.isMultiple(of: continuousGroups ? min(64, max(1, interval)) : 64)
     }
 
+    /// Hold only rows already at a cycle boundary while peers drain accepted
+    /// tokens. A singleton or fully aligned cohort is never delayed.
+    nonisolated static func qwenMTPBoundaryHoldIndices(_ ready: [Bool]) -> Set<Int> {
+        guard ready.count > 1, ready.contains(true), ready.contains(false) else { return [] }
+        return Set(ready.indices.filter { ready[$0] })
+    }
+
     nonisolated static func supportsQwenMTPScheduler(
         modelType: Any.Type, hasGenerator: Bool, enabled: Bool
     ) -> Bool {
-        enabled && hasGenerator && modelType == Qwen4ExpModel.self
+        // The VLM factory binds its generator to this same wrapper's text trunk.
+        // This permits text-only MTP, not speculative vision or continuous VLM
+        // admission: the fixed-cohort and prepared-media guards remain in force.
+        enabled && hasGenerator
+            && (modelType == Qwen4ExpModel.self || modelType == Qwen4ExpVL.self)
+    }
+
+    nonisolated static func canUseQwenMTPSession(requested: Bool, input: LMInput) -> Bool {
+        // Defend the actual prepared input as well as the service's UserInput
+        // eligibility check. The MTP session consumes token IDs only and must
+        // never discard image/video embeddings produced by the processor.
+        requested && input.image == nil && input.video == nil
+    }
+
+    nonisolated static func supportsQwenDecodeGroups(modelType: Any.Type, enabled: Bool) -> Bool {
+        enabled && (modelType == Qwen4ExpModel.self || modelType == Qwen4ExpVL.self)
+    }
+
+    nonisolated static func permitsQwenDecodeGroup(
+        enabled: Bool, independentCaches: Bool, isMultimodal: Bool, hasModelState: Bool
+    ) -> Bool {
+        enabled && independentCaches && !isMultimodal && !hasModelState
     }
 
     /// Copy cache tensors into independent MLX storage before retaining them
@@ -649,6 +703,19 @@ actor BatchScheduler {
     /// decremented in finishSlot() and error paths. Used for capacity checks.
     private let _inFlightCount = OSAllocatedUnfairLock(initialState: 0)
 
+    private let _admissionTelemetry = OSAllocatedUnfairLock<MLXAdmissionTelemetry?>(initialState: nil)
+
+    nonisolated func connectAdmissionTelemetry(_ telemetry: MLXAdmissionTelemetry) {
+        _admissionTelemetry.withLock { $0 = telemetry }
+    }
+
+    /// Membership transitions only. Never call on an unchanged decode tick,
+    /// nor while holding a queue/counter lock. The bridge does not enter the
+    /// service lock, so service-held reservations are safe as well.
+    nonisolated private func publishAdmission() {
+        _admissionTelemetry.withLock { $0 }?.publish()
+    }
+
     /// Cancellation must be observable from the synchronous GPU loop without
     /// waiting for an actor hop. The generation loop intentionally contains no
     /// suspension point while slots are active.
@@ -656,11 +723,13 @@ actor BatchScheduler {
 
     /// Atomically reserve a slot if under capacity. Returns true if reserved.
     nonisolated func tryReserve() -> Bool {
-        _inFlightCount.withLock { count in
+        let reserved = _inFlightCount.withLock { count in
             if count >= maxConcurrent { return false }
             count += 1
             return true
         }
+        if reserved { publishAdmission() }
+        return reserved
     }
 
     /// Exponential backoff constants for slot polling.
@@ -689,18 +758,21 @@ actor BatchScheduler {
     /// Release a reserved slot (call if request fails before reaching submit).
     nonisolated func releaseReservation() {
         _inFlightCount.withLock { $0 = max($0 - 1, 0) }
+        publishAdmission()
     }
 
     /// Atomically reserve N slots. Returns true if all N were reserved,
     /// false if insufficient capacity (no slots reserved in that case).
     nonisolated func tryReserveMultiple(count: Int) -> Bool {
-        _inFlightCount.withLock { current in
+        let reserved = _inFlightCount.withLock { current in
             if current + count <= maxConcurrent {
                 current += count
                 return true
             }
             return false
         }
+        if reserved { publishAdmission() }
+        return reserved
     }
 
     /// Release N slot reservations at once.
@@ -708,6 +780,7 @@ actor BatchScheduler {
         _inFlightCount.withLock { current in
             current = max(0, current - count)
         }
+        publishAdmission()
     }
 
     /// Current number of active + pending slots (for teardown decisions).
@@ -741,6 +814,7 @@ actor BatchScheduler {
         guard !removed.isEmpty else { return }
 
         _inFlightCount.withLock { $0 = max(0, $0 - removed.count) }
+        publishAdmission()
         for request in removed {
             clearCancellation(request.id)
             request.constraintRuntimeConfig?.matcherHandle?.release()
@@ -814,8 +888,15 @@ actor BatchScheduler {
             && ProcessInfo.processInfo.environment["AFM_QWEN_MTP_COHORT_DEPTH"] == "1"
         self.qwenMTPCohortDepth = cohortDepth
             ? CohortSpeculationController(maximumDepth: qwenMTPGenerator!.depth) : nil
-        self.qwenMTPAdaptiveDepth = ownsQwenMTP && !cohortDepth
+        let adaptiveDepth = ownsQwenMTP && !cohortDepth
             && ProcessInfo.processInfo.environment["AFM_QWEN_MTP_ADAPTIVE_DEPTH"] == "1"
+        self.qwenMTPAdaptiveDepth = adaptiveDepth
+        let phaseAlignment = independentAttention && !cohortDepth
+            && !adaptiveDepth
+            && ProcessInfo.processInfo.environment["AFM_QWEN_MTP_PHASE_ALIGNMENT"] == "1"
+        self.qwenMTPPhaseAlignment = phaseAlignment
+        self.qwenMTPAdmissionInterleave = phaseAlignment
+            && ProcessInfo.processInfo.environment["AFM_QWEN_MTP_ADMISSION_INTERLEAVE"] == "1"
         let stateMiB = min(2048, max(0, Int(ProcessInfo.processInfo.environment[
             "AFM_QWEN_MTP_PERSISTENT_STATE_MIB"] ?? "0") ?? 0))
         self.qwenMTPPersistentState = independentAttention && stateMiB > 0
@@ -837,25 +918,48 @@ actor BatchScheduler {
                 ProcessInfo.processInfo.environment["AFM_QWEN_MTP_REPLAY_BACKOFF"]) : 0
         self.qwenMTPReplayBackoffOnMiss = ProcessInfo.processInfo.environment[
             "AFM_QWEN_MTP_REPLAY_BACKOFF_ON_MISS"] == "1"
-        self.qwenARReplayBackoffTokens = model is Qwen4ExpModel && enablePrefixCaching
-            ? Self.qwenARReplayBackoffTokenCount(
-                ProcessInfo.processInfo.environment["AFM_QWEN_PREFIX_REPLAY_BACKOFF"]) : 0
+        self.qwenARReplayBackoffTokens = Self.qwenARReplayBackoffTokenCount(
+            modelType: type(of: model), prefixCacheEnabled: enablePrefixCaching,
+            ownsMTP: ownsQwenMTP,
+            vlmTextReplayEnabled: ProcessInfo.processInfo.environment[
+                "AFM_QWEN_BATCH_VLM_TEXT_REPLAY"] == "1",
+            value: ProcessInfo.processInfo.environment["AFM_QWEN_PREFIX_REPLAY_BACKOFF"])
+        self.qwenARReplayCoarseAnchor = Self.qwenARReplayUsesCoarseAnchor(
+            backoffTokens: qwenARReplayBackoffTokens, ownsMTP: ownsQwenMTP,
+            enabled: ProcessInfo.processInfo.environment["AFM_QWEN_PREFIX_REPLAY_COARSE_ANCHOR"] == "1")
+        self.qwenARReplayInlineAnchor = qwenARReplayCoarseAnchor
+            && ProcessInfo.processInfo.environment["AFM_QWEN_PREFIX_REPLAY_INLINE_ANCHOR"] == "1"
         self.glmMTPPromptReplayCache = glmMTPPromptReplayCache
         self.glmMTPReplayModelID = Self.glmMTPReplayModelID(
             serviceModelID: serviceModelID,
             configurationName: configuration.name)
-        let uniformGroups = model is Qwen4ExpModel
-            && ProcessInfo.processInfo.environment["AFM_QWEN_BATCH_COMPATIBLE_GROUPS"] == "1"
+        let uniformGroups = Self.supportsQwenDecodeGroups(
+            modelType: type(of: model),
+            enabled: ProcessInfo.processInfo.environment["AFM_QWEN_BATCH_COMPATIBLE_GROUPS"] == "1")
         let continuousGroups = uniformGroups
             && ProcessInfo.processInfo.environment["AFM_QWEN_BATCH_CONTINUOUS_GROUPS"] == "1"
         self.enablesUniformDecodeGroups = uniformGroups
-        self.enablesRequestOwnedDecodeBatch = continuousGroups && !ownsQwenMTP
+        let requestOwnedBatch = continuousGroups && !ownsQwenMTP
             && ProcessInfo.processInfo.environment["AFM_QWEN_BATCH_MIXED_POSITIONS"] == "1"
+        self.enablesRequestOwnedDecodeBatch = requestOwnedBatch
+        self.enablesContinuousVLMTextAdmission = Self.supportsContinuousVLMTextAdmission(
+            modelType: type(of: model), requestOwnedBatch: requestOwnedBatch,
+            ownsMTP: ownsQwenMTP,
+            enabled: ProcessInfo.processInfo.environment["AFM_QWEN_BATCH_VLM_TEXT_ADMISSION"] == "1")
+        if requestOwnedBatch,
+           ProcessInfo.processInfo.environment["AFM_QWEN_BATCH_RETAIN_RECURRENT"] == "1",
+           let adapter = model as? any RetainedRequestOwnedDecodeBatchModel {
+            self.retainedRequestBatch = RetainedRequestBatchOwner(
+                state: adapter.makeRequestOwnedDecodeBatchState())
+        } else {
+            self.retainedRequestBatch = nil
+        }
         self.enablesContinuousIndependentAdmission = continuousGroups || ownsQwenMTP
         self.enablesPrefillInterleave = Self.supportsPrefillInterleave(
             modelType: type(of: model), continuousGroups: continuousGroups,
             ownsMTP: ownsQwenMTP,
-            enabled: ProcessInfo.processInfo.environment["AFM_QWEN_BATCH_PREFILL_INTERLEAVE"] == "1")
+            enabled: ProcessInfo.processInfo.environment["AFM_QWEN_BATCH_PREFILL_INTERLEAVE"] == "1",
+            permitsVLMTextAdmission: enablesContinuousVLMTextAdmission)
         self.continuousPrefillTokenBudget = min(8192, max(1,
             Int(ProcessInfo.processInfo.environment[
                 "AFM_QWEN_BATCH_PREFILL_TOKEN_BUDGET"] ?? "1024") ?? 1024))
@@ -965,10 +1069,11 @@ actor BatchScheduler {
                 jsonStopFilter: jsonStopFilter,
                 continuation: continuation,
                 usesGLMMTP: usesGLMMTP,
-                usesQwenMTP: usesQwenMTP
+                usesQwenMTP: Self.canUseQwenMTPSession(requested: usesQwenMTP, input: input)
             ))
         }
 
+        publishAdmission()
         StatsAggregator.shared.requestStarted()
         DebugLogger.log("[BatchScheduler] Request enqueued req=\(requestId) (\(_inFlightCount.withLock { $0 })/\(maxConcurrent))")
         Task { await self.ensureLoopRunning() }
@@ -978,10 +1083,19 @@ actor BatchScheduler {
 
     /// Drain all pending requests from the nonisolated queue.
     /// Called from within the actor-isolated generationLoop.
-    private func drainPendingQueue(limit: Int? = nil) -> [PendingRequest] {
-        _pendingQueue.withLock { q in
+    private func drainPendingQueue(limit: Int? = nil, ordinaryTextOnly: Bool = false) -> [PendingRequest] {
+        let drained = _pendingQueue.withLock { q in
             let result: [PendingRequest]
-            if let limit, q.count > limit {
+            if ordinaryTextOnly {
+                // Inspect/remove under the same lock. Never skip a media or
+                // speculative head: it must retain FIFO priority at the barrier.
+                let count = Self.eligibleAdmissionPrefixCount(q, limit: limit ?? q.count) {
+                    Self.isOrdinaryVLMTextAdmission(
+                        input: $0.input, usesSpeculativeSession: $0.usesSpeculativeSession)
+                }
+                result = Array(q.prefix(count))
+                q.removeFirst(count)
+            } else if let limit, q.count > limit {
                 result = Array(q.prefix(limit))
                 q.removeFirst(limit)
             } else {
@@ -990,6 +1104,8 @@ actor BatchScheduler {
             }
             return result
         }
+        if !drained.isEmpty { publishAdmission() }
+        return drained
     }
 
     /// Give same-burst requests a bounded chance to join an empty scheduler.
@@ -998,12 +1114,12 @@ actor BatchScheduler {
     /// capacity is reached, or the bounded maximum expires. This avoids
     /// splitting a large HTTP burst merely because its final connections were
     /// parsed a few milliseconds after its first connections.
-    private func drainAdmissionBatch() async -> [PendingRequest] {
+    private func drainAdmissionBatch(ordinaryTextOnly: Bool = false) async -> [PendingRequest] {
         let admissionLimit = Self.continuousAdmissionLimit(
             maxConcurrent: maxConcurrent, activeCount: slots.count,
             enabled: enablesContinuousIndependentAdmission,
             tokenBudget: continuousPrefillTokenBudget)
-        var requests = drainPendingQueue(limit: admissionLimit)
+        var requests = drainPendingQueue(limit: admissionLimit, ordinaryTextOnly: ordinaryTextOnly)
         if enablesContinuousIndependentAdmission, !slots.isEmpty, requests.count > 1 {
             let admitted = Self.continuousAdmissionPrefixCount(
                 estimatedTokenCounts: requests.map(estimatedContinuousPrefillTokens),
@@ -1014,12 +1130,15 @@ actor BatchScheduler {
                 // Requests enqueued during cost estimation must remain behind
                 // the older work, without holding the queue lock for cache lookup.
                 _pendingQueue.withLock { $0.insert(contentsOf: deferred, at: 0) }
+                publishAdmission()
             }
         }
         guard slots.isEmpty,
-              requests.count == 1,
-              maxConcurrent > 1,
-              admissionWindowNanoseconds > 0
+              Self.shouldCollectInitialBurst(
+                  requestCount: requests.count, maxConcurrent: maxConcurrent,
+                  allRequestsUseQwenMTP: ownsQwenMTPSessions
+                      && requests.allSatisfy(\.usesQwenMTP),
+                  admissionWindowNanoseconds: admissionWindowNanoseconds)
         else {
             return requests
         }
@@ -1078,14 +1197,21 @@ actor BatchScheduler {
         }
         // Reset in-flight counter
         _inFlightCount.withLock { $0 = 0 }
+        publishAdmission()
         slots.removeAll()
         uniformDecodeGroups.removeAll()
+        if let retained = retainedRequestBatch {
+            retained.reset()
+            print("[BatchScheduler] Retained AR recurrent bank: layer_hits=\(retained.state.layerHits) layer_rebuilds=\(retained.state.layerRebuilds) resets=\(retained.resets) retained_bytes=\(retained.state.retainedBytes) peak_payload_bytes=\(retained.state.peakRetainedBytes)")
+        }
         if qwenMTPSubmissionWindow > 1 {
             print("[BatchScheduler] Qwen MTP submitted cycles: \(qwenMTPPreparedCycles) | window=\(qwenMTPSubmissionWindow)")
         }
         if qwenMTPSharedVerification {
             print("[BatchScheduler] Qwen MTP shared verification: batches=\(qwenMTPSharedVerificationBatches) | rows=\(qwenMTPSharedVerificationRows)")
             print("[BatchScheduler] Qwen MTP independent attention: \(qwenMTPIndependentAttention)")
+            print("[BatchScheduler] Qwen MTP phase alignment: \(qwenMTPPhaseAlignment) | held token ticks=\(qwenMTPHeldTokenTicks)")
+            print("[BatchScheduler] Qwen MTP admission interleave: \(qwenMTPAdmissionInterleave) | decode ticks=\(qwenMTPAdmissionInterleavedTicks)")
             print("[BatchScheduler] Qwen MTP shared vocabulary: \(qwenMTPSharedVocabulary)")
             print("[BatchScheduler] Qwen MTP shared head: \(qwenMTPSharedHead) | draft rows=\(qwenMTPSharedDraftRows) | repair rows=\(qwenMTPSharedRepairRows)")
             print("[BatchScheduler] Qwen MTP shared deferred PLE IDs: \(qwenMTPSharedDeferredPLEIDs)")
@@ -1138,6 +1264,7 @@ actor BatchScheduler {
     /// otherwise be idle time. The model input uses `lastTokenArray` (MLXArray)
     /// directly — no Int→MLXArray roundtrip needed.
     private func generationLoop() async {
+        defer { retainedRequestBatch?.reset() }
         var stepCount = 0
         // Previous step's sampled tokens + slot IDs + logits, for deferred dispatch.
         // nil on the first iteration (newly prefilled slots have no pending work).
@@ -1158,17 +1285,29 @@ actor BatchScheduler {
             // Drain nonisolated queue. When idle, wait a bounded admission
             // window so same-burst concurrent requests start together.
             let newRequests: [PendingRequest]
+            // Only request-owned AR text rows may relax the VLM fixed barrier.
+            // Keep the default hot path unchanged and inspect CPU metadata only.
+            let admitVLMText = enablesContinuousVLMTextAdmission && !slots.isEmpty
+                && cacheMode == .independent && slots.allSatisfy {
+                    Self.permitsContinuousVLMTextSlot(
+                        permitsDecodeGroup: $0.permitsUniformDecodeGroup,
+                        hasModelState: $0.modelState != nil,
+                        hasSpeculativeSession: $0.speculativeSession != nil,
+                        hasRequestCaches: !$0.prefillCaches.isEmpty)
+                }
             if Self.shouldDeferStaggeredAdmissions(
                 requiresFixedDecodeCohorts: requiresFixedDecodeCohorts,
-                activeSlotCount: slots.count
+                activeSlotCount: slots.count,
+                permitsVLMTextAdmission: admitVLMText
             ) {
                 newRequests = []
             } else {
-                newRequests = await drainAdmissionBatch()
+                newRequests = await drainAdmissionBatch(ordinaryTextOnly: admitVLMText)
             }
             if Task.isCancelled || _isShutdown.withLock({ $0 }) {
                 for req in newRequests {
                     _inFlightCount.withLock { $0 = max(0, $0 - 1) }
+                    publishAdmission()
                     clearCancellation(req.id)
                     req.constraintRuntimeConfig?.matcherHandle?.release()
                     req.continuation.finish(
@@ -1189,6 +1328,7 @@ actor BatchScheduler {
                     if isCancellationRequested(req.id) {
                         clearCancellation(req.id)
                         _inFlightCount.withLock { $0 = max(0, $0 - 1) }
+                        publishAdmission()
                         req.constraintRuntimeConfig?.matcherHandle?.release()
                         req.continuation.finish(throwing: CancellationError())
                         StatsAggregator.shared.requestSucceeded(reason: "abort")
@@ -1199,6 +1339,7 @@ actor BatchScheduler {
                         accepted.append(req)
                     } else {
                         _pendingQueue.withLock { $0.append(req) }
+                        publishAdmission()
                     }
                 }
 
@@ -1215,13 +1356,20 @@ actor BatchScheduler {
                 {
                     switch cacheMode {
                     case .empty, .independent:
-                        for req in accepted {
+                        let interleaveQwenBurst = qwenMTPAdmissionInterleave
+                            && accepted.count > 2 && accepted.allSatisfy(\.usesQwenMTP)
+                        for (index, req) in accepted.enumerated() {
                             if req.usesGLMMTP {
                                 prefillGLMMTP(req)
                             } else if req.usesQwenMTP {
                                 prefillQwenMTP(req)
                             } else {
                                 prefillOne(req, forceIndependentCaches: true)
+                            }
+                            if interleaveQwenBurst, (index + 1).isMultiple(of: 2),
+                               index + 1 < accepted.count, !slots.isEmpty {
+                                advanceIndependentDecode(phaseAlignment: false)
+                                qwenMTPAdmissionInterleavedTicks += 1
                             }
                         }
                         if enablesContinuousIndependentAdmission {
@@ -1247,6 +1395,7 @@ actor BatchScheduler {
                                 deferredAR: deferredAR,
                                 isGLMMTP: \.usesGLMMTP)
                         }
+                        publishAdmission()
                         continue
                     }
                 }
@@ -1414,6 +1563,7 @@ actor BatchScheduler {
                 modelConsumesHostTokenIDs: model.consumesHostTokenIDs)
 
             let modelStart = debugTiming ? Date() : Date.distantPast
+            retainedRequestBatch?.reset()
             let output = model(
                 input,
                 cache: batchCaches,
@@ -1607,9 +1757,47 @@ actor BatchScheduler {
 
     static func shouldDeferStaggeredAdmissions(
         requiresFixedDecodeCohorts: Bool,
-        activeSlotCount: Int
+        activeSlotCount: Int,
+        permitsVLMTextAdmission: Bool = false
     ) -> Bool {
-        requiresFixedDecodeCohorts && activeSlotCount > 0
+        requiresFixedDecodeCohorts && activeSlotCount > 0 && !permitsVLMTextAdmission
+    }
+
+    /// This experiment needs independent per-request caches and mixed-position
+    /// decode. Uniform groups can transfer cache ownership out of their slots;
+    /// speculative and media state have not qualified for this admission route.
+    nonisolated static func supportsContinuousVLMTextAdmission(
+        modelType: Any.Type, requestOwnedBatch: Bool, ownsMTP: Bool, enabled: Bool
+    ) -> Bool {
+        enabled && modelType == Qwen4ExpVL.self && requestOwnedBatch && !ownsMTP
+    }
+
+    nonisolated static func permitsContinuousVLMTextSlot(
+        permitsDecodeGroup: Bool, hasModelState: Bool,
+        hasSpeculativeSession: Bool, hasRequestCaches: Bool
+    ) -> Bool {
+        permitsDecodeGroup && !hasModelState && !hasSpeculativeSession && hasRequestCaches
+    }
+
+    nonisolated static func isOrdinaryVLMTextAdmission(
+        input: LMInput, usesSpeculativeSession: Bool
+    ) -> Bool {
+        guard !usesSpeculativeSession, input.image == nil, input.video == nil else { return false }
+        let shape = input.text.tokens.shape
+        // Match Qwen4ExpVL.prepare's delegation to its text trunk, without
+        // evaluating a tensor or reading token values back from the GPU.
+        return shape.count == 1 || (shape.count == 2 && shape[0] == 1)
+    }
+
+    nonisolated static func eligibleAdmissionPrefixCount<Request>(
+        _ requests: [Request], limit: Int, isEligible: (Request) -> Bool
+    ) -> Int {
+        var count = 0
+        for request in requests.prefix(max(0, limit)) {
+            guard isEligible(request) else { break }
+            count += 1
+        }
+        return count
     }
 
     /// `ModelConfiguration.name` is a display-oriented relative name for
@@ -1647,10 +1835,31 @@ actor BatchScheduler {
         return min(maximumQwenMTPReplayBackoffTokens, max(0, parsed))
     }
 
+    /// Extend the existing text-trunk policy only to explicitly opted-in AR
+    /// requests in the Qwen VLM wrapper. Media remains excluded by
+    /// shouldCaptureReplayBoundary; MTP owns its separate replay policy.
+    /// This changes prefill geometry, so it requires quality qualification as
+    /// well as timing measurements before any default is changed.
+    static func qwenARReplayBackoffTokenCount(
+        modelType: Any.Type, prefixCacheEnabled: Bool, ownsMTP: Bool,
+        vlmTextReplayEnabled: Bool, value: String?
+    ) -> Int {
+        guard prefixCacheEnabled else { return 0 }
+        let eligible = modelType == Qwen4ExpModel.self
+            || (modelType == Qwen4ExpVL.self && vlmTextReplayEnabled && !ownsMTP)
+        return eligible ? qwenARReplayBackoffTokenCount(value) : 0
+    }
+
     /// Optional two-stage admission within the SAME replay budget: misses seed
     /// a shared earlier boundary, hits retain the full endpoint for exact reuse.
     static func qwenMTPReplayCaptureBackoff(_ requested: Int, onlyOnMiss: Bool, cacheHit: Bool) -> Int {
         onlyOnMiss && cacheHit ? 0 : requested
+    }
+
+    /// Default-off AR-only coverage experiment. The resolved backoff already
+    /// encodes prefix-cache/model eligibility; MTP keeps its own snapshot policy.
+    static func qwenARReplayUsesCoarseAnchor(backoffTokens: Int, ownsMTP: Bool, enabled: Bool) -> Bool {
+        enabled && !ownsMTP && backoffTokens > 1
     }
 
     /// Keep deferred GLM work ahead of AR work while a dense cohort drains.
@@ -1713,6 +1922,8 @@ actor BatchScheduler {
     /// dispatcher continues to enforce output caps, EOS, cancellation, streaming,
     /// and request accounting.
     private func prefillGLMMTP(_ req: PendingRequest) {
+        retainedRequestBatch?.suspend()
+        defer { retainedRequestBatch?.resume() }
         guard let generator = glmMTPGenerator else {
             failPendingRequest(
                 req,
@@ -1753,6 +1964,8 @@ actor BatchScheduler {
     }
 
     private func prefillQwenMTP(_ req: PendingRequest) {
+        retainedRequestBatch?.suspend()
+        defer { retainedRequestBatch?.resume() }
         guard let generator = qwenMTPGenerator else {
             failPendingRequest(req,
                 error: MLXServiceError.loadFailed("Qwen MTP generator is unavailable"))
@@ -1795,7 +2008,7 @@ actor BatchScheduler {
         _ session: SpeculativeSession, request req: PendingRequest,
         inputTokens: [Int], prefillStart: Date, cachedTokens: Int
     ) {
-
+        retainedRequestBatch?.reset()
         if case .empty = cacheMode {
             cacheMode = .independent
         } else if case .independent = cacheMode {
@@ -1904,6 +2117,10 @@ actor BatchScheduler {
         forceIndependentCaches: Bool = false,
         allowDecodeInterleave: Bool = true
     ) {
+        // afterChunk may perform nested decode. Do not recreate a retained
+        // group between prefill chunks, even when independent admission is on.
+        retainedRequestBatch?.suspend()
+        defer { retainedRequestBatch?.resume() }
         let profileStart = executionProfile == nil ? nil : DispatchTime.now().uptimeNanoseconds
         let nestedDecodeBefore = executionProfile?.independentNanoseconds ?? 0
         defer {
@@ -2052,6 +2269,16 @@ actor BatchScheduler {
         // peers unnecessarily destroys their equal-position batch eligibility.
         let interleave = enablesPrefillInterleave && forceIndependentCaches && !isMultimodal
             && allowDecodeInterleave && !slots.isEmpty && !inputTokens.isEmpty
+            && (type(of: model) != Qwen4ExpVL.self
+                || (Self.isOrdinaryVLMTextAdmission(
+                        input: req.input, usesSpeculativeSession: req.usesSpeculativeSession)
+                    && slots.allSatisfy {
+                        Self.permitsContinuousVLMTextSlot(
+                            permitsDecodeGroup: $0.permitsUniformDecodeGroup,
+                            hasModelState: $0.modelState != nil,
+                            hasSpeculativeSession: $0.speculativeSession != nil,
+                            hasRequestCaches: !$0.prefillCaches.isEmpty)
+                    }))
         if let cachedPromptOutput {
             result = cachedPromptOutput
             // The restored radix entry already owns an immutable snapshot.
@@ -2073,6 +2300,7 @@ actor BatchScheduler {
             // scheduler stack, not a second model owner or recursive admission.
             // Same-thread chunk/decode hook design informed by David Dalcu's
             // MIT-licensed mlx-serve (src/generate.zig, src/scheduler.zig).
+            let interleaveStepsBefore = independentDecodeSteps
             let afterChunk: ((Range<Int>) -> Void)? = interleave ? { _ in
                 if self.cacheMode == .independent && !self.slots.isEmpty {
                     self.advanceIndependentDecode()
@@ -2083,6 +2311,8 @@ actor BatchScheduler {
                     model: model, cache: cache, inputTokens: inputTokens,
                     restoredPrefix: cachedTokens, prefillStepSize: req.parameters.prefillStepSize,
                     promptSnapshotBackoffTokens: qwenARReplayBackoffTokens,
+                    retainCoarseAnchor: qwenARReplayCoarseAnchor,
+                    captureCoarseAnchorInline: qwenARReplayInlineAnchor,
                     captureFinalSnapshot: false,
                     captureFinalCheckpoint: !shouldCaptureReplayBoundary,
                     checkpoint: capture,
@@ -2093,6 +2323,16 @@ actor BatchScheduler {
                     },
                     didCompleteChunk: afterChunk)
                 result = prepared.output
+                let interleavedChunks = independentDecodeSteps - interleaveStepsBefore
+                if interleavedChunks > 0 {
+                    // Audit opt-in activation once per admission, not per token.
+                    print("[BatchScheduler] Prefill/decode interleave: chunks=\(interleavedChunks)")
+                }
+                if prepared.inlineCheckpointCount > 0 {
+                    // One line per successful opt-in capture, never per token.
+                    // Keep activation auditable without enabling hot-loop debug logging.
+                    print("[BatchScheduler] Inline AR prefill checkpoints: captured=\(prepared.inlineCheckpointCount)")
+                }
                 // Unknown extra continuation state cannot be stored in radix.
                 if result.state != nil { prefixCacheTokens = [] }
             } catch {
@@ -2283,8 +2523,9 @@ actor BatchScheduler {
         )
         print("[\(batchTs())] [ChunkStats] stage=preliminary | stream=true | cached_tokens=\(cachedTokens) | prompt_tokens=pending | completion_tokens=pending | prompt_time=pending | generate_time=pending")
 
-        slot.permitsUniformDecodeGroup = enablesUniformDecodeGroups
-            && forceIndependentCaches && !isMultimodal && result.state == nil
+        slot.permitsUniformDecodeGroup = Self.permitsQwenDecodeGroup(
+            enabled: enablesUniformDecodeGroups, independentCaches: forceIndependentCaches,
+            isMultimodal: isMultimodal, hasModelState: result.state != nil)
         slots.append(slot)
         if slot.permitsUniformDecodeGroup { needsUniformDecodeGrouping = true }
         if firstTokenFinished {
@@ -2299,10 +2540,10 @@ actor BatchScheduler {
     /// Keep graph reclamation and token accounting identical for outer-loop
     /// ticks and ticks between prefill chunks. Otherwise long admissions can
     /// bypass the safety intervals even though their output is being streamed.
-    private func advanceIndependentDecode() {
+    private func advanceIndependentDecode(phaseAlignment: Bool = true) {
         let tickStart = executionProfile == nil ? nil : DispatchTime.now().uptimeNanoseconds
         let profileRows = slots.count
-        let activeCount = decodeIndependentSlots()
+        let activeCount = decodeIndependentSlots(phaseAlignment: phaseAlignment)
         let profileStart = executionProfile == nil ? nil : DispatchTime.now().uptimeNanoseconds
         totalTokensGenerated += activeCount
         if activeCount > 0, totalTokensGenerated % 1024 < activeCount {
@@ -2326,6 +2567,7 @@ actor BatchScheduler {
     private func prepareUniformDecodeGroups() {
         guard enablesUniformDecodeGroups, !enablesRequestOwnedDecodeBatch,
               needsUniformDecodeGrouping else { return }
+        retainedRequestBatch?.reset()
         needsUniformDecodeGrouping = false
         let candidates = slots.filter {
             $0.permitsUniformDecodeGroup && !groupedSlotIDs.contains($0.id) && $0.modelState == nil
@@ -2351,7 +2593,7 @@ actor BatchScheduler {
     /// This is the fail-closed concurrency path for hybrid or custom caches;
     /// architecture-specific dense adapters can still replace it later.
     @discardableResult
-    private func decodeIndependentSlots() -> Int {
+    private func decodeIndependentSlots(phaseAlignment: Bool) -> Int {
         var cancelledIndices = slots.indices.filter {
             isCancellationRequested(slots[$0].id)
         }
@@ -2359,7 +2601,7 @@ actor BatchScheduler {
             finishSlot(at: index)
         }
         cancelledIndices.removeAll(keepingCapacity: true)
-        guard !slots.isEmpty else { return 0 }
+        guard !slots.isEmpty else { retainedRequestBatch?.reset(); return 0 }
         var profileLap = executionProfile == nil ? nil : DispatchTime.now().uptimeNanoseconds
         prepareUniformDecodeGroups()
 
@@ -2369,8 +2611,22 @@ actor BatchScheduler {
                 $0.permitsUniformDecodeGroup && $0.modelState == nil && $0.speculativeSession == nil
                     && !$0.prefillCaches.isEmpty
             }
-            if candidates.count > 1, let output = adapter.decodeRequestBatch(
-                tokens: candidates.map(\.lastTokenId), caches: candidates.map(\.prefillCaches)) {
+            let output: LMOutput?
+            if candidates.count > 1 {
+                let caches = candidates.map(\.prefillCaches)
+                if let retainedAdapter = adapter as? any RetainedRequestOwnedDecodeBatchModel,
+                   let retained = retainedRequestBatch?.prepare(rowIDs: candidates.map(\.id), caches: caches) {
+                    output = retainedAdapter.decodeRequestBatch(
+                        tokens: candidates.map(\.lastTokenId), caches: caches, state: retained)
+                } else {
+                    retainedRequestBatch?.reset()
+                    output = adapter.decodeRequestBatch(tokens: candidates.map(\.lastTokenId), caches: caches)
+                }
+            } else {
+                retainedRequestBatch?.reset()
+                output = nil
+            }
+            if let output {
                 precondition(output.state == nil, "Request-owned decode adapter omitted model state")
                 for (row, member) in candidates.enumerated() {
                     groupedLogits[member.id] = output.logits[row, -1, 0...]
@@ -2380,9 +2636,14 @@ actor BatchScheduler {
                 if requestOwnedBatchRowsSeen.insert(candidates.count).inserted {
                     print("[BatchScheduler] Request-owned mixed-position decode: rows=\(candidates.count)")
                 }
+            } else {
+                retainedRequestBatch?.reset()
             }
+        } else {
+            retainedRequestBatch?.reset()
         }
         if !uniformDecodeGroups.isEmpty {
+            retainedRequestBatch?.reset()
             let byID = Dictionary(uniqueKeysWithValues: slots.map { ($0.id, $0) })
             for group in uniformDecodeGroups {
                 let members = group.slotIDs.map { byID[$0]! }
@@ -2391,8 +2652,8 @@ actor BatchScheduler {
                 let output = model(
                     LMInput.Text(tokens: tokens), cache: group.caches, state: nil,
                     hostTokenIDs: model.consumesHostTokenIDs ? members.map(\.lastTokenId) : nil)
-                // The opt-in adapter is Qwen4ExpModel, whose text continuation
-                // state lives entirely in its model-owned concrete caches.
+                // Opt-in Qwen text continuation (bare or vision-wrapped) keeps
+                // state in concrete caches. Media/stateful slots are excluded.
                 precondition(output.state == nil, "Uniform decode adapter omitted model state")
                 for (row, member) in members.enumerated() {
                     groupedLogits[member.id] = output.logits[row, -1, 0...]
@@ -2409,6 +2670,7 @@ actor BatchScheduler {
         sampledLogits.reserveCapacity(slots.count)
 
         var sharedQwenTokens: [UUID: Int] = [:]
+        var heldQwenSlotIDs = Set<UUID>()
         if qwenMTPSharedVerification {
             let cohortStart = qwenMTPCohortDepth == nil ? nil : DispatchTime.now().uptimeNanoseconds
             let candidates = slots.compactMap { slot -> (slot: SlotState, session: Qwen4ExpMTPSession)? in
@@ -2416,28 +2678,47 @@ actor BatchScheduler {
                       case .qwen(let session) = slot.speculativeSession else { return nil }
                 return (slot, session)
             }
+            if qwenMTPPhaseAlignment && phaseAlignment {
+                let heldIndices = Self.qwenMTPBoundaryHoldIndices(
+                    candidates.map { $0.session.isAtVerificationBoundary })
+                heldQwenSlotIDs = Set(heldIndices.map { candidates[$0].slot.id })
+                qwenMTPHeldTokenTicks += heldQwenSlotIDs.count
+            }
+            let advancingCandidates = candidates.filter { !heldQwenSlotIDs.contains($0.slot.id) }
             if let controller = qwenMTPCohortDepth {
                 let depth = controller.depth(activeRows: candidates.count)
                 for candidate in candidates { candidate.session.selectCohortDepth(depth) }
             }
             qwenMTPPersistentState?.prune(activeRows: Set(candidates.map { $0.session.stateIdentity }))
+            let preRepairStart = executionProfile == nil ? nil : DispatchTime.now().uptimeNanoseconds
             if qwenMTPSharedHead {
                 let repaired = Qwen4ExpMTPSession.prepareCompatibleHeadRepairs(
                     candidates.map(\.session), maximumRows: qwenMTPSubmissionWindow)
                 qwenMTPSharedRepairRows += repaired.rows
             }
+            if let preRepairStart {
+                executionProfile?.record(.qwenMTPPreRepair, rows: candidates.count,
+                    nanoseconds: DispatchTime.now().uptimeNanoseconds - preRepairStart)
+            }
             for indices in Qwen4ExpMTPSession.compatibleVerificationGroups(
-                candidates.map(\.session), maximumRows: qwenMTPSubmissionWindow,
+                advancingCandidates.map(\.session), maximumRows: qwenMTPSubmissionWindow,
                 independentAttention: qwenMTPIndependentAttention)
             {
-                let members = indices.map { candidates[$0] }.filter { !isCancellationRequested($0.slot.id) }
+                let members = indices.map { advancingCandidates[$0] }.filter { !isCancellationRequested($0.slot.id) }
                 let sessions = members.map(\.session)
+                var qwenLap = executionProfile == nil ? nil : DispatchTime.now().uptimeNanoseconds
                 let measureDepth = qwenMTPAdaptiveDepth || qwenMTPCohortDepth != nil
                 let cyclesBefore = measureDepth ? sessions.map(\.verificationCycleCount) : []
                 if qwenMTPSharedHead {
                     qwenMTPSharedDraftRows += Qwen4ExpMTPSession.prepareCompatibleDraftBatch(sessions)
                 }
                 for session in sessions { session.prepareDraftTokens() }
+                if let qwenLapStart = qwenLap {
+                    let now = DispatchTime.now().uptimeNanoseconds
+                    executionProfile?.record(.qwenMTPDraft, rows: sessions.count,
+                        nanoseconds: now - qwenLapStart)
+                    qwenLap = now
+                }
                 if measureDepth {
                     for (i, session) in sessions.enumerated() where session.verificationCycleCount > cyclesBefore[i] {
                         qwenMTPDepthCycles[session.activeDraftDepth, default: 0] += 1
@@ -2450,6 +2731,12 @@ actor BatchScheduler {
                     maximumRows: qwenMTPSubmissionWindow, persistentState: qwenMTPPersistentState)
                 qwenMTPSharedVerificationBatches += shared.batches
                 qwenMTPSharedVerificationRows += shared.rows
+                if let qwenLapStart = qwenLap {
+                    let now = DispatchTime.now().uptimeNanoseconds
+                    executionProfile?.record(.qwenMTPVerify, rows: sessions.count,
+                        nanoseconds: now - qwenLapStart)
+                    qwenLap = now
+                }
                 if qwenMTPSharedHead {
                     for session in sessions {
                         if session.prepareNextToken() { qwenMTPPreparedCycles += 1 }
@@ -2458,9 +2745,19 @@ actor BatchScheduler {
                     qwenMTPSharedRepairRows += Qwen4ExpMTPSession.prepareCompatibleHeadRepairs(
                         sessions, maximumRows: qwenMTPSubmissionWindow).rows
                 }
+                if let qwenLapStart = qwenLap {
+                    let now = DispatchTime.now().uptimeNanoseconds
+                    executionProfile?.record(.qwenMTPResolveRepair, rows: sessions.count,
+                        nanoseconds: now - qwenLapStart)
+                    qwenLap = now
+                }
                 for member in members {
                     if member.session.prepareNextToken() { qwenMTPPreparedCycles += 1 }
                     if let token = member.session.nextToken() { sharedQwenTokens[member.slot.id] = token }
+                }
+                if let qwenLapStart = qwenLap {
+                    executionProfile?.record(.qwenMTPReadout, rows: sessions.count,
+                        nanoseconds: DispatchTime.now().uptimeNanoseconds - qwenLapStart)
                 }
                 // All decisions in this bounded group are consumed before
                 // submitting another group. Only token IDs are staged for the
@@ -2504,10 +2801,11 @@ actor BatchScheduler {
             if let token = sharedQwenTokens[slot.id] {
                 sampledTokens.append(MLXArray(Int32(token)))
                 sampledLogits.append(nil)
-            } else if qwenMTPSharedVerification, isCancellationRequested(slot.id),
+            } else if qwenMTPSharedVerification,
+                      heldQwenSlotIDs.contains(slot.id) || isCancellationRequested(slot.id),
                       case .qwen = slot.speculativeSession {
-                // The dispatcher checks cancellation before consuming this
-                // placeholder; no token is emitted or counted for this row.
+                // The dispatcher skips held rows and checks cancellation before
+                // consuming this placeholder; neither emits or counts a token.
                 sampledTokens.append(MLXArray(Int32(0)))
                 sampledLogits.append(nil)
             } else if let session = slot.speculativeSession,
@@ -2520,6 +2818,7 @@ actor BatchScheduler {
                 if let batched = groupedLogits[slot.id] {
                     logits = batched
                 } else {
+                    retainedRequestBatch?.reset()
                     let input = LMInput.Text(tokens: slot.lastTokenArray.reshaped([1, 1]))
                     let output = model(
                         input, cache: slot.prefillCaches, state: slot.modelState,
@@ -2557,6 +2856,7 @@ actor BatchScheduler {
                 completedIndices.append(slotIndex)
                 continue
             }
+            if heldQwenSlotIDs.contains(slot.id) { continue }
             let tokenArray = sampledTokens[requestIndex]
             if dispatchSampledToken(
                 tokenArray,
@@ -2582,7 +2882,7 @@ actor BatchScheduler {
             executionProfile?.record(.independentRetire, rows: activeSlotIDs.count,
                 nanoseconds: DispatchTime.now().uptimeNanoseconds - start)
         }
-        return activeSlotIDs.count
+        return activeSlotIDs.count - heldQwenSlotIDs.count
     }
 
     // MARK: - Batched Prefill
@@ -2596,6 +2896,8 @@ actor BatchScheduler {
     /// For cold-start concurrent arrivals (the primary use case), this replaces
     /// N sequential B=1 prefills with a single B=N forward pass.
     private func prefillBatch(_ requests: [PendingRequest]) {
+        retainedRequestBatch?.suspend()
+        defer { retainedRequestBatch?.resume() }
         let B = requests.count
         guard B > 0 else { return }
 
@@ -2992,12 +3294,14 @@ actor BatchScheduler {
         request.constraintRuntimeConfig?.matcherHandle?.release()
         request.continuation.finish(throwing: error)
         _inFlightCount.withLock { $0 = max(0, $0 - 1) }
+        publishAdmission()
         StatsAggregator.shared.requestSucceeded(reason: error is CancellationError ? "abort" : "error")
         StatsAggregator.shared.requestCompleted()
     }
 
     /// Finish a completed slot: save prefix cache, yield timing info, remove from batch.
     private func finishSlot(at index: Int) {
+        retainedRequestBatch?.reset()
         let debugTiming = ProcessInfo.processInfo.environment["AFM_DEBUG"] == "1"
         let finishStart = debugTiming ? Date() : Date.distantPast
         let slot = slots[index]
@@ -3083,6 +3387,7 @@ actor BatchScheduler {
         slot.continuation.finish()
         slot.constraintRuntime?.matcherHandle?.release()
         _inFlightCount.withLock { $0 = max($0 - 1, 0) }
+        publishAdmission()
 
         // ─── Per-request /metrics observations ────────────────────────────
         // Determine the OpenAI-style finished_reason from the slot's

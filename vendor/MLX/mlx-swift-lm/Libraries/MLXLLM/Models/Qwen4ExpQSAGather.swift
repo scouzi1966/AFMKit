@@ -258,6 +258,29 @@ enum Qwen4ExpQSAVerifyRadixSelection {
             outputDTypes: [.int32],
             cacheConfiguration: true)[0]
     }
+
+    /// Bounded compiled-graph entry point. Row bounds remain device inputs;
+    /// clamping prevents out-of-bounds score reads without a CPU evaluation.
+    /// Normal callers retain the host-validated path above.
+    static func callWithRuntimeBounds(
+        scores: MLXArray, visibleBlockCounts: MLXArray, topK: Int
+    ) -> MLXArray? {
+        guard enabled, Device.defaultDevice().deviceType == .gpu,
+              scores.ndim == 3, scores.dtype == .float32, scores.dim(0) == 1,
+              (2...8).contains(scores.dim(1)), scores.dim(2) > 0,
+              visibleBlockCounts.dtype == .int32,
+              visibleBlockCounts.shape == [scores.dim(1)],
+              topK > 0, topK <= scores.dim(2)
+        else { return nil }
+        let bounds = minimum(maximum(visibleBlockCounts, MLXArray(Int32(0))),
+                             MLXArray(Int32(scores.dim(2))))
+        return kernel([scores, bounds],
+            template: [("TGS", narrowThreadGroupWidth), ("K", topK)],
+            grid: (narrowThreadGroupWidth, scores.dim(1), 1),
+            threadGroup: (narrowThreadGroupWidth, 1, 1),
+            outputShapes: [[1, scores.dim(1), topK]], outputDTypes: [.int32],
+            cacheConfiguration: true)[0]
+    }
 }
 
 /// Bounded verifier mask expansion. The caller supplies sorted, nonnegative

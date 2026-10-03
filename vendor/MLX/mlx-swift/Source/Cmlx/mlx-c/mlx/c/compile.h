@@ -62,6 +62,16 @@ int mlx_detail_compile_with_cache(
     const uint64_t* constants,
     size_t constants_num,
     mlx_detail_compile_cache cache);
+/** Owned cache specialized by the binding's selected execution stream. */
+int mlx_detail_compile_with_cache_on_stream(
+    mlx_closure* res,
+    const mlx_closure fun,
+    uintptr_t fun_id,
+    bool shapeless,
+    const uint64_t* constants,
+    size_t constants_num,
+    mlx_detail_compile_cache cache,
+    mlx_stream stream);
 int mlx_detail_compile_clear_cache(void);
 int mlx_detail_compile_erase(uintptr_t fun_id);
 int mlx_disable_compile(void);

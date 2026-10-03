@@ -12,6 +12,13 @@ struct BatchExecutionProfile {
         case independentReadout = "independent-readout"
         case independentRetire = "independent-retire"
         case independentMaintenance = "independent-maintenance"
+        // Qwen shared MTP subspans of independentGraphSubmit. These are
+        // inclusive host laps: GPU work may be queued or waited in any one.
+        case qwenMTPPreRepair = "qwen-mtp-pre-repair"
+        case qwenMTPDraft = "qwen-mtp-draft"
+        case qwenMTPVerify = "qwen-mtp-verify"
+        case qwenMTPResolveRepair = "qwen-mtp-resolve-repair"
+        case qwenMTPReadout = "qwen-mtp-readout"
         // Whole tick, including cancellation cleanup and instrumentation gaps.
         // INCLUSIVE: never add this bucket to the component buckets above.
         case independentTotal = "independent-total-inclusive"

@@ -197,6 +197,35 @@ public protocol LanguageModel: Module {
     func sanitize(weights: [String: MLXArray]) -> [String: MLXArray]
 }
 
+/// An independent, complete interior checkpoint produced by an ordinary forward.
+/// Arrays and metadata use the same serialization contract as KVCache.state.
+/// Confined to the serialized model executor, just like LMOutput and KVCache.
+public struct InteriorPrefillCapture {
+    public let output: LMOutput
+    public let states: [[MLXArray]]
+    public let metadata: [[String]]
+
+    public init(output: LMOutput, states: [[MLXArray]], metadata: [[String]]) {
+        self.output = output
+        self.states = states
+        self.metadata = metadata
+    }
+}
+
+/// Optional model-owned capture without splitting a caller's prefill chunk.
+/// The scheduler owns checkpoint selection/publication. The model owns exact
+/// recurrent, convolution, position and attention state at that boundary.
+/// A nil result MUST leave all caches unchanged, permitting split fallback.
+/// After beginning a forward, incomplete capture must throw, never return nil.
+/// Successful snapshots must be independent of subsequent live-cache mutations.
+/// Only ordinary text with no additional continuation state is eligible.
+public protocol InteriorPrefillCaptureModel: LanguageModel {
+    func prefillCapturingBoundary(
+        _ input: LMInput.Text, cache: [KVCache], state: LMOutput.State?,
+        restoredPrefix: Int, boundary: Int, hostTokenIDs: [Int]?
+    ) throws -> InteriorPrefillCapture?
+}
+
 /// Optional one-token batch adapter for independently positioned requests.
 /// The scheduler owns admission, stable row IDs, sampling and cancellation;
 /// the model owns all cache packing and position/history semantics. Returning
@@ -204,6 +233,28 @@ public protocol LanguageModel: Module {
 /// Implementations must not retain request caches or modify retained snapshots.
 public protocol RequestOwnedDecodeBatchModel: LanguageModel {
     func decodeRequestBatch(tokens: [Int], caches: [[KVCache]]) -> LMOutput?
+}
+
+/// Optional caller-owned acceleration state for ordinary request batching.
+/// Request caches remain authoritative after every successful call. The caller
+/// must reset before any non-group cache mutation, prefill, membership/model
+/// change, or retirement. Reset releases references without evaluating/copying
+/// tensors. This is neither a prefix cache nor a speculative rollback journal.
+public protocol RequestOwnedDecodeBatchState: AnyObject {
+    func reset()
+    var retainedBytes: Int { get }
+    var peakRetainedBytes: Int { get }
+    var layerHits: Int { get }
+    var layerRebuilds: Int { get }
+}
+
+public protocol RetainedRequestOwnedDecodeBatchModel: RequestOwnedDecodeBatchModel {
+    func makeRequestOwnedDecodeBatchState() -> any RequestOwnedDecodeBatchState
+    /// The same validation/no-mutation-on-nil contract as the stateless adapter.
+    /// State must originate from this exact model; retain tensors, not requests.
+    func decodeRequestBatch(
+        tokens: [Int], caches: [[KVCache]], state: any RequestOwnedDecodeBatchState
+    ) -> LMOutput?
 }
 
 /// Optional early filter for checkpoint tensors that a model will never consume.

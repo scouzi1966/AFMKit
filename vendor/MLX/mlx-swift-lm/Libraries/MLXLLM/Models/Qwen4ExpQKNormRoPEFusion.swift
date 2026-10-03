@@ -48,7 +48,29 @@ enum Qwen4ExpQKNormRoPEFusion {
         name: "qwen_qk_norm_rope_256",
         inputNames: ["q", "k", "q_weight", "k_weight", "angles", "eps"],
         outputNames: ["q_output", "k_output"],
-        source: """
+        source: source(keysOnly: false))
+
+    private static let keyKernel = MLXFast.metalKernel(
+        name: "qwen_k_norm_rope_256",
+        inputNames: ["k", "k_weight", "angles", "eps"],
+        outputNames: ["k_output"],
+        source: source(keysOnly: true))
+
+    private static func source(keysOnly: Bool) -> String {
+        let pointers = keysOnly ? """
+            const device T* source = k + (sequence * uint(KV_HEADS) + head) * HEAD_DIM;
+            const device T* weight = k_weight;
+            device T* destination = k_output + local_row * HEAD_DIM;
+            """ : """
+            const device T* source = is_q
+                ? q + (sequence * uint(Q_HEADS) + head) * HEAD_DIM
+                : k + (sequence * uint(KV_HEADS) + head) * HEAD_DIM;
+            const device T* weight = is_q ? q_weight : k_weight;
+            device T* destination = is_q
+                ? q_output + local_row * HEAD_DIM
+                : k_output + local_row * HEAD_DIM;
+            """
+        return """
             constexpr uint HEAD_DIM = 256;
             constexpr uint half_rotary = uint(ROTARY_DIM) / 2;
             const uint row = threadgroup_position_in_grid.x;
@@ -60,13 +82,7 @@ enum Qwen4ExpQKNormRoPEFusion {
             const uint local_row = is_q ? row : row - q_rows;
             const uint head = local_row / uint(SEQUENCE);
             const uint sequence = local_row % uint(SEQUENCE);
-            const device T* source = is_q
-                ? q + (sequence * uint(Q_HEADS) + head) * HEAD_DIM
-                : k + (sequence * uint(KV_HEADS) + head) * HEAD_DIM;
-            const device T* weight = is_q ? q_weight : k_weight;
-            device T* destination = is_q
-                ? q_output + local_row * HEAD_DIM
-                : k_output + local_row * HEAD_DIM;
+            \(pointers)
             const uint base = tid * 4;
 
             threadgroup float partial_sums[32];
@@ -124,7 +140,8 @@ enum Qwen4ExpQKNormRoPEFusion {
                 }
                 destination[index] = result;
             }
-        """)
+        """
+    }
 
     /// A one-token request batch is a collection of independent norm/RoPE
     /// rows, not a shared sequence history. Reuse the qualified row kernel by
@@ -147,6 +164,23 @@ enum Qwen4ExpQKNormRoPEFusion {
         return (result.q.transposed(2, 1, 0, 3), result.k.transposed(2, 1, 0, 3))
     }
 
+    /// Cache repair has no query consumer. Reuse the identical key threadgroups
+    /// with a key-only signature, removing the otherwise live q-projection
+    /// dependency without empty input/output buffers in Metal's resource
+    /// tracking. No normalization/rotation math, rounding boundary, or key
+    /// launch geometry changes.
+    static func callKeys(
+        k: MLXArray, kWeight: MLXArray, angles: MLXArray,
+        epsilon: Float, kvHeads: Int, rotaryDimensions: Int
+    ) -> MLXArray? {
+        guard k.ndim == 4 else { return nil }
+        return callImpl(
+            q: k,
+            k: k, qWeight: kWeight, kWeight: kWeight, angles: angles,
+            epsilon: epsilon, qHeads: kvHeads, kvHeads: kvHeads,
+            rotaryDimensions: rotaryDimensions, keysOnly: true)?.k
+    }
+
     static func call(
         q: MLXArray,
         k: MLXArray,
@@ -158,6 +192,16 @@ enum Qwen4ExpQKNormRoPEFusion {
         kvHeads: Int,
         rotaryDimensions: Int
     ) -> (q: MLXArray, k: MLXArray)? {
+        callImpl(q: q, k: k, qWeight: qWeight, kWeight: kWeight,
+            angles: angles, epsilon: epsilon, qHeads: qHeads, kvHeads: kvHeads,
+            rotaryDimensions: rotaryDimensions, keysOnly: false)
+    }
+
+    private static func callImpl(
+        q: MLXArray, k: MLXArray, qWeight: MLXArray, kWeight: MLXArray,
+        angles: MLXArray, epsilon: Float, qHeads: Int, kvHeads: Int,
+        rotaryDimensions: Int, keysOnly: Bool
+    ) -> (q: MLXArray, k: MLXArray)? {
         guard enabled,
               Device.defaultDevice().deviceType == .gpu,
               q.dtype == .bfloat16,
@@ -168,6 +212,7 @@ enum Qwen4ExpQKNormRoPEFusion {
               k.dim(0) == 1,
               q.dim(1) == k.dim(1),
               q.dim(1) > 0,
+              qHeads > 0, kvHeads > 0,
               q.dim(1) <= maximumSequenceLength,
               q.shape == [1, q.dim(1), qHeads, 256],
               k.shape == [1, k.dim(1), kvHeads, 256],
@@ -181,27 +226,29 @@ enum Qwen4ExpQKNormRoPEFusion {
         else { return nil }
 
         let sequence = q.dim(1)
-        let output = kernel(
+        let launchedQueryHeads = keysOnly ? 0 : qHeads
+        let inputs = keysOnly ? [k, kWeight, angles, MLXArray(epsilon)]
+            : [q, k, qWeight, kWeight, angles, MLXArray(epsilon)]
+        let shapes = keysOnly ? [[1, kvHeads, sequence, 256]]
+            : [[1, qHeads, sequence, 256], [1, kvHeads, sequence, 256]]
+        let output = (keysOnly ? keyKernel : kernel)(
             // MLXFast enforces row contiguity only when a view actually needs
             // materialization.  Decode-width q/k/angles are already eligible,
             // so avoid three unconditional graph nodes per attention layer.
-            [q, k, qWeight, kWeight, angles, MLXArray(epsilon)],
+            inputs,
             template: [
                 ("T", q.dtype),
                 ("A", angles.dtype),
-                ("Q_HEADS", qHeads),
+                ("Q_HEADS", launchedQueryHeads),
                 ("KV_HEADS", kvHeads),
                 ("SEQUENCE", sequence),
                 ("ROTARY_DIM", rotaryDimensions),
             ],
-            grid: ((qHeads + kvHeads) * sequence * 64, 1, 1),
+            grid: ((launchedQueryHeads + kvHeads) * sequence * 64, 1, 1),
             threadGroup: (64, 1, 1),
-            outputShapes: [
-                [1, qHeads, sequence, 256],
-                [1, kvHeads, sequence, 256],
-            ],
-            outputDTypes: [q.dtype, q.dtype],
+            outputShapes: shapes,
+            outputDTypes: Array(repeating: q.dtype, count: shapes.count),
             cacheConfiguration: true)
-        return (output[0], output[1])
+        return (output[0], output[keysOnly ? 0 : 1])
     }
 }

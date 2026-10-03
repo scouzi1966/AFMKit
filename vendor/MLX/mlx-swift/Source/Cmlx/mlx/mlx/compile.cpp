@@ -3,6 +3,7 @@
 #include <atomic>
 #include <cstdlib>
 #include <map>
+#include <optional>
 #include <shared_mutex>
 #include <sstream>
 #include <unordered_map>
@@ -299,6 +300,8 @@ std::uintptr_t get_function_address(const std::function<T(U...)>& fun) {
   return reinterpret_cast<std::uintptr_t>(*fun_ptr);
 }
 
+struct IndexedCompileReplay;
+
 class CompileCache {
  public:
   struct CacheEntry {
@@ -309,6 +312,7 @@ class CompileCache {
     std::vector<array> inputs;
     std::vector<array> outputs;
     std::vector<array> tape;
+    std::shared_ptr<const IndexedCompileReplay> indexed_replay;
     bool empty{true};
     std::vector<uint64_t> constants;
     std::shared_ptr<void> extra;
@@ -326,7 +330,8 @@ class CompileCache {
       std::uintptr_t fun_id,
       const std::vector<array>& inputs,
       bool shapeless,
-      const std::vector<uint64_t>& constants) {
+      const std::vector<uint64_t>& constants,
+      Stream stream) {
     // Find the cache entries for |fun_id| in a thread-safe way.
     auto entries_ptr = [&]() {
       // Lookup with shared lock.
@@ -368,11 +373,10 @@ class CompileCache {
       return true;
     };
     // Loop over entries and check:
-    // - Default stream and device match the entry's default stream
+    // - Selected execution stream and device match the entry's stream
     // - Inputs match i.e. shapes and types must be equal.
-    auto stream = default_stream(default_device());
     for (CacheEntry& entry : entries) {
-      // Check that the default stream and device match
+      // Keep genuinely different execution streams isolated.
       if (entry.stream != stream) {
         continue;
       }
@@ -1111,9 +1115,128 @@ std::vector<array> compile_replace(
   return outputs;
 }
 
-bool skip_compile() {
+// Experimental replay of the *same* simplified/fused tape. Resolve stable
+// trace-array IDs once, not in a hash map on every invocation. Runtime arrays
+// remain invocation-local; this plan never caches a request's tensors/state.
+// The legacy map implementation above is retained for export and A/B control.
+struct IndexedCompileReplay {
+  struct Step {
+    std::optional<array> constant;
+    std::shared_ptr<Primitive> primitive;
+    std::vector<size_t> inputs;
+    std::vector<size_t> outputs;
+    std::vector<Shape> shapes;
+    std::vector<Dtype> types;
+  };
+  std::vector<size_t> input_slots;
+  std::vector<size_t> output_slots;
+  std::vector<Step> steps;
+  size_t slot_count = 0;
+
+  IndexedCompileReplay(
+      const std::vector<array>& tape,
+      const std::vector<array>& trace_inputs,
+      const std::vector<array>& trace_outputs) {
+    std::unordered_map<uintptr_t, size_t> slots;
+    slots.reserve(tape.size() + trace_inputs.size());
+    auto slot_for = [&](const array& a) {
+      return slots.emplace(a.id(), slots.size()).first->second;
+    };
+    for (const auto& input : trace_inputs) {
+      input_slots.push_back(slot_for(input));
+    }
+    steps.reserve(tape.size());
+    for (const auto& a : tape) {
+      if (!a.has_primitive() || typeid(a.primitive()) == typeid(Load)) {
+        // An input already occupies its slot. As in unordered_map::insert,
+        // do not replace it with the traced placeholder or duplicate constant.
+        if (slots.find(a.id()) == slots.end()) {
+          Step step;
+          step.constant = a;
+          step.outputs.push_back(slot_for(a));
+          steps.push_back(std::move(step));
+        }
+        continue;
+      }
+      Step step;
+      step.primitive = a.primitive_ptr();
+      step.inputs.reserve(a.inputs().size());
+      for (const auto& input : a.inputs()) {
+        step.inputs.push_back(slots.at(input.id()));
+      }
+      for (const auto& output : a.outputs()) {
+        step.outputs.push_back(slot_for(output));
+        step.shapes.push_back(output.shape());
+        step.types.push_back(output.dtype());
+      }
+      steps.push_back(std::move(step));
+    }
+    slot_count = slots.size();
+    for (const auto& output : trace_outputs) {
+      output_slots.push_back(slots.at(output.id()));
+    }
+  }
+
+  std::vector<array> operator()(
+      const std::vector<array>& inputs, bool shapeless) const {
+    // optional avoids constructing/evaluating placeholder MLX arrays. All
+    // slots are written topologically before use and released on return/error.
+    std::vector<std::optional<array>> values(slot_count);
+    for (size_t i = 0; i < inputs.size(); ++i) {
+      if (!values[input_slots[i]]) {
+        values[input_slots[i]] = inputs[i];
+      }
+    }
+    for (const auto& step : steps) {
+      if (step.constant) {
+        values[step.outputs[0]] = *step.constant;
+        continue;
+      }
+      std::vector<array> real_inputs;
+      real_inputs.reserve(step.inputs.size());
+      for (auto slot : step.inputs) {
+        real_inputs.push_back(values[slot].value());
+      }
+      if (step.outputs.size() == 1) {
+        auto shape = shapeless
+            ? step.primitive->output_shapes(real_inputs)[0] : step.shapes[0];
+        auto output = array(std::move(shape), step.types[0],
+                            step.primitive, std::move(real_inputs));
+        if (!values[step.outputs[0]]) {
+          values[step.outputs[0]] = std::move(output);
+        }
+      } else {
+        auto shapes = shapeless
+            ? step.primitive->output_shapes(real_inputs) : step.shapes;
+        auto outputs = array::make_arrays(
+            std::move(shapes), step.types, step.primitive, real_inputs);
+        for (size_t i = 0; i < outputs.size(); ++i) {
+          if (!values[step.outputs[i]]) {
+            values[step.outputs[i]] = std::move(outputs[i]);
+          }
+        }
+      }
+    }
+    std::vector<array> outputs;
+    outputs.reserve(output_slots.size());
+    for (auto slot : output_slots) {
+      outputs.push_back(values[slot].value());
+    }
+    return outputs;
+  }
+};
+
+bool indexed_compile_replay_enabled() {
+  static const bool enabled = [] {
+    const auto* value = std::getenv("MLX_INDEXED_COMPILE_REPLAY");
+    return value && std::string(value) == "1";
+  }();
+  return enabled;
+}
+
+bool skip_compile(std::optional<Stream> stream = std::nullopt) {
   return compile_mode() == CompileMode::disabled ||
-      !(compile_available_for_device(default_device()));
+      !(compile_available_for_device(stream ? stream->device : default_device()));
 }
 
 ArrayFnWithExtra compile(
@@ -1121,8 +1244,9 @@ ArrayFnWithExtra compile(
     std::uintptr_t fun_id,
     bool shapeless,
     std::vector<uint64_t> constants,
-    CompileCachePtr cache) {
-  if (skip_compile()) {
+    CompileCachePtr cache,
+    std::optional<Stream> execution_stream = std::nullopt) {
+  if (skip_compile(execution_stream)) {
     return fun;
   }
   if (!fun) {
@@ -1134,7 +1258,8 @@ ArrayFnWithExtra compile(
           fun_id,
           shapeless,
           constants = std::move(constants),
-          cache = std::move(cache)](const std::vector<array>& inputs) {
+          cache = std::move(cache),
+          execution_stream](const std::vector<array>& inputs) {
     // If the inputs are tracers, trace the original graph
     if (std::any_of(inputs.begin(), inputs.end(), [](auto& in) {
           return in.is_tracer();
@@ -1143,8 +1268,12 @@ ArrayFnWithExtra compile(
     }
 
     // Find a cache entry with the correct inputs
+    // Swift tasks can migrate between OS threads while using one explicit
+    // execution stream. Do not specialize on an unrelated thread default.
+    // Legacy C++ callers retain their thread-local default-stream semantics.
+    auto stream = execution_stream ? *execution_stream : default_stream(default_device());
     auto [entry, entries_ptr] =
-        cache->find(fun_id, inputs, shapeless, constants);
+        cache->find(fun_id, inputs, shapeless, constants, stream);
     static_assert(std::is_reference_v<decltype(entry)>);
 
     // No matching cache entry existed, so compile
@@ -1175,6 +1304,11 @@ ArrayFnWithExtra compile(
         compile_fuse(entry.tape, parents_map, entry.inputs, entry.outputs);
       }
 
+      if (indexed_compile_replay_enabled()) {
+        entry.indexed_replay = std::make_shared<const IndexedCompileReplay>(
+            entry.tape, entry.inputs, entry.outputs);
+      }
+
       // Mark the entry as filled only after every step above completed, so
       // a throwing first trace leaves the entry empty and a later call
       // re-traces cleanly instead of hitting a half-filled entry
@@ -1184,8 +1318,9 @@ ArrayFnWithExtra compile(
     // At this point we must have a tape, now replace the placeholders
     // with real arrays that can be evaluated
     return ArraysAndExtra{
-        compile_replace(
-            entry.tape, entry.inputs, entry.outputs, inputs, shapeless),
+        entry.indexed_replay ? (*entry.indexed_replay)(inputs, shapeless)
+            : compile_replace(
+                entry.tape, entry.inputs, entry.outputs, inputs, shapeless),
         entry.extra};
   };
 }
@@ -1246,6 +1381,32 @@ std::function<std::vector<array>(const std::vector<array>&)> compile(
       shapeless,
       std::move(constants),
       compile_cache_unsafe());
+}
+
+std::function<std::vector<array>(const std::vector<array>&)> compile_on_stream(
+    std::function<std::vector<array>(const std::vector<array>&)> fun,
+    std::uintptr_t fun_id,
+    bool shapeless,
+    std::vector<uint64_t> constants,
+    CompileCachePtr cache,
+    Stream execution_stream) {
+  if (skip_compile(execution_stream)) {
+    return fun;
+  }
+  if (!fun) {
+    throw std::invalid_argument(
+        "[compile] Cannot compile a function without a target.");
+  }
+  ArrayFnWithExtra fun_with_extra =
+      [fun = std::move(fun)](const std::vector<array>& inputs) {
+        return ArraysAndExtra{fun(inputs), nullptr};
+      };
+  auto compiled_fun = compile(
+      std::move(fun_with_extra), fun_id, shapeless, std::move(constants),
+      std::move(cache), execution_stream);
+  return [compiled_fun = std::move(compiled_fun)](const std::vector<array>& inputs) {
+    return compiled_fun(inputs).first;
+  };
 }
 
 CompileCacheWeakPtr compile_cache() {

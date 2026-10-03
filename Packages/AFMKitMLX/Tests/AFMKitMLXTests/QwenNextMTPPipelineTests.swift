@@ -35,6 +35,18 @@ final class QwenNextMTPPipelineTests: XCTestCase {
             XCTAssertEqual(Set(shortlist.tokenIDs.asArray(Int32.self)).count,
                            Qwen4ExpDraftSelector.shortlistSize)
         }
+        let batch = MLXArray([
+            -1 as Float, 1, 0, 0,
+        ]).reshaped(4, 1, 1) * MLXArray(
+            [1 as Float] + Array(repeating: 0, count: columns - 1)
+        ).reshaped(1, 1, columns)
+        let batched = try XCTUnwrap(selector.greedyBatch(batch.asType(.bfloat16)))
+        let independent = (0..<4).map { row -> Int32 in
+            let shortlisted = selector.shortlist(batch[row..<(row + 1)].asType(.bfloat16))!
+            let local = argMax(shortlisted.logits.reshaped(-1))
+            return shortlisted.tokenIDs[local].item(Int32.self)
+        }
+        XCTAssertEqual(batched.asArray(Int32.self), independent)
         XCTAssertEqual(originalWeight, target.weight.asArray(UInt32.self))
     }
 
@@ -43,6 +55,8 @@ final class QwenNextMTPPipelineTests: XCTestCase {
         let target = QuantizedLinear(weight: weights, bias: nil, groupSize: 64, bits: 4)
         let selector = try XCTUnwrap(Qwen4ExpDraftSelector(target: target))
         XCTAssertNil(selector.shortlist(MLXArray.zeros([2, 1, 64], dtype: .bfloat16)))
+        XCTAssertNil(selector.greedyBatch(MLXArray.zeros([1, 1, 64], dtype: .bfloat16)))
+        XCTAssertNil(selector.greedyBatch(MLXArray.zeros([2, 1, 64], dtype: .float32)))
         XCTAssertNil(selector.shortlist(MLXArray.zeros([1, 1, 64], dtype: .float32)))
         XCTAssertNil(Qwen4ExpDraftSelector(target: QuantizedLinear(
             weight: weights, bias: nil, groupSize: 64, bits: 3)))
@@ -2338,6 +2352,19 @@ final class QwenNextMTPPipelineTests: XCTestCase {
             XCTAssertFalse(qwen4ExpCanFuseVerificationHC(
                 MLXArray.zeros(shape, dtype: .bfloat16), policy: .batched, enabled: true))
         }
+        for batchSize in [1, 2] {
+            XCTAssertTrue(qwen4ExpCanFuseVerificationHC(
+                MLXArray.zeros([batchSize, 4, 10240], dtype: .bfloat16),
+                policy: .batched, enabled: true, maximumBatchSize: 2))
+        }
+        for batchSize in [3, 4, 8] {
+            XCTAssertFalse(qwen4ExpCanFuseVerificationHC(
+                MLXArray.zeros([batchSize, 4, 10240], dtype: .bfloat16),
+                policy: .batched, enabled: true, maximumBatchSize: 2))
+        }
+        XCTAssertFalse(qwen4ExpCanFuseVerificationHC(
+            input, policy: .strictSingletonEquivalent, enabled: true,
+            maximumBatchSize: 2))
         XCTAssertFalse(qwen4ExpCanFuseVerificationHC(
             input.asType(.float32), policy: .batched, enabled: true))
     }
@@ -2968,6 +2995,48 @@ final class QwenNextMTPPipelineTests: XCTestCase {
                     }
                 }
             }
+        }
+    }
+
+    func testIndependentExpertTailMatchesARAndReleasesModel() async throws {
+        var config = try await makeModel().configuration
+        config.hiddenSize = 2560
+        config.moeIntermediateSize = 640
+        config.sharedExpertIntermediateSize = 640
+        config.numExperts = 32
+        config.numExpertsPerToken = 10
+        config.hcLowRank = 320
+        for group in [32, 64] {
+            weak var released: Qwen4ExpDecoderLayer?
+            do {
+                let layer = Qwen4ExpDecoderLayer(config, layerIndex: 1)
+                released = layer
+                layer.update(parameters: layer.mapParameters { $0.asType(.bfloat16) })
+                quantize(model: layer, groupSize: group, bits: 4)
+                eval(layer)
+                for width in [2, 4, 7, 8, 2] {
+                    func values(_ columns: Int, _ divisor: Float) -> MLXArray {
+                        MLXArray((0..<(width * columns)).map { Float(($0 % 41) - 20) / divisor })
+                            .reshaped(1, width, columns).asType(.bfloat16)
+                    }
+                    let attended = values(2560, 32), residual = values(10240, 64)
+                    let injection = values(4, 128)
+                    let expected = layer.singletonCompiledVerificationTail(
+                        attended: attended, residual: residual, injection: injection)
+                    let actual = layer.independentExpertVerificationTail(
+                        attended: attended, residual: residual, injection: injection, compiled: true)
+                    let coalesced = layer.independentExpertVerificationTail(
+                        attended: attended, residual: residual, injection: injection, compiled: true,
+                        coalesced: true)
+                    eval(expected, actual, coalesced)
+                    XCTAssertTrue(arrayEqual(expected, actual).item(Bool.self),
+                                  "group=\(group) width=\(width)")
+                    XCTAssertTrue(arrayEqual(expected, coalesced).item(Bool.self),
+                                  "coalesced group=\(group) width=\(width)")
+                }
+                Stream.gpu.synchronize()
+            }
+            XCTAssertNil(released, "Compiled expert tail retained its model owner")
         }
     }
 

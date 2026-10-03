@@ -933,6 +933,13 @@ public final class Qwen3_5MoEMTPHead: Module {
 // and no `eval` barrier per cycle (those were ~150MB copied + a full GPU sync every cycle).
 // Trimmable (full-attn KV) layers don't need a state snapshot at all: `trim()` shrinks them back
 // to the accepted length on restore. So we only capture references for the recurrent layers.
+/// A cache can own derived CPU state outside its public tensor representation.
+/// Notify only after an actual snapshot restore, never on the successful MTP
+/// commit path. Implementations must invalidate or rebuild that derived state.
+protocol MTPCacheRestoreObserver {
+    func didRestoreMTPCacheSnapshot()
+}
+
 public enum Qwen3MTPCacheSnapshot {
     public struct Layer { let arrays: [MLXArray]?; let offset: Int; let isTrimmable: Bool }
 
@@ -951,6 +958,7 @@ public enum Qwen3MTPCacheSnapshot {
                 if extra > 0 { _ = c.trim(extra) }
             } else if let arrays = snap.arrays {
                 c.state = arrays   // assign the held pre-verify references back (no copy)
+                (c as? MTPCacheRestoreObserver)?.didRestoreMTPCacheSnapshot()
             }
         }
     }

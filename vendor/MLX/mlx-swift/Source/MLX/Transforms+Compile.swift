@@ -116,8 +116,10 @@ final class CompiledFunction: @unchecked (Sendable) {
         // note: this will use the cached compile (via the id)
         // but will be able to re-evaluate with fresh state if needed
         var compiled = mlx_closure_new()
-        let compileStatus = mlx_detail_compile_with_cache(
-            &compiled, innerClosure, id, shapeless, [], 0, cache)
+        // Key by the stream used by Swift graph operations, not the C++
+        // default stream of whichever executor thread happens to call us.
+        let compileStatus = mlx_detail_compile_with_cache_on_stream(
+            &compiled, innerClosure, id, shapeless, [], 0, cache, StreamOrDevice.default.ctx)
         defer {
             mlx_closure_free(compiled)
         }
