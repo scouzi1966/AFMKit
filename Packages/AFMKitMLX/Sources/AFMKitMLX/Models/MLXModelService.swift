@@ -2123,6 +2123,7 @@ public final class MLXModelService:
         stage: (@Sendable (MLXLoadStage) -> Void)? = nil,
         countOperation: Bool = true
     ) async throws -> String {
+        try QwenMTPExecutionProfile.validate(environment: ProcessInfo.processInfo.environment)
         var didBeginOperation = false
         if countOperation {
             try beginOperation()

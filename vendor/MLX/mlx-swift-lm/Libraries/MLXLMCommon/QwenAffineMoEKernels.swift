@@ -259,7 +259,7 @@ enum QwenAffineMoEKernels {
     /// Experimental group-64 analogue. Keep its BF16 affine coefficient
     /// expansion and four independent FP32 reduction chains unchanged.
     private static let downGroup64OutputReuseEnabled =
-        ProcessInfo.processInfo.environment["AFM_QWEN_EXPERT_DOWN_GROUP64_REUSE"] == "1"
+        QwenMTPExecutionProfile.environment["AFM_QWEN_EXPERT_DOWN_GROUP64_REUSE"] == "1"
 
     private static let independentDownReuseKernel = MLXFast.metalKernel(
         name: "qwen_affine_moe_independent_down_output_reuse",

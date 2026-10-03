@@ -869,19 +869,19 @@ actor BatchScheduler {
         self.glmMTPGenerator = glmMTPGenerator
         let ownsQwenMTP = Self.supportsQwenMTPScheduler(
             modelType: type(of: model), hasGenerator: qwenMTPGenerator != nil,
-            enabled: ProcessInfo.processInfo.environment["AFM_QWEN_MTP_SCHEDULER"] == "1")
+            enabled: QwenMTPExecutionProfile.environment["AFM_QWEN_MTP_SCHEDULER"] == "1")
         self.ownsQwenMTPSessions = ownsQwenMTP
         self.qwenMTPGenerator = ownsQwenMTP ? qwenMTPGenerator : nil
         let sharedVerification = ownsQwenMTP
-            && ProcessInfo.processInfo.environment["AFM_QWEN_MTP_SHARED_VERIFY"] == "1"
+            && QwenMTPExecutionProfile.environment["AFM_QWEN_MTP_SHARED_VERIFY"] == "1"
         self.qwenMTPSharedVerification = sharedVerification
         let independentAttention = sharedVerification
-            && ProcessInfo.processInfo.environment["AFM_QWEN_MTP_INDEPENDENT_ATTENTION"] == "1"
+            && QwenMTPExecutionProfile.environment["AFM_QWEN_MTP_INDEPENDENT_ATTENTION"] == "1"
         self.qwenMTPIndependentAttention = independentAttention
         self.qwenMTPSharedVocabulary = sharedVerification
             && ProcessInfo.processInfo.environment["AFM_QWEN_MTP_SHARED_VOCAB"] == "1"
         self.qwenMTPSharedHead = sharedVerification
-            && ProcessInfo.processInfo.environment["AFM_QWEN_MTP_SHARED_HEAD"] == "1"
+            && QwenMTPExecutionProfile.environment["AFM_QWEN_MTP_SHARED_HEAD"] == "1"
         self.qwenMTPSharedDeferredPLEIDs = sharedVerification
             && ProcessInfo.processInfo.environment["AFM_QWEN_MTP_SHARED_DEFER_PLE_IDS"] == "1"
         let cohortDepth = sharedVerification && qwenMTPGenerator?.verificationPolicy == .batched
@@ -903,10 +903,10 @@ actor BatchScheduler {
             ? SpeculativeRowStateCache(maximumBytes: stateMiB * 1024 * 1024,
                 remapMembership: ProcessInfo.processInfo.environment["AFM_QWEN_MTP_STATE_REMAP"] == "1") : nil
         self.qwenMTPSubmissionWindow = ownsQwenMTP ? min(independentAttention ? 8 : 4, max(sharedVerification ? 2 : 1,
-            Int(ProcessInfo.processInfo.environment[
+            Int(QwenMTPExecutionProfile.environment[
                 "AFM_QWEN_MTP_SUBMISSION_WINDOW"] ?? "1") ?? 1)) : 1
         let replayMiB = min(4096, max(0,
-            Int(ProcessInfo.processInfo.environment["AFM_QWEN_MTP_REPLAY_MIB"] ?? "0") ?? 0))
+            Int(QwenMTPExecutionProfile.environment["AFM_QWEN_MTP_REPLAY_MIB"] ?? "0") ?? 0))
         self.qwenMTPReplayCache = ownsQwenMTP && enablePrefixCaching && replayMiB > 0
             ? ExactPromptReplayCache(maximumBytes: replayMiB * 1024 * 1024,
                 maximumPromptTokens: Self.qwenMTPReplayPromptTokenLimit(
@@ -915,8 +915,8 @@ actor BatchScheduler {
                     "AFM_QWEN_MTP_REPLAY_ANCHOR"] == "1") : nil
         self.qwenMTPReplayBackoffTokens = ownsQwenMTP && enablePrefixCaching && replayMiB > 0
             ? Self.qwenMTPReplayBackoffTokenCount(
-                ProcessInfo.processInfo.environment["AFM_QWEN_MTP_REPLAY_BACKOFF"]) : 0
-        self.qwenMTPReplayBackoffOnMiss = ProcessInfo.processInfo.environment[
+                QwenMTPExecutionProfile.environment["AFM_QWEN_MTP_REPLAY_BACKOFF"]) : 0
+        self.qwenMTPReplayBackoffOnMiss = QwenMTPExecutionProfile.environment[
             "AFM_QWEN_MTP_REPLAY_BACKOFF_ON_MISS"] == "1"
         self.qwenARReplayBackoffTokens = Self.qwenARReplayBackoffTokenCount(
             modelType: type(of: model), prefixCacheEnabled: enablePrefixCaching,

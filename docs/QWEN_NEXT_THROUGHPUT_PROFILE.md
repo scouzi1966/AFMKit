@@ -1,0 +1,24 @@
+# Qwen Next MTP throughput profile
+
+`AFM_QWEN_MTP_PROFILE=throughput-v1` expands the recovered Qwen Next throughput settings inside AFMKit. It is opt-in. It does not mutate the process environment, install anything, or change the default verifier. Explicit individual `AFM_QWEN_*` values override the profile, including `0` and empty values. Unknown profile names fail before model loading.
+
+Set the profile before starting the process. The kernel owners capture their settings during initialization, so switching profiles in a running process is not supported.
+
+```sh
+AFM_QWEN_MTP_PROFILE=throughput-v1 /path/to/afm mlx \
+  --model /path/to/Qwen-Next-checkpoint \
+  --mtp --mtp-depth 3 --concurrent 2 --prefill-step-size 8192 \
+  --port 9999
+```
+
+The explicit command arguments matter: the profile selects provider tuning, while the CLI selects MTP depth, scheduler capacity, and prefill chunk size. Capacity two enables the scheduler path; it does not mean a single-request benchmark sends two requests. Add `--no-think` only when the workload requires reasoning disabled. Prefix caching stays enabled unless explicitly disabled.
+
+The profile selects batched verification, fused expert rows and routing, draft shortlist, native hyperconnection operations, scheduler/head sharing, bounded replay, and native checkpoint CPU ngram lookup. Replay has a 4096 MiB budget. Batched reduction arithmetic can change greedy decisions relative to strict singleton-equivalent verification. The profile does not select sampled proposals, adaptive depth, one-pass capture, or unrelated crowd experiments.
+
+Use `AFM_QWEN_MTP_PROFILE=off` (or omit it) for existing behavior. Individual legacy switches remain available. An override can remove a speed benefit or change behavior; it is no longer the unmodified qualified recipe.
+
+## Qualification boundary
+
+This profile is for the recovered Qwen Next runtime, including the native mlx-community group32 checkpoint and the distinct ddalcu group64 representation. Those checkpoints are not interchangeable benchmark inputs. Compare AFM and a reference engine using the exact same checkpoint whenever claiming engine parity.
+
+The underlying explicit settings recovered short-context, single-request reference-level speed on the shared ddalcu checkpoint. The native configuration passed 283/283 llmprobe conformance checks and 6/8 agentic tasks; two malformed tool-call tasks remain unresolved. Those are measurements of the sealed pre-profile binary with explicit settings. The named-profile implementation still needs its own build, expansion-equivalence and live checks. Long-context, sustained concurrency and full release qualification are not yet complete. This document does not claim a release-ready default.

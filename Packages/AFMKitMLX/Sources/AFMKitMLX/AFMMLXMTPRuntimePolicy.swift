@@ -22,7 +22,7 @@ enum AFMMLXMTPRuntimePolicy {
     static func qwenNextVerificationPolicy(
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> MTPVerificationPolicy {
-        switch environment["AFM_QWEN_MTP_VERIFICATION_POLICY"]?
+        switch QwenMTPExecutionProfile.resolved(environment: environment)["AFM_QWEN_MTP_VERIFICATION_POLICY"]?
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
         {

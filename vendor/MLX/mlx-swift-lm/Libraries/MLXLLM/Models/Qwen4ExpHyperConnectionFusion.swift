@@ -47,7 +47,7 @@ enum Qwen4ExpHyperConnectionFusion {
     /// The compound C++ graph-construction boundary is qualified for decode;
     /// retain `0` as a diagnostic and recovery escape hatch.
     private static let nativeChainEnabled =
-        ProcessInfo.processInfo.environment["AFM_QWEN_HC_NATIVE_CHAIN"] == "1"
+        QwenMTPExecutionProfile.environment["AFM_QWEN_HC_NATIVE_CHAIN"] == "1"
 
     /// Keep pure graph replay separate from the compound native-chain screen
     /// and from the unfused fallback arithmetic.

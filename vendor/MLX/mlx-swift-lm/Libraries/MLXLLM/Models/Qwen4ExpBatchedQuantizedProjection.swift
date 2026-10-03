@@ -13,7 +13,7 @@ import MLXLMCommon
 import MLXNN
 
 enum Qwen4ExpBatchedQuantizedProjection {
-    static let enabled = ProcessInfo.processInfo.environment["AFM_QWEN_VERIFY_QMM"] == "1"
+    static let enabled = QwenMTPExecutionProfile.environment["AFM_QWEN_VERIFY_QMM"] == "1"
 
     // Immutable, bounded family. Literal row names and accumulator indices
     // are important: runtime-indexed Vec8 arrays spill at verification widths.

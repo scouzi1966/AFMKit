@@ -345,7 +345,7 @@ final class Qwen4ExpGatedResidual: Module {
     // Keep this an explicit A/B: fused reductions can change batched token
     // trajectories even when they match the single-row kernel exactly.
     private static let fusedVerificationMode =
-        ProcessInfo.processInfo.environment["AFM_QWEN_VERIFY_FUSED_HC"] ?? ""
+        QwenMTPExecutionProfile.environment["AFM_QWEN_VERIFY_FUSED_HC"] ?? ""
     private static let fusedVerificationEnabled =
         fusedVerificationMode == "1" || fusedVerificationMode == "auto"
     private static let fusedVerificationMaximumBatchSize: Int? =
@@ -4046,9 +4046,9 @@ private final class Qwen4ExpSparseMoE: Module, UnaryLayer {
     private static let reportSharedExpertTrace =
         ProcessInfo.processInfo.environment["AFM_DEBUG"] == "1"
     private static let fusedVerifyRouter =
-        ProcessInfo.processInfo.environment["AFM_QWEN_VERIFY_FUSED_ROUTER"] == "1"
+        QwenMTPExecutionProfile.environment["AFM_QWEN_VERIFY_FUSED_ROUTER"] == "1"
     private static let group64FusedVerifyExperts =
-        ProcessInfo.processInfo.environment["AFM_QWEN_VERIFY_GROUP64_EXPERT_ROWS"] == "1"
+        QwenMTPExecutionProfile.environment["AFM_QWEN_VERIFY_GROUP64_EXPERT_ROWS"] == "1"
     let topK: Int
     let normalize: Bool
     @ModuleInfo var gate: Linear
@@ -4370,7 +4370,7 @@ func qwen4MappedNGramRowIDs(
 
 final class Qwen4ExpNGramEmbedding: Module {
     static let residentCPULookupEnabled =
-        ProcessInfo.processInfo.environment["AFM_QWEN_RESIDENT_CPU_NGRAM"] == "1"
+        QwenMTPExecutionProfile.environment["AFM_QWEN_RESIDENT_CPU_NGRAM"] == "1"
     static let sharedRequestGather =
         ProcessInfo.processInfo.environment["AFM_QWEN_BATCH_NGRAM_GATHER"] == "1"
     let ngramSize: Int
@@ -5924,11 +5924,11 @@ final class Qwen4ExpDecoderLayer: Module {
 
 private final class Qwen4ExpModelInner: Module {
     private static let verificationAsyncLadderStride = max(0, Int(
-        ProcessInfo.processInfo.environment["AFM_QWEN_VERIFY_ASYNC_LADDER"] ?? "0") ?? 0)
+        QwenMTPExecutionProfile.environment["AFM_QWEN_VERIFY_ASYNC_LADDER"] ?? "0") ?? 0)
     // Separate opt-in for shared request verification. Every submission uses
     // the same deferred-PLE flush barrier as singleton verification below.
     private static let sharedVerificationAsyncLadderStride = max(0, Int(
-        ProcessInfo.processInfo.environment["AFM_QWEN_VERIFY_SHARED_ASYNC_LADDER"] ?? "0") ?? 0)
+        QwenMTPExecutionProfile.environment["AFM_QWEN_VERIFY_SHARED_ASYNC_LADDER"] ?? "0") ?? 0)
     private static let deferVerificationHC =
         ProcessInfo.processInfo.environment["AFM_QWEN_VERIFY_DEFER_HC"] == "1"
     private static let shareVerificationQSAPositions =
@@ -6447,7 +6447,7 @@ private struct Qwen4ExpEmbeddedMTPCheckpoint {
 /// four hyper-connection streams. The head then runs a complete QSA + sparse
 /// MoE decoder layer and its own final hyper-connection mixer.
 public final class Qwen4ExpMTPHead: Module {
-    private static let cacheOnlyRepairEnabled = ProcessInfo.processInfo.environment[
+    private static let cacheOnlyRepairEnabled = QwenMTPExecutionProfile.environment[
         "AFM_QWEN_MTP_CACHE_ONLY_REPAIR"] == "1"
     private static let attentionDiagnosticsEnabled =
         ProcessInfo.processInfo.environment["AFM_QWEN_PROFILE_ATTN"] == "all"
@@ -6733,7 +6733,7 @@ public final class Qwen4ExpModel: Module, LLMModel, KVCacheDimensionProvider, Re
         ] != "0"
     @ModuleInfo(key: "lm_head") var lmHead: Linear?
     private lazy var draftSelector: Qwen4ExpDraftSelector? = {
-        guard ProcessInfo.processInfo.environment[
+        guard QwenMTPExecutionProfile.environment[
             "AFM_QWEN_MTP_DRAFT_SHORTLIST"
         ] == "1", let head = lmHead as? QuantizedLinear else { return nil }
         return Qwen4ExpDraftSelector(target: head)
@@ -7821,7 +7821,7 @@ public final class Qwen4ExpMTPGenerator {
         self.init(
             model: model, head: head, depth: depth,
             verificationPolicy: verificationPolicy,
-            draftDispatchStride: Int(ProcessInfo.processInfo.environment[
+            draftDispatchStride: Int(QwenMTPExecutionProfile.environment[
                 "AFM_QWEN_MTP_DRAFT_ASYNC_LADDER"] ?? "0") ?? 0,
             retainHeadAnchor: ProcessInfo.processInfo.environment[
                 "AFM_QWEN_MTP_RETAIN_ANCHOR"] == "1",

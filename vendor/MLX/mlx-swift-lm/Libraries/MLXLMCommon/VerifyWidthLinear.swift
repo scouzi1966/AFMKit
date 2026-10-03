@@ -46,7 +46,7 @@ package enum VerifyWidthLinear {
     package static let exactAttentionEnabled =
         ProcessInfo.processInfo.environment["AFM_QWEN_VERIFY_EXACT_ATTENTION"] != "0"
     package static let exactAttentionChunkSize: Int = {
-        let value = Int(ProcessInfo.processInfo.environment[
+        let value = Int(QwenMTPExecutionProfile.environment[
             "AFM_QWEN_VERIFY_ATTENTION_CHUNK"
         ] ?? "1") ?? 1
         return max(1, min(2, value))
