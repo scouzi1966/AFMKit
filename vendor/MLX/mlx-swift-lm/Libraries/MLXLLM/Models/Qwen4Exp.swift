@@ -2532,6 +2532,12 @@ final class Qwen4ExpQSAIndexer: Module {
                     + "blockKeys=\(blockKeys.dtype) heads=\(heads)/\(kvHeads) "
                     + "headDim=\(headDim)")
         }
+        if verificationPolicy == .batched,
+           Qwen4ExpQSAVerificationSparseAttention.shouldSelectBlocks(
+            batch: batch, queryLength: length, keyLength: totalLength, dtype: hidden.dtype)
+        {
+            return .blocks(selectedBlocks)
+        }
         if Qwen4ExpQSAGather.shouldSelectBlocks(
             batch: batch,
             queryLength: length,
@@ -3206,7 +3212,31 @@ private final class Qwen4ExpAttention: Module {
         let groupedBatchedVerification = verificationPolicy == .batched
             && VerifyWidthLinear.exactAttentionEnabled
             && VerifyWidthLinear.exactAttentionChunkSize == 2
-        if l > 1,
+        if verificationPolicy == .batched,
+           case let .some(.blocks(selectedBlocks)) = qsaSelection,
+           Qwen4ExpQSAVerificationSparseAttention.shouldSelectBlocks(
+            batch: b, queryLength: l, keyLength: (cache?.offset ?? 0) + l, dtype: q.dtype)
+        {
+            let cached = cache?.update(keys: k, values: v) ?? (k, v)
+            if let sparse = Qwen4ExpQSAVerificationSparseAttention.call(
+                queries: q, keys: cached.0, values: cached.1, scale: scale,
+                selectedBlocks: selectedBlocks, compressionRatio: indexer.compressRatio)
+            {
+                outputHeads = sparse
+            } else {
+                // A declined geometry must retain QSA selection and append KV
+                // only once, even though the fast arm requested block IDs.
+                let fallbackMask = Qwen4ExpQSAGather.maskFromBlocks(
+                    selectedBlocks, keyLength: cached.0.dim(2),
+                    compressionRatio: indexer.compressRatio)
+                outputHeads = qwen4ExpTargetVerifyAttention(
+                    queries: q, keys: cached.0, values: cached.1,
+                    prefixLength: cached.0.dim(2) - l, scale: scale,
+                    mask: .array(fallbackMask),
+                    chunkSize: VerifyWidthLinear.exactAttentionChunkSize,
+                    coDispatchIndependentRows: false)
+            }
+        } else if l > 1,
            verificationPolicy == .strictSingletonEquivalent || groupedBatchedVerification
         {
             let prefixLength = cache?.offset ?? 0

@@ -32,3 +32,25 @@ The no-think prefix introduced in `49a4e57d` passed unit tests but changed previ
 ### Quantized hyper-connection fallback
 
 The recovered fused quantized injection path was isolated as a cause of the four native candidate-only failures. A diagnostic binary restoring only that fallback passes all four cases in two trials both with MTP disabled and with the throughput profile enabled; disabling all hyper-connection fusion restores only two cases. Keep the existing residual-injection kernel enabled. Quantized injection fusion now requires `AFM_QWEN_FUSED_QUANTIZED_HC=1` and is not included in `throughput-v1`. Its numerical-tolerance tests are not evidence of unchanged model decisions. A native-checkpoint speed screen with this fallback measured 83.2 and 71.5 decode tok/s at 0.5K and 2K context, about 20–23% below the earlier named-profile run. This is a diagnostic binary, not final qualification. The corrected default passes the full provider suite (1,171 passed, 51 skipped). Full live-model and final-binary throughput validation remain pending.
+
+### Experimental sparse verification attention
+
+`AFM_QWEN_VERIFY_SPARSE_ATTENTION=1` enables a dense-BF16 split-K QSA
+verification kernel only for the batched policy, one request, 2–8 verification
+rows, and at least 8,192 cached-plus-current tokens. It is not part of the named
+profile defaults. Singleton-equivalent verification and unsupported shapes retain
+the existing path. If kernel admission declines after selecting block IDs, the
+fallback reconstructs their exact mask and appends KV only once.
+
+The Metal split and merge arithmetic comes from the MIT-licensed mlx-serve
+v26.10.1 source at `02bee553f48cd3bc7d82aba0f8073820bd924738`; the full license
+notice is included in `Qwen4ExpQSAVerificationSparseAttention.swift`. This uses
+the verification-specific split-K grid, not the prefill gather grid.
+
+Initial component validation: nine width/context pairs (widths 2/4/7 at
+8K/16K/32K), a poisoned unselected-block/causal-tail test, and unsupported-shape
+checks pass. Maximum observed difference from current chunk-2 masked attention
+is 0.0009765625; this is not bit-identical arithmetic. At width four, a dependent
+12-layer component screen measures roughly 3.37 to 2.16 ms at 16K and 4.61 to
+2.20 ms at 32K. These are component timings, not full-model tokens per second.
+Full-model throughput and behavioral regression qualification remain required.
