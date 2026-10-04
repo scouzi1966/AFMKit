@@ -1,11 +1,91 @@
 import MLX
 import MLXFast
 import MLXNN
+import MLXLMCommon
 @testable import MLXLLM
 @testable import AFMKitMLX
 import XCTest
 
 final class QwenQuantizedHCInjectionTests: XCTestCase {
+    func testQuantizedFusionPreservesCallerProjectionPolicy() throws {
+        try MLXMetalLibrary.ensureAvailable(verbose: false)
+        // Run with AFM_QWEN_VERIFY_QMM=1 so batched up-projection uses
+        // the production alternative to singleton MLX reductions.
+        print("QWEN_HC_POLICY_TEST_QMM=\(Qwen4ExpBatchedQuantizedProjection.enabled)")
+        let hidden = 2560, hc = 4, rank = 320
+        let columns = hidden * hc
+        let epsilon: Float = 1e-6
+        func values(_ count: Int, divisor: Float) -> MLXArray {
+            MLXArray((0..<count).map { Float(($0 % 43) - 21) / divisor })
+                .asType(.bfloat16)
+        }
+        let norm = values(columns, divisor: 512)
+        let normalization = Qwen4ExpZeroCenteredRMSNorm(
+            dimensions: columns, groupSize: hidden, eps: epsilon)
+        normalization.update(parameters: normalization.mapParameters { _ in norm })
+        let down = QuantizedLinear(weight: values(rank * columns, divisor: 1024)
+            .reshaped(rank, columns), bias: nil, groupSize: 32, bits: 4)
+        let up = QuantizedLinear(weight: values(columns * rank, divisor: 1024)
+            .reshaped(columns, rank), bias: nil, groupSize: 32, bits: 4)
+        let inject = QuantizedLinear(weight: values(hc * columns, divisor: 512)
+            .reshaped(hc, columns), bias: nil, groupSize: 32, bits: 4)
+        let policies: [MTPVerificationPolicy?] = [nil, .batched, .strictSingletonEquivalent]
+        var detectedOldPolicyMismatch = false
+        for rows in [1, 2, 4, 7] {
+            let input = values(rows * columns, divisor: 32).reshaped(1, rows, columns)
+            let pending = values(rows * hidden, divisor: 128).reshaped(1, rows, hidden)
+            let weights = values(rows * hc, divisor: 128).reshaped(1, rows, hc)
+            for policy in policies {
+                for hasPending in [false, true] {
+                    let residual = hasPending ? try XCTUnwrap(Qwen4ExpHyperConnectionFusion.inject(
+                        output: pending, residual: input, weights: weights,
+                        hcCount: hc, hiddenSize: hidden)) : input
+                    let n = normalization(residual)
+                    func project(_ layer: QuantizedLinear, _ x: MLXArray) -> MLXArray {
+                        qwen4ExpVerificationLinear(layer, x, verificationPolicy: policy,
+                                                   role: .hyperConnection)
+                    }
+                    let u = project(up, silu(project(down, n) / Float(hc)))
+                    let expectedMixed = Qwen4ExpHyperConnectionFusion.mixGroupedPrefill(
+                        up: u, normalized: n, groupSize: hidden)
+                        ?? (sigmoid(u).reshaped(1, rows, hc, hidden)
+                            * n.reshaped(1, rows, hc, hidden)).mean(axis: -2)
+                    let expectedInjection = 2 * sigmoid(project(inject, n) / Float(hc))
+                    let actual = try XCTUnwrap(Qwen4ExpHyperConnectionFusion.call(
+                        input: input, normWeight: norm, down: down, up: up, inject: inject,
+                        hcCount: hc, hiddenSize: hidden, epsilon: epsilon,
+                        pendingOutput: hasPending ? pending : nil,
+                        pendingWeights: hasPending ? weights : nil,
+                        allowQuantizedInjectionForTesting: true, verificationPolicy: policy))
+                    eval(actual.mixed, actual.injection, actual.stream,
+                         expectedMixed, expectedInjection, residual)
+                    let context = "rows=\(rows) policy=\(String(describing: policy)) pending=\(hasPending)"
+                    XCTAssertTrue(arrayEqual(actual.stream, residual).item(Bool.self), context)
+                    XCTAssertTrue(arrayEqual(actual.mixed, expectedMixed).item(Bool.self), context)
+                    XCTAssertTrue(arrayEqual(actual.injection, expectedInjection).item(Bool.self), context)
+                    if policy == .batched && rows > 1 {
+                        // Reproduce the old fast path's forced singleton policy
+                        // on the same materialized residual. This fixture must
+                        // distinguish it from the production batched oracle.
+                        let old = try XCTUnwrap(Qwen4ExpHyperConnectionFusion.call(
+                            input: residual, normWeight: norm, down: down, up: up, inject: inject,
+                            hcCount: hc, hiddenSize: hidden, epsilon: epsilon,
+                            allowQuantizedInjectionForTesting: true,
+                            verificationPolicy: .strictSingletonEquivalent))
+                        eval(old.mixed, old.injection)
+                        detectedOldPolicyMismatch = detectedOldPolicyMismatch
+                            || !arrayEqual(old.mixed, expectedMixed).item(Bool.self)
+                            || !arrayEqual(old.injection, expectedInjection).item(Bool.self)
+                    }
+                }
+            }
+        }
+        if Qwen4ExpBatchedQuantizedProjection.enabled {
+            XCTAssertTrue(detectedOldPolicyMismatch,
+                          "The regression fixture must expose the old forced singleton policy")
+        }
+    }
+
     func testPackedInjectionMatchesQuantizedProjectionAndPreservesMixedRows() throws {
         try MLXMetalLibrary.ensureAvailable(verbose: false)
         let hidden = 2560

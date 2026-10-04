@@ -926,7 +926,8 @@ enum Qwen4ExpHyperConnectionFusion {
         pendingWeights: MLXArray? = nil,
         matchFusedInjection: Bool = false,
         allowExtendedRows: Bool = false,
-        allowQuantizedInjectionForTesting: Bool = false
+        allowQuantizedInjectionForTesting: Bool = false,
+        verificationPolicy: MTPVerificationPolicy? = .strictSingletonEquivalent
     ) -> Qwen4ExpHyperConnectionFusionOutput? {
         guard enabled,
               Device.defaultDevice().deviceType == .gpu,
@@ -1029,9 +1030,16 @@ enum Qwen4ExpHyperConnectionFusion {
                 matchFusedInjection: true)
             let normalized = normalizedResult.normalized.reshaped(1, rows, hcCount * hiddenSize)
             func projection(_ layer: QuantizedLinear, _ values: MLXArray) -> MLXArray {
-                VerifyWidthLinear.call(layer, values,
-                    verificationPolicy: .strictSingletonEquivalent,
-                    role: .hyperConnection, exactAcceleratorEnabled: false)
+                if verificationPolicy == .strictSingletonEquivalent {
+                    return VerifyWidthLinear.call(layer, values,
+                        verificationPolicy: .strictSingletonEquivalent,
+                        role: .hyperConnection, exactAcceleratorEnabled: false)
+                }
+                // Preserve the caller's ordinary/batched projection geometry,
+                // including its selected QMM path. Singleton reductions are
+                // not equivalent to the qualified batched fallback.
+                return qwen4ExpVerificationLinear(layer, values,
+                    verificationPolicy: verificationPolicy, role: .hyperConnection)
             }
             let projectedDown = projection(quantizedDown, normalized)
             let projectedUp = projection(quantizedUp, silu(projectedDown / Float(hcCount)))

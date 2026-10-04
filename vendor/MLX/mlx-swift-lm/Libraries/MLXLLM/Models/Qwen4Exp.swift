@@ -554,7 +554,8 @@ final class Qwen4ExpGatedResidual: Module {
                hcCount: hcCount,
                hiddenSize: hiddenSize,
                epsilon: hcNorm.eps,
-               allowExtendedRows: qwen4ExpUsesExtendedVerificationHC(input, policy: verificationPolicy))
+               allowExtendedRows: qwen4ExpUsesExtendedVerificationHC(input, policy: verificationPolicy),
+               verificationPolicy: verificationPolicy)
         {
             return (fused.mixed, input, fused.injection)
         }
@@ -585,7 +586,8 @@ final class Qwen4ExpGatedResidual: Module {
                pendingOutput: output,
                pendingWeights: weights,
                matchFusedInjection: matchFusedInjection,
-               allowExtendedRows: qwen4ExpUsesExtendedVerificationHC(residual, policy: verificationPolicy))
+               allowExtendedRows: qwen4ExpUsesExtendedVerificationHC(residual, policy: verificationPolicy),
+               verificationPolicy: verificationPolicy)
         {
             return (fused.mixed, fused.stream, fused.injection)
         }
@@ -640,7 +642,8 @@ final class Qwen4ExpGatedResidual: Module {
                hcCount: hcCount,
                hiddenSize: hiddenSize,
                epsilon: hcNorm.eps,
-               allowExtendedRows: qwen4ExpUsesExtendedVerificationHC(input, policy: verificationPolicy))
+               allowExtendedRows: qwen4ExpUsesExtendedVerificationHC(input, policy: verificationPolicy),
+               verificationPolicy: verificationPolicy)
         {
             return fused.mixed
         }
@@ -669,7 +672,8 @@ final class Qwen4ExpGatedResidual: Module {
                epsilon: hcNorm.eps,
                pendingOutput: output,
                pendingWeights: weights,
-               allowExtendedRows: qwen4ExpUsesExtendedVerificationHC(residual, policy: verificationPolicy))
+               allowExtendedRows: qwen4ExpUsesExtendedVerificationHC(residual, policy: verificationPolicy),
+               verificationPolicy: verificationPolicy)
         {
             return fused.mixed
         }
