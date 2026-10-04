@@ -134,6 +134,37 @@ final class QwenQuantizedHCInjectionTests: XCTestCase {
         }
     }
 
+    func testQuantizedNormalizationMatchesNativeBeforeProjectionRounding() throws {
+        try MLXMetalLibrary.ensureAvailable(verbose: false)
+        let hidden = 2560, hc = 4, columns = 10240
+        for dtype: DType in [.bfloat16, .float16] {
+            for rows in [1, 4, 16] {
+                for seed: UInt32 in [1, 17, 299] {
+                    var state = seed
+                    func values(_ count: Int, scale: Float) -> MLXArray {
+                        MLXArray((0..<count).map { _ in
+                            state = state &* 1664525 &+ 1013904223
+                            return Float(Int32(bitPattern: state)) / Float(Int32.max) * scale
+                        }).asType(dtype)
+                    }
+                    let input = values(rows * columns, scale: 3).reshaped(1, rows, columns)
+                    let norm = values(columns, scale: 0.8)
+                    let normalization = Qwen4ExpZeroCenteredRMSNorm(
+                        dimensions: columns, groupSize: hidden, eps: 1e-6)
+                    normalization.update(parameters: normalization.mapParameters { _ in norm })
+                    let expected = normalization(input)
+                    let actual = Qwen4ExpHyperConnectionFusion.normalizeQuantizedRows(
+                        input: input, normWeight: norm, hcCount: hc,
+                        hiddenSize: hidden, epsilon: 1e-6).normalized
+                    eval(actual, expected)
+                    let error = abs(actual - expected).max().item(Float.self)
+                    XCTAssertTrue(arrayEqual(actual, expected).item(Bool.self),
+                                  "dtype=\(dtype) rows=\(rows) seed=\(seed) maxError=\(error)")
+                }
+            }
+        }
+    }
+
     func testQuantizedMixerMatchesCompleteNativeGraph() throws {
         try MLXMetalLibrary.ensureAvailable(verbose: false)
         let hidden = 2560, hc = 4, columns = 10240, rank = 320

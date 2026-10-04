@@ -824,6 +824,95 @@ enum Qwen4ExpHyperConnectionFusion {
         }
     }
 
+    // Follow MLX's FP32 row-reduction geometry and rounding for the native
+    // grouped norm. Four adjacent reads per thread, then two SIMD reductions.
+    private static let nativeQuantizedNormalizeKernel = MLXFast.metalKernel(
+        name: "qwen4_exp_hc_native_quantized_normalize",
+        inputNames: ["x_in", "norm_weight", "epsilon", "pending_output", "pending_weights"],
+        outputNames: ["normalized", "next_stream"],
+        source: """
+            #pragma clang fp contract(off)
+            const uint tid = thread_index_in_threadgroup;
+            const uint lane = thread_index_in_simdgroup;
+            const uint simd_group = simdgroup_index_in_threadgroup;
+            const uint stream = threadgroup_position_in_grid.x;
+            const uint row = threadgroup_position_in_grid.y;
+            constexpr int blocks = (HIDDEN + THREADS * 4 - 1) / (THREADS * 4);
+            threadgroup float partials[32];
+            const size_t row_base = size_t(row) * size_t(HC * HIDDEN);
+            const int stream_base = int(stream) * HIDDEN;
+            float values[blocks * 4];
+            float total = 0.0f;
+            for (int block = 0; block < blocks; ++block) {
+                for (int component = 0; component < 4; ++component) {
+                    const int index = int(tid) * 4 + block * THREADS * 4 + component;
+                    float value = 0.0f;
+                    if (index < HIDDEN) {
+                        const size_t offset = row_base + stream_base + index;
+                        T stored = x_in[offset];
+                        if (HAS_PENDING) {
+                            const float delta = float(pending_output[size_t(row) * HIDDEN + index])
+                                * float(pending_weights[size_t(row) * HC + stream]);
+                            stored = MATCH_FUSED_INJECTION
+                                ? T(float(stored) + delta)
+                                : T(float(stored) + float(T(delta)));
+                            next_stream[offset] = stored;
+                        }
+                        value = float(stored);
+                    }
+                    values[block * 4 + component] = value;
+                    const float squared = value * value;
+                    total = squared + total;
+                }
+            }
+            total = simd_sum(total);
+            if (lane == 0) partials[simd_group] = total;
+            threadgroup_barrier(mem_flags::mem_threadgroup);
+            const float group_total = tid < uint(THREADS / 32) ? partials[tid] : 0.0f;
+            const float reduced = simd_sum(group_total);
+            if (tid == 0) partials[0] = reduced;
+            threadgroup_barrier(mem_flags::mem_threadgroup);
+            // Native mean is sum * FP32(1 / HIDDEN), followed by add(epsilon).
+            const float average = partials[0] * (1.0f / float(HIDDEN));
+            const float inverse_rms = precise::rsqrt(average + epsilon);
+            for (int block = 0; block < blocks; ++block) {
+                for (int component = 0; component < 4; ++component) {
+                    const int index = int(tid) * 4 + block * THREADS * 4 + component;
+                    if (index < HIDDEN) {
+                        const int column = stream_base + index;
+                        const float normed = values[block * 4 + component] * inverse_rms;
+                        const float gamma = float(T(float(norm_weight[column]) + 1.0f));
+                        normalized[row_base + column] = T(normed * gamma);
+                    }
+                }
+            }
+        """)
+
+    /// Quantized HC grouped normalization, kept separate so exact native
+    /// normalization parity can be tested before projection/gate rounding.
+    static func normalizeQuantizedRows(
+        input: MLXArray, normWeight: MLXArray, hcCount: Int, hiddenSize: Int,
+        epsilon: Float, pendingOutput: MLXArray? = nil,
+        pendingWeights: MLXArray? = nil, matchFusedInjection: Bool = false
+    ) -> (normalized: MLXArray, stream: MLXArray) {
+        let rows = input.size / (hcCount * hiddenSize)
+        let hasPending = pendingOutput != nil && pendingWeights != nil
+        let threads = hiddenSize <= 512 ? 32 : hiddenSize <= 1024 ? 128
+            : min(1024, ((hiddenSize + 127) / 128) * 32)
+        let result = nativeQuantizedNormalizeKernel(
+            [input, normWeight, MLXArray(epsilon), pendingOutput ?? input, pendingWeights ?? normWeight],
+            template: [
+                ("T", input.dtype), ("HC", hcCount), ("HIDDEN", hiddenSize),
+                ("THREADS", threads), ("HAS_PENDING", hasPending),
+                ("MATCH_FUSED_INJECTION", matchFusedInjection),
+            ],
+            grid: (threads * hcCount, rows, 1), threadGroup: (threads, 1, 1),
+            outputShapes: [[rows, hcCount * hiddenSize], [rows, hcCount * hiddenSize]],
+            outputDTypes: [input.dtype, input.dtype], cacheConfiguration: true)
+        return (result[0].reshaped(input.shape),
+                (hasPending ? result[1] : input).reshaped(input.shape))
+    }
+
     static func call(
         input: MLXArray,
         normWeight: MLXArray,
@@ -930,26 +1019,12 @@ enum Qwen4ExpHyperConnectionFusion {
             // Preserve MLX's quantized projection reductions. Their custom
             // fused replacements change native-checkpoint tool decisions.
             // Only fuse grouped normalization and the final stream mix.
-            let normalizationKernel = hasPending ? normalizePendingKernel : normalizeKernel
-            var inputs = [input, normWeight, injectWeight, MLXArray(epsilon)]
-            if hasPending {
-                inputs.append(contentsOf: [pendingOutput!, pendingWeights!])
-            }
-            inputs.append(contentsOf: [quantizedInject.scales, quantizedInject.biases!])
-            let normalizedResult = normalizationKernel(
-                inputs,
-                template: [
-                    ("T", input.dtype), ("HC", hcCount), ("HIDDEN", hiddenSize),
-                    ("HAS_INJECT", false), ("MATCH_FUSED_INJECTION", matchFusedInjection),
-                    ("QUANTIZED_INJECT", true), ("INJECT_BITS", injectBits),
-                    ("INJECT_GROUP_SIZE", injectGroupSize),
-                ],
-                grid: (256 * hcCount, rows, 1), threadGroup: (256, 1, 1),
-                outputShapes: [[rows, hcCount * hiddenSize], [rows, hcCount * hcCount]]
-                    + (hasPending ? [[rows, hcCount * hiddenSize]] : []),
-                outputDTypes: [input.dtype, .float32] + (hasPending ? [input.dtype] : []),
-                cacheConfiguration: true)
-            let normalized = normalizedResult[0].reshaped(1, rows, hcCount * hiddenSize)
+            let normalizedResult = normalizeQuantizedRows(
+                input: input, normWeight: normWeight, hcCount: hcCount,
+                hiddenSize: hiddenSize, epsilon: epsilon,
+                pendingOutput: pendingOutput, pendingWeights: pendingWeights,
+                matchFusedInjection: matchFusedInjection)
+            let normalized = normalizedResult.normalized.reshaped(1, rows, hcCount * hiddenSize)
             func projection(_ layer: QuantizedLinear, _ values: MLXArray) -> MLXArray {
                 VerifyWidthLinear.call(layer, values,
                     verificationPolicy: .strictSingletonEquivalent,
@@ -975,7 +1050,7 @@ enum Qwen4ExpHyperConnectionFusion {
             return Qwen4ExpHyperConnectionFusionOutput(
                 mixed: mixed.reshaped(leading + [hiddenSize]),
                 injection: injection.reshaped(leading + [hcCount]),
-                stream: (hasPending ? normalizedResult[2] : input).reshaped(input.shape))
+                stream: normalizedResult.stream.reshaped(input.shape))
         }
 
         if nativeChainEnabled {
