@@ -45,6 +45,9 @@ enum Qwen4ExpHyperConnectionFusion {
     private static let enabled =
         ProcessInfo.processInfo.environment["AFM_QWEN_FUSED_HYPER_CONNECTION"] != "0"
 
+    private static let quantizedInjectionEnabled =
+        ProcessInfo.processInfo.environment["AFM_QWEN_FUSED_QUANTIZED_HC"] == "1"
+
     /// The compound C++ graph-construction boundary is qualified for decode;
     /// retain `0` as a diagnostic and recovery escape hatch.
     private static let nativeChainEnabled =
@@ -823,7 +826,8 @@ enum Qwen4ExpHyperConnectionFusion {
         pendingOutput: MLXArray? = nil,
         pendingWeights: MLXArray? = nil,
         matchFusedInjection: Bool = false,
-        allowExtendedRows: Bool = false
+        allowExtendedRows: Bool = false,
+        allowQuantizedInjectionForTesting: Bool = false
     ) -> Qwen4ExpHyperConnectionFusionOutput? {
         guard enabled,
               Device.defaultDevice().deviceType == .gpu,
@@ -845,9 +849,17 @@ enum Qwen4ExpHyperConnectionFusion {
         else { return nil }
 
         // Some native checkpoints quantize this small projection as well as
-        // down/up. Read its original affine representation in the norm kernel;
-        // do not expand/requantize model weights or bypass fusion for that layout.
+        // down/up. The experimental fused path reads its original affine
+        // representation without expanding or requantizing model weights.
         let quantizedInject = inject as? QuantizedLinear
+        // The quantized injection fusion changes projection reductions and
+        // regresses native Qwen Next tool decisions. Preserve the existing
+        // fallback, including the established residual-injection kernel.
+        // Keep the experimental path explicitly opt-in for numerical work.
+        if quantizedInject != nil, !allowQuantizedInjectionForTesting,
+           !quantizedInjectionEnabled {
+            return nil
+        }
         let injectBits = quantizedInject?.bits ?? 0
         let injectGroupSize = quantizedInject?.groupSize ?? 0
         let injectWeight: MLXArray

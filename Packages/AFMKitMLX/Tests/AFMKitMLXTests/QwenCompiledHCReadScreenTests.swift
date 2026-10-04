@@ -47,7 +47,8 @@ final class QwenCompiledHCReadScreenTests: XCTestCase {
                 input: input, normWeight: norm, down: down, up: up, inject: inject,
                 hcCount: QwenCompiledHCReadScreenTests.streams,
                 hiddenSize: QwenCompiledHCReadScreenTests.hidden,
-                epsilon: QwenCompiledHCReadScreenTests.epsilon)!
+                epsilon: QwenCompiledHCReadScreenTests.epsilon,
+                allowQuantizedInjectionForTesting: true)!
             return [result.mixed, input, result.injection]
         }
 

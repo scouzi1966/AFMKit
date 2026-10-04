@@ -38,7 +38,8 @@ final class QwenQuantizedHCInjectionTests: XCTestCase {
                             try XCTUnwrap(Qwen4ExpHyperConnectionFusion.call(
                                 input: x, normWeight: norm, down: down, up: up,
                                 inject: injection, hcCount: hc, hiddenSize: hidden,
-                                epsilon: epsilon, pendingOutput: pending, pendingWeights: weights))
+                                epsilon: epsilon, pendingOutput: pending, pendingWeights: weights,
+                                allowQuantizedInjectionForTesting: true))
                         }
                         func expectedInjection(_ x: MLXArray) -> MLXArray {
                             let normalized = MLXFast.rmsNorm(
@@ -46,6 +47,12 @@ final class QwenQuantizedHCInjectionTests: XCTestCase {
                                 weight: MLXArray.ones([hidden], dtype: dtype), eps: epsilon)
                                 .reshaped(x.shape)
                             return 2 * sigmoid(inject(normalized) / Float(hc))
+                        }
+                        if ProcessInfo.processInfo.environment["AFM_QWEN_FUSED_QUANTIZED_HC"] != "1" {
+                            XCTAssertNil(Qwen4ExpHyperConnectionFusion.call(
+                                input: input, normWeight: norm, down: down, up: up,
+                                inject: inject, hcCount: hc, hiddenSize: hidden, epsilon: epsilon),
+                                "Native quantized injection must retain the qualified fallback by default")
                         }
                         let actual = try run(input, injection: inject)
                         let noInjection = try run(input, injection: nil)
@@ -94,7 +101,8 @@ final class QwenQuantizedHCInjectionTests: XCTestCase {
                 down: projection(rank, columns, bits: bits),
                 up: projection(columns, rank, bits: bits),
                 inject: projection(4, columns, bits: 4),
-                hcCount: 4, hiddenSize: hidden, epsilon: 1e-6))
+                hcCount: 4, hiddenSize: hidden, epsilon: 1e-6,
+                allowQuantizedInjectionForTesting: true))
         }
     }
 }
