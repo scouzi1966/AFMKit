@@ -224,13 +224,15 @@ enum Qwen4ExpHyperConnectionFusion {
     /// `hc_prefill_mix.metal` (MIT licensed). A BF16 sigmoid lookup table keeps
     /// the same rounded sigmoid values as MLX while one pass performs the
     /// multiply and HC mean, eliminating two full-width intermediates.
+    /// Keep the row count as a runtime input, as in the reference, so a new
+    /// prompt length does not create another Metal source specialization.
     private static let prefillMixKernel = MLXFast.metalKernel(
         name: "qwen4_exp_hc_prefill_mix",
-        inputNames: ["up", "normalized", "sigmoid_table"],
+        inputNames: ["up", "normalized", "sigmoid_table", "row_count"],
         outputNames: ["mixed"],
         source: """
             const uint index = thread_position_in_grid.x;
-            if (index >= uint(ROWS * HIDDEN)) return;
+            if (index >= uint(row_count * HIDDEN)) return;
             const uint row = index / HIDDEN;
             const uint column = index - row * HIDDEN;
             T value = T(0.0f);
@@ -378,10 +380,9 @@ enum Qwen4ExpHyperConnectionFusion {
         else { return nil }
 
         let mixed = prefillMixKernel(
-            [up, normalized, sigmoidTableBF16],
+            [up, normalized, sigmoidTableBF16, MLXArray(Int32(rows))],
             template: [
                 ("T", up.dtype), ("HC", hcCount), ("HIDDEN", groupSize),
-                ("ROWS", rows),
             ],
             grid: (rows * groupSize, 1, 1),
             threadGroup: (256, 1, 1),
@@ -1046,9 +1047,9 @@ enum Qwen4ExpHyperConnectionFusion {
             let mixed: MLXArray
             if input.dtype == .bfloat16 {
                 mixed = prefillMixKernel(
-                    [projectedUp, normalized, sigmoidTableBF16],
+                    [projectedUp, normalized, sigmoidTableBF16, MLXArray(Int32(rows))],
                     template: [("T", input.dtype), ("HC", hcCount),
-                               ("HIDDEN", hiddenSize), ("ROWS", rows)],
+                               ("HIDDEN", hiddenSize)],
                     grid: (rows * hiddenSize, 1, 1), threadGroup: (256, 1, 1),
                     outputShapes: [[rows, hiddenSize]], outputDTypes: [input.dtype],
                     cacheConfiguration: true)[0]

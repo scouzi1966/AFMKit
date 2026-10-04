@@ -129,7 +129,7 @@ final class QwenQuantizedHCInjectionTests: XCTestCase {
                                 2 * sigmoid(inject(normalization(x[0..., row..<(row + 1), 0...])) / Float(hc))
                             }, axis: 1)
                         }
-                        if ProcessInfo.processInfo.environment["AFM_QWEN_FUSED_QUANTIZED_HC"] != "1" {
+                        if QwenMTPExecutionProfile.environment["AFM_QWEN_FUSED_QUANTIZED_HC"] != "1" {
                             XCTAssertNil(Qwen4ExpHyperConnectionFusion.call(
                                 input: input, normWeight: norm, down: down, up: up,
                                 inject: inject, hcCount: hc, hiddenSize: hidden, epsilon: epsilon),
