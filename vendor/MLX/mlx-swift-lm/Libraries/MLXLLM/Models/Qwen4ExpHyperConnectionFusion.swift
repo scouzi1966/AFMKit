@@ -434,7 +434,12 @@ enum Qwen4ExpHyperConnectionFusion {
                 const int index = stream_base + int(tid) + 256 * element;
                 // Preserve the stock zero-centered norm's two BF16 rounding sites.
                 const T normed = T(values[element] * inverse_rms);
-                const T weighted = T(float(normed) * (float(norm_weight[index]) + 1.0f));
+                // Match the generic grouped norm used by native quantized HC:
+                // round gamma in T, normalize in FP32, then cast once.
+                const T weighted = QUANTIZED_INJECT
+                    ? T(values[element] * inverse_rms
+                        * float(T(float(norm_weight[index]) + 1.0f)))
+                    : T(float(normed) * (float(norm_weight[index]) + 1.0f));
                 output[index] = weighted;
                 if (HAS_INJECT) {
                     for (int column = 0; column < HC; ++column) {
@@ -528,7 +533,12 @@ enum Qwen4ExpHyperConnectionFusion {
             for (int element = 0; element < elements_per_thread; ++element) {
                 const int index = stream_base + int(tid) + 256 * element;
                 const T normed = T(values[element] * inverse_rms);
-                const T weighted = T(float(normed) * (float(norm_weight[index]) + 1.0f));
+                // Match the generic grouped norm used by native quantized HC:
+                // round gamma in T, normalize in FP32, then cast once.
+                const T weighted = QUANTIZED_INJECT
+                    ? T(values[element] * inverse_rms
+                        * float(T(float(norm_weight[index]) + 1.0f)))
+                    : T(float(normed) * (float(norm_weight[index]) + 1.0f));
                 output[index] = weighted;
                 if (HAS_INJECT) {
                     for (int column = 0; column < HC; ++column) {
@@ -914,6 +924,58 @@ enum Qwen4ExpHyperConnectionFusion {
                   pendingOutput.size == rows * hiddenSize,
                   pendingWeights.size == rows * hcCount
             else { return nil }
+        }
+
+        if let quantizedInject {
+            // Preserve MLX's quantized projection reductions. Their custom
+            // fused replacements change native-checkpoint tool decisions.
+            // Only fuse grouped normalization and the final stream mix.
+            let normalizationKernel = hasPending ? normalizePendingKernel : normalizeKernel
+            var inputs = [input, normWeight, injectWeight, MLXArray(epsilon)]
+            if hasPending {
+                inputs.append(contentsOf: [pendingOutput!, pendingWeights!])
+            }
+            inputs.append(contentsOf: [quantizedInject.scales, quantizedInject.biases!])
+            let normalizedResult = normalizationKernel(
+                inputs,
+                template: [
+                    ("T", input.dtype), ("HC", hcCount), ("HIDDEN", hiddenSize),
+                    ("HAS_INJECT", false), ("MATCH_FUSED_INJECTION", matchFusedInjection),
+                    ("QUANTIZED_INJECT", true), ("INJECT_BITS", injectBits),
+                    ("INJECT_GROUP_SIZE", injectGroupSize),
+                ],
+                grid: (256 * hcCount, rows, 1), threadGroup: (256, 1, 1),
+                outputShapes: [[rows, hcCount * hiddenSize], [rows, hcCount * hcCount]]
+                    + (hasPending ? [[rows, hcCount * hiddenSize]] : []),
+                outputDTypes: [input.dtype, .float32] + (hasPending ? [input.dtype] : []),
+                cacheConfiguration: true)
+            let normalized = normalizedResult[0].reshaped(1, rows, hcCount * hiddenSize)
+            func projection(_ layer: QuantizedLinear, _ values: MLXArray) -> MLXArray {
+                VerifyWidthLinear.call(layer, values,
+                    verificationPolicy: .strictSingletonEquivalent,
+                    role: .hyperConnection, exactAcceleratorEnabled: false)
+            }
+            let projectedDown = projection(quantizedDown, normalized)
+            let projectedUp = projection(quantizedUp, silu(projectedDown / Float(hcCount)))
+            let mixed: MLXArray
+            if input.dtype == .bfloat16 {
+                mixed = prefillMixKernel(
+                    [projectedUp, normalized, sigmoidTableBF16],
+                    template: [("T", input.dtype), ("HC", hcCount),
+                               ("HIDDEN", hiddenSize), ("ROWS", rows)],
+                    grid: (rows * hiddenSize, 1, 1), threadGroup: (256, 1, 1),
+                    outputShapes: [[rows, hiddenSize]], outputDTypes: [input.dtype],
+                    cacheConfiguration: true)[0]
+            } else {
+                mixed = (sigmoid(projectedUp).reshaped(rows, hcCount, hiddenSize)
+                    * normalized.reshaped(rows, hcCount, hiddenSize)).mean(axis: -2)
+            }
+            let injection = 2 * sigmoid(projection(quantizedInject, normalized) / Float(hcCount))
+            let leading = Array(input.shape.dropLast())
+            return Qwen4ExpHyperConnectionFusionOutput(
+                mixed: mixed.reshaped(leading + [hiddenSize]),
+                injection: injection.reshaped(leading + [hcCount]),
+                stream: (hasPending ? normalizedResult[2] : input).reshaped(input.shape))
         }
 
         if nativeChainEnabled {
