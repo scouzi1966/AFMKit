@@ -25,6 +25,34 @@ The underlying explicit settings recovered short-context, single-request referen
 
 ## Current regression gate
 
+### October 4 vision qualification repair
+
+The shared ddalcu vision overlay failed color probes while the native community
+checkpoint passed. Its 333 vision tensors use `model.visual.*`; the Qwen Next
+wrapper previously accepted only `vision_tower.*`, silently discarding the
+overlay tower. The sanitizer now accepts native and HF vision namespaces and
+normalizes channels-first patch weights through the existing vision sanitizer.
+Canonical `vision_tower.*` names take precedence when aliases coexist.
+
+Two preprocessing problems were also corrected: the Qwen processor now reads
+nested `size.shortest_edge`/`longest_edge` pixel budgets, and Qwen Next no longer
+receives a forced 1024-pixel service resize before its model-owned processor.
+Other architectures retain the service resize policy. Legacy top-level pixel
+budgets retain precedence. Text-only execution is unchanged by these repairs.
+
+Ten targeted release tests passed. The live shared-overlay color probes now
+return red and blue correctly, with 94 prompt tokens, matching the reference
+instead of the previous 1,054 tokens. Resizing alone did not fix the wrong
+answers; accepting the supplied vision tensors did. Native community color
+probes also passed at 94 tokens after the resize correction. These two-color
+checks are smoke coverage, not complete vision qualification.
+
+Evidence is under
+`/Volumes/edata/afm-release-artifacts/nightly-qualification-20261004/` in
+`vision-layout-fixed-overlay`, `vision-sizing-fixed-community`, and
+`vision-layout-unit-tests.log`. Full shared-checkpoint qualification follows
+separately; no throughput parity or release readiness is implied by this fix.
+
 The complete matched Promptfoo run passed 341/406 cases on the throughput candidate versus 357/406 on the checkpoint-compatible control (`382efd5a`). Request hashes match for all 406 cases. There are 24 candidate-only failures (4 native and 20 forced XML), 8 candidate-only passes, and 41 shared failures. Both builds passed all 76 native protocol cases. Do not describe the remaining differences as baseline failures or model limitations.
 
 The no-think prefix introduced in `49a4e57d` passed unit tests but changed previously passing forced-XML tool decisions. Commit `c05916eb` withdraws that change and restores the established compatibility prompt. The restored prompt passes the missing-required-arguments case in four live trials; the complete forced-XML comparison remains pending. The partial fallback-candidate run was stopped after 346/406 cases, with ten candidate-only failures in forced-XML modes and seven improvements. No completed native case regressed. The earlier paired consumer suite passed 495 tests with two skips, but it is not final-provider coverage. Unit test success and short-context throughput do not qualify this candidate for release.

@@ -8,6 +8,29 @@ import MLXLMCommon
 import XCTest
 
 final class Qwen4ExpCheckpointLayoutTests: XCTestCase {
+    func testVisionWeightsAcceptNativeAndHuggingFacePrefixes() throws {
+        try MLXMetalLibrary.ensureAvailable(verbose: false)
+        let wrapper = Qwen4ExpVL(try JSONDecoder().decode(
+            Qwen4ExpVLConfiguration.self, from: configuration(vision: true)))
+        let channelsFirst = MLXArray(0..<(2 * 3 * 2 * 14 * 14))
+            .asType(.float32).reshaped(2, 3, 2, 14, 14)
+        let channelsLast = channelsFirst.transposed(0, 2, 3, 4, 1)
+        for prefix in ["vision_tower.", "model.visual.", "visual."] {
+            for patch in [channelsFirst, channelsLast] {
+                let got = wrapper.sanitize(weights: [
+                    prefix + "patch_embed.proj.weight": patch,
+                    prefix + "blocks.0.norm1.weight": MLXArray([Float(2)]),
+                ])
+                XCTAssertEqual(got.count, 2)
+                let actual = try XCTUnwrap(got["vision_tower.patch_embed.proj.weight"])
+                XCTAssertEqual(actual.shape, channelsLast.shape)
+                XCTAssertEqual(actual.asArray(Float.self), channelsLast.asArray(Float.self))
+                XCTAssertEqual(try XCTUnwrap(got["vision_tower.blocks.0.norm1.weight"])
+                    .item(Float.self), 2)
+            }
+        }
+    }
+
     private func configuration(mapped: Bool = false, vision: Bool = false) throws -> Data {
         var config: [String: Any] = [
             "model_type": "qwen4_exp",

@@ -167,9 +167,30 @@ public struct Qwen3VLProcessorConfiguration: Codable, Sendable {
         public let maxPixels: Int
         public let minPixels: Int
 
+        public init(maxPixels: Int, minPixels: Int) {
+            self.maxPixels = maxPixels
+            self.minPixels = minPixels
+        }
+
+        public init(from decoder: Swift.Decoder) throws {
+            let values = try decoder.container(keyedBy: CodingKeys.self)
+            maxPixels = try values.decodeIfPresent(Int.self, forKey: .maxPixels)
+                ?? values.decode(Int.self, forKey: .longestEdge)
+            minPixels = try values.decodeIfPresent(Int.self, forKey: .minPixels)
+                ?? values.decode(Int.self, forKey: .shortestEdge)
+        }
+
+        public func encode(to encoder: Encoder) throws {
+            var values = encoder.container(keyedBy: CodingKeys.self)
+            try values.encode(maxPixels, forKey: .maxPixels)
+            try values.encode(minPixels, forKey: .minPixels)
+        }
+
         enum CodingKeys: String, CodingKey {
             case maxPixels = "max_pixels"
             case minPixels = "min_pixels"
+            case longestEdge = "longest_edge"
+            case shortestEdge = "shortest_edge"
         }
     }
 
@@ -177,13 +198,14 @@ public struct Qwen3VLProcessorConfiguration: Codable, Sendable {
     public let imageStd: [CGFloat]
     private let _minPixels: Int?
     private let _maxPixels: Int?
+    private let configuredSize: Size?
     public let mergeSize: Int
     public let patchSize: Int
     public let temporalPatchSize: Int
     public let imageProcessorType: String
 
-    public var minPixels: Int { _minPixels ?? 4 * 28 * 28 }  // 3,136
-    public var maxPixels: Int { _maxPixels ?? 16384 * 28 * 28 }  // 12,845,056
+    public var minPixels: Int { _minPixels ?? configuredSize?.minPixels ?? 4 * 28 * 28 }
+    public var maxPixels: Int { _maxPixels ?? configuredSize?.maxPixels ?? 16384 * 28 * 28 }
 
     public var size: Size { .init(maxPixels: maxPixels, minPixels: minPixels) }
 
@@ -200,6 +222,7 @@ public struct Qwen3VLProcessorConfiguration: Codable, Sendable {
         case imageStd = "image_std"
         case _minPixels = "min_pixels"
         case _maxPixels = "max_pixels"
+        case configuredSize = "size"
         case mergeSize = "merge_size"
         case patchSize = "patch_size"
         case temporalPatchSize = "temporal_patch_size"

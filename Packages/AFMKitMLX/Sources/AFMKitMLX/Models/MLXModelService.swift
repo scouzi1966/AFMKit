@@ -8349,7 +8349,11 @@ public final class MLXModelService:
             return (UserInput(prompt: ""), tempFiles: allTempFiles)
         }
 
-        var input = UserInput(chat: chatMessages, processing: .init(resize: .init(width: 1024, height: 1024)), tools: tools)
+        let promptArchitecture = withStateLock {
+            currentModelArchitecture?.canonicalModelType
+        }
+        var input = UserInput(chat: chatMessages,
+            processing: AFMMLXRuntimeAdapter.imageProcessing(modelType: promptArchitecture), tools: tools)
         var appliedChatTemplateOverride = false
 
         // Compatibility parsers can override the chat template. Native Qwen XML
@@ -8436,9 +8440,6 @@ public final class MLXModelService:
             print("[\(ts())] [StructuredOutput] Disabling thinking for guided JSON on reasoning-capable model")
         }
 
-        let promptArchitecture = withStateLock {
-            currentModelArchitecture?.canonicalModelType
-        }
         let reasoningNormalization = Self.normalizeReasoningKwargs(
             resolvedKwargs,
             canonicalModelType: promptArchitecture,

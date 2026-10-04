@@ -270,11 +270,20 @@ public final class Qwen4ExpVL: Module, VLMModel, KVCacheDimensionProvider,
             result["language_model.\(key)"] = value
         }
 
-        let visionWeights: [String: MLXArray] = Dictionary(
-            uniqueKeysWithValues: weights.compactMap { key, value -> (String, MLXArray)? in
-            guard key.hasPrefix("vision_tower.") else { return nil }
-            return (String(key.dropFirst("vision_tower.".count)), value)
-        })
+        // Native MLX checkpoints use vision_tower.; HF/converted overlays
+        // also use model.visual. Preserve those weights rather than silently
+        // leaving the vision tower at its randomly initialized parameters.
+        let visionPrefixes = ["vision_tower.", "model.visual.", "visual."]
+        var visionWeights = [String: MLXArray]()
+        for prefix in visionPrefixes {
+            for (key, value) in weights where key.hasPrefix(prefix) {
+                let normalizedKey = String(key.dropFirst(prefix.count))
+                // Prefer the canonical namespace if a bundle has aliases.
+                if visionWeights[normalizedKey] == nil {
+                    visionWeights[normalizedKey] = value
+                }
+            }
+        }
         for (key, value) in visionModel.sanitize(weights: visionWeights) {
             result["vision_tower.\(key)"] = value
         }
