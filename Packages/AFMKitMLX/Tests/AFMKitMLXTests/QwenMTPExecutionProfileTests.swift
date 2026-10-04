@@ -14,6 +14,7 @@ final class QwenMTPExecutionProfileTests: XCTestCase {
             let resolved = QwenMTPExecutionProfile.resolved(environment: environment)
             XCTAssertEqual(resolved["AFM_QWEN_VERIFY_QMM"], "0")
             XCTAssertNil(resolved["AFM_QWEN_MTP_SCHEDULER"])
+            XCTAssertNil(resolved["AFM_QWEN_MTP_ONE_PASS_CAPTURE"])
             XCTAssertNil(resolved["UNRELATED_SETTING"])
             XCTAssertEqual(AFMMLXMTPRuntimePolicy.qwenNextVerificationPolicy(
                 environment: environment), .strictSingletonEquivalent)
@@ -29,6 +30,7 @@ final class QwenMTPExecutionProfileTests: XCTestCase {
         XCTAssertEqual(resolved["AFM_QWEN_RESIDENT_CPU_NGRAM"], "1")
         XCTAssertEqual(resolved["AFM_QWEN_VERIFY_GROUP64_EXPERT_ROWS"], "1")
         XCTAssertEqual(resolved["AFM_QWEN_MTP_REPLAY_MIB"], "4096")
+        XCTAssertEqual(resolved["AFM_QWEN_MTP_ONE_PASS_CAPTURE"], "1")
         XCTAssertEqual(AFMMLXMTPRuntimePolicy.qwenNextVerificationPolicy(
             environment: environment), .batched)
     }
@@ -36,7 +38,8 @@ final class QwenMTPExecutionProfileTests: XCTestCase {
     func testExplicitSettingsOverrideProfileIncludingDisabledValues() {
         let environment = [QwenMTPExecutionProfile.variable: "throughput-v1",
             "AFM_QWEN_VERIFY_QMM": "0", "AFM_QWEN_MTP_VERIFICATION_POLICY": "strict",
-            "AFM_QWEN_MTP_REPLAY_MIB": "0", "AFM_QWEN_MTP_DRAFT_SHORTLIST": ""]
+            "AFM_QWEN_MTP_REPLAY_MIB": "0", "AFM_QWEN_MTP_DRAFT_SHORTLIST": "",
+            "AFM_QWEN_MTP_ONE_PASS_CAPTURE": "0"]
         let resolved = QwenMTPExecutionProfile.resolved(environment: environment)
         for (key, value) in environment { XCTAssertEqual(resolved[key], value) }
         XCTAssertEqual(AFMMLXMTPRuntimePolicy.qwenNextVerificationPolicy(

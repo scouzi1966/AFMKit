@@ -13,7 +13,7 @@ AFM_QWEN_MTP_PROFILE=throughput-v1 /path/to/afm mlx \
 
 The explicit command arguments matter: the profile selects provider tuning, while the CLI selects MTP depth, scheduler capacity, and prefill chunk size. Capacity two enables the scheduler path; it does not mean a single-request benchmark sends two requests. Add `--no-think` only when the workload requires reasoning disabled. Prefix caching stays enabled unless explicitly disabled.
 
-The profile selects batched verification, fused expert rows and routing, draft shortlist, native hyperconnection operations, scheduler/head sharing, bounded replay, and native checkpoint CPU ngram lookup. Replay has a 4096 MiB budget. Batched reduction arithmetic can change greedy decisions relative to strict singleton-equivalent verification. The profile does not select sampled proposals, adaptive depth, one-pass capture, or unrelated crowd experiments.
+The profile selects batched verification, fused expert rows and routing, draft shortlist, native hyperconnection operations, scheduler/head sharing, bounded replay, and native checkpoint CPU ngram lookup. Replay has a 4096 MiB budget. Batched reduction arithmetic can change greedy decisions relative to strict singleton-equivalent verification. The profile uses one-pass prompt capture to retain the replay boundary without splitting the cold prompt at that boundary. The profile does not select sampled proposals, adaptive depth, or unrelated crowd experiments.
 
 Use `AFM_QWEN_MTP_PROFILE=off` (or omit it) to disable the named profile. This controls configuration only; it does not revert the underlying recovered provider changes. Individual legacy switches remain available. An override can remove a speed benefit or change behavior; it is no longer the unmodified qualified recipe.
 
@@ -54,3 +54,9 @@ is 0.0009765625; this is not bit-identical arithmetic. At width four, a dependen
 12-layer component screen measures roughly 3.37 to 2.16 ms at 16K and 4.61 to
 2.20 ms at 32K. These are component timings, not full-model tokens per second.
 Full-model throughput and behavioral regression qualification remain required.
+
+### Prompt capture qualification
+
+Snapshot backoff previously split a cold prompt before its final 31 tokens. On the native community checkpoint, a focused HTTP comparison reproduced an incomplete 589-token answer with that split. One-pass capture and disabled backoff both produced the same complete 999-token answer with the same binary and request. One-pass capture retains prefix reuse without changing cold prefill chunk geometry. Explicit `AFM_QWEN_MTP_ONE_PASS_CAPTURE=0` remains available for comparison.
+
+Current-source direct-model checks passed five snapshot tests and a native growing-conversation test covering 64 known-answer responses and eight cancellation/isolation checks. These checks use strict verification and short contexts; they do not establish full serving-profile quality, long-context replay equivalence, or reference speed parity. Replayed and cold greedy output need not be token-identical because the forwarded matrix shapes differ. Broader qualification remains required before release promotion.

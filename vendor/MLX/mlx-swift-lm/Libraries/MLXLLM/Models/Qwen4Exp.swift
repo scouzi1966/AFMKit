@@ -7858,7 +7858,7 @@ public final class Qwen4ExpMTPGenerator {
             sampledProposalOverride: nil,
             // Experimental serving A/B only. No change without explicit opt-in;
             // capture still requires a retained interior backoff boundary.
-            onePassPromptCapture: ProcessInfo.processInfo.environment[
+            onePassPromptCapture: QwenMTPExecutionProfile.environment[
                 "AFM_QWEN_MTP_ONE_PASS_CAPTURE"] == "1")
     }
 
