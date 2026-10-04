@@ -75,9 +75,9 @@ final class QwenQuantizedHCInjectionTests: XCTestCase {
                             .reshaped(1, rows, hidden)
                         let weights = values(rows * hc, divisor: 128, dtype: dtype)
                             .reshaped(1, rows, hc)
-                        let materialized = (input.reshaped(1, rows, hc, hidden)
-                            + pending[.ellipsis, .newAxis, 0...] * weights[.ellipsis, .newAxis])
-                            .reshaped(input.shape)
+                        let materialized = try XCTUnwrap(Qwen4ExpHyperConnectionFusion.inject(
+                            output: pending, residual: input, weights: weights,
+                            hcCount: hc, hiddenSize: hidden))
                         let fusedPending = try run(input, injection: inject, pending: pending, weights: weights)
                         let ordinary = try run(materialized, injection: inject)
                         eval(fusedPending.stream, fusedPending.mixed, fusedPending.injection,
@@ -131,6 +131,44 @@ final class QwenQuantizedHCInjectionTests: XCTestCase {
                                   "group=\(group) rows=\(rows) pending=\(pending)")
                 }
             }
+        }
+    }
+
+    func testQuantizedPendingReadPreservesNativeInjectionRounding() throws {
+        try MLXMetalLibrary.ensureAvailable(verbose: false)
+        let hidden = 2560, hc = 4, columns = 10240, rank = 320
+        let input = MLXArray.full([1, 1, columns], values: MLXArray(Float(-1)), dtype: .bfloat16)
+        let pending = MLXArray.full([1, 1, hidden], values: MLXArray(Float(129) / 128), dtype: .bfloat16)
+        let weights = MLXArray.full([1, 1, hc], values: MLXArray(Float(127) / 128), dtype: .bfloat16)
+        let native = try XCTUnwrap(Qwen4ExpHyperConnectionFusion.inject(
+            output: pending, residual: input, weights: weights, hcCount: hc, hiddenSize: hidden))
+        let doubleRounded = (input.reshaped(1, 1, hc, hidden)
+            + pending[.ellipsis, .newAxis, 0...] * weights[.ellipsis, .newAxis]).reshaped(input.shape)
+        eval(native, doubleRounded)
+        // (129/128)*(127/128)-1 = -1/16384. Rounding the product to
+        // BF16 first instead produces zero, erasing the residual entirely.
+        XCTAssertEqual(native.flattened()[0].item(Float.self), -1 / Float(16384))
+        XCTAssertEqual(doubleRounded.flattened()[0].item(Float.self), 0)
+        let norm = MLXArray.zeros([columns], dtype: .bfloat16)
+        let normalization = Qwen4ExpZeroCenteredRMSNorm(
+            dimensions: columns, groupSize: hidden, eps: 1e-6)
+        normalization.update(parameters: normalization.mapParameters { _ in norm })
+        let expectedMixed = (normalization(native).reshaped(1, 1, hc, hidden)
+            * MLXArray(Float(0.5)).asType(.bfloat16)).mean(axis: -2)
+        for group in [32, 64] {
+            func zero(_ outputs: Int, _ inputs: Int) -> QuantizedLinear {
+                QuantizedLinear(weight: MLXArray.zeros([outputs, inputs], dtype: .bfloat16),
+                                bias: nil, groupSize: group, bits: 4)
+            }
+            let result = try XCTUnwrap(Qwen4ExpHyperConnectionFusion.call(
+                input: input, normWeight: norm, down: zero(rank, columns),
+                up: zero(columns, rank), inject: zero(hc, columns),
+                hcCount: hc, hiddenSize: hidden, epsilon: 1e-6,
+                pendingOutput: pending, pendingWeights: weights,
+                allowQuantizedInjectionForTesting: true))
+            eval(result.stream, result.mixed, expectedMixed)
+            XCTAssertTrue(arrayEqual(result.stream, native).item(Bool.self))
+            XCTAssertTrue(arrayEqual(result.mixed, expectedMixed).item(Bool.self))
         }
     }
 

@@ -1023,7 +1023,10 @@ enum Qwen4ExpHyperConnectionFusion {
                 input: input, normWeight: normWeight, hcCount: hcCount,
                 hiddenSize: hiddenSize, epsilon: epsilon,
                 pendingOutput: pendingOutput, pendingWeights: pendingWeights,
-                matchFusedInjection: matchFusedInjection)
+                // The qualified quantized fallback calls injectKernel for
+                // these row counts, including ordinary AR: it rounds once
+                // after addition. Preserve that contract for pending reads.
+                matchFusedInjection: true)
             let normalized = normalizedResult.normalized.reshaped(1, rows, hcCount * hiddenSize)
             func projection(_ layer: QuantizedLinear, _ values: MLXArray) -> MLXArray {
                 VerifyWidthLinear.call(layer, values,
