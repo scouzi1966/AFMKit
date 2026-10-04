@@ -169,31 +169,4 @@ final class QwenVisionToolHistoryTests: XCTestCase {
             XCTAssertTrue(rendered.contains("<function=get_weather>\n<parameter=location>\nParis\n</parameter>"))
         }
     }
-
-    func testAdaptiveTemplateHonorsExplicitThinkingDisable() throws {
-        let template = try Template(MLXModelService.qwen3XMLTemplate)
-        let messages = generator.generate(from: UserInput(chat: [.user("Call get_weather.")]))
-        for supportsThinking in [false, true, nil] as [Bool?] {
-            for thinking in [false, true, nil] as [Bool?] {
-                for generationPrompt in [false, true] {
-                    var context: [String: Value] = [
-                        "messages": try Value(any: messages),
-                        "tools": .array([]),
-                        "add_generation_prompt": .boolean(generationPrompt),
-                    ]
-                    if let thinking { context["enable_thinking"] = .boolean(thinking) }
-                    if let supportsThinking { context["afm_qwen_xml_thinking"] = .boolean(supportsThinking) }
-                    let rendered = try template.render(context)
-                    let closesReasoning = generationPrompt && thinking == false && supportsThinking == true
-                    XCTAssertEqual(rendered.contains("<think>"), closesReasoning)
-                    if closesReasoning {
-                        XCTAssertTrue(rendered.hasSuffix("<|im_start|>assistant\n<think>\n\n</think>\n\n"))
-                    } else if generationPrompt {
-                        XCTAssertTrue(rendered.hasSuffix("<|im_start|>assistant\n"))
-                    }
-                }
-            }
-        }
-    }
-
 }

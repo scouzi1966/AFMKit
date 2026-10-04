@@ -8351,7 +8351,6 @@ public final class MLXModelService:
 
         var input = UserInput(chat: chatMessages, processing: .init(resize: .init(width: 1024, height: 1024)), tools: tools)
         var appliedChatTemplateOverride = false
-        var usesAdaptiveXMLTemplate = false
 
         // Compatibility parsers can override the chat template. Native Qwen XML
         // keeps the model-owned template so AFM changes the prompt as little as possible.
@@ -8360,7 +8359,6 @@ public final class MLXModelService:
             switch parser {
             case "afm_adaptive_xml":
                 templateOverride = Self.qwen3XMLTemplate
-                usesAdaptiveXMLTemplate = true
             case "qwen3_xml":
                 templateOverride = nil
             case "deepseek_dsml":
@@ -8440,12 +8438,6 @@ public final class MLXModelService:
 
         let promptArchitecture = withStateLock {
             currentModelArchitecture?.canonicalModelType
-        }
-        if usesAdaptiveXMLTemplate {
-            // Qwen Next needs a preclosed reasoning turn when explicitly disabled.
-            // Do not add reasoning markers to non-thinking Coder checkpoints that
-            // also use this compatibility template.
-            resolvedKwargs["afm_qwen_xml_thinking"] = promptArchitecture == "qwen4_exp"
         }
         let reasoningNormalization = Self.normalizeReasoningKwargs(
             resolvedKwargs,
@@ -9136,9 +9128,6 @@ public final class MLXModelService:
     {%- endfor %}
     {%- if add_generation_prompt %}
         {{- '<|im_start|>assistant\\n' }}
-        {%- if afm_qwen_xml_thinking is defined and afm_qwen_xml_thinking is true and enable_thinking is defined and enable_thinking is false %}
-            {{- '<think>\\n\\n</think>\\n\\n' }}
-        {%- endif %}
     {%- endif %}
     """
 
