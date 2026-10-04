@@ -45,8 +45,8 @@ enum Qwen4ExpHyperConnectionFusion {
     private static let enabled =
         ProcessInfo.processInfo.environment["AFM_QWEN_FUSED_HYPER_CONNECTION"] != "0"
 
-    private static let quantizedInjectionEnabled =
-        ProcessInfo.processInfo.environment["AFM_QWEN_FUSED_QUANTIZED_HC"] == "1"
+    static let quantizedInjectionEnabled =
+        QwenMTPExecutionProfile.environment["AFM_QWEN_FUSED_QUANTIZED_HC"] == "1"
 
     /// The compound C++ graph-construction boundary is qualified for decode;
     /// retain `0` as a diagnostic and recovery escape hatch.

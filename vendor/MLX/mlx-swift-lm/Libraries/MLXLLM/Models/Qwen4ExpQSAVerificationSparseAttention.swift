@@ -1,6 +1,7 @@
 import Foundation
 import MLX
 import MLXFast
+import MLXLMCommon
 
 /*
 Dense split-K QSA kernel from ddalcu/mlx-serve v26.10.1,
@@ -43,7 +44,7 @@ for the text of the Apache License, Version 2.0.
 /// Opt-in sparse verification for the batched policy. Singleton-equivalent
 /// verification keeps its existing arithmetic. No route is enabled by default.
 enum Qwen4ExpQSAVerificationSparseAttention {
-    static let enabled = ProcessInfo.processInfo.environment["AFM_QWEN_VERIFY_SPARSE_ATTENTION"] == "1"
+    static let enabled = QwenMTPExecutionProfile.environment["AFM_QWEN_VERIFY_SPARSE_ATTENTION"] == "1"
     private static let minimumKeyLength = 8_192
     private static let maximumRows = 8
     private static let headDimension = 256
