@@ -51,7 +51,7 @@ final class QwenMTPExecutionProfileTests: XCTestCase {
             QwenMTPExecutionProfile.variable: "throughput-typo"
         ])) { error in
             XCTAssertTrue(error.localizedDescription.contains("throughput-typo"))
-            XCTAssertTrue(error.localizedDescription.contains("throughput-v1 or off"))
+            XCTAssertTrue(error.localizedDescription.contains("throughput-v2 or off"))
         }
     }
 
@@ -62,5 +62,32 @@ final class QwenMTPExecutionProfileTests: XCTestCase {
             QwenMTPExecutionProfile.variable: "throughput-v1"])
         XCTAssertEqual(QwenMTPExecutionProfile.resolved(environment: explicit), before)
         XCTAssertEqual(explicit, ["AFM_QWEN_VERIFY_QMM": "0"])
+    }
+
+    func testV2ExactlyMatchesPreviouslyQualifiedExplicitRecipe() throws {
+        let selector = QwenMTPExecutionProfile.variable
+        let explicit = [selector: "throughput-v1",
+            "AFM_QWEN_FUSED_QUANTIZED_HC": "1",
+            "AFM_QWEN_VERIFY_SPARSE_ATTENTION": "1",
+            "AFM_QWEN_VERIFY_ASYNC_LADDER": "2"]
+        let selected = [selector: " Throughput-V2 "]
+        try QwenMTPExecutionProfile.validate(environment: selected)
+        var expected = QwenMTPExecutionProfile.resolved(environment: explicit)
+        var actual = QwenMTPExecutionProfile.resolved(environment: selected)
+        expected.removeValue(forKey: selector)
+        actual.removeValue(forKey: selector)
+        XCTAssertEqual(actual, expected)
+        XCTAssertNil(QwenMTPExecutionProfile.resolved(environment: [selector: "throughput-v1"])
+            ["AFM_QWEN_FUSED_QUANTIZED_HC"])
+    }
+
+    func testV2KeepsExplicitOverridesAndDisabledProfileUnchanged() {
+        let explicit = [QwenMTPExecutionProfile.variable: "throughput-v2",
+            "AFM_QWEN_FUSED_QUANTIZED_HC": "0",
+            "AFM_QWEN_VERIFY_SPARSE_ATTENTION": "0",
+            "AFM_QWEN_VERIFY_ASYNC_LADDER": "8"]
+        let actual = QwenMTPExecutionProfile.resolved(environment: explicit)
+        for (key, value) in explicit { XCTAssertEqual(actual[key], value) }
+        XCTAssertEqual(QwenMTPExecutionProfile.resolved(environment: [:]), [:])
     }
 }

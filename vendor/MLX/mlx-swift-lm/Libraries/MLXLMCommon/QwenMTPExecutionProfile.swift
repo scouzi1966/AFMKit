@@ -6,6 +6,7 @@ import Foundation
 public enum QwenMTPExecutionProfile {
     public static let variable = "AFM_QWEN_MTP_PROFILE"
     public static let throughputV1 = "throughput-v1"
+    public static let throughputV2 = "throughput-v2"
 
     public enum ProfileError: LocalizedError {
         case unknown(String)
@@ -13,7 +14,7 @@ public enum QwenMTPExecutionProfile {
         public var errorDescription: String? {
             switch self {
             case .unknown(let value):
-                return "Unknown Qwen MTP profile '\(value)'; use throughput-v1 or off."
+                return "Unknown Qwen MTP profile '\(value)'; use throughput-v1, throughput-v2 or off."
             }
         }
     }
@@ -25,7 +26,7 @@ public enum QwenMTPExecutionProfile {
 
     public static func validate(environment: [String: String]) throws {
         let value = name(in: environment)
-        guard value.isEmpty || value == "off" || value == throughputV1 else {
+        guard value.isEmpty || value == "off" || value == throughputV1 || value == throughputV2 else {
             throw ProfileError.unknown(value)
         }
     }
@@ -34,8 +35,17 @@ public enum QwenMTPExecutionProfile {
     /// use explicit dictionaries without changing global environment values.
     public static func resolved(environment: [String: String]) -> [String: String] {
         let explicit = environment.filter { $0.key.hasPrefix("AFM_QWEN_") }
-        guard name(in: environment) == throughputV1 else { return explicit }
-        return throughputDefaults.merging(explicit) { _, override in override }
+        let profile = name(in: environment)
+        guard profile == throughputV1 || profile == throughputV2 else { return explicit }
+        var defaults = throughputDefaults
+        if profile == throughputV2 {
+            // The October 4 corrected-HC recipe. Keep v1 and normal defaults
+            // unchanged; callers explicitly select this numerical policy.
+            defaults["AFM_QWEN_FUSED_QUANTIZED_HC"] = "1"
+            defaults["AFM_QWEN_VERIFY_SPARSE_ATTENTION"] = "1"
+            defaults["AFM_QWEN_VERIFY_ASYNC_LADDER"] = "2"
+        }
+        return defaults.merging(explicit) { _, override in override }
     }
 
     /// Preserve the existing lookup timing of individual tuning switches.
