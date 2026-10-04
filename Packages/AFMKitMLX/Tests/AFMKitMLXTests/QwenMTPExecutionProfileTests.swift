@@ -77,8 +77,8 @@ final class QwenMTPExecutionProfileTests: XCTestCase {
         expected.removeValue(forKey: selector)
         actual.removeValue(forKey: selector)
         XCTAssertEqual(actual, expected)
-        XCTAssertNil(QwenMTPExecutionProfile.resolved(environment: [selector: "throughput-v1"])
-            ["AFM_QWEN_FUSED_QUANTIZED_HC"])
+        let v1 = QwenMTPExecutionProfile.resolved(environment: [selector: "throughput-v1"])
+        XCTAssertNil(v1["AFM_QWEN_FUSED_QUANTIZED_HC"])
     }
 
     func testV2KeepsExplicitOverridesAndDisabledProfileUnchanged() {
