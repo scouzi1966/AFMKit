@@ -8,6 +8,12 @@ import MLXNN
 import XCTest
 
 final class Qwen4ExpTests: XCTestCase {
+    override class func setUp() {
+        if let metallib = ProcessInfo.processInfo.environment["MACAFM_MLX_METALLIB"] {
+            GPU.setMetallibPath(metallib)
+        }
+    }
+
     func testCompiledGDNDecodeRemainsSingleRequestOnly() {
         XCTAssertTrue(qwen4ExpShouldUseCompiledGDNDecode(
             compileEnabled: true,
@@ -2926,6 +2932,43 @@ final class Qwen4ExpTests: XCTestCase {
             queryLength: 15,
             keyLength: 8_192,
             dtype: .bfloat16))
+    }
+
+    func testQSANarrowVerifierGatherMatchesDenseMaskAtLongContext() throws {
+        let queryLength = 3
+        let keyLength = 16_384
+        let compressionRatio = 128
+        let scale = pow(Float(256), -0.5)
+        let randomState = MLXRandom.RandomState(seed: 2153)
+        let queries = withRandomState(randomState) {
+            MLXRandom.normal([1, 8, queryLength, 256]).asType(.bfloat16)
+        }
+        let keys = withRandomState(randomState) {
+            MLXRandom.normal([1, 2, keyLength, 256]).asType(.bfloat16)
+        }
+        let values = withRandomState(randomState) {
+            MLXRandom.normal([1, 2, keyLength, 256]).asType(.bfloat16)
+        }
+        let selectedIDs: [Int32] = [0, 2, 4, 6, 8, 10, 12, 14,
+                                    16, 18, 20, 22, 24, 26, 28, 100]
+        let selected = MLXArray(Array(repeating: selectedIDs, count: queryLength)
+            .flatMap { $0 }).reshaped(1, queryLength, selectedIDs.count)
+        let mask = Qwen4ExpQSAGather.maskFromBlocks(
+            selected, keyLength: keyLength,
+            compressionRatio: compressionRatio)
+        let expected = MLXFast.scaledDotProductAttention(
+            queries: queries, keys: keys, values: values,
+            scale: scale, mask: .array(mask))
+        let direct = try XCTUnwrap(Qwen4ExpQSAGather.call(
+            queries: queries, keys: keys, values: values,
+            scale: scale, selectedBlocks: selected,
+            compressionRatio: compressionRatio))
+        eval(expected, direct)
+
+        let directValues = direct.asType(.float32).asArray(Float.self)
+        let expectedValues = expected.asType(.float32).asArray(Float.self)
+        XCTAssertLessThanOrEqual(zip(directValues, expectedValues)
+            .map { abs($0 - $1) }.max() ?? 0, 0.02)
     }
 
     func testQSADirectGatherMatchesDenseMaskForBatchedSelections() throws {

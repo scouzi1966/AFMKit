@@ -45,4 +45,15 @@ final class BatchExecutionProfileTests: XCTestCase {
         XCTAssertEqual(BatchExecutionProfile.exclusiveNanoseconds(start: 20, end: 10, nested: 0), 0)
         XCTAssertEqual(BatchExecutionProfile.exclusiveNanoseconds(start: 10, end: 20, nested: 11), 0)
     }
+
+    func testQwenSpeculativeSubspansDoNotInflateWholeTickAccounting() {
+        var profile = BatchExecutionProfile()
+        profile.record(.qwenMTPDraft, rows: 2, nanoseconds: 30)
+        profile.record(.qwenMTPVerify, rows: 2, nanoseconds: 60)
+        profile.record(.independentGraphSubmit, rows: 2, nanoseconds: 100)
+        profile.record(.independentTotal, rows: 2, nanoseconds: 120)
+        XCTAssertEqual(profile.samples[.qwenMTPDraft]?[2]?.nanoseconds, 30)
+        XCTAssertEqual(profile.samples[.qwenMTPVerify]?[2]?.nanoseconds, 60)
+        XCTAssertEqual(profile.independentNanoseconds, 120)
+    }
 }

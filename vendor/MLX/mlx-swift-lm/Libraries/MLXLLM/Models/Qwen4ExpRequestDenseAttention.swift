@@ -162,10 +162,18 @@ enum Qwen4ExpRequestDenseAttention {
             grid: (keyHeads * simdWidth, rows.count * group, partitions),
             threadGroup: (simdWidth, group, 1), outputShapes: [shape + [dimension], shape, shape],
             outputDTypes: [.bfloat16, .float32, .float32], cacheConfiguration: true)
-        return secondPass(intermediate, template: [("T", DType.bfloat16), ("PARTITIONS", partitions)],
-            grid: (rows.count * heads * simdWidth * simdWidth, 1, 1),
+        return reducePartials(intermediate, rows: rows.count, heads: heads, partitions: partitions)
+    }
+
+    /// Shared exact native reduction for independent request banks and
+    /// verification rows. Callers retain the BF16 partials and FP32 sums/maxima.
+    static func reducePartials(
+        _ intermediate: [MLXArray], rows: Int, heads: Int, partitions: Int
+    ) -> MLXArray {
+        secondPass(intermediate, template: [("T", DType.bfloat16), ("PARTITIONS", partitions)],
+            grid: (rows * heads * simdWidth * simdWidth, 1, 1),
             threadGroup: (simdWidth * simdWidth, 1, 1),
-            outputShapes: [[rows.count, heads, 1, dimension]], outputDTypes: [.bfloat16],
+            outputShapes: [[rows, heads, 1, dimension]], outputDTypes: [.bfloat16],
             cacheConfiguration: true)[0]
     }
 }

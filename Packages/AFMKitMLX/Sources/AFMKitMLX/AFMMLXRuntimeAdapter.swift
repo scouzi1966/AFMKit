@@ -29,6 +29,14 @@ public struct AFMMLXRuntimeAdapter: Sendable {
     public typealias RuntimeEvent = AFMMLXRuntimeEvent
     public nonisolated static let imageProcessingSize = AFMMLXRuntimePolicy.defaultImageProcessingSize
 
+    static func imageProcessing(modelType: String?) -> UserInput.Processing {
+        // Qwen Next owns aspect-ratio and pixel-budget selection in its processor.
+        // Pre-resizing to 1024 upscales small images before that selection and
+        // changes both their vision positions and the prefill workload.
+        if modelType == "qwen4_exp" { return .init() }
+        return .init(resize: .init(width: imageProcessingSize, height: imageProcessingSize))
+    }
+
     public struct LoadedContainer {
         public let container: ModelContainer
         public let isVision: Bool
@@ -73,12 +81,7 @@ public struct AFMMLXRuntimeAdapter: Sendable {
 
         return UserInput(
             chat: chat,
-            processing: .init(
-                resize: .init(
-                    width: Self.imageProcessingSize,
-                    height: Self.imageProcessingSize
-                )
-            ),
+            processing: Self.imageProcessing(modelType: modelType),
             additionalContext: additionalContext
         )
     }

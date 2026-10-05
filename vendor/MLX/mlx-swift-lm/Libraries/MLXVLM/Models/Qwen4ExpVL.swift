@@ -36,7 +36,9 @@ public struct Qwen4ExpVLConfiguration: Decodable, Sendable {
     }
 }
 
-public final class Qwen4ExpVL: Module, VLMModel, KVCacheDimensionProvider {
+public final class Qwen4ExpVL: Module, VLMModel, KVCacheDimensionProvider,
+    RetainedRequestOwnedDecodeBatchModel, InteriorPrefillCaptureModel
+{
     @ModuleInfo(key: "vision_tower") private var visionModel: Qwen3VLVision.VisionModel
     @ModuleInfo(key: "language_model") private var languageModel: Qwen4ExpModel
 
@@ -93,6 +95,33 @@ public final class Qwen4ExpVL: Module, VLMModel, KVCacheDimensionProvider {
 
     public func newCache(parameters: GenerateParameters?) -> [KVCache] {
         languageModel.newCache(parameters: parameters)
+    }
+
+    public func prefillCapturingBoundary(
+        _ input: LMInput.Text, cache: [KVCache], state: LMOutput.State?,
+        restoredPrefix: Int, boundary: Int, hostTokenIDs: [Int]?
+    ) throws -> InteriorPrefillCapture? {
+        // Prepared media/position deltas are outside this text-only contract.
+        try languageModel.prefillCapturingBoundary(input, cache: cache, state: state,
+            restoredPrefix: restoredPrefix, boundary: boundary, hostTokenIDs: hostTokenIDs)
+    }
+
+    /// Text-only, state-less continuation through the wrapper's existing trunk.
+    /// Callers must exclude prepared media and multimodal position state, as for
+    /// every RequestOwnedDecodeBatchModel. Cache validation, per-row positions,
+    /// ownership and unsupported-shape fallback stay in the text adapter.
+    public func decodeRequestBatch(tokens: [Int], caches: [[KVCache]]) -> LMOutput? {
+        languageModel.decodeRequestBatch(tokens: tokens, caches: caches)
+    }
+
+    public func makeRequestOwnedDecodeBatchState() -> any RequestOwnedDecodeBatchState {
+        languageModel.makeRequestOwnedDecodeBatchState()
+    }
+
+    public func decodeRequestBatch(
+        tokens: [Int], caches: [[KVCache]], state: any RequestOwnedDecodeBatchState
+    ) -> LMOutput? {
+        languageModel.decodeRequestBatch(tokens: tokens, caches: caches, state: state)
     }
 
     private func frames(images: [THW]?, videos: [THW]?) -> [THW] {
@@ -241,11 +270,20 @@ public final class Qwen4ExpVL: Module, VLMModel, KVCacheDimensionProvider {
             result["language_model.\(key)"] = value
         }
 
-        let visionWeights: [String: MLXArray] = Dictionary(
-            uniqueKeysWithValues: weights.compactMap { key, value -> (String, MLXArray)? in
-            guard key.hasPrefix("vision_tower.") else { return nil }
-            return (String(key.dropFirst("vision_tower.".count)), value)
-        })
+        // Native MLX checkpoints use vision_tower.; HF/converted overlays
+        // also use model.visual. Preserve those weights rather than silently
+        // leaving the vision tower at its randomly initialized parameters.
+        let visionPrefixes = ["vision_tower.", "model.visual.", "visual."]
+        var visionWeights = [String: MLXArray]()
+        for prefix in visionPrefixes {
+            for (key, value) in weights where key.hasPrefix(prefix) {
+                let normalizedKey = String(key.dropFirst(prefix.count))
+                // Prefer the canonical namespace if a bundle has aliases.
+                if visionWeights[normalizedKey] == nil {
+                    visionWeights[normalizedKey] = value
+                }
+            }
+        }
         for (key, value) in visionModel.sanitize(weights: visionWeights) {
             result["vision_tower.\(key)"] = value
         }

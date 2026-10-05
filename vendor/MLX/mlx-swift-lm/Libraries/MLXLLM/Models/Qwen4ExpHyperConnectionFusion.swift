@@ -7,6 +7,7 @@
 import Foundation
 import MLX
 import MLXFast
+import MLXLMCommon
 import MLXNN
 
 struct Qwen4ExpHyperConnectionFusionOutput {
@@ -44,10 +45,17 @@ enum Qwen4ExpHyperConnectionFusion {
     private static let enabled =
         ProcessInfo.processInfo.environment["AFM_QWEN_FUSED_HYPER_CONNECTION"] != "0"
 
+    static let quantizedInjectionEnabled =
+        QwenMTPExecutionProfile.environment["AFM_QWEN_FUSED_QUANTIZED_HC"] == "1"
+
     /// The compound C++ graph-construction boundary is qualified for decode;
     /// retain `0` as a diagnostic and recovery escape hatch.
     private static let nativeChainEnabled =
-        ProcessInfo.processInfo.environment["AFM_QWEN_HC_NATIVE_CHAIN"] == "1"
+        QwenMTPExecutionProfile.environment["AFM_QWEN_HC_NATIVE_CHAIN"] == "1"
+
+    /// Keep pure graph replay separate from the compound native-chain screen
+    /// and from the unfused fallback arithmetic.
+    static var permitsStrictReadCompilation: Bool { enabled && !nativeChainEnabled }
 
     private enum ChainExternalInput: Int {
         case input
@@ -62,6 +70,8 @@ enum Qwen4ExpHyperConnectionFusion {
         case upBiases
         case pendingOutput
         case pendingWeights
+        case injectScales
+        case injectBiases
     }
 
     private struct ChainKey: Hashable {
@@ -76,6 +86,8 @@ enum Qwen4ExpHyperConnectionFusion {
         let hasInject: Bool
         let hasPending: Bool
         let matchFusedInjection: Bool
+        let injectBits: Int
+        let injectGroupSize: Int
     }
 
     private final class ChainPlan: @unchecked Sendable {
@@ -212,13 +224,15 @@ enum Qwen4ExpHyperConnectionFusion {
     /// `hc_prefill_mix.metal` (MIT licensed). A BF16 sigmoid lookup table keeps
     /// the same rounded sigmoid values as MLX while one pass performs the
     /// multiply and HC mean, eliminating two full-width intermediates.
+    /// Keep the row count as a runtime input, as in the reference, so a new
+    /// prompt length does not create another Metal source specialization.
     private static let prefillMixKernel = MLXFast.metalKernel(
         name: "qwen4_exp_hc_prefill_mix",
-        inputNames: ["up", "normalized", "sigmoid_table"],
+        inputNames: ["up", "normalized", "sigmoid_table", "row_count"],
         outputNames: ["mixed"],
         source: """
             const uint index = thread_position_in_grid.x;
-            if (index >= uint(ROWS * HIDDEN)) return;
+            if (index >= uint(row_count * HIDDEN)) return;
             const uint row = index / HIDDEN;
             const uint column = index - row * HIDDEN;
             T value = T(0.0f);
@@ -366,10 +380,9 @@ enum Qwen4ExpHyperConnectionFusion {
         else { return nil }
 
         let mixed = prefillMixKernel(
-            [up, normalized, sigmoidTableBF16],
+            [up, normalized, sigmoidTableBF16, MLXArray(Int32(rows))],
             template: [
                 ("T", up.dtype), ("HC", hcCount), ("HIDDEN", groupSize),
-                ("ROWS", rows),
             ],
             grid: (rows * groupSize, 1, 1),
             threadGroup: (256, 1, 1),
@@ -381,7 +394,7 @@ enum Qwen4ExpHyperConnectionFusion {
 
     private static let normalizeKernel = MLXFast.metalKernel(
         name: "qwen4_exp_hc_normalize_inject",
-        inputNames: ["x_in", "norm_weight", "inject_weight", "epsilon"],
+        inputNames: ["x_in", "norm_weight", "inject_weight", "epsilon", "inject_scales", "inject_biases"],
         outputNames: ["normalized", "inject_partials"],
         source: """
             const uint tid = thread_index_in_threadgroup;
@@ -422,12 +435,31 @@ enum Qwen4ExpHyperConnectionFusion {
                 const int index = stream_base + int(tid) + 256 * element;
                 // Preserve the stock zero-centered norm's two BF16 rounding sites.
                 const T normed = T(values[element] * inverse_rms);
-                const T weighted = T(float(normed) * (float(norm_weight[index]) + 1.0f));
+                // Match the generic grouped norm used by native quantized HC:
+                // round gamma in T, normalize in FP32, then cast once.
+                const T weighted = QUANTIZED_INJECT
+                    ? T(values[element] * inverse_rms
+                        * float(T(float(norm_weight[index]) + 1.0f)))
+                    : T(float(normed) * (float(norm_weight[index]) + 1.0f));
                 output[index] = weighted;
                 if (HAS_INJECT) {
                     for (int column = 0; column < HC; ++column) {
-                        inject[column] += float(weighted)
-                            * float(inject_weight[column * (HC * HIDDEN) + index]);
+                        float weight;
+                        if (QUANTIZED_INJECT) {
+                            constexpr int values_per_word = 32 / INJECT_BITS;
+                            const int packed_index = column * (HC * HIDDEN / values_per_word)
+                                + index / values_per_word;
+                            const uint word = uint(inject_weight[packed_index]);
+                            const uint q = (word >> ((index % values_per_word) * INJECT_BITS))
+                                & ((1u << INJECT_BITS) - 1u);
+                            const int group = column * (HC * HIDDEN / INJECT_GROUP_SIZE)
+                                + index / INJECT_GROUP_SIZE;
+                            weight = float(q) * float(inject_scales[group])
+                                + float(inject_biases[group]);
+                        } else {
+                            weight = float(inject_weight[column * (HC * HIDDEN) + index]);
+                        }
+                        inject[column] += float(weighted) * weight;
                     }
                 }
             }
@@ -452,6 +484,7 @@ enum Qwen4ExpHyperConnectionFusion {
         inputNames: [
             "x_in", "norm_weight", "inject_weight", "epsilon",
             "pending_output", "pending_weights",
+            "inject_scales", "inject_biases",
         ],
         outputNames: ["normalized", "inject_partials", "next_stream"],
         source: """
@@ -501,12 +534,31 @@ enum Qwen4ExpHyperConnectionFusion {
             for (int element = 0; element < elements_per_thread; ++element) {
                 const int index = stream_base + int(tid) + 256 * element;
                 const T normed = T(values[element] * inverse_rms);
-                const T weighted = T(float(normed) * (float(norm_weight[index]) + 1.0f));
+                // Match the generic grouped norm used by native quantized HC:
+                // round gamma in T, normalize in FP32, then cast once.
+                const T weighted = QUANTIZED_INJECT
+                    ? T(values[element] * inverse_rms
+                        * float(T(float(norm_weight[index]) + 1.0f)))
+                    : T(float(normed) * (float(norm_weight[index]) + 1.0f));
                 output[index] = weighted;
                 if (HAS_INJECT) {
                     for (int column = 0; column < HC; ++column) {
-                        inject[column] += float(weighted)
-                            * float(inject_weight[column * (HC * HIDDEN) + index]);
+                        float weight;
+                        if (QUANTIZED_INJECT) {
+                            constexpr int values_per_word = 32 / INJECT_BITS;
+                            const int packed_index = column * (HC * HIDDEN / values_per_word)
+                                + index / values_per_word;
+                            const uint word = uint(inject_weight[packed_index]);
+                            const uint q = (word >> ((index % values_per_word) * INJECT_BITS))
+                                & ((1u << INJECT_BITS) - 1u);
+                            const int group = column * (HC * HIDDEN / INJECT_GROUP_SIZE)
+                                + index / INJECT_GROUP_SIZE;
+                            weight = float(q) * float(inject_scales[group])
+                                + float(inject_biases[group]);
+                        } else {
+                            weight = float(inject_weight[column * (HC * HIDDEN) + index]);
+                        }
+                        inject[column] += float(weighted) * weight;
                     }
                 }
             }
@@ -670,6 +722,9 @@ enum Qwen4ExpHyperConnectionFusion {
                     ("HIDDEN", key.hiddenSize),
                     ("HAS_INJECT", key.hasInject),
                     ("MATCH_FUSED_INJECTION", key.matchFusedInjection),
+                    ("QUANTIZED_INJECT", key.injectBits > 0),
+                    ("INJECT_BITS", max(1, key.injectBits)),
+                    ("INJECT_GROUP_SIZE", max(1, key.injectGroupSize)),
                 ],
                 grid: (256 * key.hcCount, key.rows, 1),
                 threadGroup: (256, 1, 1),
@@ -725,6 +780,10 @@ enum Qwen4ExpHyperConnectionFusion {
                     .external(ChainExternalInput.pendingWeights.rawValue),
                 ])
             }
+            normalizedInputs.append(contentsOf: [
+                .external(ChainExternalInput.injectScales.rawValue),
+                .external(ChainExternalInput.injectBiases.rawValue),
+            ])
             let stages = [
                 MLXFast.MetalKernelChain.Stage(
                     kernel: normalizedKernel,
@@ -766,6 +825,95 @@ enum Qwen4ExpHyperConnectionFusion {
         }
     }
 
+    // Follow MLX's FP32 row-reduction geometry and rounding for the native
+    // grouped norm. Four adjacent reads per thread, then two SIMD reductions.
+    private static let nativeQuantizedNormalizeKernel = MLXFast.metalKernel(
+        name: "qwen4_exp_hc_native_quantized_normalize",
+        inputNames: ["x_in", "norm_weight", "epsilon", "pending_output", "pending_weights"],
+        outputNames: ["normalized", "next_stream"],
+        source: """
+            #pragma clang fp contract(off)
+            const uint tid = thread_index_in_threadgroup;
+            const uint lane = thread_index_in_simdgroup;
+            const uint simd_group = simdgroup_index_in_threadgroup;
+            const uint stream = threadgroup_position_in_grid.x;
+            const uint row = threadgroup_position_in_grid.y;
+            constexpr int blocks = (HIDDEN + THREADS * 4 - 1) / (THREADS * 4);
+            threadgroup float partials[32];
+            const size_t row_base = size_t(row) * size_t(HC * HIDDEN);
+            const int stream_base = int(stream) * HIDDEN;
+            float values[blocks * 4];
+            float total = 0.0f;
+            for (int block = 0; block < blocks; ++block) {
+                for (int component = 0; component < 4; ++component) {
+                    const int index = int(tid) * 4 + block * THREADS * 4 + component;
+                    float value = 0.0f;
+                    if (index < HIDDEN) {
+                        const size_t offset = row_base + stream_base + index;
+                        T stored = x_in[offset];
+                        if (HAS_PENDING) {
+                            const float delta = float(pending_output[size_t(row) * HIDDEN + index])
+                                * float(pending_weights[size_t(row) * HC + stream]);
+                            stored = MATCH_FUSED_INJECTION
+                                ? T(float(stored) + delta)
+                                : T(float(stored) + float(T(delta)));
+                            next_stream[offset] = stored;
+                        }
+                        value = float(stored);
+                    }
+                    values[block * 4 + component] = value;
+                    const float squared = value * value;
+                    total = squared + total;
+                }
+            }
+            total = simd_sum(total);
+            if (lane == 0) partials[simd_group] = total;
+            threadgroup_barrier(mem_flags::mem_threadgroup);
+            const float group_total = tid < uint(THREADS / 32) ? partials[tid] : 0.0f;
+            const float reduced = simd_sum(group_total);
+            if (tid == 0) partials[0] = reduced;
+            threadgroup_barrier(mem_flags::mem_threadgroup);
+            // Native mean is sum * FP32(1 / HIDDEN), followed by add(epsilon).
+            const float average = partials[0] * (1.0f / float(HIDDEN));
+            const float inverse_rms = precise::rsqrt(average + epsilon);
+            for (int block = 0; block < blocks; ++block) {
+                for (int component = 0; component < 4; ++component) {
+                    const int index = int(tid) * 4 + block * THREADS * 4 + component;
+                    if (index < HIDDEN) {
+                        const int column = stream_base + index;
+                        const float normed = values[block * 4 + component] * inverse_rms;
+                        const float gamma = float(T(float(norm_weight[column]) + 1.0f));
+                        normalized[row_base + column] = T(normed * gamma);
+                    }
+                }
+            }
+        """)
+
+    /// Quantized HC grouped normalization, kept separate so exact native
+    /// normalization parity can be tested before projection/gate rounding.
+    static func normalizeQuantizedRows(
+        input: MLXArray, normWeight: MLXArray, hcCount: Int, hiddenSize: Int,
+        epsilon: Float, pendingOutput: MLXArray? = nil,
+        pendingWeights: MLXArray? = nil, matchFusedInjection: Bool = false
+    ) -> (normalized: MLXArray, stream: MLXArray) {
+        let rows = input.size / (hcCount * hiddenSize)
+        let hasPending = pendingOutput != nil && pendingWeights != nil
+        let threads = hiddenSize <= 512 ? 32 : hiddenSize <= 1024 ? 128
+            : min(1024, ((hiddenSize + 127) / 128) * 32)
+        let result = nativeQuantizedNormalizeKernel(
+            [input, normWeight, MLXArray(epsilon), pendingOutput ?? input, pendingWeights ?? normWeight],
+            template: [
+                ("T", input.dtype), ("HC", hcCount), ("HIDDEN", hiddenSize),
+                ("THREADS", threads), ("HAS_PENDING", hasPending),
+                ("MATCH_FUSED_INJECTION", matchFusedInjection),
+            ],
+            grid: (threads * hcCount, rows, 1), threadGroup: (threads, 1, 1),
+            outputShapes: [[rows, hcCount * hiddenSize], [rows, hcCount * hiddenSize]],
+            outputDTypes: [input.dtype, input.dtype], cacheConfiguration: true)
+        return (result[0].reshaped(input.shape),
+                (hasPending ? result[1] : input).reshaped(input.shape))
+    }
+
     static func call(
         input: MLXArray,
         normWeight: MLXArray,
@@ -778,7 +926,9 @@ enum Qwen4ExpHyperConnectionFusion {
         pendingOutput: MLXArray? = nil,
         pendingWeights: MLXArray? = nil,
         matchFusedInjection: Bool = false,
-        allowExtendedRows: Bool = false
+        allowExtendedRows: Bool = false,
+        allowQuantizedInjectionForTesting: Bool = false,
+        verificationPolicy: MTPVerificationPolicy? = .strictSingletonEquivalent
     ) -> Qwen4ExpHyperConnectionFusionOutput? {
         guard enabled,
               Device.defaultDevice().deviceType == .gpu,
@@ -799,12 +949,40 @@ enum Qwen4ExpHyperConnectionFusion {
               normWeight.dtype == input.dtype
         else { return nil }
 
+        // Some native checkpoints quantize this small projection as well as
+        // down/up. The experimental fused path reads its original affine
+        // representation without expanding or requantizing model weights.
+        let quantizedInject = inject as? QuantizedLinear
+        // The quantized injection fusion changes projection reductions and
+        // regresses native Qwen Next tool decisions. Preserve the existing
+        // fallback, including the established residual-injection kernel.
+        // Keep the experimental path explicitly opt-in for numerical work.
+        if quantizedInject != nil, !allowQuantizedInjectionForTesting,
+           !quantizedInjectionEnabled {
+            return nil
+        }
+        let injectBits = quantizedInject?.bits ?? 0
+        let injectGroupSize = quantizedInject?.groupSize ?? 0
         let injectWeight: MLXArray
         if let inject {
-            guard !(inject is QuantizedLinear),
-                  inject.bias == nil,
-                  inject.weight.dtype == input.dtype
-            else { return nil }
+            guard inject.bias == nil else { return nil }
+            if let quantizedInject {
+                // The down kernel covers eight SIMD groups in 32-word steps.
+                // Do not newly enable its truncated-tail geometry merely
+                // because the injection representation is now supported.
+                let packedDownColumns = hcCount * hiddenSize / (32 / quantizedDown.bits)
+                guard quantizedInject.mode == .affine,
+                      packedDownColumns.isMultiple(of: 256),
+                      [2, 4, 8].contains(injectBits), injectGroupSize > 0,
+                      (hcCount * hiddenSize).isMultiple(of: injectGroupSize),
+                      quantizedInject.weight.dtype == .uint32,
+                      quantizedInject.scales.dtype == input.dtype,
+                      quantizedInject.biases?.dtype == input.dtype,
+                      quantizedInject.shape == (hcCount, hcCount * hiddenSize)
+                else { return nil }
+            } else if inject.weight.dtype != input.dtype {
+                return nil
+            }
             injectWeight = inject.weight
         } else {
             // The final model-level mixer has no block-injection projection.
@@ -824,7 +1002,8 @@ enum Qwen4ExpHyperConnectionFusion {
               rank.isMultiple(of: groupSize),
               quantizedDown.shape == (rank, hcCount * hiddenSize),
               quantizedUp.shape == (hcCount * hiddenSize, rank),
-              (inject == nil || injectWeight.shape == [hcCount, hcCount * hiddenSize]),
+              (inject == nil || quantizedInject != nil
+                  || injectWeight.shape == [hcCount, hcCount * hiddenSize]),
               normWeight.shape == [hcCount * hiddenSize]
         else { return nil }
 
@@ -836,6 +1015,54 @@ enum Qwen4ExpHyperConnectionFusion {
                   pendingOutput.size == rows * hiddenSize,
                   pendingWeights.size == rows * hcCount
             else { return nil }
+        }
+
+        if let quantizedInject {
+            // Preserve MLX's quantized projection reductions. Their custom
+            // fused replacements change native-checkpoint tool decisions.
+            // Only fuse grouped normalization and the final stream mix.
+            let normalizedResult = normalizeQuantizedRows(
+                input: input, normWeight: normWeight, hcCount: hcCount,
+                hiddenSize: hiddenSize, epsilon: epsilon,
+                pendingOutput: pendingOutput, pendingWeights: pendingWeights,
+                // The qualified quantized fallback calls injectKernel for
+                // these row counts, including ordinary AR: it rounds once
+                // after addition. Preserve that contract for pending reads.
+                matchFusedInjection: true)
+            let normalized = normalizedResult.normalized.reshaped(1, rows, hcCount * hiddenSize)
+            func projection(_ layer: QuantizedLinear, _ values: MLXArray) -> MLXArray {
+                if verificationPolicy == .strictSingletonEquivalent {
+                    return VerifyWidthLinear.call(layer, values,
+                        verificationPolicy: .strictSingletonEquivalent,
+                        role: .hyperConnection, exactAcceleratorEnabled: false)
+                }
+                // Preserve the caller's ordinary/batched projection geometry,
+                // including its selected QMM path. Singleton reductions are
+                // not equivalent to the qualified batched fallback.
+                return qwen4ExpVerificationLinear(layer, values,
+                    verificationPolicy: verificationPolicy, role: .hyperConnection)
+            }
+            let projectedDown = projection(quantizedDown, normalized)
+            let projectedUp = projection(quantizedUp, silu(projectedDown / Float(hcCount)))
+            let mixed: MLXArray
+            if input.dtype == .bfloat16 {
+                mixed = prefillMixKernel(
+                    [projectedUp, normalized, sigmoidTableBF16, MLXArray(Int32(rows))],
+                    template: [("T", input.dtype), ("HC", hcCount),
+                               ("HIDDEN", hiddenSize)],
+                    grid: (rows * hiddenSize, 1, 1), threadGroup: (256, 1, 1),
+                    outputShapes: [[rows, hiddenSize]], outputDTypes: [input.dtype],
+                    cacheConfiguration: true)[0]
+            } else {
+                mixed = (sigmoid(projectedUp).reshaped(rows, hcCount, hiddenSize)
+                    * normalized.reshaped(rows, hcCount, hiddenSize)).mean(axis: -2)
+            }
+            let injection = 2 * sigmoid(projection(quantizedInject, normalized) / Float(hcCount))
+            let leading = Array(input.shape.dropLast())
+            return Qwen4ExpHyperConnectionFusionOutput(
+                mixed: mixed.reshaped(leading + [hiddenSize]),
+                injection: injection.reshaped(leading + [hcCount]),
+                stream: normalizedResult.stream.reshaped(input.shape))
         }
 
         if nativeChainEnabled {
@@ -850,7 +1077,9 @@ enum Qwen4ExpHyperConnectionFusion {
                 epsilon: epsilon,
                 hasInject: inject != nil,
                 hasPending: hasPending,
-                matchFusedInjection: matchFusedInjection)
+                matchFusedInjection: matchFusedInjection,
+                injectBits: injectBits,
+                injectGroupSize: injectGroupSize)
             let plan = chainPlan(for: key)
             let chained = plan.chain([
                 input,
@@ -865,6 +1094,8 @@ enum Qwen4ExpHyperConnectionFusion {
                 quantizedUp.biases!,
                 pendingOutput ?? input,
                 pendingWeights ?? input,
+                quantizedInject?.scales ?? normWeight,
+                quantizedInject?.biases ?? normWeight,
             ])
             let leadingShape = Array(input.shape.dropLast())
             return Qwen4ExpHyperConnectionFusionOutput(
@@ -877,11 +1108,15 @@ enum Qwen4ExpHyperConnectionFusion {
         let normalizedResult: [MLXArray]
         if let pendingOutput, let pendingWeights {
             normalizedResult = normalizePendingKernel(
-                [input, normWeight, injectWeight, epsilonArray, pendingOutput, pendingWeights],
+                [input, normWeight, injectWeight, epsilonArray, pendingOutput, pendingWeights,
+                 quantizedInject?.scales ?? normWeight, quantizedInject?.biases ?? normWeight],
                 template: [
                     ("T", input.dtype), ("HC", hcCount), ("HIDDEN", hiddenSize),
                     ("HAS_INJECT", inject != nil),
                     ("MATCH_FUSED_INJECTION", matchFusedInjection),
+                    ("QUANTIZED_INJECT", quantizedInject != nil),
+                    ("INJECT_BITS", max(1, injectBits)),
+                    ("INJECT_GROUP_SIZE", max(1, injectGroupSize)),
                 ],
                 grid: (256 * hcCount, rows, 1),
                 threadGroup: (256, 1, 1),
@@ -894,10 +1129,14 @@ enum Qwen4ExpHyperConnectionFusion {
                 cacheConfiguration: true)
         } else {
             normalizedResult = normalizeKernel(
-                [input, normWeight, injectWeight, epsilonArray],
+                [input, normWeight, injectWeight, epsilonArray,
+                 quantizedInject?.scales ?? normWeight, quantizedInject?.biases ?? normWeight],
                 template: [
                     ("T", input.dtype), ("HC", hcCount), ("HIDDEN", hiddenSize),
                     ("HAS_INJECT", inject != nil),
+                    ("QUANTIZED_INJECT", quantizedInject != nil),
+                    ("INJECT_BITS", max(1, injectBits)),
+                    ("INJECT_GROUP_SIZE", max(1, injectGroupSize)),
                 ],
                 grid: (256 * hcCount, rows, 1),
                 threadGroup: (256, 1, 1),

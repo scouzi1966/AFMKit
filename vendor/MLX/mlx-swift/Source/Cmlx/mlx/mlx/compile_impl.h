@@ -6,6 +6,7 @@
 
 #include "mlx/api.h"
 #include "mlx/array.h"
+#include "mlx/stream.h"
 
 namespace mlx::core::detail {
 
@@ -44,6 +45,17 @@ MLX_API std::function<std::vector<array>(const std::vector<array>&)> compile(
     bool shapeless,
     std::vector<uint64_t> constants,
     CompileCachePtr cache);
+
+// The caller supplies the stream used by graph operations. This preserves
+// stream specialization without tying a language binding to executor threads.
+// As with the owned-cache overload, the caller serializes cache use.
+MLX_API std::function<std::vector<array>(const std::vector<array>&)> compile_on_stream(
+    std::function<std::vector<array>(const std::vector<array>&)> fun,
+    std::uintptr_t fun_id,
+    bool shapeless,
+    std::vector<uint64_t> constants,
+    CompileCachePtr cache,
+    Stream execution_stream);
 
 // Erase cached compile function.
 MLX_API void compile_erase(

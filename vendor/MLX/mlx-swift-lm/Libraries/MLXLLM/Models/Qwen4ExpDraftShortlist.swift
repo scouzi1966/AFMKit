@@ -80,6 +80,28 @@ final class Qwen4ExpDraftSelector {
             tokenIDs: ids.asType(.int32), logits: exact,
             vocabularySize: target.shape.0)
     }
+
+    /// Reuse one coarse batched projection while keeping each request's exact
+    /// top-32 rerank independent. Drafts are proposals only: the target model
+    /// still verifies every emitted token. Fails closed for unsupported shapes.
+    func greedyBatch(_ hidden: MLXArray) -> MLXArray? {
+        guard hidden.ndim == 3, (2...8).contains(hidden.dim(0)),
+              hidden.dim(1) == 1, hidden.dim(2) == target.shape.1,
+              hidden.dtype == target.scales.dtype
+        else { return nil }
+        let coarseScores = coarse(hidden)
+        let candidates = (0..<hidden.dim(0)).map { row -> MLXArray in
+            let rowHidden = hidden[row..<(row + 1)]
+            let scores = coarseScores[row..<(row + 1)].reshaped(-1)
+            let ids = Qwen4ExpDraftTop32.select(scores)
+            let exact = quantizedMM(
+                rowHidden, target.weight[ids],
+                scales: target.scales[ids], biases: target.biases![ids],
+                groupSize: target.groupSize, bits: target.bits, mode: target.mode)
+            return ids[MLX.argMax(exact.reshaped(-1))].asType(.int32).reshaped(1, 1)
+        }
+        return concatenated(candidates, axis: 0)
+    }
 }
 
 /// Two-dispatch top-32 selection specialized for a single wide vocabulary

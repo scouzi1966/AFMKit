@@ -46,7 +46,7 @@ package enum VerifyWidthLinear {
     package static let exactAttentionEnabled =
         ProcessInfo.processInfo.environment["AFM_QWEN_VERIFY_EXACT_ATTENTION"] != "0"
     package static let exactAttentionChunkSize: Int = {
-        let value = Int(ProcessInfo.processInfo.environment[
+        let value = Int(QwenMTPExecutionProfile.environment[
             "AFM_QWEN_VERIFY_ATTENTION_CHUNK"
         ] ?? "1") ?? 1
         return max(1, min(2, value))
@@ -62,6 +62,182 @@ package enum VerifyWidthLinear {
 
     private static func isExactRoleEnabled(_ role: Role) -> Bool {
         exactRoles.map { $0.contains(role.rawValue) } ?? true
+    }
+
+    // Experiment only: preserve singleton reductions while interleaving token
+    // rows in the grid so nearby workgroups can reuse quantized weights. Unlike
+    // exactAffineQ4Kernel, per-thread storage does not grow with verify width.
+    private static let independentRowRoles = ProcessInfo.processInfo.environment[
+        "AFM_QWEN_VERIFY_INDEPENDENT_ROWS"]
+
+    private static let independentQ8RowsEnabled = ProcessInfo.processInfo.environment[
+        "AFM_QWEN_VERIFY_Q8_ROWS"] == "1"
+
+    // Preserve MLX qmv_fast's eight values/lane for routers, and qmv's four
+    // values/lane for the single-output shared-expert gate. In particular, do
+    // not route the scalar gate through fast-QMV arithmetic: that changes its
+    // reduction order. Source: ml-explore/mlx quantized.h (Apple, MIT),
+    // qmv_impl / qmv_fast_impl / load_vector / qdot, linked above the q4 helper.
+    private static let independentAffineQ8RowKernel = MLXFast.metalKernel(
+        name: "verify_independent_affine_qmv_b8_gs64",
+        inputNames: ["x", "w", "scales", "biases"], outputNames: ["y"],
+        source: """
+            const uint group = threadgroup_position_in_grid.x;
+            const uint lane = thread_index_in_simdgroup;
+            const uint sg = simdgroup_index_in_threadgroup;
+            const uint token = group % ROWS;
+            const uint output = SCALAR ? 0 : (group / ROWS) * 8 + sg * 4;
+            constexpr int VALUES = SCALAR ? 4 : 8;
+            constexpr int OUTPUTS = SCALAR ? 1 : 4;
+            constexpr int BLOCK = VALUES * 32;
+            const device uchar* weights = (const device uchar*)w + output * K + lane * VALUES;
+            const device T* ss = scales + output * (K / 64) + lane / (64 / VALUES);
+            const device T* bb = biases + output * (K / 64) + lane / (64 / VALUES);
+            const device T* inputs = x + token * K + lane * VALUES;
+            float result[OUTPUTS] = {0.0f};
+            for (int k = 0; k < K; k += BLOCK) {
+                float values[VALUES];
+                float sum = 0.0f;
+                for (int i = 0; i < VALUES; ++i) {
+                    sum += inputs[i];
+                    values[i] = inputs[i];
+                }
+                for (int row = 0; row < OUTPUTS; ++row) {
+                    const device uchar* packed = weights + row * K;
+                    float dot = 0.0f;
+                    for (int i = 0; i < VALUES; ++i) dot += values[i] * packed[i];
+                    result[row] += float(ss[row * (K / 64)]) * dot
+                        + sum * float(bb[row * (K / 64)]);
+                }
+                weights += BLOCK;
+                ss += BLOCK / 64;
+                bb += BLOCK / 64;
+                inputs += BLOCK;
+            }
+            for (int row = 0; row < OUTPUTS; ++row) {
+                float value = simd_sum(result[row]);
+                if (lane == 0) y[token * N + output + row] = T(value);
+            }
+            """)
+
+    package static func independentAffineQ8Rows(
+        _ linear: Linear, _ input: MLXArray, forceEnabledForTesting: Bool = false
+    ) -> MLXArray? {
+        guard forceEnabledForTesting || independentQ8RowsEnabled,
+              Device.defaultDevice().deviceType == .gpu,
+              input.ndim == 3, input.dim(0) == 1,
+              (2...maximumAcceleratedWidth).contains(input.dim(1)),
+              input.dtype == .bfloat16,
+              let q = linear as? QuantizedLinear,
+              q.bits == 8, q.groupSize == 64, q.mode == .affine,
+              q.weight.ndim == 2, q.weight.dtype == .uint32,
+              let biases = q.biases,
+              q.scales.dtype == input.dtype, biases.dtype == input.dtype
+        else { return nil }
+        let k = input.dim(2)
+        let n = q.weight.dim(0)
+        guard k > 0, k.isMultiple(of: 256), n == 1 || n == 512,
+              q.weight.dim(1) * 4 == k,
+              q.scales.shape == [n, k / 64], biases.shape == q.scales.shape
+        else { return nil }
+        let rows = input.dim(1)
+        let scalar = n == 1
+        let threads = scalar ? 32 : 64
+        let tiles = scalar ? 1 : n / 8
+        var output = independentAffineQ8RowKernel(
+            [contiguous(input), q.weight, q.scales, biases],
+            template: [("T", input.dtype), ("K", k), ("N", n),
+                       ("ROWS", rows), ("SCALAR", scalar)],
+            grid: (threads * tiles * rows, 1, 1), threadGroup: (threads, 1, 1),
+            outputShapes: [[1, rows, n]], outputDTypes: [input.dtype])[0]
+        if let bias = q.bias { output = output + bias }
+        return output
+    }
+
+    /// Arithmetic follows MLX's qmv_fast_impl/load_vector/qdot (Apple, MIT):
+    /// https://github.com/ml-explore/mlx/blob/main/mlx/backend/metal/kernels/quantized.h
+    /// Only group ordering changes; token accumulators and output rounding are
+    /// independent. No approximate QMM, model copy, or request state is used.
+    private static let independentAffineQ4RowKernel = MLXFast.metalKernel(
+        name: "verify_independent_affine_qmv_b4_gs32",
+        inputNames: ["x", "w", "scales", "biases"], outputNames: ["y"],
+        source: """
+            const uint group = threadgroup_position_in_grid.x;
+            const uint lane = thread_index_in_simdgroup;
+            const uint sg = simdgroup_index_in_threadgroup;
+            const uint tile = INTERLEAVED ? group / ROWS : group % (N / 8);
+            const uint token = INTERLEAVED ? group % ROWS : group / (N / 8);
+            const uint output = tile * 8 + sg * 4;
+            const device ushort* weights = (const device ushort*)w
+                + output * (K / 4) + lane * 4;
+            const device T* ss = scales + output * (K / 32) + lane / 2;
+            const device T* bb = biases + output * (K / 32) + lane / 2;
+            const device T* inputs = x + token * K + lane * 16;
+            float result[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+            for (int k = 0; k < K; k += 512) {
+                float values[16];
+                float sum = 0.0f;
+                for (int i = 0; i < 16; i += 4) {
+                    sum += inputs[i] + inputs[i + 1] + inputs[i + 2] + inputs[i + 3];
+                    values[i] = inputs[i];
+                    values[i + 1] = inputs[i + 1] / 16.0f;
+                    values[i + 2] = inputs[i + 2] / 256.0f;
+                    values[i + 3] = inputs[i + 3] / 4096.0f;
+                }
+                for (int row = 0; row < 4; ++row) {
+                    const device ushort* packed = weights + row * (K / 4);
+                    float dot = 0.0f;
+                    for (int i = 0; i < 4; ++i) {
+                        dot += values[4 * i] * (packed[i] & 0x000f)
+                            + values[4 * i + 1] * (packed[i] & 0x00f0)
+                            + values[4 * i + 2] * (packed[i] & 0x0f00)
+                            + values[4 * i + 3] * (packed[i] & 0xf000);
+                    }
+                    result[row] += float(ss[row * (K / 32)]) * dot
+                        + sum * float(bb[row * (K / 32)]);
+                }
+                weights += 512 / 4;
+                ss += 512 / 32;
+                bb += 512 / 32;
+                inputs += 512;
+            }
+            for (int row = 0; row < 4; ++row) {
+                float value = simd_sum(result[row]);
+                if (lane == 0) y[token * N + output + row] = T(value);
+            }
+            """)
+
+    package static func independentAffineQ4Rows(
+        _ linear: Linear, _ input: MLXArray, role: Role = .other,
+        interleaved: Bool = true, forceEnabledForTesting: Bool = false
+    ) -> MLXArray? {
+        guard forceEnabledForTesting || independentRowRoles == "all"
+                || independentRowRoles == role.rawValue,
+              Device.defaultDevice().deviceType == .gpu,
+              input.ndim == 3, input.dim(0) == 1,
+              (1...maximumAcceleratedWidth).contains(input.dim(1)),
+              input.dtype == .bfloat16,
+              let q = linear as? QuantizedLinear,
+              q.bits == 4, q.groupSize == 32, q.mode == .affine,
+              q.weight.ndim == 2, q.weight.dtype == .uint32,
+              let biases = q.biases,
+              q.scales.dtype == input.dtype, biases.dtype == input.dtype
+        else { return nil }
+        let k = input.dim(2)
+        let n = q.weight.dim(0)
+        let rows = input.dim(1)
+        guard k > 0, k.isMultiple(of: 512), n > 0, n.isMultiple(of: 8),
+              q.weight.dim(1) * 8 == k,
+              q.scales.shape == [n, k / 32], biases.shape == q.scales.shape
+        else { return nil }
+        var output = independentAffineQ4RowKernel(
+            [contiguous(input), q.weight, q.scales, biases],
+            template: [("T", input.dtype), ("K", k), ("N", n),
+                       ("ROWS", rows), ("INTERLEAVED", interleaved)],
+            grid: (64 * (n / 8) * rows, 1, 1), threadGroup: (64, 1, 1),
+            outputShapes: [[1, rows, n]], outputDTypes: [input.dtype])[0]
+        if let bias = q.bias { output = output + bias }
+        return output
     }
 
     private static let exactAffineQ4Kernel = MLXFast.metalKernel(
@@ -397,6 +573,14 @@ package enum VerifyWidthLinear {
 
         let useExactAccelerator = exactAcceleratorEnabled
             ?? (exactLinearEnabled && isExactRoleEnabled(role))
+        if useExactAccelerator, role == .expert,
+           let output = independentAffineQ8Rows(linear, input) {
+            return output
+        }
+        if useExactAccelerator,
+           let output = independentAffineQ4Rows(linear, input, role: role) {
+            return output
+        }
         if useExactAccelerator,
            isExactAffineQ4Eligible(linear, input: input),
            let quantized = linear as? QuantizedLinear,

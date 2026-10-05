@@ -222,7 +222,7 @@ private func makeGatedDeltaKernel(
 /// ml-explore/mlx-lm packed GDN implementation (PR #1559, commit e9308d7).
 /// Eight independent value rows share one SIMD group, reducing each row with
 /// four lanes while preserving the explicitly specified butterfly order.
-private func makePackedGatedDeltaKernel() -> MLXFast.MLXFastKernel? {
+private func makePackedGatedDeltaKernel(captureBoundary: Bool = false) -> MLXFast.MLXFastKernel? {
     let source = """
         constexpr int lanes_per_row = 4;
         constexpr int rows_per_simdgroup = 32 / lanes_per_row;
@@ -309,6 +309,18 @@ private func makePackedGatedDeltaKernel() -> MLXFast.MLXFastKernel? {
             y[dv_idx] = static_cast<InT>(out);
           }
 
+          \(captureBoundary ? """
+          // One request-owned prefix, not a per-token history. Every lane
+          // owns disjoint elements; no synchronization or arithmetic changes.
+          if (t + 1 == boundary) {
+            auto saved = boundary_state + (n * Dv + dv_idx) * Dk
+                + lane_in_row * values_per_lane;
+            for (int i = 0; i < values_per_lane; ++i) {
+              saved[i] = state[i];
+            }
+          }
+          """ : "")
+
           q_ += Hk * Dk;
           k_ += Hk * Dk;
           v_ += Hv * Dv;
@@ -322,10 +334,47 @@ private func makePackedGatedDeltaKernel() -> MLXFast.MLXFastKernel? {
         }
     """
     return MLXFast.metalKernel(
-        name: "gated_delta_step_packed_btree",
-        inputNames: ["q", "k", "v", "g", "beta", "state_in", "T"],
-        outputNames: ["y", "state_out"],
+        name: captureBoundary ? "gated_delta_step_packed_btree_boundary" : "gated_delta_step_packed_btree",
+        inputNames: ["q", "k", "v", "g", "beta", "state_in", "T"] + (captureBoundary ? ["boundary"] : []),
+        outputNames: ["y", "state_out"] + (captureBoundary ? ["boundary_state"] : []),
         source: source)
+}
+
+private enum GatedDeltaBoundaryKernel {
+    static let kernel = makePackedGatedDeltaKernel(captureBoundary: true)
+}
+
+/// Side-effect-free eligibility shared by the model preflight and dispatcher.
+func supportsGatedDeltaBoundaryCapture(
+    width: Int, keyDimension: Int, valueDimension: Int, stateType: DType
+) -> Bool {
+    packedGatedDeltaEnabled && width >= 16 && keyDimension == 128
+        && valueDimension > 0 && valueDimension.isMultiple(of: 8)
+        && stateType == .float32
+        && GatedDeltaKernelManager.shared.kernelPacked != nil
+        && GatedDeltaBoundaryKernel.kernel != nil
+}
+
+/// Additive packed-prefill capture. Fail closed unless the ordinary dispatcher
+/// would use this exact arithmetic; callers then run their unchanged path.
+func gatedDeltaKernelWithBoundary(
+    q: MLXArray, k: MLXArray, v: MLXArray, g: MLXArray, beta: MLXArray,
+    state: MLXArray, boundary: Int
+) -> (output: MLXArray, state: MLXArray, boundary: MLXArray)? {
+    let (batch, width, keyHeads, keyDimension) = k.shape4
+    let valueHeads = v.dim(2), valueDimension = v.dim(3)
+    guard supportsGatedDeltaBoundaryCapture(width: width, keyDimension: keyDimension,
+              valueDimension: valueDimension, stateType: state.dtype),
+          boundary > 0, boundary <= width, g.ndim == 3,
+          let kernel = GatedDeltaBoundaryKernel.kernel
+    else { return nil }
+    let result = kernel([q, k, v, g, beta, state, MLXArray(width), MLXArray(boundary)],
+        template: [("InT", q.dtype), ("StT", state.dtype), ("Dk", keyDimension),
+                   ("Dv", valueDimension), ("Hk", keyHeads), ("Hv", valueHeads)],
+        grid: (32, valueDimension / 8, batch * valueHeads), threadGroup: (32, 2, 1),
+        outputShapes: [[batch, width, valueHeads, valueDimension], state.shape, state.shape],
+        outputDTypes: [q.dtype, state.dtype, state.dtype])
+    return (result[0], result[1], result[2])
 }
 
 // MARK: - Kernel Manager (Singleton)

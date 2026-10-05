@@ -90,6 +90,28 @@ extern "C" int mlx_detail_compile_with_cache(
   }
   return 0;
 }
+extern "C" int mlx_detail_compile_with_cache_on_stream(
+    mlx_closure* res,
+    const mlx_closure fun,
+    uintptr_t fun_id,
+    bool shapeless,
+    const uint64_t* constants,
+    size_t constants_num,
+    mlx_detail_compile_cache cache,
+    mlx_stream stream) {
+  try {
+    mlx_closure_set_(
+        *res,
+        mlx::core::detail::compile_on_stream(
+            mlx_closure_get_(fun), fun_id, shapeless,
+            std::vector<uint64_t>(constants, constants + constants_num),
+            mlx_detail_compile_cache_get_(cache), mlx_stream_get_(stream)));
+  } catch (std::exception& e) {
+    mlx_error(e.what());
+    return 1;
+  }
+  return 0;
+}
 extern "C" int mlx_detail_compile_clear_cache(void) {
   try {
     mlx::core::detail::compile_clear_cache(mlx::core::detail::compile_cache());
