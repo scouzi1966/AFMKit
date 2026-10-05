@@ -5331,6 +5331,7 @@ private final class Qwen4ExpModelInner: Module {
 /// loader: only shards assigned to `language_model.mtp.*` are opened.
 private struct Qwen4ExpEmbeddedMTPCheckpoint {
     static let prefix = "language_model.mtp."
+    let nativeLayout: Bool
 
     let shardURLs: [URL]
     let indexedKeys: Set<String>
@@ -5347,7 +5348,11 @@ private struct Qwen4ExpEmbeddedMTPCheckpoint {
             throw Self.error("Qwen Next safetensor index is missing or malformed")
         }
 
-        let assignments = weightMap.filter { $0.key.hasPrefix(Self.prefix) }
+        let selectedPrefix = weightMap.keys.contains(where: { $0.hasPrefix(Self.prefix) })
+            ? Self.prefix : "mtp."
+        let assignments = weightMap.filter { $0.key.hasPrefix(selectedPrefix) }
+        nativeLayout = selectedPrefix == "mtp."
+            && assignments["mtp.fc_embedding.scales"] == nil
         let requiredMarkers = [
             "fc_embedding.weight",
             "fc_hidden.weight",
@@ -5355,7 +5360,7 @@ private struct Qwen4ExpEmbeddedMTPCheckpoint {
             "layers.0.mlp.switch_mlp.gate_proj.weight",
             "hyper_connection_mixer.hc_norm.weight",
         ]
-        guard requiredMarkers.allSatisfy({ assignments[Self.prefix + $0] != nil })
+        guard requiredMarkers.allSatisfy({ assignments[selectedPrefix + $0] != nil })
         else {
             throw Self.error("Qwen Next checkpoint has no complete native MTP head")
         }
@@ -5620,8 +5625,10 @@ public final class Qwen4ExpMTPHead: Module {
     ) throws -> Qwen4ExpMTPHead {
         let checkpoint = try Qwen4ExpEmbeddedMTPCheckpoint(
             modelDirectory: modelDirectory)
-        let weights = prepareEmbeddedCheckpointWeights(
-            try checkpoint.loadArrays())
+        let raw = try checkpoint.loadArrays()
+        let weights = checkpoint.nativeLayout
+            ? prepareCheckpointWeights(raw)
+            : prepareEmbeddedCheckpointWeights(raw)
         let head = Qwen4ExpMTPHead(config)
         quantize(model: head, filter: { path, _ in
             weights["\(path).scales"] != nil
@@ -6234,6 +6241,14 @@ public final class Qwen4ExpModel: Module, LLMModel, KVCacheDimensionProvider, Re
 
     public func sanitize(weights: [String: MLXArray]) -> [String: MLXArray] {
         var result = [String: MLXArray]()
+        // The native MLX sharded-embedding layout preserves Qwen's zero-centered
+        // norms. Legacy shard_N and mapped-table conversions fold 1 + weight
+        // into the checkpoint. Do not undo that fold on an unfurled checkpoint.
+        // Detect the serialized layout before renaming its keys; never infer a
+        // normalization convention from tensor values or a repository name.
+        let nativeShardedLayout = ngramTableConfiguration == nil && weights.keys.contains {
+            $0.contains(".ple.ple_embedding.ngram_embedding.shards.")
+        }
         let zeroCenteredNormSuffixes = [
             ".hc_norm.weight",
             ".q_norm.weight",
@@ -6277,7 +6292,8 @@ public final class Qwen4ExpModel: Module, LLMModel, KVCacheDimensionProvider, Re
                     of: ".ple.ple_embedding.ngram_embedding.shard_",
                     with: ".ple.ple_embedding.ngram_embedding.shards.")
             }
-            result[key] = zeroCenteredNormSuffixes.contains(where: key.hasSuffix) ? value - 1 : value
+            result[key] = !nativeShardedLayout
+                && zeroCenteredNormSuffixes.contains(where: key.hasSuffix) ? value - 1 : value
         }
         // Mapped PLE lookups happen on the host, so they cannot read the
         // checkpoint's device-side `layer_multipliers` lazily. Capture the

@@ -73,6 +73,46 @@ struct Qwen38ToolCallStreamingTests {
         #expect(remaining.isEmpty)
     }
 
+    @Test("Qwen XML keeps JSON-looking file content as a schema-declared string")
+    func xmlFileContentRespectsStringSchema() throws {
+        let tool = makeTool(
+            name: "write_file",
+            properties: [
+                "path": ["type": "string"],
+                "content": ["type": "string"],
+            ],
+            required: ["path", "content"]
+        )
+        let content = "{\n  \"network\": {\"port\": 9090},\n  \"debug\": false\n}"
+        let xml = "<tool_call><function=write_file><parameter=path>config/settings.json</parameter><parameter=content>\n\(content)\n</parameter></function></tool_call>"
+
+        let direct = try #require(MLXModelService.parseXMLFunction(xml, tools: [tool]))
+        #expect(direct.function.arguments["content"]?.anyValue as? String == content)
+
+        let (completed, _) = ToolCallStreamingRuntime.parseCompletedToolCalls(
+            from: xml,
+            toolCallParser: "qwen3_xml",
+            tools: [tool]
+        )
+        #expect(completed.first?.function.arguments["content"]?.anyValue as? String == content)
+
+        let runtime = makeRuntime(tools: [tool], parser: "qwen3_xml")
+        let events = runtime.process(piece: xml).events
+        let call = try #require(collectedCall(from: events))
+        #expect(try decodeArguments(call.function.arguments)["content"] as? String == content)
+        #expect(try decodeArguments(streamedArguments(from: events))["content"] as? String == content)
+
+        let escapedJSON = #"{"message":"line\ncontinued"}"#
+        let escapedXML = "<tool_call><function=write_file><parameter=path>config/settings.json</parameter><parameter=content>\(escapedJSON)</parameter></function></tool_call>"
+        let escapedDirect = try #require(MLXModelService.parseXMLFunction(escapedXML, tools: [tool]))
+        #expect(escapedDirect.function.arguments["content"]?.anyValue as? String == escapedJSON)
+        let escapedEvents = makeRuntime(tools: [tool], parser: "qwen3_xml")
+            .process(piece: escapedXML).events
+        let escapedCall = try #require(collectedCall(from: escapedEvents))
+        #expect(try decodeArguments(escapedCall.function.arguments)["content"] as? String == escapedJSON)
+        #expect(try decodeArguments(streamedArguments(from: escapedEvents))["content"] as? String == escapedJSON)
+    }
+
     @Test("Qwen 3.8 streaming assembles a tool call split at arbitrary boundaries")
     func streamingAssemblesFragmentedJSONInXML() throws {
         let runtime = makeRuntime(tools: [weatherTool])

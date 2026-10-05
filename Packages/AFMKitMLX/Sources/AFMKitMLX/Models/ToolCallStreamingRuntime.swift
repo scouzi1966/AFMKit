@@ -455,7 +455,7 @@ public final class ToolCallStreamingRuntime {
             emittedKey = remapSingleKey(rawKey, incrementalFunctionName)
         }
 
-        let decodedValue = Self.decodeParameterValue(Self.normalizeParameterBody(rawValue))
+        let decodedValue = parameterValue(rawValue, key: emittedKey)
         let jsonValue = Self.jsonEncodeValue(coerceIncrementalParameterValue(decodedValue, key: emittedKey))
         let fragment: String
         if incrementalParamCount == 0 {
@@ -506,6 +506,18 @@ public final class ToolCallStreamingRuntime {
         }
     }
 
+    private func parameterValue(_ rawValue: String, key: String) -> any Sendable {
+        let normalized = Self.normalizeParameterBody(rawValue)
+        if MLXModelService.xmlParameterIsString(
+            function: incrementalFunctionName,
+            key: key,
+            tools: tools
+        ) {
+            return MLXModelService.xmlStringValue(normalized)
+        }
+        return Self.decodeParameterValue(normalized)
+    }
+
     private func salvageUnclosedParameterFragment() -> StreamDeltaToolCall? {
         guard let partial = trailingPartialParameter() else { return nil }
         let rawKey = partial.key
@@ -535,7 +547,7 @@ public final class ToolCallStreamingRuntime {
                 }
                 let key = String(currentToolText[keyRange])
                 if arguments[key] == nil {
-                    arguments[key] = Self.decodeParameterValue(Self.normalizeParameterBody(String(currentToolText[valueRange])))
+                    arguments[key] = parameterValue(String(currentToolText[valueRange]), key: key)
                 }
             }
         }
@@ -543,7 +555,7 @@ public final class ToolCallStreamingRuntime {
         if includeTrailingPartial,
            let partial = trailingPartialParameter(),
            arguments[partial.key] == nil {
-            arguments[partial.key] = Self.decodeParameterValue(Self.normalizeParameterBody(partial.value))
+            arguments[partial.key] = parameterValue(partial.value, key: partial.key)
         }
 
         return ToolCall(function: .init(
@@ -746,7 +758,7 @@ public final class ToolCallStreamingRuntime {
             return dsml
         }
         if toolCallParser == "qwen3_xml" {
-            return parseQwen3NativeXMLToolCalls(from: text)
+            return parseQwen3NativeXMLToolCalls(from: text, tools: tools)
         }
         if toolCallParser == "afm_adaptive_xml",
            let direct = parseSingleAdaptiveJSONToolCall(from: text, tools: tools) {
@@ -763,7 +775,8 @@ public final class ToolCallStreamingRuntime {
     /// intentionally narrower than AFM's compatibility fallback and mirrors the
     /// structural parser used by current vLLM Qwen 3 serving.
     private static func parseQwen3NativeXMLToolCalls(
-        from text: String
+        from text: String,
+        tools: [RequestTool]?
     ) -> ([ToolCall], String) {
         let envelopes = ToolCallEnvelopeScanner.envelopes(in: text)
         guard !envelopes.isEmpty else { return ([], text) }
@@ -781,7 +794,8 @@ public final class ToolCallStreamingRuntime {
                 let functionText = String(body[function.range])
                 if let call = MLXModelService.parseXMLFunction(
                     functionText,
-                    repairArguments: false
+                    repairArguments: false,
+                    tools: tools
                 ) {
                     calls.append(call)
                     parsedEnvelope = true

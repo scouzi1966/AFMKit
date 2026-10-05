@@ -1206,6 +1206,22 @@ final class Qwen4ExpTests: XCTestCase {
         XCTAssertNil(sanitized["model.layers.1.ple.ple_embedding.ngram_heads_vocab_sizes"])
     }
 
+    func testSanitizeNativeShardedLayoutPreservesZeroCenteredNorms() async throws {
+        let model = try await LLMTypeRegistry.shared.createModel(
+            configuration: Data(minimalConfiguration.utf8), modelType: "qwen4_exp")
+        let qwen = try XCTUnwrap(model as? Qwen4ExpModel)
+        let norm = "model.layers.0.attn_hyper_connection.hc_norm.weight"
+        let shard = "model.layers.1.ple.ple_embedding.ngram_embedding.shards.0.weight"
+        for prefix in ["", "language_model."] {
+            let sanitized = qwen.sanitize(weights: [
+                prefix + norm: MLXArray([Float(-0.25)]),
+                prefix + shard: MLXArray.zeros([1]),
+            ])
+            XCTAssertEqual(try XCTUnwrap(sanitized[norm]).item(Float.self), -0.25)
+            XCTAssertNotNil(sanitized[shard])
+        }
+    }
+
     func testSanitizeAcceptsTextOnlyCheckpointRootsWithoutVisionLeakage() async throws {
         let model = try await LLMTypeRegistry.shared.createModel(
             configuration: Data(minimalConfiguration.utf8),
