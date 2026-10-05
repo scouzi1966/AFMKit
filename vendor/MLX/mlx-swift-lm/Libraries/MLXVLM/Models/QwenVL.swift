@@ -120,22 +120,26 @@ public struct QwenVL {
     }
 
     // image_processing_qwen2_vl.smart_resize
-    static func targetSize(height: Int, width: Int, factor: Int, minPixels: Int, maxPixels: Int)
+    static func targetSize(height: Int, width: Int, factor: Int, minPixels: Int, maxPixels: Int,
+        allowUpscalingSmallImages: Bool = false)
         throws
         -> (Int, Int)
     {
         debug("Original dimensions: \(width) × \(height)")
         debug("Factor: \(factor), minPixels: \(minPixels), maxPixels: \(maxPixels)")
 
-        if height < factor {
+        if height <= 0 || width <= 0 || factor <= 0 {
+            throw VLMError.imageProcessingFailure("Image dimensions and patch factor must be positive")
+        }
+        if height < factor && !allowUpscalingSmallImages {
             throw VLMError.imageProcessingFailure(
                 "Height: \(height) must be larger than factor: \(factor)")
         }
-        if width < factor {
+        if width < factor && !allowUpscalingSmallImages {
             throw VLMError.imageProcessingFailure(
                 "Width: \(width) must be larger than factor: \(factor)")
         }
-        if max(height, width) / min(height, width) > 200 {
+        if Double(max(height, width)) / Double(min(height, width)) > 200 {
             throw VLMError.imageProcessingFailure(
                 "Absolute aspect ratio must be smaller than 200: \(width) × \(height)")
         }

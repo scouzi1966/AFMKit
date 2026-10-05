@@ -46,7 +46,10 @@ public struct Qwen3VLProcessor: UserInputProcessor {
             width: Int(extent.width),
             factor: config.patchSize * config.mergeSize,
             minPixels: config.size.minPixels,
-            maxPixels: config.size.maxPixels)
+            maxPixels: config.size.maxPixels,
+            // This processor owns pixel-budget resizing, including valid images
+            // smaller than one patch group. Do not require an upstream resize.
+            allowUpscalingSmallImages: true)
 
         let targetSize = CGSize(width: resizedWidth, height: resizedHeight)
 
@@ -121,7 +124,8 @@ public struct Qwen3VLProcessor: UserInputProcessor {
                             width: Int(size.width),
                             factor: config.patchSize * config.mergeSize,
                             minPixels: config.minPixels,
-                            maxPixels: config.maxPixels)
+                            maxPixels: config.maxPixels,
+                            allowUpscalingSmallImages: true)
                         resizedSize = CGSize(width: width, height: height)
                     }
                     let finalImage = preprocess(image: processed, resizedSize: resizedSize)

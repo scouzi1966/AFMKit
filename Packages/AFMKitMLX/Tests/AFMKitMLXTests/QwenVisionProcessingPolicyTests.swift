@@ -1,5 +1,5 @@
 import Foundation
-import MLXVLM
+@testable import MLXVLM
 @testable import AFMKitMLX
 import XCTest
 
@@ -42,6 +42,32 @@ final class QwenVisionProcessingPolicyTests: XCTestCase {
         for model in [nil, "glm5_next", "qwen3_vl"] as [String?] {
             XCTAssertEqual(AFMMLXRuntimeAdapter.imageProcessing(modelType: model).resize,
                 CGSize(width: 1024, height: 1024))
+        }
+    }
+
+    func testTinyImagesUsePixelBudgetInsteadOfFailingBeforeInference() throws {
+        for edge in [1, 16, 31, 32, 64] {
+            let size = try QwenVL.targetSize(height: edge, width: edge, factor: 32,
+                minPixels: 65536, maxPixels: 16777216, allowUpscalingSmallImages: true)
+            XCTAssertEqual(size.0, 256)
+            XCTAssertEqual(size.1, 256)
+        }
+    }
+
+    func testOrdinaryImageGeometryAndLegacySmallImagePolicyAreUnchanged() throws {
+        let size = try QwenVL.targetSize(height: 480, width: 640, factor: 32,
+            minPixels: 65536, maxPixels: 16777216, allowUpscalingSmallImages: true)
+        XCTAssertEqual(size.0, 480)
+        XCTAssertEqual(size.1, 640)
+        XCTAssertThrowsError(try QwenVL.targetSize(height: 1, width: 1, factor: 32,
+            minPixels: 65536, maxPixels: 16777216))
+    }
+
+    func testInvalidDimensionsAndExtremeAspectRatioStillFail() {
+        for (height, width) in [(0, 1), (1, 0), (-1, 32), (1, 201), (2, 401)] {
+            XCTAssertThrowsError(try QwenVL.targetSize(height: height, width: width,
+                factor: 32, minPixels: 65536, maxPixels: 16777216,
+                allowUpscalingSmallImages: true))
         }
     }
 }
