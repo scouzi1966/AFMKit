@@ -4033,8 +4033,9 @@ public final class MLXModelService:
             // Reuse the batching policy to capture an actual earlier recurrent
             // state; a final-only snapshot cannot safely be trimmed to that point.
             // Exact repeats still use saved logits without prefilling again.
-            if preparedPrefill == nil, capturesPromptBoundary,
-               context.model is Qwen4ExpModel, replayBackoff > 0 {
+            if preparedPrefill == nil, replayBackoff > 0,
+               MLXReplayPrefill.supportsSerialTextBackoff(
+                   modelType: type(of: context.model), eligibleInput: capturesPromptBoundary) {
                 preparedPrefill = { cache in
                     try MLXReplayPrefill.prepareWithSnapshot(
                         model: context.model, cache: cache, inputTokens: inputTokens,
@@ -5112,8 +5113,9 @@ public final class MLXModelService:
                             ProcessInfo.processInfo.environment["AFM_QWEN_PREFIX_REPLAY_BACKOFF"])
                         // Keep serial HTTP streaming and non-streaming on the
                         // same exact-boundary snapshot policy as batch admission.
-                        if preparedPrefill == nil, capturesPromptBoundary,
-                           context.model is Qwen4ExpModel, replayBackoff > 0 {
+                        if preparedPrefill == nil, replayBackoff > 0,
+                           MLXReplayPrefill.supportsSerialTextBackoff(
+                               modelType: type(of: context.model), eligibleInput: capturesPromptBoundary) {
                             preparedPrefill = { cache in
                                 try MLXReplayPrefill.prepareWithSnapshot(
                                     model: context.model, cache: cache, inputTokens: inputTokens,
