@@ -86,8 +86,40 @@ This supports steady-state non-regression, not a claim that the initial
 slow runs never occurred or that cold startup is fully qualified. All
 initial raw trials remain saved in `context-vlm-fix` and
 `context-backoff-control`; the matched rechecks are `context-release-recheck`
-and `context-fix-recheck`. MTP and a complete coding-project rerun were not
-qualified by this focused test. Do not publish broader release claims from it.
+and `context-fix-recheck`. MTP was not qualified by this focused test.
+Do not publish broader release claims from it.
+
+### Complete coding-agent rerun
+
+One unchanged dashboard fixture was implemented by the coding agent using
+the preserved candidate, with no manual edits or interventions. The same
+acceptance harness was used for all three runs:
+
+| Run | Wall seconds | Automated checks | Requests | Output tokens |
+|---|---:|---:|---:|---:|
+| Previous released AFM | 877.6 | 13/15 | 37 | 24929 |
+| Previous reference | 720.5 | 11/15 | 55 | 38964 |
+| Fixed AFM | 554.9 | 15/15 | 41 | 27838 |
+
+Fixed AFM reused 641,547 of 711,468 input tokens (90.2%), with 39/41
+requests reporting reuse. The two misses were the initial request and
+request 24, which removed all four tool definitions from the prompt.
+The earlier conversation input remained unchanged, but the tools did not;
+reusing state across that different prompt prefix would be unsafe.
+
+This is one run per arm, not statistical quality superiority. Source output
+and tool trajectories differ, so the full wall-time change must not be
+attributed entirely to caching; the frozen-request replay isolates prefill.
+Four generated tool commands failed during the fixed run; the agent
+recovered, and the final application builds successfully.
+
+Visual review adds an important limitation: the fixed application's table
+headings and cell positions do not match. The previous reference also has
+table-alignment defects, whereas the previous AFM desktop table is aligned.
+The 15-check harness misses this visual/semantic issue. Do not describe
+15/15 automated checks as perfect application quality or silently modify
+the generated project. Desktop/mobile screenshots and final source remain
+unaltered under the sibling `cacheFixVerification/` evidence directory.
 
 The local workspace generator initially floated `swift-metrics` from 2.11
 to 2.12. The candidate was rebuilt with the release lock as the seed; all
