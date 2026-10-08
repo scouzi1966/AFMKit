@@ -1,10 +1,19 @@
 import MLX
 import MLXLMCommon
+import MLXLLM
+import MLXVLM
 
 /// Shared exact-boundary prefill for request-owned hybrid/recurrent caches.
 /// Never reconstruct an earlier recurrent state by trimming a later snapshot.
 /// Callers own model serialization and must exclude multimodal input.
 enum MLXReplayPrefill {
+    /// The VLM wrapper delegates text forwards to the same Qwen language trunk.
+    /// A growing tool transcript can retokenize the final newline, so retaining
+    /// only the full prompt boundary defeats otherwise valid prefix reuse.
+    /// Eligibility must already exclude media, quantized KV and disabled caches.
+    static func supportsSerialTextBackoff(modelType: Any.Type, eligibleInput: Bool) -> Bool {
+        eligibleInput && (modelType == Qwen4ExpModel.self || modelType == Qwen4ExpVL.self)
+    }
     struct Snapshot {
         let boundary: Int
         let states: [[MLXArray]]
