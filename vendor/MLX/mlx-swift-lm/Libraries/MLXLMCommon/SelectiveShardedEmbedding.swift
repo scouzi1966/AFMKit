@@ -19,6 +19,10 @@ public final class SelectiveShardedEmbedding: Module {
     public let selectiveLookupLimit: Int
     public let selectiveLookupEnabled: Bool
     @ModuleInfo public var shards: [Embedding]
+    /// Some converted checkpoints retain one shared scale after quantizing
+    /// the unscaled embedding rows. Apply it once, after row dequantization.
+    @ParameterInfo(key: "weight_scale") private var weightScale: MLXArray
+    private var checkpointHasSharedScale = false
 
     public init(
         rows: Int,
@@ -38,6 +42,31 @@ public final class SelectiveShardedEmbedding: Module {
         self._shards.wrappedValue = (0 ..< parts).map { _ in
             Embedding(embeddingCount: rows / parts, dimensions: dimensions)
         }
+        self._weightScale.wrappedValue = MLXArray.ones([1], dtype: .bfloat16)
+    }
+
+    @discardableResult
+    public override func update(
+        parameters: ModuleParameters, verify: VerifyUpdate, path: [String] = [],
+        modulePath: [String] = []
+    ) throws -> Self {
+        let hasScale = parameters["weight_scale"] != nil
+        try super.update(parameters: parameters, verify: verify, path: path, modulePath: modulePath)
+        if hasScale { checkpointHasSharedScale = true }
+        return self
+    }
+
+    public override func updateMissing(
+        parameter: String, verify: VerifyUpdate, path: [String], modulePath: [String]
+    ) throws {
+        // Older sharded checkpoints have no shared scale. Their implicit
+        // multiplier is one, and their lookup graph retains its existing path.
+        if parameter == "weight_scale" { return }
+        try super.updateMissing(parameter: parameter, verify: verify, path: path, modulePath: modulePath)
+    }
+
+    private func applySharedScale(_ values: MLXArray) -> MLXArray {
+        checkpointHasSharedScale ? values * weightScale : values
     }
 
     public func callAsFunction(_ ids: MLXArray) -> MLXArray {
@@ -79,7 +108,7 @@ public final class SelectiveShardedEmbedding: Module {
             result = result!.at[MLXArray(positionsByShard[shardIndex].map(Int32.init))]
                 .add(values)
         }
-        return result!.reshaped(shape + [dimensions])
+        return applySharedScale(result!.reshaped(shape + [dimensions]))
     }
 
     /// Read tiny affine q4/BF16 rows directly from unified memory. No dense
@@ -156,9 +185,10 @@ public final class SelectiveShardedEmbedding: Module {
                 }
             }
         }
-        return output.withUnsafeBytes {
+        let values = output.withUnsafeBytes {
             MLXArray(Data($0), shape + [dimensions], dtype: .bfloat16)
         }
+        return applySharedScale(values)
     }
 
     private func referenceLookup(_ ids: MLXArray) -> MLXArray {
@@ -171,6 +201,6 @@ public final class SelectiveShardedEmbedding: Module {
             let values = shard(safeIDs) * selected[.ellipsis, .newAxis]
             result = result.map { $0 + values } ?? values
         }
-        return result!
+        return applySharedScale(result!)
     }
 }
