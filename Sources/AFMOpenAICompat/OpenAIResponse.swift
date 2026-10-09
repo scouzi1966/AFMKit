@@ -154,15 +154,15 @@ public struct ChatCompletionResponse: Codable, Sendable {
         self.afmProfileExtended = afmProfileExtended
     }
 
-    public init(id: String = UUID().uuidString, model: String, toolCalls: [ResponseToolCall], logprobs: ChoiceLogprobs? = nil, promptTokens: Int = 0, completionTokens: Int = 0, cachedTokens: Int? = nil, completionTime: Double? = nil, promptTime: Double? = nil, peakMemoryGib: Double? = nil, timings: StreamTimings? = nil, afmProfile: AFMProfile? = nil, afmProfileExtended: AFMProfileExtended? = nil) {
+    public init(id: String = UUID().uuidString, model: String, toolCalls: [ResponseToolCall], logprobs: ChoiceLogprobs? = nil, finishReason: String = "tool_calls", promptTokens: Int = 0, completionTokens: Int = 0, cachedTokens: Int? = nil, completionTime: Double? = nil, promptTime: Double? = nil, peakMemoryGib: Double? = nil, timings: StreamTimings? = nil, afmProfile: AFMProfile? = nil, afmProfileExtended: AFMProfileExtended? = nil) {
         self.init(id: id, model: model, toolCalls: toolCalls, reasoningContent: nil,
-                  logprobs: logprobs, promptTokens: promptTokens, completionTokens: completionTokens,
+                  logprobs: logprobs, finishReason: finishReason, promptTokens: promptTokens, completionTokens: completionTokens,
                   cachedTokens: cachedTokens, completionTime: completionTime, promptTime: promptTime,
                   peakMemoryGib: peakMemoryGib, timings: timings, afmProfile: afmProfile,
                   afmProfileExtended: afmProfileExtended)
     }
 
-    public init(id: String = UUID().uuidString, model: String, toolCalls: [ResponseToolCall], reasoningContent: String?, logprobs: ChoiceLogprobs? = nil, promptTokens: Int = 0, completionTokens: Int = 0, cachedTokens: Int? = nil, completionTime: Double? = nil, promptTime: Double? = nil, peakMemoryGib: Double? = nil, timings: StreamTimings? = nil, afmProfile: AFMProfile? = nil, afmProfileExtended: AFMProfileExtended? = nil) {
+    public init(id: String = UUID().uuidString, model: String, toolCalls: [ResponseToolCall], reasoningContent: String?, logprobs: ChoiceLogprobs? = nil, finishReason: String = "tool_calls", promptTokens: Int = 0, completionTokens: Int = 0, cachedTokens: Int? = nil, completionTime: Double? = nil, promptTime: Double? = nil, peakMemoryGib: Double? = nil, timings: StreamTimings? = nil, afmProfile: AFMProfile? = nil, afmProfileExtended: AFMProfileExtended? = nil) {
         self.id = "chatcmpl-\(id.prefix(8))"
         self.object = "chat.completion"
         self.created = Int(Date().timeIntervalSince1970)
@@ -172,7 +172,7 @@ public struct ChatCompletionResponse: Codable, Sendable {
                 index: 0,
                 message: ResponseMessage(role: "assistant", content: nil, reasoningContent: reasoningContent, toolCalls: toolCalls),
                 logprobs: logprobs,
-                finishReason: "tool_calls"
+                finishReason: finishReason
             )
         ]
         self.usage = Usage(
