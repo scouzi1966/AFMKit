@@ -111,7 +111,7 @@ public final class SelectiveShardedEmbedding: Module {
         return applySharedScale(result!.reshaped(shape + [dimensions]))
     }
 
-    /// Read tiny affine q4/BF16 rows directly from unified memory. No dense
+    /// Read tiny affine q4/q8 BF16 rows directly from unified memory. No dense
     /// table, sidecar, retained pointer, or global cache is created. Must be
     /// called outside compiled transforms, like the selective host-ID path.
     /// The caller retains ordinary GPU lookup for unsupported layouts.
@@ -138,17 +138,22 @@ public final class SelectiveShardedEmbedding: Module {
         var output = [UInt16](repeating: 0, count: hostIDs.count * dimensions)
         for (index, rows) in rowsByShard.enumerated() where !rows.isEmpty {
             guard let shard = shards[index] as? QuantizedEmbedding,
-                  shard.mode == .affine, shard.bits == 4, shard.groupSize == 32,
+                  shard.mode == .affine, (shard.bits == 4 || shard.bits == 8), shard.groupSize == 32,
                   shard.weight.dtype == .uint32, shard.scales.dtype == .bfloat16,
                   let biases = shard.biases, biases.dtype == .bfloat16,
-                  shard.weight.shape == [rowsPerShard, dimensions / 8],
+                  shard.weight.shape == [rowsPerShard, dimensions / (32 / shard.bits)],
                   shard.scales.shape == [rowsPerShard, dimensions / 32],
                   biases.shape == shard.scales.shape
             else { return nil }
             let weightData = shard.weight.asData(access: .noCopy)
             let scaleData = shard.scales.asData(access: .noCopy)
             let biasData = biases.asData(access: .noCopy)
-            guard weightData.strides == [dimensions / 8, 1],
+            let valuesPerWord = 32 / shard.bits
+            let wordShift = shard.bits == 4 ? 3 : 2
+            let packedRowStride = dimensions >> wordShift
+            let withinWordMask = valuesPerWord - 1
+            let quantizedMask = UInt32((1 << shard.bits) - 1)
+            guard weightData.strides == [dimensions / valuesPerWord, 1],
                   scaleData.strides == [dimensions / 32, 1],
                   biasData.strides == [dimensions / 32, 1]
             else { return nil }
@@ -161,8 +166,8 @@ public final class SelectiveShardedEmbedding: Module {
                             let offsets = biasRaw.bindMemory(to: UInt16.self)
                             for (position, row) in rows {
                                 for column in 0..<dimensions {
-                                    let packed = weights[row * (dimensions / 8) + column / 8]
-                                    let q = (packed >> ((column % 8) * 4)) & 15
+                                    let packed = weights[row * packedRowStride + (column >> wordShift)]
+                                    let q = (packed >> ((column & withinWordMask) * shard.bits)) & quantizedMask
                                     let group = row * (dimensions / 32) + column / 32
                                     let scale = Float(bitPattern: UInt32(scales[group]) << 16)
                                     let bias = Float(bitPattern: UInt32(offsets[group]) << 16)

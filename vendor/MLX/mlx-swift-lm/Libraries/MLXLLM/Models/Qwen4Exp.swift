@@ -4565,7 +4565,7 @@ final class Qwen4ExpNGramEmbedding: Module {
                 <= SelectiveShardedEmbedding.maximumCPULookupRows
                 && $0.shards.allSatisfy { shard in
                     guard let q = shard as? QuantizedEmbedding else { return false }
-                    return q.mode == .affine && q.bits == 4 && q.groupSize == 32
+                    return q.mode == .affine && (q.bits == 4 || q.bits == 8) && q.groupSize == 32
                         && q.scales.dtype == .bfloat16 && q.biases?.dtype == .bfloat16
                 }
         } ?? false)

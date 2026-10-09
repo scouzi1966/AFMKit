@@ -174,7 +174,9 @@ final class SelectiveShardedEmbeddingTests: XCTestCase {
         let actual = embedding(ids)
         eval(expected, actual)
         XCTAssertTrue(arrayEqual(expected, actual).item(Bool.self))
-        XCTAssertNil(embedding.lookupOnCPU(hostIDs: [0, 8, 15, 8], shape: [4]))
+        let cpu = try XCTUnwrap(embedding.lookupOnCPU(hostIDs: [0, 8, 15, 8], shape: [4]))
+        eval(cpu)
+        XCTAssertTrue(arrayEqual(expected, cpu).item(Bool.self))
     }
 
     func testCPUFourBitLookupPreservesSharedScale() throws {
@@ -196,5 +198,20 @@ final class SelectiveShardedEmbeddingTests: XCTestCase {
         let actual = try XCTUnwrap(embedding.lookupOnCPU(hostIDs: ids, shape: [1, 4]))
         eval(expected, actual)
         XCTAssertTrue(arrayEqual(expected, actual).item(Bool.self))
+    }
+
+    func testCPUEightBitLookupMatchesGPUAcrossMultipleGroups() throws {
+        let embedding = SelectiveShardedEmbedding(rows: 32, dimensions: 160, parts: 4)
+        var replacements = ModuleChildren()
+        replacements["shards"] = .array(embedding.shards.map { shard in
+            shard.update(parameters: .unflattened(["weight": shard.weight.asType(.bfloat16)]))
+            return .value(QuantizedEmbedding(shard, groupSize: 32, bits: 8, mode: .affine))
+        })
+        embedding.update(modules: replacements)
+        let ids: [Int64] = [31, 0, 16, 31, 4]
+        let gpu = embedding.lookup(hostIDs: ids, shape: [1, 5])
+        let cpu = try XCTUnwrap(embedding.lookupOnCPU(hostIDs: ids, shape: [1, 5]))
+        eval(gpu, cpu)
+        XCTAssertTrue(arrayEqual(gpu, cpu).item(Bool.self))
     }
 }
