@@ -1446,6 +1446,9 @@ public func generateTask(
                 break
             }
 
+            // Count accepted IDs even when UTF-8 detokenization buffers bytes.
+            tokenCount += 1
+
             // Buffer logprob data for this token
             if let lpInfo = iterator.lastLogprobInfo {
                 pendingLogprobs.append(lpInfo)
@@ -1454,8 +1457,6 @@ public func generateTask(
             let tDetok0: UInt64 = perfEnabled ? DispatchTime.now().uptimeNanoseconds : 0
             detokenizer.append(token: token)
             if let chunk = detokenizer.next() {
-                tokenCount += 1
-
                 // Process chunk through the tool call processor
                 if let textToYield = toolCallProcessor.processChunk(chunk) {
                     // Yield buffered logprobs before the chunk they belong to

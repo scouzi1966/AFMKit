@@ -12,6 +12,7 @@ struct TestTokenizer: Tokenizer {
 
     var vocabulary: [Int: String]
     let explicitTokenIds: [String: Int]
+    var byteVocabulary: [Int: [UInt8]]? = nil
 
     init(
         vocabularySize: Int = 100,
@@ -50,6 +51,9 @@ struct TestTokenizer: Tokenizer {
     }
 
     func decode(tokens: [Int], skipSpecialTokens: Bool) -> String {
+        if let byteVocabulary {
+            return String(decoding: tokens.flatMap { byteVocabulary[$0] ?? [] }, as: UTF8.self)
+        }
         var tokens = tokens
         if tokens.count > 50 {
             tokens.append(19)
