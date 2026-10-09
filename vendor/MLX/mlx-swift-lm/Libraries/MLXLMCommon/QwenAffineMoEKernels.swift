@@ -42,6 +42,10 @@ package struct QwenSharedExpertGateUpInputs {
 enum QwenAffineMoEKernels {
     private static let enabled =
         ProcessInfo.processInfo.environment["AFM_QWEN_FUSED_AFFINE_MOE"] != "0"
+    // Qualify the q8/group-64 arithmetic independently before changing the
+    // serving default. Group-32 and multi-row q8 remain on the stock path.
+    private static let eightBitEnabled =
+        ProcessInfo.processInfo.environment["AFM_QWEN_FUSED_AFFINE_MOE_Q8"] == "1"
 
     /// Construct the two dependent MoE custom-kernel nodes below the Swift/C
     /// boundary. The Metal kernels, launch geometry, and lazy graph remain
@@ -159,7 +163,30 @@ enum QwenAffineMoEKernels {
             float up_acc[4] = {0.0f, 0.0f, 0.0f, 0.0f};
             float stock_gate = 0.0f;
             float stock_up = 0.0f;
-            if (GROUP_SIZE == 32) {
+            if (BITS == 8) {
+                // Match MLX qmv_fast/qmv's byte-wise float accumulation and
+                // bias correction. Gate/up use eight inputs per lane when
+                // the stock q8 fast kernel's 256-element K step is aligned.
+                constexpr int per_lane = INPUT % 256 == 0 && OUTPUT % 8 == 0 ? 8 : 4;
+                for (int base = int(lane) * per_lane; base < INPUT; base += 32 * per_lane) {
+                    float gdot = 0.0f, udot = 0.0f, input_sum = 0.0f;
+                    #pragma unroll
+                    for (int offset = 0; offset < per_lane; ++offset) {
+                        const int position = base + offset;
+                        const uint gw = gate_weight_data[weight_base + size_t(position / 4)];
+                        const uint uw = up_weight_data[weight_base + size_t(position / 4)];
+                        const float value = float(token_x[position]);
+                        input_sum += value;
+                        gdot += value * float((gw >> ((position % 4) * 8)) & 255u);
+                        udot += value * float((uw >> ((position % 4) * 8)) & 255u);
+                    }
+                    const size_t group = group_base + size_t(base / GROUP_SIZE);
+                    stock_gate += float(gate_scale_data[group]) * gdot
+                        + input_sum * float(gate_bias_data[group]);
+                    stock_up += float(up_scale_data[group]) * udot
+                        + input_sum * float(up_bias_data[group]);
+                }
+            } else if (GROUP_SIZE == 32) {
                 // Preserve MLX affine qmv/qmv_fast's packed dot and BF16
                 // bias-correction order, including the fast path's 16
                 // inputs per lane rather than the general path's eight.
@@ -213,9 +240,9 @@ enum QwenAffineMoEKernels {
                     }
                 }
             }
-            const float gate_sum = GROUP_SIZE == 32 ? simd_sum(stock_gate) : simd_sum(
+            const float gate_sum = GROUP_SIZE == 32 || BITS == 8 ? simd_sum(stock_gate) : simd_sum(
                 (gate_acc[0] + gate_acc[1]) + (gate_acc[2] + gate_acc[3]));
-            const float up_sum = GROUP_SIZE == 32 ? simd_sum(stock_up) : simd_sum(
+            const float up_sum = GROUP_SIZE == 32 || BITS == 8 ? simd_sum(stock_up) : simd_sum(
                 (up_acc[0] + up_acc[1]) + (up_acc[2] + up_acc[3]));
             if (lane == 0) {
                 // Match the stock graph's BF16 projection rounding, sigmoid,
@@ -436,7 +463,14 @@ enum QwenAffineMoEKernels {
                         const uint packed = word >> (offset * BITS);
                         const size_t input_offset = input_base_for_slot
                             + size_t(input_index + offset);
-                        if (GROUP_SIZE == 32) {
+                        if (BITS == 8) {
+                            #pragma unroll
+                            for (int component = 0; component < 4; ++component) {
+                                const float value = float(activation_data[input_offset + size_t(component)]);
+                                input_sum += value;
+                                dot += value * float((packed >> (component * 8)) & 255u);
+                            }
+                        } else if (GROUP_SIZE == 32) {
                             // MLX qmv's load_vector/qdot groups bias correction
                             // per packed word and rounds each T input quartet
                             // before adding it to the float sum. Distributing
@@ -459,9 +493,9 @@ enum QwenAffineMoEKernels {
                             }
                         }
                     }
-                    if (GROUP_SIZE == 32) stock_accumulator += scale * dot + input_sum * bias;
+                    if (GROUP_SIZE == 32 || BITS == 8) stock_accumulator += scale * dot + input_sum * bias;
                 }
-                const float value = GROUP_SIZE == 32 ? simd_sum(stock_accumulator)
+                const float value = GROUP_SIZE == 32 || BITS == 8 ? simd_sum(stock_accumulator)
                     : simd_sum((accumulators[0] + accumulators[1])
                         + (accumulators[2] + accumulators[3]));
                 if (lane == 0) slot_values[slot * uint(ROWS) + row] = T(value);
@@ -471,7 +505,7 @@ enum QwenAffineMoEKernels {
 
             if (slot == 0 && lane < uint(ROWS)) {
                 T total = T(0.0f);
-                if (GROUP_SIZE == 32) {
+                if (GROUP_SIZE == 32 || BITS == 8) {
                     // Match MLX col_reduce_small's eight BF16 partial sums.
                     // Reassociating this as a sequential top-k sum changes
                     // rounded routed activations despite identical experts.
@@ -615,7 +649,8 @@ enum QwenAffineMoEKernels {
               gate.mode == .affine,
               up.mode == .affine,
               down.mode == .affine,
-              gate.bits == 4,
+              gate.bits == 4 || (gate.bits == 8 && eightBitEnabled
+                  && gate.groupSize == 64 && !independentRows),
               up.bits == gate.bits,
               down.bits == gate.bits,
               (gate.groupSize == 64 || (gate.groupSize == 32
@@ -634,6 +669,26 @@ enum QwenAffineMoEKernels {
               let downBiases = down.biases,
               down.outputDims.isMultiple(of: 4)
         else { return nil }
+
+        if gate.bits == 8 {
+            guard scores.dtype == .bfloat16,
+                  gate.bias == nil, up.bias == nil, down.bias == nil,
+                  gate.weight.dtype == .uint32, up.weight.dtype == .uint32,
+                  down.weight.dtype == .uint32,
+                  gate.weight.shape == [gate.numExperts, gate.outputDims, gate.inputDims / 4],
+                  up.weight.shape == gate.weight.shape,
+                  down.weight.shape == [down.numExperts, down.outputDims, down.inputDims / 4],
+                  gate.scales.dtype == .bfloat16, up.scales.dtype == .bfloat16,
+                  down.scales.dtype == .bfloat16,
+                  gateBiases.dtype == .bfloat16, upBiases.dtype == .bfloat16,
+                  downBiases.dtype == .bfloat16,
+                  gate.scales.shape == [gate.numExperts, gate.outputDims, gate.inputDims / 64],
+                  up.scales.shape == gate.scales.shape,
+                  down.scales.shape == [down.numExperts, down.outputDims, down.inputDims / 64],
+                  gateBiases.shape == gate.scales.shape, upBiases.shape == up.scales.shape,
+                  downBiases.shape == down.scales.shape
+            else { return nil }
+        }
 
         if independentRows {
             guard gate.scales.dtype == .bfloat16, up.scales.dtype == .bfloat16,

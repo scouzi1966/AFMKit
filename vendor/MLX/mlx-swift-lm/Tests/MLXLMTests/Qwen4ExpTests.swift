@@ -2071,6 +2071,35 @@ final class Qwen4ExpTests: XCTestCase {
         XCTAssertLessThanOrEqual(difference, 0.02)
     }
 
+    func testQwenEightBitAffineDecodeFusesGroup64WithStockRounding() throws {
+        let prior = getenv("AFM_QWEN_FUSED_AFFINE_MOE_Q8").map { String(cString: $0) }
+        setenv("AFM_QWEN_FUSED_AFFINE_MOE_Q8", "1", 1)
+        defer {
+            if let prior { setenv("AFM_QWEN_FUSED_AFFINE_MOE_Q8", prior, 1) }
+            else { unsetenv("AFM_QWEN_FUSED_AFFINE_MOE_Q8") }
+        }
+        let layer = SwitchGLU(inputDims: 2560, hiddenDims: 640, numExperts: 16)
+        layer.update(parameters: layer.parameters().mapValues { $0.asType(.bfloat16) })
+        quantize(model: layer, groupSize: 64, bits: 8)
+        let input = MLXArray((0..<2560).map { Float(($0 % 13) - 6) / 16 })
+            .asType(.bfloat16).reshaped(1, 1, 2560)
+        let indices = MLXArray((0..<10).map(Int32.init)).reshaped(1, 1, 10)
+        let scores = MLXArray((0..<10).map { Float($0 + 1) / 55 })
+            .asType(.bfloat16).reshaped(1, 1, 10)
+        layer.prepareQwenAffineDecode()
+        let actual = try XCTUnwrap(layer.qwenAffineDecode(input, indices: indices, scores: scores))
+        let expected = (layer(input, indices) * scores[.ellipsis, .newAxis]).sum(axis: -2)
+        eval(actual, expected)
+        XCTAssertEqual(actual.shape, expected.shape)
+        XCTAssertEqual(actual.dtype, expected.dtype)
+        let magnitude = MLX.abs(expected.asType(.float32)).max().item(Float.self)
+        let error = MLX.abs(actual.asType(.float32) - expected.asType(.float32)).max().item(Float.self)
+        XCTAssertGreaterThan(magnitude, 0)
+        XCTAssertLessThanOrEqual(error / magnitude, 0.02)
+        // Unsupported score precision must retain the stock implementation.
+        XCTAssertNil(layer.qwenAffineDecode(input, indices: indices, scores: scores.asType(.float32)))
+    }
+
     func testTargetVerifyAttentionUsesEachRowsCausalPrefix() {
         let queryValues: [Float] = (0 ..< (2 * 3 * 8)).map {
             Float(($0 % 11) - 5) / 8
