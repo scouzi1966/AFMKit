@@ -595,9 +595,10 @@ public final class MLXModelService:
     /// loaded model's parser, and nil would select the default JSON parser.
     static func generationConfiguration(
         _ configuration: ModelConfiguration,
-        rawPrompt: String?
+        rawPrompt: String?,
+        hasTools: Bool = true
     ) -> ModelConfiguration {
-        guard rawPrompt != nil else { return configuration }
+        guard rawPrompt != nil || !hasTools else { return configuration }
         var rawConfiguration = configuration
         rawConfiguration.toolCallFormat = ToolCallFormat.none
         return rawConfiguration
@@ -3566,7 +3567,8 @@ public final class MLXModelService:
             var collectedToolCalls = [ToolCall]()
             var completionInfo: GenerateCompletionInfo? = nil
             var stoppedBySequence = false
-            let (generationStream, generationTask) = try await container.generateTask(input: input, parameters: params)
+            let (generationStream, generationTask) = try await container.generateTask(
+                input: input, parameters: params, tools: toolSpecs)
             defer {
                 generationTask.cancel()
             }
@@ -3626,7 +3628,7 @@ public final class MLXModelService:
 
             var finalToolCalls = collectedToolCalls
             var finalContent = generated
-            if finalToolCalls.isEmpty && tools != nil && !self.toolCallParserDisabled {
+            if finalToolCalls.isEmpty && !(tools?.isEmpty ?? true) && !self.toolCallParserDisabled {
                 let (parsed, remaining) = ToolCallStreamingRuntime.parseCompletedToolCalls(
                     from: generated,
                     toolCallParser: self.resolvedToolCallParser(logBypass: false),
@@ -3763,6 +3765,7 @@ public final class MLXModelService:
                 let decoded = context.tokenizer.decode(tokens: allTokens)
                 if self.trace {
                     print("\(vvCyan)[\(ts())] [VV] SEND→MODEL full prompt (\(allTokens.count) tokens):\n\(decoded)\(vvReset)")
+                    print("[AFM_PROMPT_TOKEN_IDS] \(allTokens)")
                     fflush(stdout)
                 } else {
                     print("[\(ts())] [DEBUG] Full tokenized prompt (\(allTokens.count) tokens):\n\(decoded)\n[/DEBUG]")
@@ -4061,7 +4064,7 @@ public final class MLXModelService:
             let (generationStream, generationTask) = MLXLMCommon.generateTask(
                 promptTokenCount: generateInput.text.tokens.size,
                 modelConfiguration: Self.generationConfiguration(
-                    context.configuration, rawPrompt: rawPrompt),
+                    context.configuration, rawPrompt: rawPrompt, hasTools: !(tools?.isEmpty ?? true)),
                 tokenizer: context.tokenizer,
                 iterator: generationIterator,
                 stopAfterToolCall: params.stopAfterToolCall,
@@ -4266,7 +4269,7 @@ public final class MLXModelService:
         // the vendor's XMLFunctionParser misses (regex doesn't match multiline content).
         var finalToolCalls = collectedToolCalls
         var finalContent = generated
-        if finalToolCalls.isEmpty && tools != nil && !self.toolCallParserDisabled {
+        if finalToolCalls.isEmpty && !(tools?.isEmpty ?? true) && !self.toolCallParserDisabled {
             if debugLogging {
                 print("[\(ts())] [ToolCallParser] Vendor parser found 0 tool calls, trying fallback on \(generated.count) chars")
             }
@@ -4858,6 +4861,7 @@ public final class MLXModelService:
                             let allTokens = input.text.tokens.reshaped(-1).asArray(Int.self)
                             let decoded = context.tokenizer.decode(tokens: allTokens)
                             print("\(vvCyan)[\(ts())] [VV] SEND→MODEL full prompt (\(allTokens.count) tokens):\n\(decoded)\(vvReset)")
+                            print("[AFM_PROMPT_TOKEN_IDS] \(allTokens)")
                             fflush(stdout)
                         }
 
@@ -5150,7 +5154,7 @@ public final class MLXModelService:
                         let (generationStream, generationTask) = MLXLMCommon.generateTask(
                             promptTokenCount: generateInput.text.tokens.size,
                             modelConfiguration: Self.generationConfiguration(
-                                context.configuration, rawPrompt: rawPrompt),
+                                context.configuration, rawPrompt: rawPrompt, hasTools: !(tools?.isEmpty ?? true)),
                             tokenizer: context.tokenizer,
                             iterator: generationIterator,
                             stopAfterToolCall: params.stopAfterToolCall,
@@ -5675,8 +5679,12 @@ public final class MLXModelService:
         if let parameters = tool.function.parameters {
             functionPairs.append(("parameters", parameters.value.toAny()))
         }
-        if let strict = tool.function.strict {
-            functionPairs.append(("strict", strict))
+        // False is the API default, not part of the function's semantic schema.
+        // Keep explicit strict opt-in visible without teaching a different tool
+        // definition for clients which serialize the default versus omit it.
+        // This only renders the prompt; the original tool still drives grammar policy.
+        if tool.function.strict == true {
+            functionPairs.append(("strict", true))
         }
         let functionValue = orderedJSONObject(functionPairs)
         return "{\(jsonStringLiteral("type")): \(jsonStringLiteral(tool.type)), \(jsonStringLiteral("function")): \(functionValue)}"
@@ -5752,7 +5760,7 @@ public final class MLXModelService:
     }
 
     private static func jsonStringLiteral(_ value: String) -> String {
-        let data = try? JSONSerialization.data(withJSONObject: [value])
+        let data = try? JSONSerialization.data(withJSONObject: [value], options: [.withoutEscapingSlashes])
         let encoded = data.flatMap { String(data: $0, encoding: .utf8) } ?? "[\"\"]"
         return String(encoded.dropFirst().dropLast())
     }

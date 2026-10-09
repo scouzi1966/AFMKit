@@ -5,6 +5,26 @@ import XCTest
 @testable import AFMKitMLX
 
 final class RawTextGenerationContractTests: XCTestCase {
+    func testNoToolsPreservesMarkupWithoutMutatingToolEnabledConfiguration() {
+        let formats: [ToolCallFormat?] = [nil, .xmlFunction, .json, .glm4, .apertus]
+        for format in formats {
+            let configured = ModelConfiguration(id: "test/model", toolCallFormat: format)
+            let disabled = MLXModelService.generationConfiguration(
+                configured, rawPrompt: nil, hasTools: false)
+            XCTAssertEqual(disabled.toolCallFormat, ToolCallFormat.none)
+            XCTAssertEqual(configured.toolCallFormat, format)
+            XCTAssertEqual(MLXModelService.generationConfiguration(
+                configured, rawPrompt: nil, hasTools: true), configured)
+            let parser = ToolCallProcessor(format: disabled.toolCallFormat ?? .json)
+            let pieces = ["<tool_", "call><function=read_file>",
+                "<parameter=path>README.md</parameter></function></tool_call>"]
+            var output = pieces.compactMap { parser.processChunk($0) }.joined()
+            output += parser.finishPendingText() ?? ""
+            XCTAssertEqual(output, pieces.joined())
+            XCTAssertTrue(parser.drainToolCalls(stopAfterFirst: false).isEmpty)
+        }
+    }
+
     func testRawGenerationPreservesToolMarkupWithoutMutatingChatConfiguration() {
         let formats: [ToolCallFormat?] = [nil, .xmlFunction, .json, .glm4, .apertus]
         for format in formats {
