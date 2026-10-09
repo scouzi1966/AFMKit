@@ -4079,6 +4079,7 @@ private final class Qwen4ExpSparseMoE: Module, UnaryLayer {
         ProcessInfo.processInfo.environment["AFM_QWEN_VERIFY_FUSED_SHARED_EXPERT"] == "1"
     private static let reportSharedExpertTrace =
         ProcessInfo.processInfo.environment["AFM_DEBUG"] == "1"
+    private var didReportEightBitDispatch = false
     private static let fusedVerifyRouter =
         QwenMTPExecutionProfile.environment["AFM_QWEN_VERIFY_FUSED_ROUTER"] == "1"
     private static let group64FusedVerifyExperts =
@@ -4243,6 +4244,16 @@ private final class Qwen4ExpSparseMoE: Module, UnaryLayer {
                 x, indices: indices, scores: scores, allowGroup64: true)
         } else {
             fusedRouted = nil
+        }
+        if Self.reportSharedExpertTrace, !didReportEightBitDispatch,
+           x.dim(1) == 1,
+           let routedGate = switchMLP.leafModules().flattened().first(where: { $0.0 == "gate_proj" })?.1
+                as? QuantizedSwitchLinear,
+           routedGate.bits == 8 {
+            didReportEightBitDispatch = true
+            print("[QwenQ8Dispatch] input=\(x.dtype) logits=\(logits.dtype) scores=\(scores.dtype) "
+                + "group=\(routedGate.groupSize) fused=\(fusedRouted != nil) "
+                + "verification=\(String(describing: verificationPolicy))")
         }
         let routed: MLXArray
         if let fusedRouted {

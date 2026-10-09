@@ -46,6 +46,8 @@ enum QwenAffineMoEKernels {
     // serving default. Group-32 and multi-row q8 remain on the stock path.
     private static let eightBitEnabled =
         ProcessInfo.processInfo.environment["AFM_QWEN_FUSED_AFFINE_MOE_Q8"] == "1"
+    private static let eightBitFastKStep = 256
+    private static let eightBitSlowKStep = 128
 
     /// Construct the two dependent MoE custom-kernel nodes below the Swift/C
     /// boundary. The Metal kernels, launch geometry, and lazy graph remain
@@ -671,7 +673,13 @@ enum QwenAffineMoEKernels {
         else { return nil }
 
         if gate.bits == 8 {
-            guard scores.dtype == .bfloat16,
+            guard gate.inputDims > 0, gate.outputDims > 0,
+                  gate.inputDims.isMultiple(of: eightBitFastKStep),
+                  gate.outputDims.isMultiple(of: eightBitSlowKStep),
+                  !gate.outputDims.isMultiple(of: eightBitFastKStep),
+                  gate.numExperts > 0, up.numExperts == gate.numExperts,
+                  down.numExperts == gate.numExperts,
+                  scores.dtype == .bfloat16,
                   gate.bias == nil, up.bias == nil, down.bias == nil,
                   gate.weight.dtype == .uint32, up.weight.dtype == .uint32,
                   down.weight.dtype == .uint32,

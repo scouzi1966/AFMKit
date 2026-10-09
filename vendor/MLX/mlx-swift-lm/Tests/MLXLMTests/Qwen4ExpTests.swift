@@ -2098,6 +2098,11 @@ final class Qwen4ExpTests: XCTestCase {
         XCTAssertLessThanOrEqual(error / magnitude, 0.02)
         // Unsupported score precision must retain the stock implementation.
         XCTAssertNil(layer.qwenAffineDecode(input, indices: indices, scores: scores.asType(.float32)))
+        // Fast-down widths need a separately qualified lane/reduction order.
+        let fastDown = SwitchGLU(inputDims: 2560, hiddenDims: 256, numExperts: 16)
+        fastDown.update(parameters: fastDown.parameters().mapValues { $0.asType(.bfloat16) })
+        quantize(model: fastDown, groupSize: 64, bits: 8)
+        XCTAssertNil(fastDown.qwenAffineDecode(input, indices: indices, scores: scores))
     }
 
     func testTargetVerifyAttentionUsesEachRowsCausalPrefix() {
