@@ -872,6 +872,79 @@ final class Qwen4ExpTests: XCTestCase {
         }
     }
 
+    /// Preserve normal command batching while isolating the tiny HC injection
+    /// projections. Sigmoid/broadcast keeps an explicit dependency and bounded
+    /// inputs; this is not a decoder-quality or full-trunk timing assertion.
+    func testExactCheckpointInjectionChainMicrobenchmark() async throws {
+        guard let modelPath = ProcessInfo.processInfo.environment["QWEN4_FORWARD_BENCH_MODEL"] else {
+            throw XCTSkip("Set QWEN4_FORWARD_BENCH_MODEL for this diagnostic")
+        }
+        let context = try await loadModel(directory: URL(fileURLWithPath: modelPath))
+        defer { withExtendedLifetime(context) {} }
+        let textModel = context.model as? Qwen4ExpModel
+            ?? context.model.children().flattened().first(where: { $0.0 == "language_model" })?.1 as? Qwen4ExpModel
+        let qwen = try XCTUnwrap(textModel)
+        let projections = qwen.modules().compactMap { $0 as? Qwen4ExpGatedResidual }
+            .compactMap { $0.blockInjectWeight }
+        XCTAssertEqual(projections.count, 96)
+        MLXRandom.seed(123)
+        let input = MLXRandom.normal([1, 1, 10240]).asType(.bfloat16)
+        eval(input)
+        let native: [(MLXArray) -> MLXArray] = projections.map { projection in
+            { projection($0) }
+        }
+        var modes = [("native", native)]
+        if projections.allSatisfy({ $0 is QuantizedLinear }) {
+            // Same checkpoint's affine values, restored to FP32 for this
+            // diagnostic only. No checkpoint or model parameter is changed.
+            // Dense dot reductions differ from QMV; this is not a quality fix.
+            let dense = try projections.map { projection -> (MLXArray) -> MLXArray in
+                let q = try XCTUnwrap(projection as? QuantizedLinear)
+                let weight = dequantized(q.weight, scales: q.scales.asType(.float32),
+                    biases: q.biases?.asType(.float32), groupSize: q.groupSize,
+                    bits: q.bits, mode: q.mode)
+                eval(weight)
+                return { matmul($0.asType(.float32), weight.T).asType(.bfloat16) }
+            }
+            let nativeValues = native.map { $0(input) }
+            let denseValues = dense.map { $0(input) }
+            eval(nativeValues + denseValues)
+            let difference = stacked(zip(nativeValues, denseValues).map {
+                abs($0.0.asType(.float32) - $0.1.asType(.float32)).max()
+            }).max().item(Float.self)
+            let equal = stacked(zip(nativeValues, denseValues).map {
+                arrayEqual($0.0, $0.1)
+            }).asType(.int32).sum().item(Int32.self)
+            print("[qwen4-injection-dense-comparison] exact_fields=\(equal)/\(projections.count) "
+                + "max_abs_difference=\(difference)")
+            modes.append(("same-affine-values-dense-f32", dense))
+        }
+        for (mode, functions) in modes {
+            func forward() -> MLXArray {
+                var hidden = input
+                for (index, projection) in functions.enumerated() {
+                    let gate = sigmoid(projection(hidden)).asType(.bfloat16).reshaped(1, 1, 4, 1)
+                    hidden = contiguous(broadcast(gate, to: [1, 1, 4, 2560])).reshaped(1, 1, 10240)
+                    if (index + 1).isMultiple(of: 8), index + 1 < projections.count { asyncEval(hidden) }
+                }
+                return hidden
+            }
+            for _ in 0..<3 { eval(forward()) }
+            _ = Stream.gpu.commandBufferProfileSinceReport()
+            var samples = [Double]()
+            var operations: UInt64 = 0
+            for _ in 0..<8 {
+                let start = DispatchTime.now().uptimeNanoseconds
+                eval(forward())
+                samples.append(Double(DispatchTime.now().uptimeNanoseconds - start) / 1e6)
+                operations += Stream.gpu.commandBufferProfileSinceReport().operations
+            }
+            samples.sort()
+            print("[qwen4-injection-chain] mode=\(mode) banks=\(projections.count) median_wall_ms=\(samples[4]) "
+                + "min_wall_ms=\(samples[0]) ops=\(operations / 8)")
+        }
+    }
+
     func testSanitizeAppliesCheckpointNGramMultipliersToMappedLookupPath() async throws {
         let loaded = try await LLMTypeRegistry.shared.createModel(
             configuration: Data(pleConfiguration.utf8),
