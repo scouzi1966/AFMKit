@@ -520,6 +520,8 @@ final class Qwen4ExpTests: XCTestCase {
     /// token-loop bookkeeping so model graph construction and GPU evaluation
     /// can be compared at the same cache depth. The test is skipped unless an
     /// exact checkpoint and iteration count are supplied explicitly.
+    /// Build includes async submission and possible GPU scheduler waits; these
+    /// are host wall intervals, not independent CPU/GPU execution counters.
     func testExactCheckpointDecodeForwardMicrobenchmark() async throws {
         let environment = ProcessInfo.processInfo.environment
         guard let modelPath = environment["QWEN4_FORWARD_BENCH_MODEL"],
@@ -534,8 +536,14 @@ final class Qwen4ExpTests: XCTestCase {
             0, Int(environment["QWEN4_FORWARD_BENCH_KV"] ?? "0") ?? 0)
         let profileOperations =
             environment["QWEN4_FORWARD_BENCH_PROFILE_OPS"] == "1"
+        let profilePrimitives = environment["MLX_PROFILE_PRIMITIVES"] == "1"
+        let captureLogitsPath = environment["QWEN4_FORWARD_BENCH_CAPTURE_LOGITS"]
         let context = try await loadModel(directory: URL(fileURLWithPath: modelPath))
-        let qwen = try XCTUnwrap(context.model as? Qwen4ExpModel)
+        let textModel = context.model as? Qwen4ExpModel
+            ?? context.model.children().flattened().first(where: {
+                $0.0 == "language_model"
+            })?.1 as? Qwen4ExpModel
+        let qwen = try XCTUnwrap(textModel)
         let cache = qwen.newCache(parameters: nil)
 
         var prefilled = 0
@@ -552,10 +560,19 @@ final class Qwen4ExpTests: XCTestCase {
 
         func forward() -> MLXArray {
             let token = MLXArray([Int32(1)]).reshaped(1, 1)
-            return qwen(token, cache: cache)
+            // Match AFM's AR iterator, which already knows this host token.
+            // Omitting it introduces device-to-host ID reads for native PLE
+            // and makes this diagnostic a different execution path.
+            return qwen.forward(inputIDs: token, cache: cache, hostTokenIDs: [1])
         }
         for _ in 0 ..< 3 {
             eval(forward())
+        }
+        print("[qwen4-fwd-memory] active_bytes=\(Memory.activeMemory) "
+            + "limit_bytes=\(Memory.memoryLimit) peak_bytes=\(Memory.peakMemory)")
+        if profilePrimitives {
+            Stream.gpu.synchronize()
+            FileHandle.standardError.write(Data("[qwen4-primitive-window] begin full-forward\n".utf8))
         }
 
         if profileOperations {
@@ -565,8 +582,9 @@ final class Qwen4ExpTests: XCTestCase {
         var evaluationNanoseconds: UInt64 = 0
         var operations: UInt64 = 0
         var lastLogits: MLXArray?
+        var capturedLogits = [String: MLXArray]()
         let totalStart = DispatchTime.now().uptimeNanoseconds
-        for _ in 0 ..< iterations {
+        for iteration in 0 ..< iterations {
             let buildStart = DispatchTime.now().uptimeNanoseconds
             let logits = forward()
             buildNanoseconds += DispatchTime.now().uptimeNanoseconds - buildStart
@@ -580,8 +598,15 @@ final class Qwen4ExpTests: XCTestCase {
                     Stream.gpu.commandBufferProfileSinceReport().operations
             }
             lastLogits = logits
+            if captureLogitsPath != nil {
+                capturedLogits["logits_\(iteration)"] = logits
+            }
         }
         let totalNanoseconds = DispatchTime.now().uptimeNanoseconds - totalStart
+        if profilePrimitives {
+            Stream.gpu.synchronize()
+            FileHandle.standardError.write(Data("[qwen4-primitive-window] end full-forward\n".utf8))
+        }
         let divisor = Double(iterations) * 1_000_000
         print(
             "[qwen4-fwd-ubench] \(iterations) decode forwards at "
@@ -589,9 +614,9 @@ final class Qwen4ExpTests: XCTestCase {
                 + String(format: "%.3f", Double(totalNanoseconds) / divisor)
                 + " ms/forward (build "
                 + String(format: "%.3f", Double(buildNanoseconds) / divisor)
-                + " ms CPU + eval "
+                + " ms build/submit wall + "
                 + String(format: "%.3f", Double(evaluationNanoseconds) / divisor)
-                + " ms GPU, "
+                + " ms final eval wall, "
                 + (profileOperations
                     ? String(
                         format: "%.0f ops/forward",
@@ -600,16 +625,24 @@ final class Qwen4ExpTests: XCTestCase {
                 + ")")
 
         let logits = try XCTUnwrap(lastLogits)
+        if let captureLogitsPath {
+            try save(arrays: capturedLogits, url: URL(fileURLWithPath: captureLogitsPath))
+            print("[qwen4-fwd-capture] saved \(capturedLogits.count) logits tensors")
+        }
         XCTAssertEqual(logits.shape, [1, 1, qwen.vocabularySize])
         XCTAssertTrue(logits[0, 0, 0].item(Float.self).isFinite)
 
         func forwardWithoutLMHead() -> MLXArray {
             qwen.forwardStreamState(
                 inputIDs: MLXArray([Int32(1)]).reshaped(1, 1),
-                cache: cache).hidden
+                cache: cache, hostTokenIDs: [1]).hidden
         }
         for _ in 0 ..< 3 {
             eval(forwardWithoutLMHead())
+        }
+        if profilePrimitives {
+            Stream.gpu.synchronize()
+            FileHandle.standardError.write(Data("[qwen4-primitive-window] begin no-head\n".utf8))
         }
         if profileOperations {
             _ = Stream.gpu.commandBufferProfileSinceReport()
@@ -637,6 +670,10 @@ final class Qwen4ExpTests: XCTestCase {
         }
         let noLMHeadTotalNanoseconds =
             DispatchTime.now().uptimeNanoseconds - noLMHeadTotalStart
+        if profilePrimitives {
+            Stream.gpu.synchronize()
+            FileHandle.standardError.write(Data("[qwen4-primitive-window] end no-head\n".utf8))
+        }
         print(
             "[qwen4-fwd-ubench] without lm_head: "
                 + String(
@@ -644,10 +681,10 @@ final class Qwen4ExpTests: XCTestCase {
                 + " ms/forward (build "
                 + String(
                     format: "%.3f", Double(noLMHeadBuildNanoseconds) / divisor)
-                + " ms CPU + eval "
+                + " ms build/submit wall + "
                 + String(
                     format: "%.3f", Double(noLMHeadEvaluationNanoseconds) / divisor)
-                + " ms GPU, "
+                + " ms final eval wall, "
                 + (profileOperations
                     ? String(
                         format: "%.0f ops/forward",
@@ -660,6 +697,179 @@ final class Qwen4ExpTests: XCTestCase {
                         - Double(noLMHeadTotalNanoseconds)) / divisor)
                 + " ms")
         XCTAssertEqual(try XCTUnwrap(lastHidden).shape, [1, 1, 2_560])
+    }
+
+    /// Actual checkpoint weights, all 96 HC banks, and explicit pending
+    /// injection. Independent reads isolate this subsystem; they do not claim
+    /// to reproduce the full trunk's dependency/overlap behavior or quality.
+    func testExactCheckpointHyperConnectionMicrobenchmark() async throws {
+        let environment = ProcessInfo.processInfo.environment
+        guard let modelPath = environment["QWEN4_FORWARD_BENCH_MODEL"] else {
+            throw XCTSkip("Set QWEN4_FORWARD_BENCH_MODEL for this diagnostic")
+        }
+        let context = try await loadModel(directory: URL(fileURLWithPath: modelPath))
+        let textModel = context.model as? Qwen4ExpModel
+            ?? context.model.children().flattened().first(where: {
+                $0.0 == "language_model"
+            })?.1 as? Qwen4ExpModel
+        let qwen = try XCTUnwrap(textModel)
+        let mixers = qwen.modules().compactMap { $0 as? Qwen4ExpGatedResidual }
+            .filter { $0.blockInjectWeight != nil }
+        defer { withExtendedLifetime(context) {} }
+        XCTAssertEqual(mixers.count, 96)
+        MLXRandom.seed(123)
+        let input = MLXRandom.normal([1, 1, 10240]).asType(.bfloat16)
+        let output = MLXRandom.normal([1, 1, 2560]).asType(.bfloat16)
+        let weights = MLXArray([Float(0.25), 0.5, 0.75, 1])
+            .asType(.bfloat16).reshaped(1, 1, 4)
+        eval(input, output, weights)
+        let arguments = [input, output, weights]
+        let bodies: [@Sendable ([MLXArray]) -> [MLXArray]] = mixers.map { mixer in
+            { [unowned mixer] arrays in
+                let result = mixer.mixAfterInjection(output: arrays[1],
+                    residual: arrays[0], weights: arrays[2], verificationPolicy: nil)
+                return [result.0, result.1, result.2]
+            }
+        }
+        let expected = bodies.flatMap { $0(arguments) }
+        eval(expected)
+        if mixers.allSatisfy({ $0.blockInjectWeight is QuantizedLinear }) {
+            let partial = try mixers.flatMap { mixer -> [MLXArray] in
+                let value = try XCTUnwrap(Qwen4ExpHyperConnectionFusion.call(
+                    input: input, normWeight: mixer.hcNorm.weight,
+                    down: mixer.inputMixWeightDown, up: mixer.inputMixWeightUp,
+                    inject: mixer.blockInjectWeight, hcCount: mixer.hcCount,
+                    hiddenSize: mixer.hiddenSize, epsilon: mixer.hcNorm.eps,
+                    pendingOutput: output, pendingWeights: weights,
+                    allowQuantizedInjectionForTesting: true, verificationPolicy: nil))
+                return [value.mixed, value.stream, value.injection]
+            }
+            eval(partial)
+            let maximumDifference = stacked(zip(partial, expected).map {
+                abs($0.0.asType(.float32) - $0.1.asType(.float32)).max()
+            }).max().item(Float.self)
+            let exactFields = stacked(zip(partial, expected).map {
+                arrayEqual($0.0, $0.1)
+            }).asType(.int32).sum().item(Int32.self)
+            print("[qwen4-hc-partial-vs-current] max_abs_difference=\(maximumDifference) "
+                + "exact_fields=\(exactFields)/\(expected.count)")
+        }
+        for mode in ["eager", "compiled"] {
+            let functions = mode == "compiled"
+                ? bodies.map { compile(shapeless: false, $0) } : bodies
+            func makeOutputs() -> [MLXArray] {
+                functions.flatMap { $0(arguments) }
+            }
+            let actual = makeOutputs()
+            eval(actual)
+            XCTAssertEqual(actual.count, expected.count)
+            let differences = zip(actual, expected).map {
+                abs($0.0.asType(.float32) - $0.1.asType(.float32)).max()
+            }
+            let equality = zip(actual, expected).map { arrayEqual($0.0, $0.1) }
+            let maximumDifference = stacked(differences).max().item(Float.self)
+            let exactFields = stacked(equality).asType(.int32).sum().item(Int32.self)
+            print("[qwen4-hc-equivalence] mode=\(mode) max_abs_difference=\(maximumDifference) "
+                + "exact_fields=\(exactFields)/\(expected.count)")
+            for _ in 0..<2 { eval(makeOutputs()) }
+            _ = Stream.gpu.commandBufferProfileSinceReport()
+            var samples = [Double]()
+            var operations: UInt64 = 0
+            for _ in 0..<8 {
+                let start = DispatchTime.now().uptimeNanoseconds
+                eval(makeOutputs())
+                samples.append(Double(DispatchTime.now().uptimeNanoseconds - start) / 1e6)
+                operations += Stream.gpu.commandBufferProfileSinceReport().operations
+            }
+            samples.sort()
+            print("[qwen4-hc-ubench] mode=\(mode) banks=\(mixers.count) "
+                + "median_wall_ms=\(samples[4]) min_wall_ms=\(samples[0]) "
+                + "ops_per_sweep=\(operations / 8)")
+        }
+    }
+
+    /// Real routed banks in a dependent 48-layer chain. A synthetic RMS
+    /// boundary keeps the chain finite and alive; this is not a model-quality
+    /// test or an additive attribution of the full trunk's wall time.
+    func testExactCheckpointRoutedExpertChainMicrobenchmark() async throws {
+        guard let modelPath = ProcessInfo.processInfo.environment["QWEN4_FORWARD_BENCH_MODEL"] else {
+            throw XCTSkip("Set QWEN4_FORWARD_BENCH_MODEL for this diagnostic")
+        }
+        let context = try await loadModel(directory: URL(fileURLWithPath: modelPath))
+        let textModel = context.model as? Qwen4ExpModel
+            ?? context.model.children().flattened().first(where: {
+                $0.0 == "language_model"
+            })?.1 as? Qwen4ExpModel
+        let qwen = try XCTUnwrap(textModel)
+        let routedLayers = qwen.modules().compactMap { $0 as? SwitchGLU }
+        defer { withExtendedLifetime(context) {} }
+        XCTAssertEqual(routedLayers.count, 48)
+        MLXRandom.seed(123)
+        let input = MLXRandom.normal([1, 1, 2560]).asType(.bfloat16)
+        let normWeight = MLXArray.ones([2560], dtype: .bfloat16)
+        let indices = (0..<routedLayers.count).map { layer in
+            MLXArray((0..<10).map { Int32((layer * 13 + $0 * 53) % 512) }).reshaped(1, 1, 10)
+        }
+        let scores = MLXArray((0..<10).map { Float($0 + 1) / 55 })
+            .asType(.bfloat16).reshaped(1, 1, 10)
+        eval(input, normWeight, scores)
+        for index in indices { eval(index) }
+        for layer in routedLayers { layer.prepareQwenAffineDecode() }
+        for fused in [false, true] {
+            if fused, routedLayers.enumerated().contains(where: { index, layer in
+                layer.qwenAffineDecode(input, indices: indices[index], scores: scores) == nil
+            }) {
+                print("[qwen4-routed-chain] fused mode unavailable; stock measurements retained")
+                continue
+            }
+            for compiled in [false, true] {
+                let bodies: [@Sendable ([MLXArray]) -> [MLXArray]] = routedLayers.map { layer in
+                    let body: @Sendable ([MLXArray]) -> [MLXArray] = { [unowned layer] arrays in
+                        let mixed: MLXArray
+                        if fused {
+                            guard let value = layer.qwenAffineDecode(arrays[0],
+                                indices: arrays[1], scores: arrays[2]) else {
+                                preconditionFailure("Enable the qualified bit-width-specific fused expert experiment")
+                            }
+                            mixed = value
+                        } else {
+                            mixed = (layer(arrays[0], arrays[1])
+                                * arrays[2][.ellipsis, .newAxis]).sum(axis: -2)
+                        }
+                        return [MLXFast.rmsNorm(mixed, weight: normWeight, eps: 1e-6)]
+                    }
+                    return compiled ? compile(shapeless: false, body) : body
+                }
+                func forward() -> MLXArray {
+                    var hidden = input
+                    for (index, body) in bodies.enumerated() {
+                        hidden = body([hidden, indices[index], scores])[0]
+                        if (index + 1).isMultiple(of: 8), index + 1 < bodies.count {
+                            asyncEval(hidden)
+                        }
+                    }
+                    return hidden
+                }
+                for _ in 0..<3 { eval(forward()) }
+                _ = Stream.gpu.commandBufferProfileSinceReport()
+                var samples = [Double]()
+                var operations: UInt64 = 0
+                var last: MLXArray?
+                for _ in 0..<8 {
+                    let start = DispatchTime.now().uptimeNanoseconds
+                    let result = forward()
+                    eval(result)
+                    samples.append(Double(DispatchTime.now().uptimeNanoseconds - start) / 1e6)
+                    operations += Stream.gpu.commandBufferProfileSinceReport().operations
+                    last = result
+                }
+                samples.sort()
+                let values = try XCTUnwrap(last).asType(.float32).asArray(Float.self)
+                XCTAssertTrue(values.allSatisfy(\.isFinite))
+                print("[qwen4-routed-chain] fused=\(fused) compiled=\(compiled) banks=\(bodies.count) "
+                    + "median_wall_ms=\(samples[4]) min_wall_ms=\(samples[0]) ops=\(operations / 8)")
+            }
+        }
     }
 
     func testSanitizeAppliesCheckpointNGramMultipliersToMappedLookupPath() async throws {
