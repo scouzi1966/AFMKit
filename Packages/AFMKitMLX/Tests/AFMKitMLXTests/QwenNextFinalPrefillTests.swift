@@ -10,57 +10,32 @@ import XCTest
 final class QwenNextFinalPrefillTests: XCTestCase {
     private let vocabularySize = 32
 
-    func testSerialFinalTailIsEnabledWithoutEnvironmentOverrides() {
-        XCTAssertTrue(MLXReplayPrefill.serialFinalTailEnabled(environment: [:]))
-        XCTAssertTrue(MLXReplayPrefill.serialFinalTailEnabled(
-            environment: ["AFM_QWEN_SERIAL_PREFILL_TAIL": "1"]))
-        XCTAssertFalse(MLXReplayPrefill.serialFinalTailEnabled(
-            environment: ["AFM_QWEN_SERIAL_PREFILL_TAIL": "0"]))
-    }
-
-    func testCoalescedTailPolicyPreservesRequiredSnapshotsAndMemoryBound() {
-        func plan(requested: Bool = true, snapshot: Bool = false,
-                  finalCheckpoint: Bool = false, radix: Bool = false,
-                  step: Int = 64, restored: Int = 0, checkpoints: [Int] = [17]) -> Int? {
-            MLXReplayPrefill.coalescedFinalTailStart(
-                inputTokenCount: 48, restoredPrefix: restored, checkpoints: checkpoints,
-                prefillStepSize: step, promptSnapshotBackoffTokens: 31,
-                requested: requested, captureFinalSnapshot: snapshot,
-                captureFinalCheckpoint: finalCheckpoint, hasRadix: radix)
-        }
-        XCTAssertEqual(plan(), 17)
-        XCTAssertNil(plan(requested: false))
-        XCTAssertNil(plan(snapshot: true))
-        XCTAssertNil(plan(finalCheckpoint: true))
-        XCTAssertNil(plan(radix: true))
-        XCTAssertNil(plan(step: 30))
-        XCTAssertNil(plan(step: 0))
-        XCTAssertNil(plan(restored: 17))
-        XCTAssertNil(plan(checkpoints: []))
-        XCTAssertNil(plan(checkpoints: [16]))
-    }
-
-    func testCoalescedTailMatchesSameGeometryAndRetainsContinuationState() throws {
+    func testSerialBackoffPreservesSeparateFinalTokenForwardAndContinuation() throws {
         try Device.withDefaultDevice(.cpu) {
             let (control, candidate) = try models()
             let tokens = (0..<48).map { $0 % 29 + 1 }
             let candidateCache = candidate.newCache(parameters: nil)
             let controlCache = control.newCache(parameters: nil)
             var boundaries: [Int] = []
+            var chunks: [Range<Int>] = []
             let prepared = try MLXReplayPrefill.prepareWithSnapshot(
                 model: candidate, cache: candidateCache, inputTokens: tokens,
                 restoredPrefix: 0, prefillStepSize: 64,
                 promptSnapshotBackoffTokens: 31, captureFinalCheckpoint: false,
-                coalesceFinalTail: true,
-                checkpoint: { boundary, _, _ in boundaries.append(boundary) })
+                checkpoint: { boundary, _, _ in boundaries.append(boundary) },
+                didCompleteChunk: { chunks.append($0) })
             XCTAssertEqual(boundaries, [17])
+            XCTAssertEqual(chunks, [0..<17, 17..<47])
             XCTAssertNil(prepared.finalSnapshot)
             let prefix = MLXArray(Array(tokens.prefix(17))).reshaped(1, -1)
             _ = control(prefix, cache: controlCache)
             eval(controlCache)
-            let tail = MLXArray(Array(tokens.suffix(31))).reshaped(1, -1)
-            let full = control(tail, cache: controlCache)
-            assertClose(prepared.output.logits, full[0..., 30..., 0...])
+            let tail = MLXArray(Array(tokens[17..<47])).reshaped(1, -1)
+            _ = control(tail, cache: controlCache)
+            eval(controlCache)
+            let last = MLXArray([tokens[47]]).reshaped(1, 1)
+            let full = control(last, cache: controlCache)
+            assertClose(prepared.output.logits, full)
             assertSameCaches(candidateCache, controlCache)
             let next = MLXArray([13]).reshaped(1, 1)
             assertClose(candidate(next, cache: candidateCache), control(next, cache: controlCache))

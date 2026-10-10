@@ -1,4 +1,3 @@
-import Foundation
 import MLX
 import MLXLMCommon
 import MLXLLM
@@ -8,30 +7,6 @@ import MLXVLM
 /// Never reconstruct an earlier recurrent state by trimming a later snapshot.
 /// Callers own model serialization and must exclude multimodal input.
 enum MLXReplayPrefill {
-    /// Normal serving policy for eligible Qwen serial text requests. Keep only
-    /// a diagnostic rollback switch; no environment variable is needed to use it.
-    static let coalescedSerialFinalTailEnabled =
-        serialFinalTailEnabled(environment: ProcessInfo.processInfo.environment)
-
-    static func serialFinalTailEnabled(environment: [String: String]) -> Bool {
-        environment["AFM_QWEN_SERIAL_PREFILL_TAIL"] != "0"
-    }
-
-    static func coalescedFinalTailStart(
-        inputTokenCount: Int, restoredPrefix: Int, checkpoints: [Int],
-        prefillStepSize: Int, promptSnapshotBackoffTokens: Int,
-        requested: Bool, captureFinalSnapshot: Bool,
-        captureFinalCheckpoint: Bool, hasRadix: Bool
-    ) -> Int? {
-        guard requested, inputTokenCount > 1, restoredPrefix >= 0, prefillStepSize > 0,
-              !captureFinalSnapshot, !captureFinalCheckpoint, !hasRadix,
-              promptSnapshotBackoffTokens > 0, let boundary = checkpoints.last,
-              boundary > restoredPrefix, boundary < inputTokenCount - 1,
-              inputTokenCount - boundary == promptSnapshotBackoffTokens,
-              inputTokenCount - boundary <= max(1, prefillStepSize)
-        else { return nil }
-        return boundary
-    }
     /// The VLM wrapper delegates text forwards to the same Qwen language trunk.
     /// A growing tool transcript can retokenize the final newline, so retaining
     /// only the full prompt boundary defeats otherwise valid prefix reuse.
@@ -129,7 +104,6 @@ enum MLXReplayPrefill {
         captureCoarseAnchorInline: Bool = false,
         captureFinalSnapshot: Bool = false,
         captureFinalCheckpoint: Bool = true,
-        coalesceFinalTail: Bool = false,
         checkpoint: ((Int, [[MLXArray]], [[String]]) -> Void)? = nil,
         checkCancellation: (() throws -> Void)? = nil,
         didCompleteChunk: ((Range<Int>) -> Void)? = nil,
@@ -150,14 +124,8 @@ enum MLXReplayPrefill {
             && checkpoints.count == 2 && adapter != nil ? checkpoints.first : nil
         let scheduledCheckpoints = inlineAnchor.map { anchor in checkpoints.filter { $0 != anchor } }
             ?? checkpoints
-        let finalTailStart = coalescedFinalTailStart(
-            inputTokenCount: inputTokens.count, restoredPrefix: restoredPrefix,
-            checkpoints: scheduledCheckpoints, prefillStepSize: prefillStepSize,
-            promptSnapshotBackoffTokens: promptSnapshotBackoffTokens,
-            requested: coalesceFinalTail, captureFinalSnapshot: captureFinalSnapshot,
-            captureFinalCheckpoint: captureFinalCheckpoint, hasRadix: radix != nil)
         for boundary in scheduledCheckpoints
-            + (finalTailStart == nil ? [finalBoundary] : []) {
+            + [finalBoundary] {
             try Task.checkCancellation()
             try checkCancellation?()
             while boundary > consumed {
@@ -238,30 +206,6 @@ enum MLXReplayPrefill {
         }
         try Task.checkCancellation()
         try checkCancellation?()
-        if let finalTailStart {
-            // Reference: ddalcu/mlx-serve v26.10.1, src/generate.zig runPrefill
-            // (MIT): snapshot before the held-back tail, then forward that
-            // tail plus the last token in one weight sweep. Never trim a later
-            // recurrent state to manufacture an earlier snapshot.
-            precondition(consumed == finalTailStart)
-            guard state == nil else { throw CaptureError.invalidSnapshot }
-            let tail = Array(inputTokens[finalTailStart...])
-            let prepared = try model.prepare(LMInput(tokens: MLXArray(tail)),
-                cache: cache, windowSize: prefillStepSize)
-            let output: LMOutput
-            switch prepared {
-            case .logits(let value):
-                output = value
-            case .tokens(let remaining):
-                guard remaining.tokens.ndim == 1, remaining.tokens.size == tail.count else {
-                    throw CaptureError.invalidSnapshot
-                }
-                output = model(remaining[text: .newAxis], cache: cache, state: state,
-                    hostTokenIDs: model.consumesHostTokenIDs ? tail : nil)
-            }
-            return Prepared(output: output, finalSnapshot: nil,
-                inlineCheckpointCount: inlineCheckpointCount)
-        }
         let finalToken = inputTokens[finalBoundary]
         let output = model(LMInput.Text(tokens: MLXArray([finalToken]).reshaped([1, 1])),
                      cache: cache, state: state,
