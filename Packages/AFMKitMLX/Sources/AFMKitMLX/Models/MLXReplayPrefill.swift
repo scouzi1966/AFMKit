@@ -8,9 +8,14 @@ import MLXVLM
 /// Never reconstruct an earlier recurrent state by trimming a later snapshot.
 /// Callers own model serialization and must exclude multimodal input.
 enum MLXReplayPrefill {
-    /// Diagnostic opt-in; ordinary serving and batch behavior remain unchanged.
+    /// Normal serving policy for eligible Qwen serial text requests. Keep only
+    /// a diagnostic rollback switch; no environment variable is needed to use it.
     static let coalescedSerialFinalTailEnabled =
-        ProcessInfo.processInfo.environment["AFM_QWEN_SERIAL_PREFILL_TAIL"] == "1"
+        serialFinalTailEnabled(environment: ProcessInfo.processInfo.environment)
+
+    static func serialFinalTailEnabled(environment: [String: String]) -> Bool {
+        environment["AFM_QWEN_SERIAL_PREFILL_TAIL"] != "0"
+    }
 
     static func coalescedFinalTailStart(
         inputTokenCount: Int, restoredPrefix: Int, checkpoints: [Int],

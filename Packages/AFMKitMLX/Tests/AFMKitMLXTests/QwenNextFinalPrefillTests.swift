@@ -10,6 +10,14 @@ import XCTest
 final class QwenNextFinalPrefillTests: XCTestCase {
     private let vocabularySize = 32
 
+    func testSerialFinalTailIsEnabledWithoutEnvironmentOverrides() {
+        XCTAssertTrue(MLXReplayPrefill.serialFinalTailEnabled(environment: [:]))
+        XCTAssertTrue(MLXReplayPrefill.serialFinalTailEnabled(
+            environment: ["AFM_QWEN_SERIAL_PREFILL_TAIL": "1"]))
+        XCTAssertFalse(MLXReplayPrefill.serialFinalTailEnabled(
+            environment: ["AFM_QWEN_SERIAL_PREFILL_TAIL": "0"]))
+    }
+
     func testCoalescedTailPolicyPreservesRequiredSnapshotsAndMemoryBound() {
         func plan(requested: Bool = true, snapshot: Bool = false,
                   finalCheckpoint: Bool = false, radix: Bool = false,
