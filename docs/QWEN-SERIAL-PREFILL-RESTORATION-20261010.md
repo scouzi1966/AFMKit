@@ -69,3 +69,40 @@ Local evidence root:
 See `RestoreHTMLBest20261010`, `RestoreHTMLDefault20261010`, and
 `threeProjectDefaultTail20261010`; their manifests include binary identities,
 commands, requests, raw responses and usage.
+
+## Subsequent full-trace verification
+
+The preserved executable's SHA256 was rechecked against the original launch
+record. The executable's file timestamp is October 9, 2026 at 12:36:21 EDT.
+The best coding run started at 12:42:20 and its 11/11 evaluation was saved at
+12:50:56 that day. The diagnostic uses that same executable, not a rebuild.
+
+All **34 exact captured requests** from the best run were replayed with full
+output budgets and no tool execution. All 34 responses reproduced the original
+status, reasoning, message content, function names, parsed arguments and token
+counts exactly. Generated protocol IDs and timestamps were excluded from the
+comparison. Total output was 26,391 tokens in both runs.
+
+| Identical-input measure | Original best | Replay |
+|---|---:|---:|
+| Raw decode tok/s | 60.72 | 61.38 |
+| Prefill seconds | 57.275 | 55.664 |
+| Decode seconds | 434.651 | 429.988 |
+| Summed API response seconds | 496.149 | 488.344 |
+
+Startup warmup frames are excluded. These durations are not whole-agent task
+times: no returned tool command was executed during the replay. Evidence is
+`RestoreBestFullTrace20261010/trace-comparison.json` and its request/response
+and server logs under the local evidence root.
+
+A separate fresh live run on this same executable passed 11/11 browser checks
+but took 842.187 seconds, generated 42,949 tokens and reached the 80-served-
+request budget (81 attempted) without a final reply. It is **incomplete**,
+not a recovered normal 511-second completion. Evidence:
+`orbitalRestoredSerial20261010`. Its source contains the required diagnostics
+and does not reproduce the grouped-tail candidate's HTML startup failure.
+
+The exact binary, saved decisions and inference performance are reproducible.
+The longer live coding trajectory remains a separate investigation. Do not
+claim stable live coding-time recovery, or attribute every earlier difference
+to tail grouping, from this diagnostic.
