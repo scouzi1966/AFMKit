@@ -3,11 +3,62 @@ import MLX
 @testable import MLXLLM
 import MLXLMCommon
 import XCTest
+@testable import AFMKitMLX
 
 /// Small CPU/FP32 contract tests; real-checkpoint BF16 arithmetic and timing
 /// remain separate qualification gates, not exact-logit assertions here.
 final class QwenNextFinalPrefillTests: XCTestCase {
     private let vocabularySize = 32
+
+    func testCoalescedTailPolicyPreservesRequiredSnapshotsAndMemoryBound() {
+        func plan(requested: Bool = true, snapshot: Bool = false,
+                  finalCheckpoint: Bool = false, radix: Bool = false,
+                  step: Int = 64, restored: Int = 0, checkpoints: [Int] = [17]) -> Int? {
+            MLXReplayPrefill.coalescedFinalTailStart(
+                inputTokenCount: 48, restoredPrefix: restored, checkpoints: checkpoints,
+                prefillStepSize: step, promptSnapshotBackoffTokens: 31,
+                requested: requested, captureFinalSnapshot: snapshot,
+                captureFinalCheckpoint: finalCheckpoint, hasRadix: radix)
+        }
+        XCTAssertEqual(plan(), 17)
+        XCTAssertNil(plan(requested: false))
+        XCTAssertNil(plan(snapshot: true))
+        XCTAssertNil(plan(finalCheckpoint: true))
+        XCTAssertNil(plan(radix: true))
+        XCTAssertNil(plan(step: 30))
+        XCTAssertNil(plan(step: 0))
+        XCTAssertNil(plan(restored: 17))
+        XCTAssertNil(plan(checkpoints: []))
+        XCTAssertNil(plan(checkpoints: [16]))
+    }
+
+    func testCoalescedTailMatchesSameGeometryAndRetainsContinuationState() throws {
+        try Device.withDefaultDevice(.cpu) {
+            let (control, candidate) = try models()
+            let tokens = (0..<48).map { $0 % 29 + 1 }
+            let candidateCache = candidate.newCache(parameters: nil)
+            let controlCache = control.newCache(parameters: nil)
+            var boundaries: [Int] = []
+            let prepared = try MLXReplayPrefill.prepareWithSnapshot(
+                model: candidate, cache: candidateCache, inputTokens: tokens,
+                restoredPrefix: 0, prefillStepSize: 64,
+                promptSnapshotBackoffTokens: 31, captureFinalCheckpoint: false,
+                coalesceFinalTail: true,
+                checkpoint: { boundary, _, _ in boundaries.append(boundary) })
+            XCTAssertEqual(boundaries, [17])
+            XCTAssertNil(prepared.finalSnapshot)
+            let prefix = MLXArray(Array(tokens.prefix(17))).reshaped(1, -1)
+            _ = control(prefix, cache: controlCache)
+            eval(controlCache)
+            let tail = MLXArray(Array(tokens.suffix(31))).reshaped(1, -1)
+            let full = control(tail, cache: controlCache)
+            assertClose(prepared.output.logits, full[0..., 30..., 0...])
+            assertSameCaches(candidateCache, controlCache)
+            let next = MLXArray([13]).reshaped(1, 1)
+            assertClose(candidate(next, cache: candidateCache), control(next, cache: controlCache))
+            assertSameCaches(candidateCache, controlCache)
+        }
+    }
 
     private func configuration(tiedHead: Bool = false) throws -> Qwen4ExpConfiguration {
         // Same hybrid/PLE fixture geometry as QwenNextMTPPipelineTests, with

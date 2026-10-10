@@ -4045,6 +4045,7 @@ public final class MLXModelService:
                         restoredPrefix: cachedTokenCount, prefillStepSize: params.prefillStepSize,
                         promptSnapshotBackoffTokens: replayBackoff,
                         captureFinalCheckpoint: false,
+                        coalesceFinalTail: MLXReplayPrefill.coalescedSerialFinalTailEnabled,
                         checkpoint: { boundary, states, metadata in
                             self.radixCache?.insert(tokens: Array(inputTokens.prefix(boundary)),
                                 layerStates: states, layerMetaStates: metadata,
@@ -5127,6 +5128,7 @@ public final class MLXModelService:
                                     prefillStepSize: params.prefillStepSize,
                                     promptSnapshotBackoffTokens: replayBackoff,
                                     captureFinalCheckpoint: false,
+                                    coalesceFinalTail: MLXReplayPrefill.coalescedSerialFinalTailEnabled,
                                     checkpoint: { boundary, states, metadata in
                                         self.radixCache?.insert(tokens: Array(inputTokens.prefix(boundary)),
                                             layerStates: states, layerMetaStates: metadata,
