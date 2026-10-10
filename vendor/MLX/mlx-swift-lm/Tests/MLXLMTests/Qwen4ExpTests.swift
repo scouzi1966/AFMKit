@@ -551,6 +551,25 @@ final class Qwen4ExpTests: XCTestCase {
                 $0.0 == "language_model"
             })?.1 as? Qwen4ExpModel
         let qwen = try XCTUnwrap(textModel)
+        if environment["QWEN4_FORWARD_BENCH_HYBRID_INJECT"] == "1" {
+            guard environment["AFM_QWEN_FUSED_HYPER_CONNECTION"] == "0" else {
+                throw XCTSkip("Hybrid diagnostic requires HC fusion disabled in both controls")
+            }
+            let banks = qwen.modules().compactMap { $0 as? Qwen4ExpGatedResidual }
+                .filter { $0.blockInjectWeight != nil }
+            XCTAssertEqual(banks.count, 96)
+            for bank in banks {
+                let pair = QwenHCProjectionDiagnostic(
+                    down: try XCTUnwrap(bank.inputMixWeightDown as? QuantizedLinear),
+                    injection: try XCTUnwrap(bank.blockInjectWeight as? QuantizedLinear))
+                XCTAssertTrue(pair.compatible)
+                bank.update(modules: ModuleChildren(values: [
+                    "input_mix_weight_down": .value(QwenHCProjectionDiagnosticLinear(diagnostic: pair, injection: false)),
+                    "block_inject_weight": .value(QwenHCProjectionDiagnosticLinear(diagnostic: pair, injection: true))
+                ]))
+            }
+            print("[qwen4-fwd-hybrid-injection] banks=\(banks.count) original_affine_weights=true")
+        }
         if environment["QWEN4_FORWARD_BENCH_DENSE_INJECT"] == "1" {
             // Prevent the replacement's dense type from selecting a different
             // HC fusion algorithm. Both control runs must disable HC fusion.
@@ -613,6 +632,7 @@ final class Qwen4ExpTests: XCTestCase {
         var evaluationNanoseconds: UInt64 = 0
         var operations: UInt64 = 0
         var lastLogits: MLXArray?
+        var forwardSamples = [Double]()
         var capturedLogits = [String: MLXArray]()
         let totalStart = DispatchTime.now().uptimeNanoseconds
         for iteration in 0 ..< iterations {
@@ -624,6 +644,7 @@ final class Qwen4ExpTests: XCTestCase {
             eval(logits)
             evaluationNanoseconds +=
                 DispatchTime.now().uptimeNanoseconds - evaluationStart
+            forwardSamples.append(Double(DispatchTime.now().uptimeNanoseconds - buildStart) / 1e6)
             if profileOperations {
                 operations +=
                     Stream.gpu.commandBufferProfileSinceReport().operations
@@ -634,6 +655,9 @@ final class Qwen4ExpTests: XCTestCase {
             }
         }
         let totalNanoseconds = DispatchTime.now().uptimeNanoseconds - totalStart
+        let sortedSamples = forwardSamples.sorted()
+        print("[qwen4-fwd-samples] min_ms=\(sortedSamples.first!) median_ms=\(sortedSamples[iterations / 2]) "
+            + "max_ms=\(sortedSamples.last!) all_ms=\(forwardSamples)")
         if profilePrimitives {
             Stream.gpu.synchronize()
             FileHandle.standardError.write(Data("[qwen4-primitive-window] end full-forward\n".utf8))
@@ -901,6 +925,45 @@ final class Qwen4ExpTests: XCTestCase {
                     + "median_wall_ms=\(samples[4]) min_wall_ms=\(samples[0]) ops=\(operations / 8)")
             }
         }
+    }
+
+    func testExactCheckpointHybridProjectionEquivalence() async throws {
+        guard let modelPath = ProcessInfo.processInfo.environment["QWEN4_FORWARD_BENCH_MODEL"] else {
+            throw XCTSkip("Set QWEN4_FORWARD_BENCH_MODEL for this diagnostic")
+        }
+        let context = try await loadModel(directory: URL(fileURLWithPath: modelPath))
+        defer { withExtendedLifetime(context) {} }
+        let textModel = context.model as? Qwen4ExpModel
+            ?? context.model.children().flattened().first(where: { $0.0 == "language_model" })?.1 as? Qwen4ExpModel
+        let qwen = try XCTUnwrap(textModel)
+        let banks = qwen.modules().compactMap { $0 as? Qwen4ExpGatedResidual }
+            .filter { $0.blockInjectWeight != nil }
+        XCTAssertEqual(banks.count, 96)
+        var exactFields = 0
+        var maximumDifference: Float = 0
+        for seed in 0..<4 {
+            MLXRandom.seed(UInt64(123 + seed))
+            let x = MLXRandom.normal([1, 1, 10240]).asType(.bfloat16)
+            eval(x)
+            for bank in banks {
+                let down = try XCTUnwrap(bank.inputMixWeightDown as? QuantizedLinear)
+                let injection = try XCTUnwrap(bank.blockInjectWeight as? QuantizedLinear)
+                let pair = QwenHCProjectionDiagnostic(down: down, injection: injection)
+                XCTAssertTrue(pair.compatible)
+                let combined = pair.combined(x)
+                let expected = [down(x), injection(x)]
+                let actual = [combined[.ellipsis, 0..<320], combined[.ellipsis, 320..<324]]
+                eval(expected + actual)
+                for (a, b) in zip(actual, expected) {
+                    if arrayEqual(a, b).item(Bool.self) { exactFields += 1 }
+                    maximumDifference = max(maximumDifference,
+                        abs(a.asType(.float32) - b.asType(.float32)).max().item(Float.self))
+                }
+            }
+        }
+        print("[qwen4-hybrid-equivalence] exact_fields=\(exactFields)/\(banks.count * 8) max_abs_difference=\(maximumDifference)")
+        XCTAssertEqual(exactFields, banks.count * 8)
+        XCTAssertEqual(maximumDifference, 0)
     }
 
     /// Preserve normal command batching while isolating the tiny HC injection
