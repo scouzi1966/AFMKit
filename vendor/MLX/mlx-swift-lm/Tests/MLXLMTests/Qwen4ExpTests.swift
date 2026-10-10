@@ -7,6 +7,13 @@ import MLXVLM
 import MLXNN
 import XCTest
 
+/// Test-only same-affine-values control. Never used by model loading or serving.
+private final class QwenInjectionFP32Diagnostic: Linear {
+    override func callAsFunction(_ x: MLXArray) -> MLXArray {
+        matmul(x.asType(.float32), weight.T).asType(x.dtype)
+    }
+}
+
 final class Qwen4ExpTests: XCTestCase {
     override class func setUp() {
         if let metallib = ProcessInfo.processInfo.environment["MACAFM_MLX_METALLIB"] {
@@ -544,6 +551,30 @@ final class Qwen4ExpTests: XCTestCase {
                 $0.0 == "language_model"
             })?.1 as? Qwen4ExpModel
         let qwen = try XCTUnwrap(textModel)
+        if environment["QWEN4_FORWARD_BENCH_DENSE_INJECT"] == "1" {
+            // Prevent the replacement's dense type from selecting a different
+            // HC fusion algorithm. Both control runs must disable HC fusion.
+            guard environment["AFM_QWEN_FUSED_HYPER_CONNECTION"] == "0" else {
+                throw XCTSkip("Dense injection diagnostic requires HC fusion disabled in both controls")
+            }
+            let banks = qwen.modules().compactMap { $0 as? Qwen4ExpGatedResidual }
+                .filter { $0.blockInjectWeight != nil }
+            XCTAssertEqual(banks.count, 96)
+            var restoredBytes = 0
+            for bank in banks {
+                let projection = try XCTUnwrap(bank.blockInjectWeight as? QuantizedLinear)
+                let weight = dequantized(projection.weight,
+                    scales: projection.scales.asType(.float32),
+                    biases: projection.biases?.asType(.float32),
+                    groupSize: projection.groupSize, bits: projection.bits, mode: projection.mode)
+                eval(weight)
+                restoredBytes += weight.size * 4
+                bank.update(modules: ModuleChildren(values: [
+                    "block_inject_weight": .value(QwenInjectionFP32Diagnostic(weight: weight))
+                ]))
+            }
+            print("[qwen4-fwd-dense-injection] banks=\(banks.count) restored_bytes=\(restoredBytes)")
+        }
         let cache = qwen.newCache(parameters: nil)
 
         var prefilled = 0
