@@ -717,6 +717,9 @@ public final class MLXModelService:
     /// Native chat template patched only to preserve Python/HF `tojson` spacing for tools.
     /// nil = use the model's own template unchanged.
     private(set) var nativeToolJSONChatTemplate: String? = nil
+    /// Effective native history template, refreshed on every model load. Cached
+    /// here so template-aware defaults require no per-request filesystem access.
+    private var nativeHistoryChatTemplate: String? = nil
     /// Extra stop strings implied by the model's format that aren't its EOS — e.g. Cohere
     /// cohere2_moe ends each answer with the special token `<|END_TEXT|>` (then EOS), which
     /// otherwise leaks into the decoded output. Merged into the request stop list. Set at load.
@@ -2780,6 +2783,7 @@ public final class MLXModelService:
             self.responseChannelFormat = .none
             self.builtinChatTemplate = nil
             self.nativeToolJSONChatTemplate = Self.nativeToolJSONChatTemplate(directory: directory)
+            self.nativeHistoryChatTemplate = MLXHistoryTemplatePolicy.nativeTemplate(directory: directory)
             self.forceSerialGeneration = false
             // Reset implicit stops here (not only in the model_type else-branch) so a
             // subsequent load whose config.json is missing/unparsable can't inherit the
@@ -8439,6 +8443,11 @@ public final class MLXModelService:
                 resolvedKwargs[key] = value.value.toAny()
             }
         }
+        resolvedKwargs = MLXHistoryTemplatePolicy.applyingDefaults(
+            resolvedKwargs,
+            template: (input.additionalContext?["chatTemplateOverride"] as? String)
+                ?? nativeHistoryChatTemplate
+        )
         if forceDisableThinking {
             resolvedKwargs["enable_thinking"] = false
             resolvedKwargs.removeValue(forKey: "reasoning_effort")
