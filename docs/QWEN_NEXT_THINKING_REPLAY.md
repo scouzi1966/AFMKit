@@ -169,3 +169,59 @@ See `thinking-fix-qualification-status-20261011.json` and
 `thinking-history-default-performance-20261011.md`, along with the preserved
 raw requests, responses, build logs and binary provenance. Nothing in this
 document implies a main merge, release, or completed nightly qualification.
+
+## Reviewed candidate: reasoning-focused rechecks
+
+Provider production commit: `c3e09fcb99523306757a56a428d6343b37b8b123`.
+Consumer production commit: `f208f17ff03812bb9c54dfc9a7a2d7040e0802f0`.
+Preserved binary SHA256:
+`83ed52579ec0b71ac85a0636a40e991b7d9c66e9b91293cf16fcdc8d8d6fc7ef`.
+Later consumer harness-only commit `f1cc11ad303a6dc9f65158a76a75deef05cecaa9`
+does not change this binary's production source.
+
+| Reproduced reasoning failure | Reviewed output tokens | Cached prompt tokens | API seconds | Result |
+|---|---:|---:|---:|---|
+| Short user follow-up | 744 | 51 | 12.03 | Coherent visible answer, stop |
+| 33K tool conversation | 717 | 33,320 | 12.82 | Complete exec_command |
+| 44K tool conversation | 757 | 44,404 | 13.55 | Complete exec_command |
+
+The reviewed consumer passes 100 selected unit checks. A strengthened live
+reasoning harness passes 27/27 checks; its old-binary control fails the three
+initial SSE item checks. Initial additive fields are now empty and an initial
+item with a status is in progress, rather than pre-populated with completed
+text or arguments. The canonical final items are unchanged. These checks
+cover incremental reconstruction before final-item replacement; they do not
+claim that final Codex-visible reasoning duplication was demonstrated.
+
+The reviewed first-four-context throughput guard shows no observed regression
+versus the preceding candidate. Small positive differences may be measurement
+variation. The existing 0.5K prefill gap to the pinned reference remains above
+10%; no new blanket performance-parity claim is made.
+
+A separate fresh coding run on this binary took 744.88 seconds and generated
+42,201 output tokens, passing only 8/11 application checks. This is not a
+passing coding qualification. Its generated application has a first-frame
+negative-delta exception and an independently incomplete selection handler.
+Those failures do not, by themselves, demonstrate recurrence of either
+reasoning failure above. The generated project is retained unchanged. Do not
+use the passing reasoning/API checks to erase the failed coding outcome or
+use the application defects to infer an unproven engine-change cause.
+
+Remaining work is narrowly separated: reason/tool output stability on frozen
+inputs, then immutable package integration after provider promotion and the
+consumer's exact dependency bump. No publication or release is implied.
+
+The reviewed coding trace's eighth request was subsequently compared against
+the prior and reviewed binaries, with identical seven frozen cache-populating
+histories and final normalized request hash
+`e2474598a432b1041be4be0a9421fc2819269019b0592c12ca6cad147f501877`.
+Both generated 5,071 output tokens, restored 12,319 of 14,947 input tokens, and
+returned exactly identical reasoning text and parsed tool arguments. The
+semantic output SHA256 was
+`88fc8c2b78077d5dcfb0c41f9e9e1dcf5cf30e13e1f09f1a9364cfb14c442e15`.
+Elapsed API times were 84.68 seconds before and 84.34 seconds after review fixes.
+Both proposed write_stdin with only chars, lacking required session_id. This
+particular malformed call predates the review fixes; no tool was executed.
+Evidence: `ThinkingReviewedRequest8Comparison20261011/results.json`.
+This establishes output stability on that fixture, not full-project quality
+parity or universal absence of regression.
