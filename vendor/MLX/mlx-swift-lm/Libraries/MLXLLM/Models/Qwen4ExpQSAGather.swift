@@ -30,9 +30,9 @@ import MLXFast
 // SOFTWARE.
 
 /// Exact bounded-window QSA selection in one dispatch, already sorted by index.
-/// The caller supplies the existing biased scores: this experiment changes the
-/// selection schedule, not the scoring arithmetic. Equal scores choose the
-/// lower index deterministically. Bounds and block count remain runtime data;
+/// The caller supplies raw scores. Equal scores choose the lower index
+/// deterministically, without a bias that can reorder unequal scores.
+/// Bounds and block count remain runtime data;
 /// growing context never creates a new Metal specialization.
 enum Qwen4ExpQSAVerifyRadixSelection {
     private static let narrowRowUpperBound = 63

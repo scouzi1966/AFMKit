@@ -2223,11 +2223,11 @@ final class Qwen4ExpQSAIndexer: Module {
                 bank = a[2]
             }
             let scores = maximum(matmul(query.asType(.float32), bank), MLXArray(0)).sum(axis: 1)
-            let blockIDs = MLX.arange(capacity, dtype: .int32)
-            let biased = scores - blockIDs.asType(.float32) * Self.tieBreakScale
             // Shapes and eligibility are checked before entering this graph.
+            // The radix selector resolves exact ties itself. An index bias
+            // would also change the order of unequal, closely spaced scores.
             let selected = Qwen4ExpQSAVerifyRadixSelection.callWithRuntimeBounds(
-                scores: biased, visibleBlockCounts: a[6], topK: self.blockTopK)!
+                scores: scores, visibleBlockCounts: a[6], topK: self.blockTopK)!
             let valid = selected .< capacity
             let safe = MLX.where(valid, selected, MLXArray(Int32(capacity)))
             var blockMask = MLXArray.zeros([1, width, capacity + 1], dtype: .bool)
@@ -2657,22 +2657,23 @@ final class Qwen4ExpQSAIndexer: Module {
             queries: queries,
             blockKeys: blockKeys,
             previousOffset: previousOffset)
-        let blockIDs = MLX.arange(visibleBlocks, dtype: .int32)
-        let biasedScores = scores
-            - blockIDs.asType(.float32) * Self.tieBreakScale
         // Reuse the exact radix selector qualified for bounded MTP
         // verification. A decode request is the same selection problem with
         // one row: scores are runtime-width data, ties prefer the lower block
-        // index, and the result is emitted in cache order.
+        // index, and the result is emitted in cache order. Pass raw scores:
+        // subtracting an index bias can reverse unequal scores at long context.
         if let fused = Qwen4ExpQSAVerifyRadixSelection.call(
-            scores: biasedScores.expandedDimensions(axis: 0),
+            scores: scores.expandedDimensions(axis: 0),
             visibleBlockCounts: Array(
                 repeating: visibleBlocks,
-                count: biasedScores.dim(0)),
+                count: scores.dim(0)),
             topK: blockTopK)
         {
-            return fused.reshaped(biasedScores.dim(0), 1, blockTopK)
+            return fused.reshaped(scores.dim(0), 1, blockTopK)
         }
+        let blockIDs = MLX.arange(visibleBlocks, dtype: .int32)
+        let biasedScores = scores
+            - blockIDs.asType(.float32) * Self.tieBreakScale
         let selected = MLX.argPartition(
             -biasedScores, kth: blockTopK - 1, axis: -1
         )[0..., ..<blockTopK].asType(.int32)
@@ -2756,7 +2757,6 @@ final class Qwen4ExpQSAIndexer: Module {
         }
         let blockIDs = MLX.arange(completeBlocks, dtype: .int32)[
             .newAxis, .newAxis, 0...]
-        let tieBreak = blockIDs.asType(.float32) * Self.tieBreakScale
         var chunks = [MLXArray]()
         chunks.reserveCapacity((length + rowsPerChunk - 1) / rowsPerChunk)
 
@@ -2777,9 +2777,8 @@ final class Qwen4ExpQSAIndexer: Module {
             } else {
                 let queryChunk = queries[0..., 0..., start ..< end, 0...]
                 let rawScores = composedScoreSheet(queryChunk)
-                let biasedScores = rawScores - tieBreak
                 if let fused = Qwen4ExpQSAVerifyRadixSelection.call(
-                    scores: biasedScores,
+                    scores: rawScores,
                     visibleBlockCounts: (start..<end).map {
                         min(completeBlocks, (previousOffset + $0 + 1) / compressRatio)
                     },
@@ -2788,6 +2787,8 @@ final class Qwen4ExpQSAIndexer: Module {
                     chunks.append(fused)
                     continue
                 }
+                let biasedScores = rawScores
+                    - blockIDs.asType(.float32) * Self.tieBreakScale
                 let maskedScores = MLX.where(
                     visible,
                     biasedScores,
