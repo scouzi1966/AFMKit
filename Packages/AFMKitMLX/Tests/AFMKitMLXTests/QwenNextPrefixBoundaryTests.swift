@@ -430,6 +430,10 @@ final class QwenNextPrefixBoundaryTests: XCTestCase {
         // Both arms receive identical continuation IDs. Divergence here is
         // execution/state behavior, not different prompts or sampled histories.
         let diagnosticDecodeSteps = 64
+        let teacherTokens: [Int]? = try environment["AFM_QWEN_TOOL_HISTORY_TEACHER"].map {
+            try JSONDecoder().decode([Int].self, from: Data(contentsOf: URL(fileURLWithPath: $0)))
+        }
+        if let teacherTokens { XCTAssertEqual(teacherTokens.count, diagnosticDecodeSteps) }
         for step in 0..<diagnosticDecodeSteps {
             let next = argMax(coldLogits).item(Int.self)
             let other = argMax(restoredLogits).item(Int.self)
@@ -438,12 +442,14 @@ final class QwenNextPrefixBoundaryTests: XCTestCase {
                 "cold_text": context.tokenizer.decode(tokens: [next]),
                 "restored_text": context.tokenizer.decode(tokens: [other]),
                 "max_logit_error": abs(coldLogits - restoredLogits).max().item(Float.self)])
-            coldLogits = forward([next], model: model, cache: coldCache)
-            restoredLogits = forward([next], model: model, cache: firstCache)
+            let teacher = teacherTokens?[step] ?? next
+            coldLogits = forward([teacher], model: model, cache: coldCache)
+            restoredLogits = forward([teacher], model: model, cache: firstCache)
         }
         let report: [String: Any] = ["model": modelPath, "fixture": fixturePath,
             "canonical_boundaries": canonicalBoundaries, "prefill_step_size": stepSize,
             "reference_gdn_normalization": referenceNormalization,
+            "teacher_tokens": teacherTokens ?? teacherForced.compactMap { $0["cold_token"] as? Int },
             "history_schedule": schedule, "tokens": history.tokens.count, "restored_prefix": match.prefixLen,
             "cold_chunks": cold.chunks, "restored_chunks": first.chunks,
             "cold_vs_restored": coldComparison, "same_chunks_round_trip": persisted,
