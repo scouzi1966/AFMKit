@@ -844,6 +844,7 @@ final class Qwen4ExpQSAPositionTables {
 }
 
 final class Qwen4ExpAttentionCache: KVCache, UniformBatchKVCache, CopyOnWriteKVCacheState {
+    private static let metadataVersion = "qwen4-exp-attention-v1"
     var offset = 0
     var offsetArray: MLXArray? { nil }
     var maxSize: Int? { nil }
@@ -1275,8 +1276,20 @@ final class Qwen4ExpAttentionCache: KVCache, UniformBatchKVCache, CopyOnWriteKVC
     }
 
     var metaState: [String] {
-        get { [] }
-        set { precondition(newValue.isEmpty) }
+        get {
+            [Self.metadataVersion, hasOnlyImplicitIndexPositions ? "implicit" : "explicit"]
+        }
+        set {
+            // Older tensor-only snapshots do not establish position provenance.
+            // Preserve the conservative inference made by the state setter.
+            guard !newValue.isEmpty else { return }
+            precondition(newValue.count == 2 && newValue[0] == Self.metadataVersion
+                && (newValue[1] == "implicit" || newValue[1] == "explicit"))
+            // Materializing ordinary text positions for sparse QSA must not
+            // turn a radix restore into an explicit-position/vision execution
+            // path. Only model-owned metadata may reestablish this provenance.
+            hasOnlyImplicitIndexPositions = newValue[1] == "implicit"
+        }
     }
 
     /// Prompt replay preserves optional-field positions, unlike the compact
@@ -3465,8 +3478,9 @@ func qwen4ExpSupportsCompiledGDNPrework(
 
 private final class Qwen4ExpGatedDeltaNet: Module {
     let captureRecurrentStates: Bool
-    // Checkpoint diagnostic only; never set by runtime configuration.
-    var referencePrefillQKNormalizationForTesting = false
+    // Match MLX RMSNorm's FP32 prefill reduction and BF16 scaling boundaries.
+    // Decode and verifier widths retain their existing arithmetic.
+    var useReferencePrefillQKNormalization = true
     private static let compileDecode =
         ProcessInfo.processInfo.environment["AFM_QWEN_COMPILE_GDN_DECODE"] != "0"
             && HardwareInfo.isModelOwnedCompiledDecodeSupported
@@ -3747,9 +3761,10 @@ private final class Qwen4ExpGatedDeltaNet: Module {
                 keyHeadDimension: keyHeadDim,
                 valueHeadDimension: valueHeadDim,
                 convolutionKernel: convKernel,
-                referencePrefillQKNormalization: referencePrefillQKNormalizationForTesting
-                    && b == 1
-                    && l >= Qwen4ExpGatedDeltaPrework.minimumReferencePrefillSequenceLength)
+                referencePrefillQKNormalization: Qwen4ExpGatedDeltaPrework.shouldUseReferencePrefillNormalization(
+                    enabled: useReferencePrefillQKNormalization, batchSize: b,
+                    sequenceLength: l, keyHeadDimension: keyHeadDim,
+                    valueHeadDimension: valueHeadDim, hasVerificationPolicy: verificationPolicy != nil))
             : nil
 
         let q: MLXArray
@@ -3958,8 +3973,7 @@ private final class Qwen4ExpGatedDeltaNet: Module {
                   aLogDType: aLog.dtype, dtBiasDType: dtBias.dtype,
                   channels: channels, keyHeadDimension: keyHeadDim,
                   valueHeadDimension: valueHeadDim, convolutionKernel: convKernel),
-              aLog.shape == [valueHeads], dtBias.shape == [valueHeads],
-              !referencePrefillQKNormalizationForTesting
+              aLog.shape == [valueHeads], dtBias.shape == [valueHeads]
         else { return false }
         if let prior = cache[0], prior.shape != [1, convKernel - 1, channels]
             || prior.dtype != dtype { return false }
@@ -5422,10 +5436,10 @@ final class Qwen4ExpDecoderLayer: Module {
     }
 
     var referenceGatedDeltaPrefillNormalizationForTesting: Bool {
-        get { linearAttention?.referencePrefillQKNormalizationForTesting ?? false }
+        get { linearAttention?.useReferencePrefillQKNormalization ?? false }
         set {
             precondition(isLinear)
-            linearAttention!.referencePrefillQKNormalizationForTesting = newValue
+            linearAttention!.useReferencePrefillQKNormalization = newValue
         }
     }
 

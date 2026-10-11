@@ -6,6 +6,51 @@ import MLXLMCommon
 import Testing
 
 struct Qwen38ToolCallStreamingTests {
+    @Test("Tool prompt omits default strict false without changing request policy")
+    func toolPromptOmitsFalseStrictMetadata() throws {
+        let absent = RequestTool(type: "function", function: .init(
+            name: "read_file", description: "Read a file", parameters: nil, strict: nil))
+        let disabled = RequestTool(type: "function", function: .init(
+            name: "read_file", description: "Read a file", parameters: nil, strict: false))
+        let enabled = RequestTool(type: "function", function: .init(
+            name: "read_file", description: "Read a file", parameters: nil, strict: true))
+        let absentJSON = MLXModelService.pythonStyleToolJSON(absent)
+        let disabledJSON = MLXModelService.pythonStyleToolJSON(disabled)
+        let enabledJSON = MLXModelService.pythonStyleToolJSON(enabled)
+        #expect(absentJSON == disabledJSON)
+        #expect(!disabledJSON.contains("\"strict\""))
+        let parsed = try #require(JSONSerialization.jsonObject(with: Data(enabledJSON.utf8)) as? [String: Any])
+        let function = try #require(parsed["function"] as? [String: Any])
+        #expect(function["strict"] as? Bool == true)
+        #expect(absent.function.strict == nil)
+        #expect(disabled.function.strict == false)
+        #expect(enabled.function.strict == true)
+    }
+
+    @Test("Tool prompt keeps literal slashes and round trips JSON string escapes")
+    func toolPromptPreservesSlashAndEscapedStringPayloads() throws {
+        let description = "Read src/main.py or https://example.test/a/b; quote \"value\", backslash \\, newline\nnext"
+        let schema: [String: Any] = ["type": "object", "properties": [
+            "path": ["type": "string", "description": description,
+                     "enum": ["src/main.py", "C:\\folder\\file", "line\nbreak", "\"quoted\""]]
+        ]]
+        let parameters = try JSONDecoder().decode(AnyCodable.self,
+            from: JSONSerialization.data(withJSONObject: schema))
+        let tool = RequestTool(type: "function", function: .init(
+            name: "read_file", description: description, parameters: parameters, strict: false))
+        let rendered = MLXModelService.pythonStyleToolJSON(tool)
+        #expect(rendered.contains("src/main.py"))
+        #expect(rendered.contains("https://example.test/a/b"))
+        #expect(!rendered.contains("\\/"))
+        let parsed = try #require(JSONSerialization.jsonObject(with: Data(rendered.utf8)) as? [String: Any])
+        let function = try #require(parsed["function"] as? [String: Any])
+        #expect(function["description"] as? String == description)
+        let decodedSchema = try #require(function["parameters"] as? [String: Any])
+        #expect(NSDictionary(dictionary: decodedSchema).isEqual(to: schema))
+        #expect(tool.function.description == description)
+        #expect(tool.function.strict == false)
+    }
+
     @Test("Native Qwen template keeps the model template with the tool JSON serialization shim")
     func nativeQwenUsesModelOwnedToolTemplateSerialization() {
         #expect(MLXModelService.usesModelOwnedToolTemplate(parser: "qwen3_xml"))

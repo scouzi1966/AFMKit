@@ -1,0 +1,227 @@
+# Qwen Next thinking replay qualification
+
+## Two distinct reproduced failures
+
+This investigation does not attribute every historical slow coding run to one
+cause. Fixed captured histories exposed two different failures:
+
+1. Long tool conversations could repeat planning text until the output cap.
+   The 33K example exhausted 16,384 tokens without a complete tool call; another
+   44K example generated 7,996 tokens of repetitive reasoning.
+2. A short second user turn could exhaust 4,096 tokens with no visible answer
+   when the native template preserved previous-turn thinking. The corresponding
+   cold request completed, and disabling previous-turn preservation fixed the
+   warm request without removing its useful cache hit.
+
+Neither observation alone establishes corrupted persisted cache tensors.
+
+## Long-history numerical fix
+
+`Qwen4ExpAttentionCache.metaState` now preserves implicit/explicit position
+provenance across radix snapshots. Tensor equality alone cannot validate all
+cache metadata. Dedicated snapshot tests cover this separately.
+
+`Qwen4ExpGatedDeltaPrework` uses the qualified reference-style Q/K normalization
+for eligible single-slot prefill sequences of at least 16 tokens. Its arithmetic
+matches the reference RMSNorm sequence: F32 square/reduction, mean plus epsilon,
+reciprocal square root, BF16 normalization rounding, and separate BF16 scaling.
+The recurrent state remains FP32. Decode and verifier arithmetic are unchanged.
+
+An initial 128-token threshold repaired free generation but failed independent
+prefix-state assertions for shorter prefill chunks. It was rejected rather than
+weakening those assertions. The final 16-token policy retains one-pass prompt
+capture and passes the independent prefix-state controls.
+
+Controlled BF16 recurrent-state and disabled packed-kernel experiments did not
+provide an acceptable remedy. They are not serving defaults. Canonical full
+chunk-boundary replay aligned logits but required substantially more recompute;
+it was not adopted as a default performance tradeoff.
+
+## Previous-turn history default
+
+`MLXHistoryTemplatePolicy` detects support from the effective chat template,
+not a checkpoint-name allowlist. For templates exposing `preserve_thinking`,
+the default is false. Explicit server defaults or request kwargs retain priority.
+Templates without the option are unchanged. `enable_thinking` remains separate:
+the new answer can still think, and the template retains current-turn reasoning.
+
+The native template is read once per model load. A selected parser/native-tool
+or built-in template override takes precedence over that native template when
+deciding support. No filesystem lookup is added to each decode step or request.
+Loading another model refreshes the stored template rather than inheriting the
+previous model's capability.
+
+This is also the previous-turn preservation policy observed in the pinned
+reference's `src/chat.zig` extra-context handling. No external optimization
+environment setting is needed in AFM. Users can explicitly retain old thinking
+with `chat_template_kwargs: {"preserve_thinking": true}`; doing so restores the
+old prompt behaviour and is not claimed to repair its reproduced quality issue.
+
+## Evidence as of October 11, 2026
+
+All runtime comparisons below use the same physical checkpoint:
+`/Volumes/edata2/models/qualification/Qwen3.8-Flash-Next-ddalcu-vision-overlay-20261001`.
+The pinned reference is mlx-serve 26.10.1, not an assertion about its latest release.
+
+Candidate provider source: `cc77cde05e0fc2fdb6701f0dad16e95329318980`.
+Consumer source: `6839b0566dbd166f11ad4203db9568165ac8ff49`.
+Release binary SHA256:
+`e767dab82905352a9f5a7487427a8f308fc9d6d0c30af11e368e5aaee9dc8a10`.
+
+| Fixed history | Output tokens | Cached prompt tokens | API seconds | Result |
+|---|---:|---:|---:|---|
+| Short user follow-up | 744 | 51 | 11.32 | Coherent visible answer, stop |
+| 33K tool conversation | 717 | 33,320 | 12.61 | Complete exec_command |
+| 44K tool conversation | 757 | 44,404 | 13.41 | Complete exec_command |
+
+The long-history outputs retain the successful counts from the preceding fixed
+candidate. Captured-history tests never execute generated tool calls and never
+feed generated output into the next frozen request. They are not full coding
+project evaluations.
+
+Four history-policy tests pass, including a real native-template rendering
+assertion for dropping old reasoning while retaining current-turn reasoning.
+The preceding numerical qualification had 100 passed tests, one optional
+production-shape skip, and zero failures. Do not conflate these selections with
+a complete fresh release suite.
+
+The subsequent broader selection on the new default passes 134 tests (114
+XCTest and 20 Swift Testing cases), with one optional production-shape skip and
+no failures. A separate diagnostic confirms both no-tool turns actually used
+native MTP: 316 and 1,050 cycles, respectively, with zero backbone fallbacks.
+Diagnostic timings are excluded from throughput comparisons.
+
+Native no-tool MTP off/on two-turn probes both produced coherent visible answers.
+The MTP follow-up was verbose (2,695 output tokens, 53.73 seconds), so this is
+not a performance win. Requests containing tools retain the existing AR fallback;
+loading an MTP head alone is not proof that a tool request used speculation.
+
+The new binary's first four Context sizes, three measured trials per context
+after separate warmup, changed median prefill by -0.27% to +0.12% and decode by
+-0.24% to +0.35% versus the preceding fixed candidate. No material regression
+was observed. Against the pinned reference the existing 0.5K prefill gap still
+exceeds 10%; do not claim all measurements are within the target.
+
+## Remaining qualification and reporting limits
+
+A fresh coding-agent run on the new default passed 11/11 automated checks in
+666 seconds, generating 38,503 tokens across 22 requests. This is slower than
+the preceding successful AFM run (542 seconds, 30,705 tokens), not evidence of
+improved agentic latency. Its input-token reuse fraction was 92.9%.
+
+The preceding candidate's single matched Orbital pair passed 11/11
+automated checks for both engines (AFM 542 seconds, reference 504 seconds).
+That pair does not establish statistical superiority.
+
+To isolate the newest default from different fresh-project trajectories, the
+expensive ninth request was run against both preserved AFM binaries after the
+same eight frozen preceding inputs. Both restored 11,168 of 11,527 prompt tokens,
+generated 13,581 output tokens, and returned exactly identical reasoning and
+tool arguments. Prior/new times were 219.8/222.1 seconds. This request therefore
+does not demonstrate a regression introduced by the new history default.
+All 22 project requests have no generated assistant items before their latest
+user message; the previous-turn default removes no reasoning from that trace.
+
+The pinned reference on the same frozen history, with its thinking budget
+explicitly disabled for this diagnostic, completed in 168.0 seconds and 10,755
+output tokens. Its reasoning was also lengthy, but shorter than AFM's. This
+remaining difference is not resolved or dismissed as harmless randomness.
+The cold AFM control completed in 53.1 seconds with 2,715 output tokens, but
+wrote `index.html` whereas the warm response wrote the larger `main.js`.
+These are different next-step units of work, not proof of wasted thinking.
+Generated calls in all frozen-history diagnostics are inspected, never executed.
+
+## Stronger snapshot versus chunk control
+
+The ninth-request fixture contains the actual rendered token IDs for all nine
+histories. With the same continuation IDs supplied to both arms, cold/warm
+greedy choices differ on 11/64 steps in AFM and 5/64 in the reference. Cross-engine
+choices differ on 9/64 cold steps and 7/64 warm steps. These are numerical
+diagnostics, not quality scores. Disabling the packed recurrent kernel leaves
+AFM's result unchanged on this fixture.
+
+A round-trip test alone cannot exclude an incorrect originally captured state.
+The additional opt-in live control therefore advances a fresh cache through the
+same ancestor prefix chunks without any snapshots or restores. It processes
+0–6630, 6630–7460, 7460–8043, 8043–8761, 8761–8931, 8931–9589, 9589–10705 and
+10705–11168, followed by the same final suffix as the restored arm.
+Discarded final tails of earlier requests are not advanced into this cache.
+
+The independent live arm and restored arm have exactly equal logits and all 134
+stored state arrays match bitwise. This rules out snapshot capture/restoration
+as the cause **for this fixture**; it does not prove every possible cache path
+correct. Different prefill chunk boundaries still alter the numerical trajectory,
+including in the reference. Do not describe that effect as proven corruption or
+claim that its end-to-end coding-quality/performance impact is fully resolved.
+
+The control is enabled only in the explicit-checkpoint diagnostic test with
+`AFM_QWEN_TOOL_HISTORY_LIVE_CONTROL=1`; it is not a production setting, changes
+no serving defaults, and adds no production inference work. Evidence:
+`ThinkingHeavyIndependentLiveControl20261011/summary.json`.
+
+The Responses boundary still reports `reasoning_tokens: 0` despite returning
+actual reasoning items. Total output-token counts and saved reasoning text were
+used for this investigation; the separate accounting defect is not fixed here.
+
+Evidence is untracked under:
+`/Volumes/edata/dev/CODEX/codex-local-coding-eval-20261007`.
+See `thinking-fix-qualification-status-20261011.json` and
+`thinking-history-default-performance-20261011.md`, along with the preserved
+raw requests, responses, build logs and binary provenance. Nothing in this
+document implies a main merge, release, or completed nightly qualification.
+
+## Reviewed candidate: reasoning-focused rechecks
+
+Provider production commit: `c3e09fcb99523306757a56a428d6343b37b8b123`.
+Consumer production commit: `f208f17ff03812bb9c54dfc9a7a2d7040e0802f0`.
+Preserved binary SHA256:
+`83ed52579ec0b71ac85a0636a40e991b7d9c66e9b91293cf16fcdc8d8d6fc7ef`.
+Later consumer harness-only commit `f1cc11ad303a6dc9f65158a76a75deef05cecaa9`
+does not change this binary's production source.
+
+| Reproduced reasoning failure | Reviewed output tokens | Cached prompt tokens | API seconds | Result |
+|---|---:|---:|---:|---|
+| Short user follow-up | 744 | 51 | 12.03 | Coherent visible answer, stop |
+| 33K tool conversation | 717 | 33,320 | 12.82 | Complete exec_command |
+| 44K tool conversation | 757 | 44,404 | 13.55 | Complete exec_command |
+
+The reviewed consumer passes 100 selected unit checks. A strengthened live
+reasoning harness passes 27/27 checks; its old-binary control fails the three
+initial SSE item checks. Initial additive fields are now empty and an initial
+item with a status is in progress, rather than pre-populated with completed
+text or arguments. The canonical final items are unchanged. These checks
+cover incremental reconstruction before final-item replacement; they do not
+claim that final Codex-visible reasoning duplication was demonstrated.
+
+The reviewed first-four-context throughput guard shows no observed regression
+versus the preceding candidate. Small positive differences may be measurement
+variation. The existing 0.5K prefill gap to the pinned reference remains above
+10%; no new blanket performance-parity claim is made.
+
+A separate fresh coding run on this binary took 744.88 seconds and generated
+42,201 output tokens, passing only 8/11 application checks. This is not a
+passing coding qualification. Its generated application has a first-frame
+negative-delta exception and an independently incomplete selection handler.
+Those failures do not, by themselves, demonstrate recurrence of either
+reasoning failure above. The generated project is retained unchanged. Do not
+use the passing reasoning/API checks to erase the failed coding outcome or
+use the application defects to infer an unproven engine-change cause.
+
+Remaining work is narrowly separated: reason/tool output stability on frozen
+inputs, then immutable package integration after provider promotion and the
+consumer's exact dependency bump. No publication or release is implied.
+
+The reviewed coding trace's eighth request was subsequently compared against
+the prior and reviewed binaries, with identical seven frozen cache-populating
+histories and final normalized request hash
+`e2474598a432b1041be4be0a9421fc2819269019b0592c12ca6cad147f501877`.
+Both generated 5,071 output tokens, restored 12,319 of 14,947 input tokens, and
+returned exactly identical reasoning text and parsed tool arguments. The
+semantic output SHA256 was
+`88fc8c2b78077d5dcfb0c41f9e9e1dcf5cf30e13e1f09f1a9364cfb14c442e15`.
+Elapsed API times were 84.68 seconds before and 84.34 seconds after review fixes.
+Both proposed write_stdin with only chars, lacking required session_id. This
+particular malformed call predates the review fixes; no tool was executed.
+Evidence: `ThinkingReviewedRequest8Comparison20261011/results.json`.
+This establishes output stability on that fixture, not full-project quality
+parity or universal absence of regression.
