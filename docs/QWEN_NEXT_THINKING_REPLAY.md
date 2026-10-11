@@ -126,9 +126,38 @@ The pinned reference on the same frozen history, with its thinking budget
 explicitly disabled for this diagnostic, completed in 168.0 seconds and 10,755
 output tokens. Its reasoning was also lengthy, but shorter than AFM's. This
 remaining difference is not resolved or dismissed as harmless randomness.
-A separate cold-versus-warm AFM control is in progress to investigate the effect
-of prefix execution. Generated calls in all frozen-history diagnostics are
-inspected, never executed.
+The cold AFM control completed in 53.1 seconds with 2,715 output tokens, but
+wrote `index.html` whereas the warm response wrote the larger `main.js`.
+These are different next-step units of work, not proof of wasted thinking.
+Generated calls in all frozen-history diagnostics are inspected, never executed.
+
+## Stronger snapshot versus chunk control
+
+The ninth-request fixture contains the actual rendered token IDs for all nine
+histories. With the same continuation IDs supplied to both arms, cold/warm
+greedy choices differ on 11/64 steps in AFM and 5/64 in the reference. Cross-engine
+choices differ on 9/64 cold steps and 7/64 warm steps. These are numerical
+diagnostics, not quality scores. Disabling the packed recurrent kernel leaves
+AFM's result unchanged on this fixture.
+
+A round-trip test alone cannot exclude an incorrect originally captured state.
+The additional opt-in live control therefore advances a fresh cache through the
+same ancestor prefix chunks without any snapshots or restores. It processes
+0–6630, 6630–7460, 7460–8043, 8043–8761, 8761–8931, 8931–9589, 9589–10705 and
+10705–11168, followed by the same final suffix as the restored arm.
+Discarded final tails of earlier requests are not advanced into this cache.
+
+The independent live arm and restored arm have exactly equal logits and all 134
+stored state arrays match bitwise. This rules out snapshot capture/restoration
+as the cause **for this fixture**; it does not prove every possible cache path
+correct. Different prefill chunk boundaries still alter the numerical trajectory,
+including in the reference. Do not describe that effect as proven corruption or
+claim that its end-to-end coding-quality/performance impact is fully resolved.
+
+The control is enabled only in the explicit-checkpoint diagnostic test with
+`AFM_QWEN_TOOL_HISTORY_LIVE_CONTROL=1`; it is not a production setting, changes
+no serving defaults, and adds no production inference work. Evidence:
+`ThinkingHeavyIndependentLiveControl20261011/summary.json`.
 
 The Responses boundary still reports `reasoning_tokens: 0` despite returning
 actual reasoning items. Total output-token counts and saved reasoning text were

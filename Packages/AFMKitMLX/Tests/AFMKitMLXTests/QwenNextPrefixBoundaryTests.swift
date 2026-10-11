@@ -353,12 +353,15 @@ final class QwenNextPrefixBoundaryTests: XCTestCase {
             }
         }
         let canonicalBoundaries = environment["AFM_QWEN_TOOL_HISTORY_CANONICAL"] == "1"
+        let liveControl = environment["AFM_QWEN_TOOL_HISTORY_LIVE_CONTROL"] == "1"
+        XCTAssertFalse(liveControl && canonicalBoundaries, "Live control requires the recorded near-end schedule")
         let stepSize = try XCTUnwrap(histories.first).prefillStepSize
         XCTAssertGreaterThan(stepSize, 0)
         XCTAssertTrue(histories.allSatisfy { $0.prefillStepSize == stepSize })
         var schedule: [[String: Any]] = []
+        var livePrefixChunks: [[Int]] = []
         var target: RadixPrefixMatch?
-        for history in histories {
+        for (historyIndex, history) in histories.enumerated() {
             var cache = newDiagnosticCache()
             let match = MLXPrefixReplayPolicy.validatedRestoreMatch(
                 radix.findExactBoundaryMatch(history.tokens), cache: cache)
@@ -369,6 +372,23 @@ final class QwenNextPrefixBoundaryTests: XCTestCase {
             if history.request == histories.last!.request {
                 target = match
                 break
+            }
+            if liveControl {
+                // Reconstruct ONLY the ancestor of the next restored state.
+                // Discarded final-tail work must not advance this independent
+                // cache. Derive ranges without adding a didCompleteChunk
+                // callback: that would change production's evaluation timing.
+                let nextBoundary = histories[historyIndex + 1].cachedPrefix
+                XCTAssertEqual(nextBoundary, history.tokens.count - 31)
+                XCTAssertGreaterThan(nextBoundary, match.prefixLen)
+                XCTAssertEqual(Array(history.tokens.prefix(nextBoundary)),
+                    Array(histories.last!.tokens.prefix(nextBoundary)))
+                var cursor = match.prefixLen
+                while cursor < nextBoundary {
+                    let end = cursor + min(stepSize, nextBoundary - cursor)
+                    livePrefixChunks.append([cursor, end])
+                    cursor = end
+                }
             }
             let prefix = MLXPrefixReplayPolicy.effectivePrefixLength(
                 matchedPrefix: match.prefixLen, inputTokenCount: history.tokens.count,
@@ -434,6 +454,20 @@ final class QwenNextPrefixBoundaryTests: XCTestCase {
         let cold = try finish(history.tokens, restoredPrefix: 0, model: model,
                              cache: coldCache, prefillStepSize: stepSize)
         let coldComparison = compare(cold, first, requireExact: false)
+        var liveComparison: [String: Any] = [:]
+        if liveControl {
+            let liveCache = newDiagnosticCache()
+            var cursor = 0
+            for range in livePrefixChunks {
+                XCTAssertEqual(range[0], cursor, "Live prefix must be contiguous without replay")
+                forward(Array(history.tokens[range[0]..<range[1]]), model: model, cache: liveCache)
+                cursor = range[1]
+            }
+            XCTAssertEqual(cursor, match.prefixLen)
+            let live = try finish(history.tokens, restoredPrefix: cursor, model: model,
+                                  cache: liveCache, prefillStepSize: stepSize)
+            liveComparison = compare(live, first, requireExact: true)
+        }
         if canonicalBoundaries {
             XCTAssertEqual(abs(cold.logits - first.logits).max().item(Float.self), 0,
                            "Aligned cached prefill must match the cold execution schedule")
@@ -499,6 +533,8 @@ final class QwenNextPrefixBoundaryTests: XCTestCase {
             "history_schedule": schedule, "tokens": history.tokens.count, "restored_prefix": match.prefixLen,
             "cold_chunks": cold.chunks, "restored_chunks": first.chunks,
             "cold_vs_restored": coldComparison, "same_chunks_round_trip": persisted,
+            "independent_live_prefix_chunks": livePrefixChunks,
+            "independent_live_vs_restored": liveComparison,
             "teacher_forced_decode": teacherForced,
             "free_decode": freeDecode,
             "cold_token": context.tokenizer.decode(tokens: [argMax(cold.logits).item(Int.self)]),
