@@ -329,6 +329,17 @@ final class QwenNextPrefixBoundaryTests: XCTestCase {
             ModelConfiguration(directory: URL(fileURLWithPath: modelPath)))
         let model = try XCTUnwrap(context.model as? Qwen4ExpModel)
         let radix = RadixTreeCache(modelID: "thinking-history-differential")
+        let bf16State = environment["AFM_QWEN_TOOL_HISTORY_BF16_STATE"] == "1"
+        func newDiagnosticCache() -> [KVCache] {
+            let cache = model.newCache(parameters: nil)
+            if bf16State {
+                for case let layer as Qwen4ExpLayerCache in cache {
+                    layer[1] = MLXArray.zeros([1, model.configuration.linearNumValueHeads,
+                        model.configuration.linearValueHeadDim, model.configuration.linearKeyHeadDim], dtype: .bfloat16)
+                }
+            }
+            return cache
+        }
         let referenceNormalization = environment["AFM_QWEN_TOOL_HISTORY_REFERENCE_NORM"] == "1"
         let gdnLayers = model.namedModules().compactMap { $0.1 as? Qwen4ExpDecoderLayer }
             .filter(\.isLinear)
@@ -343,7 +354,7 @@ final class QwenNextPrefixBoundaryTests: XCTestCase {
         var schedule: [[String: Any]] = []
         var target: RadixPrefixMatch?
         for history in histories {
-            var cache = model.newCache(parameters: nil)
+            var cache = newDiagnosticCache()
             let match = MLXPrefixReplayPolicy.validatedRestoreMatch(
                 radix.findExactBoundaryMatch(history.tokens), cache: cache)
             if !canonicalBoundaries {
@@ -414,7 +425,7 @@ final class QwenNextPrefixBoundaryTests: XCTestCase {
         let second = try finish(history.tokens, restoredPrefix: match.prefixLen, model: model,
                                 cache: secondCache, prefillStepSize: stepSize)
         let persisted = compare(first, second, requireExact: true)
-        let coldCache = model.newCache(parameters: nil)
+        let coldCache = newDiagnosticCache()
         let cold = try finish(history.tokens, restoredPrefix: 0, model: model,
                              cache: coldCache, prefillStepSize: stepSize)
         let coldComparison = compare(cold, first, requireExact: false)
@@ -469,6 +480,7 @@ final class QwenNextPrefixBoundaryTests: XCTestCase {
         let report: [String: Any] = ["model": modelPath, "fixture": fixturePath,
             "canonical_boundaries": canonicalBoundaries, "prefill_step_size": stepSize,
             "reference_gdn_normalization": referenceNormalization,
+            "bf16_recurrent_state": bf16State,
             "teacher_tokens": teacherTokens ?? teacherForced.compactMap { $0["cold_token"] as? Int },
             "history_schedule": schedule, "tokens": history.tokens.count, "restored_prefix": match.prefixLen,
             "cold_chunks": cold.chunks, "restored_chunks": first.chunks,
