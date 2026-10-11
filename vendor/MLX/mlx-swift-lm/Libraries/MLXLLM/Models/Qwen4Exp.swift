@@ -3478,8 +3478,9 @@ func qwen4ExpSupportsCompiledGDNPrework(
 
 private final class Qwen4ExpGatedDeltaNet: Module {
     let captureRecurrentStates: Bool
-    // Checkpoint diagnostic only; never set by runtime configuration.
-    var referencePrefillQKNormalizationForTesting = false
+    // Match MLX RMSNorm's FP32 prefill reduction and BF16 scaling boundaries.
+    // Decode and verifier widths retain their existing arithmetic.
+    var useReferencePrefillQKNormalization = true
     private static let compileDecode =
         ProcessInfo.processInfo.environment["AFM_QWEN_COMPILE_GDN_DECODE"] != "0"
             && HardwareInfo.isModelOwnedCompiledDecodeSupported
@@ -3760,8 +3761,9 @@ private final class Qwen4ExpGatedDeltaNet: Module {
                 keyHeadDimension: keyHeadDim,
                 valueHeadDimension: valueHeadDim,
                 convolutionKernel: convKernel,
-                referencePrefillQKNormalization: referencePrefillQKNormalizationForTesting
+                referencePrefillQKNormalization: useReferencePrefillQKNormalization
                     && b == 1
+                    && verificationPolicy == nil
                     && l >= Qwen4ExpGatedDeltaPrework.minimumReferencePrefillSequenceLength)
             : nil
 
@@ -3971,8 +3973,7 @@ private final class Qwen4ExpGatedDeltaNet: Module {
                   aLogDType: aLog.dtype, dtBiasDType: dtBias.dtype,
                   channels: channels, keyHeadDimension: keyHeadDim,
                   valueHeadDimension: valueHeadDim, convolutionKernel: convKernel),
-              aLog.shape == [valueHeads], dtBias.shape == [valueHeads],
-              !referencePrefillQKNormalizationForTesting
+              aLog.shape == [valueHeads], dtBias.shape == [valueHeads]
         else { return false }
         if let prior = cache[0], prior.shape != [1, convKernel - 1, channels]
             || prior.dtype != dtype { return false }
@@ -5435,10 +5436,10 @@ final class Qwen4ExpDecoderLayer: Module {
     }
 
     var referenceGatedDeltaPrefillNormalizationForTesting: Bool {
-        get { linearAttention?.referencePrefillQKNormalizationForTesting ?? false }
+        get { linearAttention?.useReferencePrefillQKNormalization ?? false }
         set {
             precondition(isLinear)
-            linearAttention!.referencePrefillQKNormalizationForTesting = newValue
+            linearAttention!.useReferencePrefillQKNormalization = newValue
         }
     }
 

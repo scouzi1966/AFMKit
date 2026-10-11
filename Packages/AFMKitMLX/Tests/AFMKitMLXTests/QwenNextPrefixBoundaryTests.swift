@@ -340,13 +340,18 @@ final class QwenNextPrefixBoundaryTests: XCTestCase {
             }
             return cache
         }
-        let referenceNormalization = environment["AFM_QWEN_TOOL_HISTORY_REFERENCE_NORM"] == "1"
         let gdnLayers = model.namedModules().compactMap { $0.1 as? Qwen4ExpDecoderLayer }
             .filter(\.isLinear)
-        if referenceNormalization {
-            gdnLayers.forEach { $0.referenceGatedDeltaPrefillNormalizationForTesting = true }
+        let originalNormalizations = gdnLayers.map(\.referenceGatedDeltaPrefillNormalizationForTesting)
+        if let override = environment["AFM_QWEN_TOOL_HISTORY_REFERENCE_NORM"] {
+            gdnLayers.forEach { $0.referenceGatedDeltaPrefillNormalizationForTesting = override == "1" }
         }
-        defer { gdnLayers.forEach { $0.referenceGatedDeltaPrefillNormalizationForTesting = false } }
+        let referenceNormalization = gdnLayers.allSatisfy(\.referenceGatedDeltaPrefillNormalizationForTesting)
+        defer {
+            for (layer, original) in zip(gdnLayers, originalNormalizations) {
+                layer.referenceGatedDeltaPrefillNormalizationForTesting = original
+            }
+        }
         let canonicalBoundaries = environment["AFM_QWEN_TOOL_HISTORY_CANONICAL"] == "1"
         let stepSize = try XCTUnwrap(histories.first).prefillStepSize
         XCTAssertGreaterThan(stepSize, 0)
@@ -472,7 +477,16 @@ final class QwenNextPrefixBoundaryTests: XCTestCase {
                     if eos.contains(token) { stopped = true; break }
                     logits = forward([token], model: model, cache: cache)
                 }
-                freeDecode[name] = ["tokens": generated, "text": context.tokenizer.decode(tokens: generated),
+                let text = context.tokenizer.decode(tokens: generated)
+                if environment["AFM_QWEN_TOOL_HISTORY_REQUIRE_COMPLETION"] == "1" {
+                    XCTAssertTrue(stopped, "\(name) exhausted its budget on this frozen tool request")
+                    XCTAssertTrue(text.contains("</think>"), "\(name) never completed thinking")
+                    XCTAssertTrue(text.contains("</tool_call>"), "\(name) never completed its tool call")
+                    let paragraphs = text.components(separatedBy: "\n\n").filter { $0.count > 60 }
+                    let counts = Dictionary(grouping: paragraphs, by: { $0 }).values.map(\.count)
+                    XCTAssertLessThanOrEqual(counts.max() ?? 0, 2, "\(name) repeated long reasoning paragraphs")
+                }
+                freeDecode[name] = ["tokens": generated, "text": text,
                                     "eos": stopped, "limit": limit]
                 print("THINKING_FREE arm=\(name) tokens=\(generated.count) eos=\(stopped)")
             }

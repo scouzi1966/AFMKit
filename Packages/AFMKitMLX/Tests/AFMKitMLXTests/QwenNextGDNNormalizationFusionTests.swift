@@ -57,7 +57,7 @@ final class QwenNextGDNNormalizationFusionTests: XCTestCase {
             let weight = values([channels, convolutionKernel, 1], seed: 5, scale: 0.25, dtype: dtype)
             let aLog = values([valueHeads], seed: 7, scale: 1, dtype: dtype)
             let dtBias = values([valueHeads], seed: 11, scale: 1, dtype: dtype)
-            for width in [128, 129, 257] {
+            for width in [16, 31, 97, 128, 129, 257] {
                 for scale: Float in [0, 0.003, 1, 8] {
                     let projected = values([1, width, channels], seed: 3, scale: scale, dtype: dtype)
                     let prior = values([1, convolutionKernel - 1, channels], seed: 17, scale: scale, dtype: dtype)
@@ -98,7 +98,7 @@ final class QwenNextGDNNormalizationFusionTests: XCTestCase {
 
     func testReferenceVariantRejectsDecodeVerificationBatchAndOtherHeadGeometry() throws {
         try MLXMetalLibrary.ensureAvailable(verbose: false)
-        for (batch, width, headDimension) in [(1, 1, 128), (1, 8, 128), (1, 127, 128), (2, 4, 128), (1, 128, 64)] {
+        for (batch, width, headDimension) in [(1, 1, 128), (1, 8, 128), (1, 15, 128), (2, 4, 128), (1, 128, 64)] {
             let channels = (2 * keyHeads + valueHeads) * headDimension
             func run(reference: Bool) -> Qwen4ExpGatedDeltaPreworkOutput? {
                 Qwen4ExpGatedDeltaPrework.call(
