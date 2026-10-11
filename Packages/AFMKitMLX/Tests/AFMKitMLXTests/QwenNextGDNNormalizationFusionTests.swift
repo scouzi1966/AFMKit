@@ -11,6 +11,23 @@ final class QwenNextGDNNormalizationFusionTests: XCTestCase {
     private let valueHeads = 6
     private let convolutionKernel = 4
 
+    func testReferenceSelectionKeepsOrdinaryFusionForUnqualifiedGeometry() {
+        func select(batch: Int = 1, width: Int = 128, key: Int = 128,
+                    value: Int = 128, verification: Bool = false, enabled: Bool = true) -> Bool {
+            Qwen4ExpGatedDeltaPrework.shouldUseReferencePrefillNormalization(
+                enabled: enabled, batchSize: batch, sequenceLength: width,
+                keyHeadDimension: key, valueHeadDimension: value, hasVerificationPolicy: verification)
+        }
+        XCTAssertTrue(select())
+        XCTAssertFalse(select(key: 64, value: 64), "Unqualified reference geometry must retain ordinary fusion")
+        XCTAssertFalse(select(value: 64))
+        XCTAssertFalse(select(batch: 2))
+        XCTAssertFalse(select(width: 1))
+        XCTAssertFalse(select(width: 15))
+        XCTAssertFalse(select(verification: true))
+        XCTAssertFalse(select(enabled: false))
+    }
+
     /// Mirror Q/K inputs into V so the oracle observes the kernel's exact
     /// convolution/SiLU result. This isolates normalization, not convolution.
     func testOrdinaryBF16NormalizationMatchesMLXReduction() throws {

@@ -3761,10 +3761,10 @@ private final class Qwen4ExpGatedDeltaNet: Module {
                 keyHeadDimension: keyHeadDim,
                 valueHeadDimension: valueHeadDim,
                 convolutionKernel: convKernel,
-                referencePrefillQKNormalization: useReferencePrefillQKNormalization
-                    && b == 1
-                    && verificationPolicy == nil
-                    && l >= Qwen4ExpGatedDeltaPrework.minimumReferencePrefillSequenceLength)
+                referencePrefillQKNormalization: Qwen4ExpGatedDeltaPrework.shouldUseReferencePrefillNormalization(
+                    enabled: useReferencePrefillQKNormalization, batchSize: b,
+                    sequenceLength: l, keyHeadDimension: keyHeadDim,
+                    valueHeadDimension: valueHeadDim, hasVerificationPolicy: verificationPolicy != nil))
             : nil
 
         let q: MLXArray

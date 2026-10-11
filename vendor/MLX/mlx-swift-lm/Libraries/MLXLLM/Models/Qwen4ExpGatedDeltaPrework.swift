@@ -25,6 +25,18 @@ enum Qwen4ExpGatedDeltaPrework {
     private static let maximumBatchedSequenceLength = 8
     static let minimumReferencePrefillSequenceLength = 16
     private static let referenceNormalizationHeadDimension = 128
+    /// Select only the qualified reference arm. Other supported head widths
+    /// must still reach ordinary fused prework, rather than fail its guard and
+    /// unnecessarily fall back to the generic graph.
+    static func shouldUseReferencePrefillNormalization(
+        enabled: Bool, batchSize: Int, sequenceLength: Int,
+        keyHeadDimension: Int, valueHeadDimension: Int, hasVerificationPolicy: Bool
+    ) -> Bool {
+        enabled && batchSize == 1 && !hasVerificationPolicy
+            && sequenceLength >= minimumReferencePrefillSequenceLength
+            && keyHeadDimension == referenceNormalizationHeadDimension
+            && valueHeadDimension == referenceNormalizationHeadDimension
+    }
     static let batchEnabled =
         ProcessInfo.processInfo.environment["AFM_QWEN_BATCH_GDN_PREWORK"] == "1"
 
