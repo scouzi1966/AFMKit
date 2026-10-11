@@ -85,6 +85,12 @@ The preceding numerical qualification had 100 passed tests, one optional
 production-shape skip, and zero failures. Do not conflate these selections with
 a complete fresh release suite.
 
+The subsequent broader selection on the new default passes 134 tests (114
+XCTest and 20 Swift Testing cases), with one optional production-shape skip and
+no failures. A separate diagnostic confirms both no-tool turns actually used
+native MTP: 316 and 1,050 cycles, respectively, with zero backbone fallbacks.
+Diagnostic timings are excluded from throughput comparisons.
+
 Native no-tool MTP off/on two-turn probes both produced coherent visible answers.
 The MTP follow-up was verbose (2,695 output tokens, 53.73 seconds), so this is
 not a performance win. Requests containing tools retain the existing AR fallback;
@@ -98,10 +104,31 @@ exceeds 10%; do not claim all measurements are within the target.
 
 ## Remaining qualification and reporting limits
 
-A fresh coding-agent run on the new default is still in progress at this
-checkpoint. The preceding candidate's single matched Orbital pair passed 11/11
+A fresh coding-agent run on the new default passed 11/11 automated checks in
+666 seconds, generating 38,503 tokens across 22 requests. This is slower than
+the preceding successful AFM run (542 seconds, 30,705 tokens), not evidence of
+improved agentic latency. Its input-token reuse fraction was 92.9%.
+
+The preceding candidate's single matched Orbital pair passed 11/11
 automated checks for both engines (AFM 542 seconds, reference 504 seconds).
-That pair does not establish statistical superiority or qualify the new default.
+That pair does not establish statistical superiority.
+
+To isolate the newest default from different fresh-project trajectories, the
+expensive ninth request was run against both preserved AFM binaries after the
+same eight frozen preceding inputs. Both restored 11,168 of 11,527 prompt tokens,
+generated 13,581 output tokens, and returned exactly identical reasoning and
+tool arguments. Prior/new times were 219.8/222.1 seconds. This request therefore
+does not demonstrate a regression introduced by the new history default.
+All 22 project requests have no generated assistant items before their latest
+user message; the previous-turn default removes no reasoning from that trace.
+
+The pinned reference on the same frozen history, with its thinking budget
+explicitly disabled for this diagnostic, completed in 168.0 seconds and 10,755
+output tokens. Its reasoning was also lengthy, but shorter than AFM's. This
+remaining difference is not resolved or dismissed as harmless randomness.
+A separate cold-versus-warm AFM control is in progress to investigate the effect
+of prefix execution. Generated calls in all frozen-history diagnostics are
+inspected, never executed.
 
 The Responses boundary still reports `reasoning_tokens: 0` despite returning
 actual reasoning items. Total output-token counts and saved reasoning text were
