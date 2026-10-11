@@ -446,6 +446,26 @@ final class QwenNextPrefixBoundaryTests: XCTestCase {
             coldLogits = forward([teacher], model: model, cache: coldCache)
             restoredLogits = forward([teacher], model: model, cache: firstCache)
         }
+        var freeDecode: [String: Any] = [:]
+        if let value = environment["AFM_QWEN_TOOL_HISTORY_FREE_STEPS"], let limit = Int(value) {
+            XCTAssertTrue((1...16384).contains(limit))
+            let eos = context.configuration.eosTokenIds.union([context.tokenizer.eosTokenId].compactMap { $0 })
+            for (name, result) in [("cold", cold), ("warm", first)] {
+                let cache = restore(result.cache, model: model)
+                var logits = result.logits
+                var generated: [Int] = []
+                var stopped = false
+                for _ in 0..<limit {
+                    let token = argMax(logits).item(Int.self)
+                    generated.append(token)
+                    if eos.contains(token) { stopped = true; break }
+                    logits = forward([token], model: model, cache: cache)
+                }
+                freeDecode[name] = ["tokens": generated, "text": context.tokenizer.decode(tokens: generated),
+                                    "eos": stopped, "limit": limit]
+                print("THINKING_FREE arm=\(name) tokens=\(generated.count) eos=\(stopped)")
+            }
+        }
         let report: [String: Any] = ["model": modelPath, "fixture": fixturePath,
             "canonical_boundaries": canonicalBoundaries, "prefill_step_size": stepSize,
             "reference_gdn_normalization": referenceNormalization,
@@ -454,6 +474,7 @@ final class QwenNextPrefixBoundaryTests: XCTestCase {
             "cold_chunks": cold.chunks, "restored_chunks": first.chunks,
             "cold_vs_restored": coldComparison, "same_chunks_round_trip": persisted,
             "teacher_forced_decode": teacherForced,
+            "free_decode": freeDecode,
             "cold_token": context.tokenizer.decode(tokens: [argMax(cold.logits).item(Int.self)]),
             "restored_token": context.tokenizer.decode(tokens: [argMax(first.logits).item(Int.self)])]
         try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys])
