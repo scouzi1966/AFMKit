@@ -844,6 +844,7 @@ final class Qwen4ExpQSAPositionTables {
 }
 
 final class Qwen4ExpAttentionCache: KVCache, UniformBatchKVCache, CopyOnWriteKVCacheState {
+    private static let metadataVersion = "qwen4-exp-attention-v1"
     var offset = 0
     var offsetArray: MLXArray? { nil }
     var maxSize: Int? { nil }
@@ -1275,8 +1276,20 @@ final class Qwen4ExpAttentionCache: KVCache, UniformBatchKVCache, CopyOnWriteKVC
     }
 
     var metaState: [String] {
-        get { [] }
-        set { precondition(newValue.isEmpty) }
+        get {
+            [Self.metadataVersion, hasOnlyImplicitIndexPositions ? "implicit" : "explicit"]
+        }
+        set {
+            // Older tensor-only snapshots do not establish position provenance.
+            // Preserve the conservative inference made by the state setter.
+            guard !newValue.isEmpty else { return }
+            precondition(newValue.count == 2 && newValue[0] == Self.metadataVersion
+                && (newValue[1] == "implicit" || newValue[1] == "explicit"))
+            // Materializing ordinary text positions for sparse QSA must not
+            // turn a radix restore into an explicit-position/vision execution
+            // path. Only model-owned metadata may reestablish this provenance.
+            hasOnlyImplicitIndexPositions = newValue[1] == "implicit"
+        }
     }
 
     /// Prompt replay preserves optional-field positions, unlike the compact
