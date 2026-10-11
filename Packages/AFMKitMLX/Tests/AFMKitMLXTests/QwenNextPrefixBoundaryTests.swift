@@ -224,6 +224,84 @@ final class QwenNextPrefixBoundaryTests: XCTestCase {
         try traceFirstLayer(tokens, model: model, output: output)
     }
 
+    /// Match the reference's direct split fixture without inheriting earlier turns.
+    /// The optional joined tail is diagnostic, never a production policy change.
+    func testExactCheckpointMatchedReferenceSplit() async throws {
+        let env = ProcessInfo.processInfo.environment
+        guard let path = env["AFM_QWEN_TOOL_HISTORY_MODEL"],
+              let fixture = env["AFM_QWEN_TOOL_HISTORY_FIXTURE"],
+              let destination = env["AFM_QWEN_TOOL_HISTORY_OUT"] else {
+            throw XCTSkip("Explicit model, frozen token histories and output required")
+        }
+        struct History: Decodable {
+            let request: Int
+            let tokens: [Int]
+            let cachedPrefix: Int
+            let prefillStepSize: Int
+        }
+        let histories = try JSONDecoder().decode([History].self,
+            from: Data(contentsOf: URL(fileURLWithPath: fixture)))
+        let history = try XCTUnwrap(histories.last)
+        let output = URL(fileURLWithPath: destination, isDirectory: true)
+        try XCTSkipIf(FileManager.default.fileExists(atPath: destination), "Never overwrite evidence")
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        try MLXMetalLibrary.ensureAvailable(verbose: false)
+        let context = try await LLMModelFactory.shared.load(configuration:
+            ModelConfiguration(directory: URL(fileURLWithPath: path)))
+        let model = try XCTUnwrap(context.model as? Qwen4ExpModel)
+        let joinedTail = env["AFM_QWEN_TOOL_HISTORY_JOINED_TAIL"] == "1"
+        let teacherTokens: [Int]? = try env["AFM_QWEN_TOOL_HISTORY_TEACHER"].map {
+            try JSONDecoder().decode([Int].self, from: Data(contentsOf: URL(fileURLWithPath: $0)))
+        }
+        if let teacherTokens { XCTAssertEqual(teacherTokens.count, 64) }
+        func prefill(_ cache: [KVCache], from start: Int, to end: Int) {
+            var cursor = start
+            while cursor < end {
+                let stop = min(cursor + history.prefillStepSize, end)
+                forward(Array(history.tokens[cursor..<stop]), model: model, cache: cache)
+                cursor = stop
+            }
+        }
+        func complete(_ cache: [KVCache], from start: Int) -> MLXArray {
+            prefill(cache, from: start, to: history.tokens.count - 31)
+            if joinedTail {
+                return forward(Array(history.tokens.suffix(31)), model: model, cache: cache)
+            }
+            forward(Array(history.tokens[(history.tokens.count - 31)..<(history.tokens.count - 1)]),
+                    model: model, cache: cache)
+            return forward([history.tokens.last!], model: model, cache: cache)
+        }
+        let cold = model.newCache(parameters: nil)
+        let split = model.newCache(parameters: nil)
+        prefill(split, from: 0, to: history.cachedPrefix)
+        let saved = capture(split)
+        let restored = restore(saved, model: model)
+        var logits = [complete(cold, from: 0), complete(split, from: history.cachedPrefix),
+                      complete(restored, from: history.cachedPrefix)]
+        _ = compareStates(capture(split), capture(restored), requireExact: true)
+        let coldSplitStates = compareStates(capture(cold), capture(split), requireExact: false)
+        var steps: [[String: Any]] = []
+        for step in 0..<64 {
+            XCTAssertEqual(abs(logits[1] - logits[2]).max().item(Float.self), 0)
+            let teacher = argMax(logits[0]).item(Int.self)
+            let warm = argMax(logits[1]).item(Int.self)
+            steps.append(["step": step, "cold_token": teacher, "warm_token": warm,
+                          "max_logit_error": abs(logits[0] - logits[1]).max().item(Float.self)])
+            if step == 63 { break }
+            let inputToken = teacherTokens?[step] ?? teacher
+            logits = [cold, split, restored].map { forward([inputToken], model: model, cache: $0) }
+        }
+        let report: [String: Any] = ["model": path, "fixture": fixture,
+            "tokens": history.tokens.count, "prefix": history.cachedPrefix,
+            "chunk": history.prefillStepSize, "joined_tail": joinedTail,
+            "teacher_tokens": teacherTokens ?? steps.compactMap { $0["cold_token"] as? Int },
+            "cold_split_states": coldSplitStates,
+            "teacher_forced_decode": steps]
+        try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys])
+            .write(to: output.appendingPathComponent("summary.json"), options: .withoutOverwriting)
+        print("MATCHED_SPLIT joined_tail=\(joinedTail) disagreements=\(steps.filter { ($0["cold_token"] as? Int) != ($0["warm_token"] as? Int) }.count)/64")
+    }
+
     /// Reconstruct the captured tool-history cache boundaries without executing
     /// tools or generating replacement histories. Compare a live continuation
     /// with its radix round-trip separately from the cold execution schedule.
@@ -251,6 +329,13 @@ final class QwenNextPrefixBoundaryTests: XCTestCase {
             ModelConfiguration(directory: URL(fileURLWithPath: modelPath)))
         let model = try XCTUnwrap(context.model as? Qwen4ExpModel)
         let radix = RadixTreeCache(modelID: "thinking-history-differential")
+        let referenceNormalization = environment["AFM_QWEN_TOOL_HISTORY_REFERENCE_NORM"] == "1"
+        let gdnLayers = model.namedModules().compactMap { $0.1 as? Qwen4ExpDecoderLayer }
+            .filter(\.isLinear)
+        if referenceNormalization {
+            gdnLayers.forEach { $0.referenceGatedDeltaPrefillNormalizationForTesting = true }
+        }
+        defer { gdnLayers.forEach { $0.referenceGatedDeltaPrefillNormalizationForTesting = false } }
         let canonicalBoundaries = environment["AFM_QWEN_TOOL_HISTORY_CANONICAL"] == "1"
         let stepSize = try XCTUnwrap(histories.first).prefillStepSize
         XCTAssertGreaterThan(stepSize, 0)
@@ -358,6 +443,7 @@ final class QwenNextPrefixBoundaryTests: XCTestCase {
         }
         let report: [String: Any] = ["model": modelPath, "fixture": fixturePath,
             "canonical_boundaries": canonicalBoundaries, "prefill_step_size": stepSize,
+            "reference_gdn_normalization": referenceNormalization,
             "history_schedule": schedule, "tokens": history.tokens.count, "restored_prefix": match.prefixLen,
             "cold_chunks": cold.chunks, "restored_chunks": first.chunks,
             "cold_vs_restored": coldComparison, "same_chunks_round_trip": persisted,
