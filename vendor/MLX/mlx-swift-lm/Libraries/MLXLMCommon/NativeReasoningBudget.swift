@@ -108,3 +108,46 @@ public enum NativeReasoningTokenOrigin: Equatable, Sendable {
     case sampled
     case forcedBoundary
 }
+
+/// Opt-in host observations, after the iterator has already returned a native
+/// ID. No tensor reads, detokenization, model work, or API accounting are added.
+/// A returned ID is not necessarily visible: EOS, cancellation and buffered
+/// tool text retain their ordinary streaming semantics.
+public struct NativeGenerationDiagnosticObserver: Sendable {
+    // Classification at observation, before the existing cancellation/stop
+    // checks. `ordinary` does not assert submission or visibility.
+    public enum Delivery: String, Sendable { case ordinary, eos, unknown, cancelled }
+    public enum End: String, Sendable { case iteratorEnded, eos, unknown, cancelled, toolCall, consumerTerminated }
+    public struct Token: Sendable {
+        public let index: Int
+        public let tokenID: Int
+        public let origin: NativeReasoningTokenOrigin
+        public let delivery: Delivery
+        public let committedUndelivered: Int
+        public init(index: Int, tokenID: Int, origin: NativeReasoningTokenOrigin,
+            delivery: Delivery, committedUndelivered: Int) {
+            self.index = index; self.tokenID = tokenID; self.origin = origin
+            self.delivery = delivery; self.committedUndelivered = committedUndelivered
+        }
+    }
+    public struct Completion: Sendable {
+        public let returnedTokenCount: Int
+        public let end: End
+        public let abandonedTokenCount: Int
+        public let cacheAtDeliveredBoundary: Bool
+        public init(returnedTokenCount: Int, end: End, abandonedTokenCount: Int,
+            cacheAtDeliveredBoundary: Bool) {
+            self.returnedTokenCount = returnedTokenCount; self.end = end
+            self.abandonedTokenCount = abandonedTokenCount
+            self.cacheAtDeliveredBoundary = cacheAtDeliveredBoundary
+        }
+    }
+    public let onToken: @Sendable (Token) -> Void
+    public let onCompletion: @Sendable (Completion) -> Void
+
+    public init(onToken: @escaping @Sendable (Token) -> Void,
+        onCompletion: @escaping @Sendable (Completion) -> Void) {
+        self.onToken = onToken
+        self.onCompletion = onCompletion
+    }
+}

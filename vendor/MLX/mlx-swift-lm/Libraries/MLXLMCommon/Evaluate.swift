@@ -1524,7 +1524,8 @@ public func generateTask(
     iterator: consuming TokenIterator,
     stopAfterToolCall: Bool = false,
     ignoreEndOfSequence: Bool = false,
-    tools: [[String: any Sendable]]? = nil
+    tools: [[String: any Sendable]]? = nil,
+    nativeDiagnosticObserver: NativeGenerationDiagnosticObserver? = nil
 ) -> (AsyncStream<Generation>, Task<Void, Never>) {
 
     let (stream, continuation) = AsyncStream<Generation>.makeStream()
@@ -1552,11 +1553,22 @@ public func generateTask(
         var perfLoopOverheadNs: UInt64 = 0
         var stoppedAfterToolCall = false
         var continuationTerminated = false
+        var diagnosticEnd = NativeGenerationDiagnosticObserver.End.iteratorEnded
 
         while true {
             let tLoopTop: UInt64 = perfEnabled ? DispatchTime.now().uptimeNanoseconds : 0
 
             guard let token = iterator.next() else { break }
+
+            if let observer = nativeDiagnosticObserver {
+                let delivery: NativeGenerationDiagnosticObserver.Delivery = Task.isCancelled
+                    ? .cancelled : (eosTokenIds.contains(token) ? .eos
+                        : (token == tokenizer.unknownTokenId ? .unknown : .ordinary))
+                observer.onToken(.init(index: iterator.tokenCount - 1, tokenID: token,
+                    origin: iterator.lastReasoningTokenOrigin ?? .sampled,
+                    delivery: delivery,
+                    committedUndelivered: iterator.committedUndeliveredReasoningTokenCount))
+            }
 
             let tAfterNext: UInt64 = perfEnabled ? DispatchTime.now().uptimeNanoseconds : 0
 
@@ -1580,6 +1592,9 @@ public func generateTask(
             }
             consecutiveSuppressedEndOfSequenceTokens = 0
             if token == tokenizer.unknownTokenId || eosTokenIds.contains(token) {
+                if nativeDiagnosticObserver != nil {
+                    diagnosticEnd = eosTokenIds.contains(token) ? .eos : .unknown
+                }
                 break
             }
 
@@ -1666,6 +1681,14 @@ public func generateTask(
         // before synchronizing. This ensures no stale references survive into
         // the next request's generation pass.
         iterator.teardown()
+        if let observer = nativeDiagnosticObserver {
+            if Task.isCancelled { diagnosticEnd = .cancelled }
+            else if stoppedAfterToolCall { diagnosticEnd = .toolCall }
+            else if continuationTerminated { diagnosticEnd = .consumerTerminated }
+            observer.onCompletion(.init(returnedTokenCount: iterator.tokenCount,
+                end: diagnosticEnd, abandonedTokenCount: iterator.abandonedReasoningTokenCount,
+                cacheAtDeliveredBoundary: iterator.reasoningBudgetCacheIsAtDeliveredBoundary))
+        }
 
         let now = Date.timeIntervalSinceReferenceDate
         let generateTime = now - start

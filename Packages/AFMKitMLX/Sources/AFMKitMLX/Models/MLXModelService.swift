@@ -370,6 +370,9 @@ public final class MLXModelService:
     }()
 
     private let resolver: MLXCacheResolver
+    // Isolated replay diagnostic: parsed once, never a public request/default
+    // policy. Absent means nil and no native-ID hashing or observation.
+    private let nativeReasoningDiagnostic = Result { try QwenSerialReasoningDiagnostic.load() }
     let telemetryObserver: any AFMInferenceTelemetryObserving
     private let admissionTelemetry: MLXAdmissionTelemetry
     private let registry = MLXModelRegistry()
@@ -4382,6 +4385,7 @@ public final class MLXModelService:
         preserveStructuralTags: Bool = false,
         requestId: String? = nil
     ) async throws -> (modelID: String, stream: AsyncThrowingStream<StreamChunk, Error>, promptTokens: Int, toolCallStartTag: String?, toolCallEndTag: String?, thinkStartTag: String?, thinkEndTag: String?) {
+        let reasoningDiagnostic = try nativeReasoningDiagnostic.get()
         let reqId = requestId ?? ""
         try beginOperation()
         var endOperationOnExit = true
@@ -4508,6 +4512,18 @@ public final class MLXModelService:
         }
         let schedulerOwnsQwenMTP = mtpStreamEligible && maxConcurrent > 1
             && requestScheduler?.ownsQwenMTPSessions == true
+        if reasoningDiagnostic != nil {
+            // Do not silently enter an unsupported lane when diagnostics are
+            // explicitly requested. A loaded vision tower is fine: media
+            // inputs, not --vlm itself, are excluded.
+            try QwenSerialReasoningDiagnostic.require(
+                maxConcurrent == 1 && requestScheduler == nil && !mtpEnabled && mtpBinding == nil
+                    && eagle3DrafterPath == nil && !afmDSparkEnabled()
+                    && resolvedMedia.mediaKinds.isEmpty && (stop?.isEmpty ?? true)
+                    && responseFormat == nil && !wantLogprobs && !ignoreEndOfSequence
+                    && baseParameters.kvBits == nil,
+                "Reasoning diagnostic requires the existing serial, text-only, unconstrained AR lane")
+        }
         if let scheduler = requestScheduler,
            Self.shouldUseStreamingScheduler(
                 schedulerAvailable: true,
@@ -4900,6 +4916,33 @@ public final class MLXModelService:
                             }
                         }
                         var generationCache = context.model.newCache(parameters: params)
+                        let diagnosticRequest = try reasoningDiagnostic?.match(inputTokens)
+                        if diagnosticRequest != nil {
+                            var conditions = QwenSerialReasoningDiagnostic.Conditions()
+                            conditions.media = self.isMultimodalInput(input)
+                            conditions.grammar = constrainedDecoding != nil
+                            conditions.supportedModel = MLXReplayPrefill.supportsSerialTextBackoff(
+                                modelType: type(of: context.model), eligibleInput: true)
+                            conditions.capturesPromptBoundary = self.shouldCaptureSerialPromptBoundary(
+                                input: input, cache: generationCache, parameters: params)
+                            conditions.templateOpenedThink = templateInjectedThink
+                            conditions.inputRank = input.text.tokens.ndim
+                            conditions.inputMask = input.text.mask != nil
+                            conditions.defaultReplayGeometry = BatchScheduler.qwenARReplayBackoffTokenCount(
+                                ProcessInfo.processInfo.environment["AFM_QWEN_PREFIX_REPLAY_BACKOFF"]) == 31
+                            try QwenSerialReasoningDiagnostic.validate(conditions, parameters: params)
+                            let tokenizer = context.tokenizer
+                            let sentence = "\n\nConsidering the limited time by the user, I have to give the solution based on the thinking directly now.\n"
+                            let suffix = tokenizer.encode(text: sentence) + [248069]
+                                + tokenizer.encode(text: "\n\n")
+                            try QwenSerialReasoningDiagnostic.require(
+                                tokenizer.encode(text: "<think>") == [248068]
+                                    && tokenizer.encode(text: "</think>") == [248069]
+                                    && suffix == QwenSerialReasoningDiagnostic.suffix
+                                    && context.configuration.resolvedEOSTokenIds(tokenizer: tokenizer) == [248044, 248046]
+                                    && tokenizer.unknownTokenId == nil,
+                                "Checkpoint atomic markers, forced suffix or terminal IDs changed")
+                        }
                         var generateInput: LMInput
                         var streamCachedTokens = 0
                         var cachedPromptOutput: LMOutput?
@@ -5088,6 +5131,11 @@ public final class MLXModelService:
                         let generationIterator: TokenIterator
                         let capturesPromptBoundary = self.shouldCaptureSerialPromptBoundary(
                             input: input, cache: generationCache, parameters: params)
+                        let nativeRecord = try diagnosticRequest.map { request in
+                            try reasoningDiagnostic!.claim(request: request, modelPath: modelID,
+                                modelType: String(reflecting: type(of: context.model)),
+                                restoredPrefix: streamCachedTokens)
+                        }
                         let promptBoundaryObserver: ((LMOutput, [KVCache]) -> Void)? =
                             capturesPromptBoundary && cachedPromptOutput == nil
                             ? { output, cache in
@@ -5142,7 +5190,8 @@ public final class MLXModelService:
                                 parameters: params,
                                 processorPrompt: streamCachedTokens > 0 ? MLXArray(inputTokens) : nil,
                                 preparedPrefill: preparedPrefill,
-                                promptBoundaryObserver: promptBoundaryObserver
+                                promptBoundaryObserver: promptBoundaryObserver,
+                                reasoningBudget: nativeRecord?.budget
                             )
                         } catch {
                             if debugLogging {
@@ -5159,7 +5208,8 @@ public final class MLXModelService:
                             iterator: generationIterator,
                             stopAfterToolCall: params.stopAfterToolCall,
                             ignoreEndOfSequence: params.ignoreEndOfSequence,
-                            tools: toolSpecs
+                            tools: toolSpecs,
+                            nativeDiagnosticObserver: nativeRecord?.observer
                         )
                         var generationWasCancelled = false
                         do {
@@ -5309,6 +5359,10 @@ public final class MLXModelService:
                             generationTask.cancel()
                         }
                         await generationTask.value
+                        // The producer has torn down its live iterator. Never
+                        // publish that possibly-ahead cache; only the already
+                        // independent prompt snapshots remain in the radix.
+                        try nativeRecord?.publish()
                         if !receivedCompletionInfo {
                             let fallbackGenerateTime = Date().timeIntervalSince(genStart)
                             streamScratch.streamStatPromptTokens = fullPromptTokenCount
