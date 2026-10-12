@@ -207,6 +207,24 @@ enum Qwen4ExpGatedDeltaPrework {
         ],
         source: kernelSource)
 
+    /// Expose the original model-dtype activated Q/K to one composed FP32
+    /// helper. No new convolution, sigmoid, decay or custom normalization math.
+    /// The legacy kernel source/name/arguments stay byte-for-byte unchanged.
+    private static let activatedQKKernelForTesting: MLXFast.MLXFastKernel = {
+        let oldQuery = "queries[output_base + element] = normalized * query_scale;"
+        let oldKey = "keys[output_base + element] = normalized;"
+        precondition(kernelSource.components(separatedBy: oldQuery).count == 2)
+        precondition(kernelSource.components(separatedBy: oldKey).count == 2)
+        let source = kernelSource
+            .replacingOccurrences(of: oldQuery, with: "queries[output_base + element] = activated[element];")
+            .replacingOccurrences(of: oldKey, with: "keys[output_base + element] = activated[element];")
+        return MLXFast.metalKernel(
+            name: "qwen4_exp_gated_delta_activated_qk_diagnostic",
+            inputNames: ["projected", "prior", "convolution_weight", "projected_a", "projected_b", "a_log", "dt_bias"],
+            outputNames: ["queries", "keys", "values", "next_prior", "gate", "beta"],
+            source: source)
+    }()
+
     // David Dalcu's MIT-licensed 16-bit lookup technique (see
     // LICENSE-mlx-serve) avoids custom-kernel versus stock-metallib math-mode
     // differences. Use raw unsigned bits, never numeric float conversion:
@@ -282,8 +300,18 @@ enum Qwen4ExpGatedDeltaPrework {
         allowBatch: Bool = batchEnabled,
         referencePrefillQKNormalization: Bool = false,
         referenceQKNormalizationAllWidthsForTesting: Bool = false,
-        stockSigmoidLookupForTesting: Bool = false
+        stockSigmoidLookupForTesting: Bool = false,
+        fp32L2ForTesting: Qwen4ExpGDNFP32L2ForTesting? = nil,
+        cachedSingletonForTesting: Bool = false
     ) -> Qwen4ExpGatedDeltaPreworkOutput? {
+        if fp32L2ForTesting != nil {
+            precondition(!referencePrefillQKNormalization && !referenceQKNormalizationAllWidthsForTesting
+                && !stockSigmoidLookupForTesting,
+                "FP32-L2 diagnostic cannot combine other arithmetic interventions")
+            precondition(projected.ndim == 3 && projected.dim(0) == 1 && keyHeadDimension == 128
+                && valueHeadDimension == 128 && (!cachedSingletonForTesting || projected.dim(1) == 1),
+                "FP32-L2 diagnostic is restricted to qualified single-slot AR")
+        }
         let verifyWidth = projected.ndim == 3 ? projected.dim(1) : 0
         let batchSize = projected.ndim == 3 ? projected.dim(0) : 0
         let channels = 2 * keyHeads * keyHeadDimension
@@ -328,7 +356,9 @@ enum Qwen4ExpGatedDeltaPrework {
         }
 
         let useLookup = stockSigmoidLookupForTesting && batchSize == 1 && verifyWidth >= 17
-        let selectedKernel = useLookup ? lookupKernelForTesting : kernel
+        let useActivatedQK = fp32L2ForTesting?.intervenes == true
+        let selectedKernel = useActivatedQK ? activatedQKKernelForTesting
+            : (useLookup ? lookupKernelForTesting : kernel)
         var inputs = [projected, prior, convolutionWeight, projectedA, projectedB, aLog, dtBias]
         if useLookup { inputs.append(sigmoidTableForTesting(dtype: projected.dtype)!) }
         let outputs = selectedKernel(
@@ -357,9 +387,13 @@ enum Qwen4ExpGatedDeltaPrework {
             outputDTypes: Array(repeating: projected.dtype, count: 6),
             cacheConfiguration: true)
 
+        let qk = useActivatedQK
+            ? qwen4ExpFP32L2ForTesting(outputs[0], outputs[1], policy: fp32L2ForTesting!,
+                cachedSingleton: cachedSingletonForTesting)
+            : (outputs[0], outputs[1])
         return Qwen4ExpGatedDeltaPreworkOutput(
-            queries: outputs[0],
-            keys: outputs[1],
+            queries: qk.0,
+            keys: qk.1,
             values: outputs[2],
             convolutionState: outputs[3],
             gate: outputs[4],

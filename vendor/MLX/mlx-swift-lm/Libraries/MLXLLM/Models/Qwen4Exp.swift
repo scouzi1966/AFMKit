@@ -3416,6 +3416,60 @@ enum Qwen4ExpGDNNormalizationForTesting: String, Codable {
     case reference
 }
 
+/// Isolated official-fallback Q/K precision diagnostic. Never set by serving
+/// configuration. Nil and explicit legacy use the original arithmetic/trace.
+enum Qwen4ExpGDNFP32L2ForTesting: String, Sendable {
+    case legacy, roundQK, keepQK
+
+    var intervenes: Bool { self != .legacy }
+}
+
+enum Qwen4ExpGDNFP32L2ErrorForTesting: Error {
+    case unsupportedConfiguration
+    case unsupportedCapture
+}
+
+struct Qwen4ExpGDNFP32L2DispatchForTesting {
+    let width: Int
+    let compiled: Bool
+    let cachedSingleton: Bool
+}
+
+/// Match post-83d46 Transformers' boundaries, not mlx-serve's RMS formula.
+/// Activated convolution values arrive in model dtype. Keep every normalization
+/// operation in FP32, with epsilon added to the SUM, and scale queries last.
+func qwen4ExpFP32L2ForTesting(
+    _ queries: MLXArray, _ keys: MLXArray,
+    policy: Qwen4ExpGDNFP32L2ForTesting, cachedSingleton: Bool
+) -> (MLXArray, MLXArray) {
+    precondition(policy.intervenes && queries.dtype == keys.dtype)
+    let activationType = queries.dtype
+    let q = queries.asType(.float32), k = keys.asType(.float32)
+    let epsilon = MLXArray(Float(1e-6))
+    let normalizedQ = q * rsqrt((q * q).sum(axis: -1, keepDims: true) + epsilon)
+    let normalizedK = k * rsqrt((k * k).sum(axis: -1, keepDims: true) + epsilon)
+    let dimension = Double(queries.dim(-1))
+    // Official cached-singleton recurrence divides by sqrt(D); chunk (including
+    // cold singleton) multiplies by D**-0.5. Preserve both spellings in FP32.
+    let scaledQ = cachedSingleton
+        ? normalizedQ / MLXArray(Float(sqrt(dimension)))
+        : normalizedQ * MLXArray(Float(pow(dimension, -0.5)))
+    if policy == .roundQK {
+        return (scaledQ.asType(activationType), normalizedK.asType(activationType))
+    }
+    return (scaledQ, normalizedK)
+}
+
+func qwen4ExpFP32L2OutputForTesting(
+    _ output: MLXArray, activationType: DType, policy: Qwen4ExpGDNFP32L2ForTesting?
+) -> MLXArray {
+    guard policy == .keepQK else { return output }
+    // Shared recurrence dispatch types y from q. Official fallback instead
+    // rounds y to the original activation dtype before its gated norm.
+    precondition(output.dtype == .float32)
+    return output.asType(activationType)
+}
+
 /// Persistence-only diagnostic. Nil is the serving default. Both explicit
 /// policies retain FP32 storage and the same compiled functions and kernels.
 enum Qwen4ExpGDNStatePersistenceForTesting: String, Codable {
@@ -3524,6 +3578,8 @@ private final class Qwen4ExpGatedDeltaNet: Module {
     var normalizationForTesting: Qwen4ExpGDNNormalizationForTesting?
     var normalizationDispatchesForTesting: [Qwen4ExpGDNDispatchForTesting] = []
     var stockSigmoidLookupForTesting: Bool?
+    var fp32L2ForTesting: Qwen4ExpGDNFP32L2ForTesting?
+    var fp32L2DispatchesForTesting: [Qwen4ExpGDNFP32L2DispatchForTesting] = []
     var statePersistenceForTesting: Qwen4ExpGDNStatePersistenceForTesting?
     var statePersistenceRecordsForTesting: [Qwen4ExpGDNStatePersistenceRecordForTesting] = []
     private static let compileDecode =
@@ -3569,12 +3625,20 @@ private final class Qwen4ExpGatedDeltaNet: Module {
     // another closure, never changes a value captured by an already-built trace.
     private lazy var compiledReferenceDecodeForTesting = makeCompiledDecode(
         referenceNormalizationForTesting: true)
+    private lazy var compiledKeepColdL2ForTesting = makeCompiledDecode(fp32L2ForTesting: .keepQK)
+    private lazy var compiledKeepCachedL2ForTesting = makeCompiledDecode(
+        fp32L2ForTesting: .keepQK, cachedSingletonForTesting: true)
+    private lazy var compiledRoundColdL2ForTesting = makeCompiledDecode(fp32L2ForTesting: .roundQK)
+    private lazy var compiledRoundCachedL2ForTesting = makeCompiledDecode(
+        fp32L2ForTesting: .roundQK, cachedSingletonForTesting: true)
     // Batch traces never reuse the singleton compiled-function identity. The
     // bounded model-owned table retains functions, not request cache objects.
     private var compiledBatchDecodes: [Int: @Sendable ([MLXArray]) -> [MLXArray]] = [:]
 
     private func makeCompiledDecode(
-        referenceNormalizationForTesting: Bool = false
+        referenceNormalizationForTesting: Bool = false,
+        fp32L2ForTesting: Qwen4ExpGDNFP32L2ForTesting? = nil,
+        cachedSingletonForTesting: Bool = false
     ) -> @Sendable ([MLXArray]) -> [MLXArray] {
         let body: ([MLXArray]) -> [MLXArray] = { [unowned self] arguments in
             CompiledDecodeTrace.withActive {
@@ -3606,7 +3670,9 @@ private final class Qwen4ExpGatedDeltaNet: Module {
                     valueHeadDimension: self.valueHeadDim,
                     convolutionKernel: self.convKernel,
                     referencePrefillQKNormalization: referenceNormalizationForTesting,
-                    referenceQKNormalizationAllWidthsForTesting: referenceNormalizationForTesting)
+                    referenceQKNormalizationAllWidthsForTesting: referenceNormalizationForTesting,
+                    fp32L2ForTesting: fp32L2ForTesting,
+                    cachedSingletonForTesting: cachedSingletonForTesting)
                 precondition(
                     prework != nil,
                     "compiled Qwen GDN decode requires the fused one-token prework")
@@ -3624,7 +3690,9 @@ private final class Qwen4ExpGatedDeltaNet: Module {
                     .reshaped(b, l, self.valueHeads, self.valueHeadDim)
                 let output = qwen4ExpVerificationLinear(
                     self.outProj,
-                    self.norm(delta.0, gate: z).reshaped(b, l, self.valueDim),
+                    self.norm(qwen4ExpFP32L2OutputForTesting(delta.0,
+                        activationType: x.dtype, policy: fp32L2ForTesting), gate: z)
+                        .reshaped(b, l, self.valueDim),
                     verificationPolicy: nil,
                     role: .gatedDelta)
                 return [output, prepared.convolutionState, delta.1]
@@ -3695,6 +3763,10 @@ private final class Qwen4ExpGatedDeltaNet: Module {
         cache: ArraysCache?,
         verificationPolicy: MTPVerificationPolicy? = nil
     ) -> MLXArray {
+        if fp32L2ForTesting != nil {
+            do { try validateFP32L2ForTesting(x, cache: cache, verificationPolicy: verificationPolicy) }
+            catch { preconditionFailure("Unsupported FP32-L2 diagnostic: \(error)") }
+        }
         precondition(statePersistenceForTesting == nil || verificationPolicy == nil,
             "Persistence diagnostic excludes verification and MTP")
         precondition(stockSigmoidLookupForTesting == nil || verificationPolicy == nil,
@@ -3793,6 +3865,48 @@ private final class Qwen4ExpGatedDeltaNet: Module {
         return output
     }
 
+    private func validateFP32L2ForTesting(
+        _ input: MLXArray, cache: ArraysCache?, verificationPolicy: MTPVerificationPolicy?
+    ) throws {
+        guard fp32L2ForTesting != nil else { return }
+        guard let cache = cache as? Qwen4ExpLayerCache,
+              input.ndim == 3, input.dim(0) == 1, input.dim(1) > 0,
+              input.dtype == .bfloat16 || input.dtype == .float16 || input.dtype == .float32,
+              keyHeadDim == 128, valueHeadDim == 128,
+              verificationPolicy == nil, cache.mtpVerificationWidth == nil,
+              cache.gatedDeltaRollback == nil, cache.pleRollback == nil,
+              normalizationForTesting == nil, !referencePrefillQKNormalizationForTesting,
+              statePersistenceForTesting == nil, stockSigmoidLookupForTesting == nil
+        else { throw Qwen4ExpGDNFP32L2ErrorForTesting.unsupportedConfiguration }
+        guard cache.prefillCapture == nil else {
+            throw Qwen4ExpGDNFP32L2ErrorForTesting.unsupportedCapture
+        }
+        guard (cache[0] == nil) == (cache[1] == nil),
+              input.dtype == .float32 || (Qwen4ExpGatedDeltaPrework.enabled
+                && Device.defaultDevice().deviceType == .gpu && supportsCompiledPrework(input: input))
+        else { throw Qwen4ExpGDNFP32L2ErrorForTesting.unsupportedConfiguration }
+        if let recurrent = cache[1], recurrent.dtype != .float32
+            || recurrent.shape != [1, valueHeads, valueHeadDim, keyHeadDim] {
+            throw Qwen4ExpGDNFP32L2ErrorForTesting.unsupportedConfiguration
+        }
+        if let convolution = cache[0], convolution.dtype != input.dtype
+            || convolution.shape != [1, convKernel - 1, keyDim * 2 + valueDim] {
+            throw Qwen4ExpGDNFP32L2ErrorForTesting.unsupportedConfiguration
+        }
+    }
+
+    func fp32L2DecodeForTesting(
+        _ input: MLXArray, cache: ArraysCache, forceEager: Bool,
+        verificationPolicy: MTPVerificationPolicy?
+    ) throws -> MLXArray {
+        try validateFP32L2ForTesting(input, cache: cache, verificationPolicy: verificationPolicy)
+        // This throwing entry can test rejection, never execute verification.
+        guard verificationPolicy == nil else {
+            throw Qwen4ExpGDNFP32L2ErrorForTesting.unsupportedConfiguration
+        }
+        return callSingle(input, cache: cache, verificationPolicy: nil, forceEagerForTesting: forceEager)
+    }
+
     func uncompiledVerificationForTesting(
         _ input: MLXArray, cache: Qwen4ExpLayerCache,
         policy: MTPVerificationPolicy = .strictSingletonEquivalent
@@ -3803,19 +3917,29 @@ private final class Qwen4ExpGatedDeltaNet: Module {
     private func callSingle(
         _ x: MLXArray,
         cache: ArraysCache?,
-        verificationPolicy: MTPVerificationPolicy?
+        verificationPolicy: MTPVerificationPolicy?,
+        forceEagerForTesting: Bool = false
     ) -> MLXArray {
+        if fp32L2ForTesting != nil {
+            do { try validateFP32L2ForTesting(x, cache: cache, verificationPolicy: verificationPolicy) }
+            catch { preconditionFailure("Unsupported FP32-L2 diagnostic: \(error)") }
+        }
         let (b, l) = (x.dim(0), x.dim(1))
         // Keep the proven B=1 compiled-function identity unchanged. Opt-in
         // batches have their own shape-specific traces and truly batch-indexed
         // prework. Unknown shapes/verification still use the eager path.
-        let useCompiled = qwen4ExpShouldUseCompiledGDNDecode(
+        let useCompiled = !forceEagerForTesting && qwen4ExpShouldUseCompiledGDNDecode(
             compileEnabled: Self.compileDecode,
             batchSize: b,
             sequenceLength: l,
             hasVerificationPolicy: verificationPolicy != nil,
             batchCompileEnabled: Self.compileBatchDecode)
             && supportsCompiledPrework(input: x)
+        let cachedSingleton = fp32L2ForTesting != nil && l == 1 && cache?[1] != nil
+        if fp32L2ForTesting != nil {
+            fp32L2DispatchesForTesting.append(.init(width: l, compiled: useCompiled,
+                cachedSingleton: cachedSingleton))
+        }
         let useStockSigmoidLookup = stockSigmoidLookupForTesting == true && b == 1 && l >= 17
         if normalizationForTesting != nil || statePersistenceForTesting != nil
             || stockSigmoidLookupForTesting != nil {
@@ -3835,7 +3959,11 @@ private final class Qwen4ExpGatedDeltaNet: Module {
             let recurrentState = cache?[1] ?? MLXArray.zeros(
                 [b, valueHeads, valueHeadDim, keyHeadDim], dtype: .float32)
             let function: @Sendable ([MLXArray]) -> [MLXArray]
-            if b == 1 {
+            if fp32L2ForTesting == .keepQK {
+                function = cachedSingleton ? compiledKeepCachedL2ForTesting : compiledKeepColdL2ForTesting
+            } else if fp32L2ForTesting == .roundQK {
+                function = cachedSingleton ? compiledRoundCachedL2ForTesting : compiledRoundColdL2ForTesting
+            } else if b == 1 {
                 function = normalizationForTesting == .reference
                     ? compiledReferenceDecodeForTesting : compiledDecode
             } else if let existing = compiledBatchDecodes[b] {
@@ -3882,7 +4010,9 @@ private final class Qwen4ExpGatedDeltaNet: Module {
                     ?? (referencePrefillQKNormalizationForTesting && b == 1
                         && l >= Qwen4ExpGatedDeltaPrework.minimumReferencePrefillSequenceLength),
                 referenceQKNormalizationAllWidthsForTesting: normalizationForTesting == .reference,
-                stockSigmoidLookupForTesting: useStockSigmoidLookup)
+                stockSigmoidLookupForTesting: useStockSigmoidLookup,
+                fp32L2ForTesting: fp32L2ForTesting,
+                cachedSingletonForTesting: cachedSingleton)
             : nil
         if normalizationForTesting == .reference {
             precondition(fusedPrework != nil,
@@ -3891,6 +4021,10 @@ private final class Qwen4ExpGatedDeltaNet: Module {
         if useStockSigmoidLookup {
             precondition(fusedPrework != nil,
                 "Diagnostic must not silently fall back to ordinary sigmoid")
+        }
+        if fp32L2ForTesting != nil && x.dtype != .float32 {
+            precondition(fusedPrework != nil,
+                "FP32-L2 low-precision diagnostic requires activated fused prework, not fallback")
         }
 
         let q: MLXArray
@@ -3930,13 +4064,18 @@ private final class Qwen4ExpGatedDeltaNet: Module {
             var normalizedQueries = pieces[0].reshaped(b, l, keyHeads, keyHeadDim)
             var normalizedKeys = pieces[1].reshaped(b, l, keyHeads, keyHeadDim)
             v = pieces[2].reshaped(b, l, valueHeads, valueHeadDim)
-            normalizedQueries = normalizedQueries
-                * rsqrt((normalizedQueries * normalizedQueries).sum(
-                    axis: -1, keepDims: true) + 1e-6)
-                * pow(Float(keyHeadDim), -0.5)
-            normalizedKeys = normalizedKeys
-                * rsqrt((normalizedKeys * normalizedKeys).sum(
-                    axis: -1, keepDims: true) + 1e-6)
+            if let policy = fp32L2ForTesting, policy.intervenes {
+                (normalizedQueries, normalizedKeys) = qwen4ExpFP32L2ForTesting(
+                    normalizedQueries, normalizedKeys, policy: policy, cachedSingleton: cachedSingleton)
+            } else {
+                normalizedQueries = normalizedQueries
+                    * rsqrt((normalizedQueries * normalizedQueries).sum(
+                        axis: -1, keepDims: true) + 1e-6)
+                    * pow(Float(keyHeadDim), -0.5)
+                normalizedKeys = normalizedKeys
+                    * rsqrt((normalizedKeys * normalizedKeys).sum(
+                        axis: -1, keepDims: true) + 1e-6)
+            }
             q = normalizedQueries
             k = normalizedKeys
         }
@@ -4057,7 +4196,8 @@ private final class Qwen4ExpGatedDeltaNet: Module {
             .reshaped(b, l, valueHeads, valueHeadDim)
         return qwen4ExpVerificationLinear(
             outProj,
-            norm(output, gate: z).reshaped(b, l, valueDim),
+            norm(qwen4ExpFP32L2OutputForTesting(output, activationType: x.dtype,
+                policy: fp32L2ForTesting), gate: z).reshaped(b, l, valueDim),
             verificationPolicy: verificationPolicy,
             role: .gatedDelta)
     }
@@ -5560,6 +5700,27 @@ final class Qwen4ExpDecoderLayer: Module {
     func gatedDeltaDecodeForTesting(_ input: MLXArray, cache: ArraysCache) -> MLXArray {
         precondition(isLinear)
         return linearAttention!(input, cache: cache, verificationPolicy: nil)
+    }
+
+    var gatedDeltaFP32L2ForTesting: Qwen4ExpGDNFP32L2ForTesting? {
+        get { linearAttention?.fp32L2ForTesting }
+        set {
+            precondition(isLinear)
+            linearAttention!.fp32L2ForTesting = newValue
+        }
+    }
+
+    var gatedDeltaFP32L2DispatchesForTesting: [Qwen4ExpGDNFP32L2DispatchForTesting] {
+        linearAttention?.fp32L2DispatchesForTesting ?? []
+    }
+
+    func gatedDeltaFP32L2DecodeForTesting(
+        _ input: MLXArray, cache: ArraysCache, forceEager: Bool = false,
+        verificationPolicy: MTPVerificationPolicy? = nil
+    ) throws -> MLXArray {
+        precondition(isLinear)
+        return try linearAttention!.fp32L2DecodeForTesting(input, cache: cache,
+            forceEager: forceEager, verificationPolicy: verificationPolicy)
     }
 
     var referenceGatedDeltaPrefillNormalizationForTesting: Bool {
@@ -7078,6 +7239,9 @@ public final class Qwen4ExpModel: Module, LLMModel, KVCacheDimensionProvider, Re
         _ input: LMInput.Text, cache: [KVCache], state: LMOutput.State?,
         restoredPrefix: Int, boundary: Int, hostTokenIDs: [Int]?
     ) throws -> InteriorPrefillCapture? {
+        if model.layers.contains(where: { $0.linearAttention?.fp32L2ForTesting != nil }) {
+            throw Qwen4ExpGDNFP32L2ErrorForTesting.unsupportedCapture
+        }
         guard state == nil, input.mask == nil, input.tokens.ndim == 2,
               input.tokens.dim(0) == 1, restoredPrefix >= 0,
               boundary > 0, boundary < input.tokens.dim(1),
