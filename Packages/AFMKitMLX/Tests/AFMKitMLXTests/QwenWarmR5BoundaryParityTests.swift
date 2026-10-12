@@ -32,11 +32,23 @@ final class QwenWarmR5BoundaryParityTests: XCTestCase {
         guard let policy = GatePolicy(rawValue: raw) else { throw Failure.invalid("Unknown gate policy") }
         return policy
     }
+    private func captureGates(_ raw: String?, policy: GatePolicy?) throws -> Bool {
+        guard let raw, raw != "off" else { return false }
+        try require(raw == "on" && policy == .stockWrapper, "Gate capture requires on plus stock_wrapper")
+        return true
+    }
+    private struct GateObservation {
+        let input: MLXArray
+        let output: MLXArray
+    }
 
     /// Immutable per fresh model, installed before any startup/compiled trace.
     /// Only the two narrow a/b projections change; packed weights are reused.
     private final class GateProjection: QuantizedLinear {
         let policy: GatePolicy
+        // Host-only observation, never a Module parameter or a tensor rewrite.
+        // Installed only between startup and the8667 checkpoint, never decode.
+        var prefillObserver: ((MLXArray, MLXArray) -> Void)?
         init(_ original: QuantizedLinear, policy: GatePolicy) {
             self.policy = policy
             super.init(weight: original.weight, bias: original.bias, scales: original.scales,
@@ -47,7 +59,9 @@ final class QwenWarmR5BoundaryParityTests: XCTestCase {
             precondition(x.dtype == .bfloat16 && x.dim(-1) == 2560 && bias == nil)
             switch policy {
             case .stockWrapper:
-                return super.callAsFunction(x)
+                let output = super.callAsFunction(x)
+                if x.size / x.dim(-1) > 1 { prefillObserver?(x, output) }
+                return output
             case .fp32Input:
                 return quantizedMM(x.asType(.float32), weight, scales: scales, biases: biases,
                     transpose: true, groupSize: groupSize, bits: bits, mode: mode).asType(x.dtype)
@@ -350,6 +364,18 @@ final class QwenWarmR5BoundaryParityTests: XCTestCase {
         }
     }
 
+    func testGateCaptureIsStrictAndStockOnly() throws {
+        XCTAssertFalse(try captureGates(nil, policy: nil))
+        XCTAssertFalse(try captureGates("off", policy: .fp32Input))
+        XCTAssertTrue(try captureGates("on", policy: .stockWrapper))
+        for policy in [nil, GatePolicy.fp32Input, .referenceWideDQ, .allWidthDQ] {
+            XCTAssertThrowsError(try captureGates("on", policy: policy))
+        }
+        for raw in ["", "1", "true", "ON", "on "] {
+            XCTAssertThrowsError(try captureGates(raw, policy: .stockWrapper))
+        }
+    }
+
     func testSavedWarmR5BoundaryParity() async throws {
         let env = ProcessInfo.processInfo.environment
         let prefix = "AFM_QWEN_WARM_R5_"
@@ -361,6 +387,7 @@ final class QwenWarmR5BoundaryParityTests: XCTestCase {
         let binarySHA = try XCTUnwrap(env[prefix + "BINARY_SHA256"])
         let outputPath = try XCTUnwrap(env[prefix + "OUT"])
         let gates = try gatePolicy(env[prefix + "GATE_POLICY"])
+        let capture = try captureGates(env[prefix + "CAPTURE_LAYER0_GATES"], policy: gates)
         try require(!env.keys.contains { $0.hasPrefix("AFM_QWEN_") && !$0.hasPrefix(prefix) }, "Conflicting Qwen override")
         try require(["AFM_GDN_PACKED", "MLX_DISABLE_COMPILE", "VMLX_ENABLE_UNSAFE_COMPILE",
             "MLXPRESS_ENABLE_UNSAFE_COMPILE"].allSatisfy { env[$0] == nil }, "Default arithmetic/compile controls required")
@@ -377,7 +404,8 @@ final class QwenWarmR5BoundaryParityTests: XCTestCase {
             try require(source.path.hasPrefix(root.path + "/"), "Evidence symlink escaped the external root")
             return try Data(contentsOf: source)
         }
-        try await runModel(fixture, plan: plan, fixtureURL: url, fixtureSHA: expectedSHA, outputPath: outputPath, gatePolicy: gates)
+        try await runModel(fixture, plan: plan, fixtureURL: url, fixtureSHA: expectedSHA, outputPath: outputPath,
+            gatePolicy: gates, captureLayer0Gates: capture)
     }
 
     private struct Call: Codable {
@@ -559,8 +587,66 @@ final class QwenWarmR5BoundaryParityTests: XCTestCase {
             "max_absolute_difference": differences.map(abs).max()!]
     }
 
+    private func saveGateObservations(_ observations: [String: [String: [GateObservation]]],
+                                      output: URL, metadata: [String: String]) throws -> [String: Any] {
+        let widths = ["B_live": [6630, 595, 530, 172, 740], "C_cold": [8192, 475]]
+        var tensors: [String: MLXArray] = [:], reports: [String: Any] = [:]
+        try require(Set(observations.keys) == Set(widths.keys), "Missing captured arm")
+        for arm in ["B_live", "C_cold"] {
+            let gates = try XCTUnwrap(observations[arm]), expected = try XCTUnwrap(widths[arm])
+            let a = try XCTUnwrap(gates["a"]), b = try XCTUnwrap(gates["b"])
+            try require(Set(gates.keys) == Set(["a", "b"]) && a.count == expected.count && b.count == expected.count,
+                "Unexpected captured gate count")
+            for index in expected.indices {
+                for sample in [a[index], b[index]] {
+                    try require(sample.input.shape == [1, expected[index], 2560] && sample.input.dtype == .bfloat16
+                        && sample.output.shape == [1, expected[index], 48] && sample.output.dtype == .bfloat16,
+                        "Unexpected gate observation geometry/dtype")
+                }
+                // First observation evaluation occurs here, after all old prompt
+                // observations. No eval/copy/reshape happened in the observer.
+                try require(a[index].input.asData(access: .copy).data == b[index].input.asData(access: .copy).data,
+                    "Within-arm a/b projection inputs differ")
+            }
+            tensors[arm + "-input"] = concatenated(a.map(\.input), axis: 1)
+            tensors[arm + "-a"] = concatenated(a.map(\.output), axis: 1)
+            tensors[arm + "-b"] = concatenated(b.map(\.output), axis: 1)
+        }
+        eval(Array(tensors.values))
+        for (key, value) in tensors {
+            try require(value.asArray(Float.self).allSatisfy(\.isFinite), "Nonfinite gate capture")
+            reports[key] = ["dtype": "bfloat16", "shape": value.shape,
+                "raw_payload_sha256": digest(value.asData(access: .copy).data)]
+        }
+        var comparisons: [String: Any] = [:]
+        for name in ["input", "a", "b"] {
+            let left = try XCTUnwrap(tensors["B_live-" + name]), right = try XCTUnwrap(tensors["C_cold-" + name])
+            let lhs = left.asData(access: .copy).data, rhs = right.asData(access: .copy).data
+            try require(left.shape == right.shape && lhs.count == rhs.count, "Captured comparison geometry mismatch")
+            let firstByte = zip(lhs, rhs).enumerated().first { $0.element.0 != $0.element.1 }?.offset
+            var comparison = scoreComparison(left, right)
+            if let firstByte {
+                let element = firstByte / 2, channel = element % left.dim(-1), token = element / left.dim(-1)
+                comparison["first_differing_token_zero_based"] = token
+                comparison["first_differing_channel"] = channel
+                comparison["B_value"] = left.asArray(Float.self)[element]
+                comparison["C_value"] = right.asArray(Float.self)[element]
+            } else {
+                comparison["first_differing_token_zero_based"] = NSNull()
+                comparison["first_differing_channel"] = NSNull()
+            }
+            comparisons[name] = comparison
+        }
+        let url = output.appendingPathComponent("layer0-gate-prefill.safetensors")
+        try save(arrays: tensors, metadata: metadata, url: url)
+        return ["file": url.lastPathComponent, "file_sha256": try fileDigest(url), "tensors": reports,
+            "calls_by_arm": widths, "prefix_tokens": 8667, "within_arm_a_b_inputs_byte_equal": true,
+            "B_vs_C": comparisons,
+            "scope": "Layer0 stock a/b inputs and projection outputs before GDN prework, B five prefix calls versus C two. Captured references only, no extra eval inside forward; materialized after all old prompt observations, before continuation. Observers cleared before30+1 and all singleton decode. Array retention may alter allocation/lifetime: six prompt plus192 decision payloads must remain byte-exact versus stock no-observer control. First differing saved coordinate is not a complete per-layer causal trace. No numerical repair, serving, quality or timing claim."]
+    }
+
     private func runModel(_ fixture: Fixture, plan: Plan, fixtureURL: URL, fixtureSHA: String,
-                          outputPath: String, gatePolicy: GatePolicy?) async throws {
+                          outputPath: String, gatePolicy: GatePolicy?, captureLayer0Gates: Bool) async throws {
         let teacherIDs = try gatePolicy.map { _ in try fixedTeacher(prompt: fixture.histories[4].tokens, fixtureSHA: fixtureSHA) }
         let policyLabel = gatePolicy.map { "gate_projection_" + $0.rawValue } ?? "literal_nil"
         let teacherLabel = gatePolicy == nil ? "A_radix_MLX_ArgMaxSampler_BF16_no_processors" : "fixed_saved_baseline_64_decisions"
@@ -590,13 +676,14 @@ final class QwenWarmR5BoundaryParityTests: XCTestCase {
         let samplerPath = "vendor/MLX/mlx-swift-lm/Libraries/MLXLMCommon/Evaluate.swift"
         let samplerSHA = "eaccd6835d77e91fab0c7feff84736a568800ae3221ba94f4483c0a278d9dd97"
         try require(try fileDigest(sourceRoot.appendingPathComponent(samplerPath)) == samplerSHA, "Raw sampler source changed")
-        let provenance: [String: Any] = ["source_base_revision": "d7297d5ee357214397ea95672cc747d5fc6a0de6",
+        let provenance: [String: Any] = ["source_base_revision": "2d6224a8f9cfab6995c17cef67b87b9f4ecf80b5",
             "source_sha256": pins, "driver_source_sha256": driverSHA, "driver_source": driver.path,
             "test_executable": executable.path, "test_executable_sha256": try fileDigest(executable),
             "fixture": fixtureURL.path, "fixture_sha256": fixtureSHA, "capture_binary_sha256": fixture.source_binary_sha256,
             "capture_provider_revision": fixture.source_provider_revision, "model_directory": modelURL.path,
             "model_file_sha256": modelPins, "nil_gdn_arithmetic_hooks": true,
             "gate_projection_policy": gatePolicy?.rawValue ?? "nil", "teacher_mode": teacherLabel,
+            "capture_layer0_gates": captureLayer0Gates,
             "teacher_summary": gatePolicy == nil ? NSNull() : Self.evidenceRoot + Self.teacherSummary as Any,
             "teacher_summary_sha256": gatePolicy == nil ? NSNull() : Self.teacherSummarySHA as Any,
             "decision_limit": Self.decisionLimit, "eos_token_ids": Self.eosIDs,
@@ -612,6 +699,24 @@ final class QwenWarmR5BoundaryParityTests: XCTestCase {
         // One fresh loaded model per test/policy invocation. Never replace a
         // gate after any startup, forward, or lazy compiled closure has run.
         let gateNames = try gatePolicy.map { try installGates(model, policy: $0) } ?? []
+        var gateObservations: [String: [String: [GateObservation]]] = [:]
+        var observedGates: [String: GateProjection] = [:]
+        if captureLayer0Gates {
+            let modules = Dictionary(uniqueKeysWithValues: model.namedModules())
+            for name in ["a", "b"] {
+                observedGates[name] = try XCTUnwrap(modules["model.layers.0.linear_attn.in_proj_" + name] as? GateProjection)
+            }
+        }
+        func setGateObservers(_ arm: String?) {
+            for (name, gate) in observedGates {
+                if let arm {
+                    gate.prefillObserver = { input, output in
+                        gateObservations[arm, default: [:]][name, default: []].append(GateObservation(input: input, output: output))
+                    }
+                } else { gate.prefillObserver = nil }
+            }
+        }
+        defer { setGateObservers(nil) }
         let layers = model.namedModules().compactMap { _, module -> Qwen4ExpDecoderLayer? in
             guard let layer = module as? Qwen4ExpDecoderLayer, layer.isLinear else { return nil }; return layer
         }
@@ -722,10 +827,12 @@ final class QwenWarmR5BoundaryParityTests: XCTestCase {
             }
         }
         try startup("B_live")
+        setGateObservers("B_live")
         recording.calls = []
         let bCache = model.newCache(parameters: nil), tokens = fixture.histories[4].tokens
         var consumed = 0, bCheckpoints: [Snapshot] = [], bAux: Auxiliary?, bLast: LMOutput?
         for width in plan.uninterruptedR5Widths {
+            if consumed == 8667 { setGateObservers(nil) }
             let host = Array(tokens[consumed..<(consumed + width)])
             let result = recording(LMInput.Text(tokens: MLXArray(host).reshaped(1, -1)), cache: bCache,
                 state: nil, hostTokenIDs: model.consumesHostTokenIDs ? host : nil)
@@ -745,11 +852,13 @@ final class QwenWarmR5BoundaryParityTests: XCTestCase {
         schedules.append(["arm": "B_live", "request": 5, "tokens": tokens.count, "restored_prefix": 0,
             "calls": try json(recording.calls), "checkpoints": bCheckpoints.map(\.boundary)])
         try startup("C_cold")
+        setGateObservers("C_cold")
         recording.calls = []
         let cCache = model.newCache(parameters: nil)
         var coldBoundaries: [Int] = []
         var coldCheckpoint: Snapshot?
         let cold = try prepare(tokens, cCache, prefix: 0) { boundary, arrays, metadata in
+            setGateObservers(nil)
             coldBoundaries.append(boundary)
             coldCheckpoint = Snapshot(boundary: boundary, arrays: arrays, metadata: metadata)
         }
@@ -786,6 +895,13 @@ final class QwenWarmR5BoundaryParityTests: XCTestCase {
             "startup_ids_sha256_le_u32": fixture.captured_startup.tokens_sha256_le_u32,
             "dtype_note": "BF16 model rows losslessly stored as FP32"], url: scoreURL)
         try qualified()
+
+        let gateCapture: [String: Any]? = try captureLayer0Gates ? saveGateObservations(gateObservations,
+            output: output, metadata: ["fixture_sha256": fixtureSHA, "driver_source_sha256": driverSHA,
+                "capture_point": "layer0_gate_input_and_output_references_no_forward_eval", "gate_projection_policy": "stock_wrapper",
+                "r5_ids_sha256_le_u32": fixture.histories[4].tokens_sha256_le_u32,
+                "captured_prefix_ids_sha256_le_u32": try tokenDigest(Array(tokens.prefix(8667))), "prefix_tokens": "8667"]) : nil
+        try require(observedGates.values.allSatisfy { $0.prefillObserver == nil }, "Observer survived into continuation")
 
         // One shared trajectory: unchanged A-greedy when absent, otherwise the
         // fixed saved baseline teacher. B/C never feed their own choices.
@@ -867,7 +983,7 @@ final class QwenWarmR5BoundaryParityTests: XCTestCase {
             "first_B_C_strict_winner_difference": firstBCStrict.map { $0 as Any } ?? NSNull(),
             "scope": "At most64 rows including prompt decision0. With absent gate policy, A's actual BF16 MLX ArgMaxSampler selects the shared teacher as before. With any explicit gate policy, including stock_wrapper, the pinned baseline's64 teacher IDs are fixed; new sampler selections are observations only, never fed. All three live caches receive the same63 non-EOS IDs using ordinary singleton host-PLE forwarding. No clone/restore or own-B/C choice feed; unused final row is not fed. Raw sampler diagnosis only: no serving processors, grammar, suppression, reasoning cap or loop guard. Genuine divergence is saved, not an automatic test failure. Saved baseline teachers are diagnostic IDs, not historical/native serving IDs."]
         try qualified()
-        try write(["status": "complete", "schema_version": 3, "provenance": provenance,
+        try write(["status": "complete", "schema_version": captureLayer0Gates ? 4 : 3, "provenance": provenance,
             "policy": policyLabel, "gate_projection_policy": gatePolicy?.rawValue ?? "nil", "nil_gdn_arithmetic_hooks": true,
             "gate_replacement_names": gateNames, "gate_parameter_objects_preserved": true,
             "gate_policy_scope": "Only72 linear_attn.in_proj_a/b modules are replaced before any forward on a fresh model. Original packed weight/scales/biases objects are retained. stock_wrapper calls the original implementation; fp32_input applies all widths and casts output immediately back to BF16; reference_wide_dq uses activation-dtype dequant+GEMM only at>=2048 rows and stock below; all_width_dq extends that formula to every width, experimentally. Model GDN hooks remain nil, separately from this projection intervention. Stock-wrapper must reproduce baseline six prompt vectors and all192 saved decision rows externally before interpreting intervention arms. Not a speed/quality result.",
@@ -876,6 +992,7 @@ final class QwenWarmR5BoundaryParityTests: XCTestCase {
             "checkpoint_comparisons": checkpointComparisons, "restored_7927_comparison": restoreComparison,
             "restore_donor_7927_comparison": restoreDonor, "snapshot_immutability": immutability,
             "cold_8667_comparison": coldComparison, "auxiliary_7927": auxiliaryReports,
+            "layer0_gate_capture": gateCapture.map { $0 as Any } ?? NSNull(),
             "shared_decisions": continuation,
             "startup_comparisons": ["A_vs_B": startupAB, "A_vs_C": startupAC],
             "final_logit_comparisons": finalComparisons,
