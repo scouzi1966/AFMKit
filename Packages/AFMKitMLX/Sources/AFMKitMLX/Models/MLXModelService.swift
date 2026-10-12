@@ -4918,6 +4918,8 @@ public final class MLXModelService:
                         var generationCache = context.model.newCache(parameters: params)
                         let diagnosticRequest = try reasoningDiagnostic?.match(inputTokens)
                         if diagnosticRequest != nil {
+                            let diagnosticInput = try QwenSerialReasoningDiagnostic.canonicalTextInput(
+                                input, allowSingletonQwenVL: type(of: context.model) == Qwen4ExpVL.self)
                             var conditions = QwenSerialReasoningDiagnostic.Conditions()
                             conditions.media = self.isMultimodalInput(input)
                             conditions.grammar = constrainedDecoding != nil
@@ -4926,8 +4928,8 @@ public final class MLXModelService:
                             conditions.capturesPromptBoundary = self.shouldCaptureSerialPromptBoundary(
                                 input: input, cache: generationCache, parameters: params)
                             conditions.templateOpenedThink = templateInjectedThink
-                            conditions.inputRank = input.text.tokens.ndim
-                            conditions.inputMask = input.text.mask != nil
+                            conditions.inputRank = diagnosticInput.text.tokens.ndim
+                            conditions.inputMask = diagnosticInput.text.mask != nil
                             conditions.defaultReplayGeometry = BatchScheduler.qwenARReplayBackoffTokenCount(
                                 ProcessInfo.processInfo.environment["AFM_QWEN_PREFIX_REPLAY_BACKOFF"]) == 31
                             try QwenSerialReasoningDiagnostic.validate(conditions, parameters: params)
@@ -5183,8 +5185,18 @@ public final class MLXModelService:
                             }
                         }
                         do {
+                            let iteratorInput: LMInput
+                            if nativeRecord != nil {
+                                try QwenSerialReasoningDiagnostic.require(preparedPrefill != nil,
+                                    "Reasoning diagnostic requires the existing native-ID replay prefill callback")
+                                iteratorInput = try QwenSerialReasoningDiagnostic.canonicalTextInput(
+                                    generateInput,
+                                    allowSingletonQwenVL: type(of: context.model) == Qwen4ExpVL.self)
+                            } else {
+                                iteratorInput = generateInput
+                            }
                             generationIterator = try TokenIterator(
-                                input: generateInput,
+                                input: iteratorInput,
                                 model: context.model,
                                 cache: generationCache,
                                 parameters: params,

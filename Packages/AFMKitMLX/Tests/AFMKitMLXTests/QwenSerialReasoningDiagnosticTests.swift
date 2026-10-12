@@ -28,6 +28,74 @@ final class QwenSerialReasoningDiagnosticTests: XCTestCase {
         ] { XCTAssertThrowsError(try Diagnostic.parse(Data(invalid.utf8))) }
     }
 
+    func testFailuresExposeTheirGuardMessage() {
+        let error: Error = Diagnostic.Failure.invalid("Exact diagnostic guard failed")
+        XCTAssertEqual(error.localizedDescription, "Exact diagnostic guard failed")
+    }
+
+    func testOnlyUnpaddedSingletonQwenVLTextIsCanonicalized() throws {
+        try Device.withDefaultDevice(.cpu) {
+            let ids = MLXArray([Int32(7), 9, 11]).reshaped(1, 3)
+            let mask = MLXArray.ones([1, 3], dtype: .int8)
+            let original = LMInput(tokens: ids, mask: mask)
+            let canonical = try Diagnostic.canonicalTextInput(original, allowSingletonQwenVL: true)
+            XCTAssertEqual(canonical.text.tokens.shape, [3])
+            XCTAssertNil(canonical.text.mask)
+            XCTAssertEqual(canonical.text.tokens.asArray(Int32.self), [7, 9, 11])
+            XCTAssertEqual(original.text.tokens.shape, [1, 3])
+            XCTAssertEqual(original.text.mask?.shape, [1, 3])
+            XCTAssertThrowsError(try Diagnostic.canonicalTextInput(original, allowSingletonQwenVL: false))
+            let plain = LMInput(tokens: ids.reshaped(-1))
+            for isVL in [false, true] {
+                let same = try Diagnostic.canonicalTextInput(plain, allowSingletonQwenVL: isVL)
+                XCTAssertEqual(same.text.tokens.asArray(Int32.self), [7, 9, 11])
+                XCTAssertNil(same.text.mask)
+            }
+            let invalid = [
+                LMInput(tokens: ids),
+                LMInput(tokens: ids, mask: MLXArray([Int8(1), 0, 1]).reshaped(1, 3)),
+                LMInput(tokens: ids, mask: mask.asType(.int32)),
+                LMInput(tokens: ids, mask: mask.reshaped(-1)),
+                LMInput(tokens: ids.reshaped(-1), mask: mask.reshaped(-1)),
+                LMInput(tokens: MLXArray.zeros([2, 3], dtype: .int32),
+                    mask: MLXArray.ones([2, 3], dtype: .int8)),
+            ]
+            for input in invalid {
+                XCTAssertThrowsError(try Diagnostic.canonicalTextInput(input, allowSingletonQwenVL: true))
+            }
+        }
+    }
+
+    func testCanonicalVLTextPreservesPreparedPrefillAndOffIteratorTrace() throws {
+        try Device.withDefaultDevice(.cpu) {
+            let ids = MLXArray([Int32(3), 5, 7])
+            let original = LMInput(tokens: ids.reshaped(1, 3),
+                mask: MLXArray.ones([1, 3], dtype: .int8))
+            let canonical = try Diagnostic.canonicalTextInput(original, allowSingletonQwenVL: true)
+            func run(_ input: LMInput) throws -> (ids: [Int], spans: [[Int]]) {
+                let model = Model()
+                let cache = model.newCache(parameters: nil)
+                var iterator = try TokenIterator(input: input, model: model, cache: cache,
+                    parameters: .init(maxTokens: 3, temperature: 0),
+                    preparedPrefill: { cache in
+                        // Like serial replay, the callback forwards its already
+                        // bound native IDs, not the outer processor layout.
+                        model(.init(tokens: ids), cache: cache, state: nil)
+                    })
+                var returned: [Int] = []
+                while let next = iterator.next() { returned.append(next) }
+                iterator.teardown()
+                return (returned, model.spans)
+            }
+            let before = try run(original)
+            let after = try run(canonical)
+            XCTAssertEqual(before.ids, after.ids)
+            XCTAssertEqual(before.spans, after.spans)
+            XCTAssertEqual(after.spans.first, [3, 5, 7])
+            XCTAssertEqual(after.ids.count, 3)
+        }
+    }
+
     func testExactlyFiveNativePromptsAndUnrecordedStartup() throws {
         for index in 0..<5 {
             XCTAssertEqual(try Diagnostic.match(count: Diagnostic.lengths[index],

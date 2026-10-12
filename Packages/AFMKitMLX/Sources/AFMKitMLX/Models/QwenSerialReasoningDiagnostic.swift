@@ -1,6 +1,7 @@
 import CryptoKit
 import Darwin
 import Foundation
+import MLX
 import MLXLMCommon
 
 /// Isolated experiment, not an API effort mapping or serving default. The
@@ -29,7 +30,12 @@ final class QwenSerialReasoningDiagnostic: @unchecked Sendable {
     static let startupHash = "e97ef9915b1a97bf640997047462b29e0951978c59742abbcd727b2ccf131a23"
     static let suffix = [271, 79939, 279, 6973, 854, 539, 279, 1156, 11, 353,
         599, 310, 2873, 279, 6093, 3018, 383, 279, 7047, 5774, 1381, 13, 198, 248069, 271]
-    enum Failure: Error { case invalid(String) }
+    enum Failure: LocalizedError {
+        case invalid(String)
+        var errorDescription: String? {
+            switch self { case .invalid(let message): return message }
+        }
+    }
     enum Mode: String, Codable, Sendable { case off, on }
     struct Manifest: Codable, Sendable {
         let schema_version: Int
@@ -119,6 +125,28 @@ final class QwenSerialReasoningDiagnostic: @unchecked Sendable {
 
     func match(_ ids: [Int]) throws -> Int? {
         try Self.match(count: ids.count, hash: Self.nativeHash(ids))
+    }
+
+    /// Qwen3VLProcessor's text-only branch represents one sequence as [1,N]
+    /// with an all-ones int8 mask. The existing serial replay callback consumes
+    /// the flattened native IDs directly; it does not consume this mask. Adapt
+    /// only that proven layout, without widening TokenIterator's budget API.
+    /// Callers must still require the actual preparedPrefill closure before
+    /// passing the result to the iterator. No serving-default input is changed.
+    static func canonicalTextInput(_ input: LMInput, allowSingletonQwenVL: Bool) throws -> LMInput {
+        try require(input.image == nil && input.video == nil,
+            "Reasoning diagnostic cannot canonicalize media input")
+        if input.text.tokens.ndim == 1 && input.text.mask == nil { return input }
+        try require(allowSingletonQwenVL && input.text.tokens.ndim == 2
+            && input.text.tokens.dim(0) == 1 && input.text.tokens.dim(1) > 0,
+            "Reasoning diagnostic requires unbatched text or the singleton Qwen VL text layout")
+        guard let mask = input.text.mask else {
+            throw Failure.invalid("Singleton Qwen VL text must have its processor's all-ones mask")
+        }
+        try require(mask.dtype == .int8 && mask.shape == input.text.tokens.shape
+            && mask.asArray(Int8.self).allSatisfy { $0 == 1 },
+            "Singleton Qwen VL text mask must be shape-matched int8 ones; padding is unsupported")
+        return LMInput(tokens: input.text.tokens.reshaped(-1))
     }
 
     static func validate(_ conditions: Conditions, parameters: GenerateParameters) throws {
