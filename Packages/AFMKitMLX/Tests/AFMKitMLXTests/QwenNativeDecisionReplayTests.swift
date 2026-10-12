@@ -76,6 +76,20 @@ final class QwenNativeDecisionReplayTests: XCTestCase {
         try require(value == "off" || value == "on", "State rounding accepts only absent, off or on")
         return value == "on"
     }
+    private func r2JoinFinalSpanOption(_ value: String?, prefill: Bool, decode: Bool) throws -> Bool {
+        guard let value else { return false }
+        try require(value == "off" || value == "on", "R2 final span accepts only absent, off or on")
+        let enabled = value == "on"
+        try require(!enabled || (prefill && decode), "Joined R2 requires the fixed P1D1 persistence arm")
+        return enabled
+    }
+    private func promptGeometry(_ history: History, r2JoinFinalSpan: Bool) throws -> (joined: Bool, widths: [Int]) {
+        try require((history.request == 0 && history.tokens.count == 54)
+            || (history.request == 2 && history.tokens.count == 7255), "Only pinned startup54 and cold R2 qualify")
+        try require(history.cachedPrefix == 0 && history.prefillStepSize == 8192, "Cold default-step geometry required")
+        let joined = r2JoinFinalSpan && history.request == 2
+        return (joined, joined ? [history.tokens.count - 31, 31] : [history.tokens.count - 31, 30, 1])
+    }
 
     func testNativeStatePhaseOptionsKeepAbsentAndOffLiteralNil() throws {
         XCTAssertFalse(try stateRoundingOption(nil))
@@ -83,6 +97,39 @@ final class QwenNativeDecisionReplayTests: XCTestCase {
         XCTAssertTrue(try stateRoundingOption("on"))
         for value in ["", "0", "1", "false", "true", "OFF", "ON", " on", "on "] {
             XCTAssertThrowsError(try stateRoundingOption(value))
+        }
+    }
+
+    func testNativeR2FinalSpanOptionsAndGeometryAreStrictlyScoped() throws {
+        for prefill in [false, true] {
+            for decode in [false, true] {
+                XCTAssertFalse(try r2JoinFinalSpanOption(nil, prefill: prefill, decode: decode))
+                XCTAssertFalse(try r2JoinFinalSpanOption("off", prefill: prefill, decode: decode))
+                if prefill && decode {
+                    XCTAssertTrue(try r2JoinFinalSpanOption("on", prefill: prefill, decode: decode))
+                } else {
+                    XCTAssertThrowsError(try r2JoinFinalSpanOption("on", prefill: prefill, decode: decode))
+                }
+            }
+        }
+        for value in ["", "0", "1", "false", "true", "OFF", "ON", " on", "on "] {
+            XCTAssertThrowsError(try r2JoinFinalSpanOption(value, prefill: true, decode: true))
+        }
+        func history(_ request: Int, _ count: Int, prefix: Int = 0, step: Int = 8192) -> History {
+            History(request: request, tokens: Array(repeating: 17, count: count),
+                cachedPrefix: prefix, prefillStepSize: step)
+        }
+        for enabled in [false, true] {
+            let startup = try promptGeometry(history(0, 54), r2JoinFinalSpan: enabled)
+            XCTAssertFalse(startup.joined)
+            XCTAssertEqual(startup.widths, [23, 30, 1])
+            let r2 = try promptGeometry(history(2, 7255), r2JoinFinalSpan: enabled)
+            XCTAssertEqual(r2.joined, enabled)
+            XCTAssertEqual(r2.widths, enabled ? [7224, 31] : [7224, 30, 1])
+            for invalid in [history(1, 7255), history(0, 7255), history(2, 54), history(2, 7254),
+                history(2, 7255, prefix: 1), history(2, 7255, step: 4096)] {
+                XCTAssertThrowsError(try promptGeometry(invalid, r2JoinFinalSpan: enabled))
+            }
         }
     }
 
@@ -216,6 +263,8 @@ final class QwenNativeDecisionReplayTests: XCTestCase {
         // XCTest-only phase controls. Off uses nil, never the explicit unchanged observer.
         let prefillStateRounding = try stateRoundingOption(env[option + "PREFILL_STATE_ROUNDING"])
         let decodeStateRounding = try stateRoundingOption(env[option + "DECODE_STATE_ROUNDING"])
+        let r2JoinFinalSpan = try r2JoinFinalSpanOption(env[option + "R2_JOIN_FINAL_SPAN"],
+            prefill: prefillStateRounding, decode: decodeStateRounding)
         let policy = prefillStateRounding || decodeStateRounding ? "phase_state_rounding" : "literal_nil"
         let evidence = URL(fileURLWithPath: Self.evidence, isDirectory: true)
         let native = URL(fileURLWithPath: nativePath, isDirectory: true).resolvingSymlinksInPath()
@@ -227,6 +276,7 @@ final class QwenNativeDecisionReplayTests: XCTestCase {
         let histories = try JSONDecoder().decode([History].self, from: fixtureData)
         try require(histories.map(\.request) == [0, 2] && histories.map { $0.tokens.count } == [54, 7255]
             && histories.allSatisfy { $0.cachedPrefix == 0 && $0.prefillStepSize == 8192 }, "Wrong saved histories")
+        let geometries = try histories.map { try promptGeometry($0, r2JoinFinalSpan: r2JoinFinalSpan) }
         let prompt = histories[1].tokens
         try require(try tokenDigest(prompt) == Self.promptSHA, "Wrong cold-R2 token IDs")
         let manifestURL = capture.appendingPathComponent("decisions.json")
@@ -307,9 +357,11 @@ final class QwenNativeDecisionReplayTests: XCTestCase {
             && !FileManager.default.fileExists(atPath: output.path), "Fresh external output required")
         try require(Darwin.mkdir(output.path, 0o700) == 0, "Exclusive output creation failed")
         let executable = try XCTUnwrap(Bundle(for: Self.self).executableURL)
-        let provenance: [String: Any] = ["source_base_revision": "5dfb9cde617df70839dc36f6ec360bd2bdb0dd65",
+        let finalSpanScope = "Only cold request2 (7255 tokens, prefix0, step8192) may join its final31 under fixed P1D1. Startup54 always retains split30+1. The N-31 checkpoints remain23/7224; joined R2 uses the existing whole-model31-row forward then final-row slice, not a last-hidden projection. Actual on-policy call widths are recorded separately. This changes a recurrence persistence boundary and forward shape without changing model/kernel source or all-request scheduling."
+        let provenance: [String: Any] = ["source_base_revision": "6b7341871b284836ebffc2aef4b3f9ad3ede5402",
             "source_sha256": pins, "driver_source_sha256": try fileDigest(driverURL),
             "prefill_state_rounding": prefillStateRounding, "decode_state_rounding": decodeStateRounding,
+            "startup_join_final_span": false, "r2_join_final_span": r2JoinFinalSpan, "final_span_scope": finalSpanScope,
             "test_executable": executable.path, "test_executable_sha256": try fileDigest(executable),
             "fixture": fixture.path, "fixture_sha256": Self.fixtureSHA, "config_sha256": configSHA,
             "weight_index_sha256": indexSHA, "generation_config_sha256": generationSHA,
@@ -393,6 +445,7 @@ final class QwenNativeDecisionReplayTests: XCTestCase {
         var nextLogits: MLXArray?
         var schedules: [[String: Any]] = []
         for (historyIndex, history) in histories.enumerated() {
+            let geometry = geometries[historyIndex]
             clearPersistenceRecords()
             let cache = model.newCache(parameters: nil)
             try require(cache.count == 48, "Wrong cache layer count")
@@ -405,7 +458,7 @@ final class QwenNativeDecisionReplayTests: XCTestCase {
             let prepared = try MLXReplayPrefill.prepareWithSnapshot(model: model, cache: cache,
                 inputTokens: history.tokens, restoredPrefix: 0, prefillStepSize: 8192,
                 promptSnapshotBackoffTokens: 31, retainCoarseAnchor: false, captureCoarseAnchorInline: false,
-                captureFinalSnapshot: false, captureFinalCheckpoint: false, joinBackoffFinalSpanForTesting: false,
+                captureFinalSnapshot: false, captureFinalCheckpoint: false, joinBackoffFinalSpanForTesting: geometry.joined,
                 checkpoint: { boundary, states, metadata in
                     checkpoints.append((boundary, states, metadata))
                     radix.insert(tokens: Array(history.tokens.prefix(boundary)), layerStates: states,
@@ -425,10 +478,10 @@ final class QwenNativeDecisionReplayTests: XCTestCase {
             }
             schedules.append(["request": history.request, "tokens": history.tokens.count,
                 "restored_prefix": 0, "prefill_step_size": 8192, "checkpoint_payloads": payloads,
-                "expected_geometry_not_an_observation": [history.tokens.count - 31, 30, 1],
+                "join_final_span": geometry.joined, "expected_geometry_not_an_observation": geometry.widths,
                 "dispatch_observation": prefillStateRounding ? "actual_persistence_hook_records" : "unavailable_for_literal_nil",
                 "persistence": try persistenceReport(enabled: prefillStateRounding,
-                    expectedWidths: [history.tokens.count - 31, 30, 1], coldPrefill: true)])
+                    expectedWidths: geometry.widths, coldPrefill: true)])
             if historyIndex + 1 == histories.count { finalCache = cache; nextLogits = logits }
             else {
                 let states = MLXPrefixReplayPolicy.snapshotLayerStates(cache)
@@ -487,18 +540,21 @@ final class QwenNativeDecisionReplayTests: XCTestCase {
         try save(arrays: scores, metadata: ["policy": policy, "fixture_sha256": Self.fixtureSHA,
             "prefill_state_rounding": prefillStateRounding ? "on" : "off",
             "decode_state_rounding": decodeStateRounding ? "on" : "off",
+            "startup_join_final_span": "off", "r2_join_final_span": r2JoinFinalSpan ? "on" : "off",
+            "join_final_span_scope": "request2_only_startup_split",
             "capture_point": "raw_last_model_row_before_sampler", "native_manifest_sha256": digest(manifestData),
             "prefix_ids_sha256_le_u32_by_tensor": bindingJSON,
             "dtype_note": "Unprocessed BF16 model rows losslessly stored as FP32, as in the existing phase diagnostic."], url: scoresURL)
         try write(["status": "complete", "provenance": provenance, "policy": policy,
             "normalization": "default", "state_rounding": prefillStateRounding || decodeStateRounding,
             "prefill_state_rounding": prefillStateRounding, "decode_state_rounding": decodeStateRounding,
-            "sigmoid_lookup": false, "join_final_span": false,
+            "sigmoid_lookup": false, "startup_join_final_span": false,
+            "r2_join_final_span": r2JoinFinalSpan, "final_span_scope": finalSpanScope,
             "gdn_layer_names": namedLayers.map { $0.0 }, "decode_persistence": decodePersistence,
-            "state_phase_scope": "Only persisted slot1 rounds BF16-to-FP32 after each enabled ordinary GDN call; no live-interior, input, restore or phase-entry cast. P includes startup54 and all cold7255 calls, including final prompt singleton; D is selected after prompt/cache eval and covers native-teacher singletons. Off is literal nil with no dispatch observer. Fixed-P row0/row1 equality and off/off parity to the earlier57-row baseline are external comparison gates. This adds diagnostic casts/recording and is not a speed benchmark.",
+            "state_phase_scope": "Only persisted slot1 rounds BF16-to-FP32 after each enabled ordinary GDN call; no live-interior, input, restore or phase-entry cast. P includes startup54 and all cold7255 calls, with R2 final30+1 or joined31 as declared; D is selected after prompt/cache eval and covers native-teacher singletons. Off is literal nil with no dispatch observer. Fixed-schedule fixed-P row0/row1 equality and split-tail off/off parity to the earlier57-row baseline are external comparison gates. This adds diagnostic casts/recording and is not a speed benchmark.",
             "schedule": schedules, "native_manifest": try json(manifest), "native_fed_tokens": fed,
             "decisions": reports, "scores_file": scoresURL.lastPathComponent, "scores_file_sha256": try fileDigest(scoresURL),
-            "scope": "Shared-prefix numerical diagnosis only. Decision0 is the final prompt row; each later row follows exactly the previous native-emitted token. A saved native terminal row is compared but never fed; unresolved lookahead is ignored. The final emitted row need not be fed when no next saved row exists. AFM raw argmax is descriptive CPU lowest-ID ranking, unmasked, never a teacher; exact winning ties are recorded but the actual loaded sampler's tie behavior is not attested. A claimed first natural-generation divergence additionally requires native AFM free-generation IDs on the same prefix, if available. Native raw vectors precede sampling suppression. No free continuation, tool execution, speed or task-quality claim. AFM uses original split30+1, native final31; no schedule-parity claim."],
+            "scope": "Shared-prefix numerical diagnosis only. Decision0 is the final prompt row; each later row follows exactly the previous native-emitted token. A saved native terminal row is compared but never fed; unresolved lookahead is ignored. The final emitted row need not be fed when no next saved row exists. AFM raw argmax is descriptive CPU lowest-ID ranking, unmasked, never a teacher; exact winning ties are recorded but the actual loaded sampler's tie behavior is not attested. A claimed first natural-generation divergence additionally requires native AFM free-generation IDs on the same prefix, if available. Native raw vectors precede sampling suppression. No free continuation, tool execution, speed or task-quality claim. Startup always uses split30+1; only cold R2 can optionally join31, versus native final31. No blanket schedule-parity claim."],
             to: output.appendingPathComponent("summary.json"))
     }
 }
