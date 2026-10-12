@@ -253,6 +253,243 @@ final class QwenOnePassPromptCaptureTests: XCTestCase {
         XCTAssertNil(session.takePromptState())
     }
 
+    /// Independent IEEE round-to-nearest-even oracle, not another MLX cast.
+    private func persistenceOracle(_ state: MLXArray) -> MLXArray {
+        XCTAssertEqual(state.dtype, .float32)
+        let values = state.asArray(Float.self).map { value -> Float in
+            XCTAssertTrue(value.isFinite)
+            let bits = value.bitPattern
+            let rounded = bits &+ 0x7fff &+ ((bits >> 16) & 1)
+            return Float(bitPattern: rounded & 0xffff0000)
+        }
+        return MLXArray(values).reshaped(state.shape)
+    }
+
+    func testStatePersistenceRoundTripMatchesIndependentTieEvenOracle() throws {
+        try MLXMetalLibrary.ensureAvailable(verbose: false)
+        let values: [Float] = [0, -0.0, 1, -1, 1 + 1 / 256, 1 + 3 / 256,
+            -1 - 1 / 256, -1 - 3 / 256, 0.003, -0.003, 127.75, -127.75]
+        let state = MLXArray(values)
+        let actual = qwen4ExpRoundRecurrentStateForTesting(state)
+        let expected = persistenceOracle(state)
+        eval(actual, expected)
+        XCTAssertEqual(actual.dtype, .float32)
+        XCTAssertEqual(actual.asData(access: .copy).data, expected.asData(access: .copy).data)
+        XCTAssertEqual(actual.asArray(Float.self)[4], 1)
+        XCTAssertEqual(actual.asArray(Float.self)[5], 1 + 2 / 128)
+        XCTAssertGreaterThan(abs(actual - state).max().item(Float.self), 0)
+    }
+
+    private func persistenceCache() -> Qwen4ExpLayerCache {
+        let cache = Qwen4ExpLayerCache()
+        cache[0] = MLXArray((0..<(3 * 512)).map { Float($0 % 17 - 8) / 128 })
+            .reshaped(1, 3, 512).asType(.bfloat16)
+        cache[1] = MLXArray((0..<(2 * 128 * 128)).map { 0.01 + Float($0 % 31) / 65536 })
+            .reshaped(1, 2, 128, 128)
+        // Direct GDN must leave the PLE slots/history and metadata untouched.
+        cache[2] = MLXArray([Float(0.125), Float(0.375)])
+        cache[3] = MLXArray([1, 2])
+        cache.hostNGramHistory = [1, 2]
+        cache.offset = 17
+        return cache
+    }
+
+    private func checkStatePersistence(widths: [Int], requireCompiled: Bool) async throws {
+        let (model, _) = try await fixture()
+        let layer = try XCTUnwrap(model.namedModules().compactMap { $0.1 as? Qwen4ExpDecoderLayer }
+            .first { $0.isLinear })
+        defer {
+            layer.gatedDeltaNormalizationForTesting = nil
+            layer.gatedDeltaStatePersistenceForTesting = nil
+        }
+        for normalization in [Qwen4ExpGDNNormalizationForTesting.ordinary, .reference] {
+            layer.gatedDeltaNormalizationForTesting = normalization
+            for width in widths {
+                let input = MLXArray((0..<(width * 128)).map { Float($0 % 19 - 9) / 128 })
+                    .reshaped(1, width, 128).asType(.bfloat16)
+                var baseline: (MLXArray, Qwen4ExpLayerCache)?
+                var rounded: (MLXArray, Qwen4ExpLayerCache)?
+                var baselineSchedule: [Int]?
+                let policies: [Qwen4ExpGDNStatePersistenceForTesting?] =
+                    [nil, .unchanged, .bfloat16RoundTrip, .unchanged, .bfloat16RoundTrip]
+                for policy in policies {
+                    let cache = persistenceCache()
+                    let original = arrays(cache)
+                    layer.gatedDeltaStatePersistenceForTesting = policy
+                    layer.clearGatedDeltaNormalizationDispatchesForTesting()
+                    layer.clearGatedDeltaStatePersistenceRecordsForTesting()
+                    equal(arrays(cache), original, "Selecting a policy does not round phase-entry state")
+                    let output = layer.gatedDeltaDecodeForTesting(input, cache: cache)
+                    eval(output, cache)
+                    let dispatch = try XCTUnwrap(layer.gatedDeltaNormalizationDispatchesForTesting.first)
+                    XCTAssertEqual(layer.gatedDeltaNormalizationDispatchesForTesting.count, 1)
+                    XCTAssertEqual(dispatch.compiled, requireCompiled)
+                    if let baselineSchedule { XCTAssertEqual(dispatch.schedule, baselineSchedule) }
+                    else { baselineSchedule = dispatch.schedule }
+                    XCTAssertEqual(cache[1]?.dtype, .float32)
+                    for slot in [2, 3] { equal(cache[slot]!, original[slot]!, "untouched PLE slot") }
+                    XCTAssertEqual(cache.hostNGramHistory, [1, 2])
+                    XCTAssertEqual(cache.offset, 17)
+                    if let policy {
+                        let record = try XCTUnwrap(layer.gatedDeltaStatePersistenceRecordsForTesting.first)
+                        XCTAssertEqual(layer.gatedDeltaStatePersistenceRecordsForTesting.count, 1)
+                        XCTAssertEqual(record.width, width)
+                        XCTAssertEqual(record.compiled, requireCompiled)
+                        XCTAssertFalse(record.inputWasImplicitZero)
+                        XCTAssertEqual(record.inputDType, String(describing: DType.float32))
+                        XCTAssertEqual(record.storedDType, record.inputDType)
+                        XCTAssertEqual(record.stateRoundTrips, policy == .unchanged ? 0 : 1)
+                        XCTAssertEqual(record.snapshotRoundTrips, 0)
+                    } else { XCTAssertTrue(layer.gatedDeltaStatePersistenceRecordsForTesting.isEmpty) }
+                    if let baseline {
+                        equal(output, baseline.0, "Current-call output is unchanged, width=\(width)")
+                        equal(cache[0]!, baseline.1[0]!, "Convolution is unchanged")
+                        if policy == .bfloat16RoundTrip {
+                            equal(cache[1]!, persistenceOracle(baseline.1[1]!), "Independent saved-state oracle")
+                            XCTAssertGreaterThan(abs(cache[1]! - baseline.1[1]!).max().item(Float.self), 0)
+                            if let rounded { equal(arrays(cache), arrays(rounded.1), "Interleaved rounded trace") }
+                            else { rounded = (output, cache) }
+                        } else { equal(arrays(cache), arrays(baseline.1), "Interleaved ordinary/default trace") }
+                    } else { baseline = (output, cache) }
+                }
+            }
+        }
+    }
+
+    func testStatePersistenceEagerForwardsOnlyRoundExportedState() async throws {
+        // A whole multi-token output stays exact: no internal token-loop round.
+        try await checkStatePersistence(widths: [15, 16, 17, 97, 128], requireCompiled: false)
+    }
+
+    func testStatePersistenceCompiledSingletonPoliciesAreStable() async throws {
+        try XCTSkipUnless(HardwareInfo.isModelOwnedCompiledDecodeSupported,
+            "This test must exercise the existing model-owned compiled closure")
+        try XCTSkipIf(ProcessInfo.processInfo.environment["AFM_QWEN_COMPILE_GDN_DECODE"] == "0")
+        try await checkStatePersistence(widths: [1], requireCompiled: true)
+    }
+
+    func testStatePersistenceFirstContinuationDoesNotRoundItsInput() async throws {
+        let (model, _) = try await fixture()
+        let layer = try XCTUnwrap(model.namedModules().compactMap { $0.1 as? Qwen4ExpDecoderLayer }
+            .first { $0.isLinear })
+        defer {
+            layer.gatedDeltaNormalizationForTesting = nil
+            layer.gatedDeltaStatePersistenceForTesting = nil
+        }
+        layer.gatedDeltaNormalizationForTesting = .ordinary
+        let input = MLXArray((0..<128).map { Float($0 % 19 - 9) / 128 })
+            .reshaped(1, 1, 128).asType(.bfloat16)
+        let off = persistenceCache(), on = persistenceCache()
+        layer.gatedDeltaStatePersistenceForTesting = .unchanged
+        let firstOff = layer.gatedDeltaDecodeForTesting(input, cache: off)
+        layer.gatedDeltaStatePersistenceForTesting = .bfloat16RoundTrip
+        let firstOn = layer.gatedDeltaDecodeForTesting(input, cache: on)
+        eval(firstOff, firstOn, off, on)
+        equal(firstOn, firstOff, "The first continuation receives the same unrounded incoming state")
+        equal(on[1]!, persistenceOracle(off[1]!), "Only the first write is rounded")
+        XCTAssertGreaterThan(abs(on[1]! - off[1]!).max().item(Float.self), 0)
+        let secondControl = persistenceCache()
+        for slot in 0..<4 { secondControl[slot] = on[slot].map { $0 * 1 } }
+        let secondOn = layer.gatedDeltaDecodeForTesting(input, cache: on)
+        layer.gatedDeltaStatePersistenceForTesting = .unchanged
+        let secondExpected = layer.gatedDeltaDecodeForTesting(input, cache: secondControl)
+        eval(secondOn, secondExpected, on, secondControl)
+        equal(secondOn, secondExpected, "Next call consumes previously rounded state unchanged")
+        equal(on[1]!, persistenceOracle(secondControl[1]!), "Second write has exactly one round trip")
+    }
+
+    func testStatePersistenceInlineCaptureRoundsOnlyTheSavedBranch() async throws {
+        let (model, _) = try await fixture()
+        let layers = model.namedModules().compactMap { $0.1 as? Qwen4ExpDecoderLayer }.filter(\.isLinear)
+        defer { layers.forEach {
+            $0.gatedDeltaNormalizationForTesting = nil
+            $0.gatedDeltaStatePersistenceForTesting = nil
+        } }
+        let donor = (0..<128).map { $0 % 29 + 1 }
+        let input = LMInput.Text(tokens: MLXArray(donor).reshaped(1, -1))
+        for normalization in [Qwen4ExpGDNNormalizationForTesting.ordinary, .reference] {
+            var outputs: [MLXArray] = [], caches: [[KVCache]] = []
+            var snapshots: [[[MLXArray]]] = []
+            var metadata: [[[String]]] = []
+            for (policy, capture) in [(Qwen4ExpGDNStatePersistenceForTesting.unchanged, true),
+                (.bfloat16RoundTrip, true), (.bfloat16RoundTrip, false)] {
+                layers.forEach {
+                    $0.gatedDeltaNormalizationForTesting = normalization
+                    $0.gatedDeltaStatePersistenceForTesting = policy
+                    $0.clearGatedDeltaStatePersistenceRecordsForTesting()
+                }
+                let cache = model.newCache(parameters: nil)
+                let output: LMOutput
+                if capture {
+                    let captured = try XCTUnwrap(model.prefillCapturingBoundary(input, cache: cache,
+                        state: nil, restoredPrefix: 0, boundary: 97,
+                        hostTokenIDs: model.consumesHostTokenIDs ? donor : nil))
+                    output = captured.output
+                    snapshots.append(captured.states)
+                    metadata.append(captured.metadata)
+                } else {
+                    output = model(input, cache: cache, state: nil,
+                        hostTokenIDs: model.consumesHostTokenIDs ? donor : nil)
+                }
+                eval(output.logits, cache)
+                outputs.append(output.logits); caches.append(cache)
+                for layer in layers {
+                    let record = try XCTUnwrap(layer.gatedDeltaStatePersistenceRecordsForTesting.first)
+                    XCTAssertEqual(layer.gatedDeltaStatePersistenceRecordsForTesting.count, 1)
+                    XCTAssertEqual(record.width, 128)
+                    XCTAssertFalse(record.compiled)
+                    XCTAssertTrue(record.packedBoundaryEligible)
+                    XCTAssertEqual(record.capturedBoundary, capture)
+                    XCTAssertEqual(record.stateRoundTrips, policy == .unchanged ? 0 : 1)
+                    XCTAssertEqual(record.snapshotRoundTrips, policy == .bfloat16RoundTrip && capture ? 1 : 0)
+                }
+            }
+            equal(outputs[0], outputs[1], "Rounding saved branches leaves donor output unchanged")
+            equal(outputs[1], outputs[2], "Capture does not split or round the donor recurrence")
+            XCTAssertEqual(metadata[0], metadata[1])
+            for index in caches[0].indices {
+                XCTAssertEqual(caches[0][index].offset, caches[1][index].offset)
+                XCTAssertEqual(caches[0][index].metaState, caches[1][index].metaState)
+                equal(arrays(caches[1][index]), arrays(caches[2][index]), "Capture/no-capture final state")
+                let isRecurrent = caches[0][index] is Qwen4ExpLayerCache
+                let off = arrays(caches[0][index]), on = arrays(caches[1][index])
+                for slot in off.indices {
+                    XCTAssertEqual(off[slot] == nil, on[slot] == nil)
+                    if let a = off[slot], let b = on[slot] {
+                        equal(b, isRecurrent && slot == 1 ? persistenceOracle(a) : a,
+                            "Only final recurrent persistence is rounded")
+                    }
+                }
+                XCTAssertEqual(snapshots[0][index].count, snapshots[1][index].count)
+                for (slot, pair) in zip(snapshots[0][index], snapshots[1][index]).enumerated() {
+                    equal(pair.1, isRecurrent && slot == 1 ? persistenceOracle(pair.0) : pair.0,
+                        "Only captured recurrent persistence is rounded")
+                }
+                if let a = caches[0][index] as? Qwen4ExpLayerCache,
+                   let b = caches[1][index] as? Qwen4ExpLayerCache {
+                    XCTAssertEqual(a.hostNGramHistory, b.hostNGramHistory)
+                }
+            }
+            var restored = model.newCache(parameters: nil)
+            for index in restored.indices {
+                MLXPrefixReplayPolicy.installLayerState(snapshots[1][index], into: &restored[index], sourceBoundary: 97)
+                restored[index].metaState = metadata[1][index]
+            }
+            let restoreClone = try XCTUnwrap(Qwen4ExpMTPPromptState.captureCacheForTesting(
+                restored, pleLayerIDs: model.configuration.pleLayerIDs))
+            let cloned = model.newCache(parameters: nil)
+            restoreClone(cloned)
+            let tail = Array(donor.dropFirst(97))
+            let tailInput = LMInput.Text(tokens: MLXArray(tail).reshaped(1, -1))
+            let a = model(tailInput, cache: restored, state: nil, hostTokenIDs: tail)
+            let b = model(tailInput, cache: cloned, state: nil, hostTokenIDs: tail)
+            eval(a.logits, b.logits, restored, cloned)
+            equal(a.logits, b.logits, "Same rounded snapshot has identical continuation")
+            // Do not compare this split continuation with the uninterrupted
+            // donor: the split intentionally introduces another persistence boundary.
+        }
+    }
+
     func testNormalizationPhaseDiagnosticPreservesARCaptureAndIndependentPrefix() async throws {
         let (model, _) = try await fixture()
         let layers = model.namedModules().compactMap { $0.1 as? Qwen4ExpDecoderLayer }.filter(\.isLinear)

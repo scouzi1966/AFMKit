@@ -31,6 +31,7 @@ final class QwenGDNPhaseFactorialTests: XCTestCase {
         let logits: MLXArray
         let restore: ([KVCache]) -> Void
         let schedule: [RequestSchedule]
+        let persistenceByRequest: [[[Qwen4ExpGDNStatePersistenceRecordForTesting]]]
     }
 
     private func select(_ policy: Qwen4ExpGDNNormalizationForTesting,
@@ -38,6 +39,7 @@ final class QwenGDNPhaseFactorialTests: XCTestCase {
         for layer in layers {
             layer.gatedDeltaNormalizationForTesting = policy
             layer.clearGatedDeltaNormalizationDispatchesForTesting()
+            layer.clearGatedDeltaStatePersistenceRecordsForTesting()
         }
     }
 
@@ -56,6 +58,26 @@ final class QwenGDNPhaseFactorialTests: XCTestCase {
         return records
     }
 
+    private func persistenceRecords(_ layers: [Qwen4ExpDecoderLayer])
+        -> [[Qwen4ExpGDNStatePersistenceRecordForTesting]] {
+        layers.map { layer in
+            let records = layer.gatedDeltaStatePersistenceRecordsForTesting
+            let calls = layer.gatedDeltaNormalizationDispatchesForTesting
+            XCTAssertEqual(records.count, calls.count)
+            let round = layer.gatedDeltaStatePersistenceForTesting == .bfloat16RoundTrip
+            for (record, call) in zip(records, calls) {
+                XCTAssertEqual(record.width, call.width)
+                XCTAssertEqual(record.compiled, call.compiled)
+                XCTAssertEqual(record.capturedBoundary, call.capturesBoundary)
+                XCTAssertEqual(record.inputDType, String(describing: DType.float32))
+                XCTAssertEqual(record.storedDType, record.inputDType)
+                XCTAssertEqual(record.stateRoundTrips, round ? 1 : 0)
+                XCTAssertEqual(record.snapshotRoundTrips, round && record.capturedBoundary ? 1 : 0)
+            }
+            return records
+        }
+    }
+
     private func forward(_ token: Int, model: Qwen4ExpModel, cache: [KVCache]) -> MLXArray {
         let output = model(LMInput.Text(tokens: MLXArray([token]).reshaped(1, 1)),
             cache: cache, state: nil, hostTokenIDs: model.consumesHostTokenIDs ? [token] : nil)
@@ -72,6 +94,7 @@ final class QwenGDNPhaseFactorialTests: XCTestCase {
         var schedule: [RequestSchedule] = []
         var finalLogits: MLXArray?
         var finalRestore: (([KVCache]) -> Void)?
+        var persistenceByRequest: [[[Qwen4ExpGDNStatePersistenceRecordForTesting]]] = []
         for (historyIndex, history) in histories.enumerated() {
             select(policy, layers: layers)
             var cache = model.newCache(parameters: nil)
@@ -110,6 +133,7 @@ final class QwenGDNPhaseFactorialTests: XCTestCase {
             let logits = prepared.output.logits[0, -1].asType(.float32)
             eval(logits, cache)
             let records = dispatches(layers, policy: policy)
+            persistenceByRequest.append(persistenceRecords(layers))
             for calls in records {
                 XCTAssertEqual(calls.reduce(0) { $0 + $1.width }, history.tokens.count - prefix)
                 XCTAssertEqual(calls.last?.width, 1, "Final prompt singleton belongs to P, not D")
@@ -137,7 +161,7 @@ final class QwenGDNPhaseFactorialTests: XCTestCase {
             print("GDN_PHASE_PROMPT phase=\(policy.rawValue) request=\(history.request) prefix=\(prefix) tokens=\(history.tokens.count)")
         }
         return Prompt(logits: try XCTUnwrap(finalLogits), restore: try XCTUnwrap(finalRestore),
-            schedule: schedule)
+            schedule: schedule, persistenceByRequest: persistenceByRequest)
     }
 
     private func compareStates(_ left: [KVCache], _ right: [KVCache],
@@ -222,6 +246,12 @@ final class QwenGDNPhaseFactorialTests: XCTestCase {
         let finalHistory = try XCTUnwrap(histories.last)
         XCTAssertTrue(histories.allSatisfy { !$0.tokens.isEmpty && $0.prefillStepSize > 0 })
         let freeSteps = try XCTUnwrap(Int(env["AFM_QWEN_GDN_PHASE_FREE_STEPS"] ?? "2048"))
+        // XCTest input only: there is no serving/runtime environment option.
+        // One persistence policy covers every ancestor, P, D and free call.
+        let roundingInput = env["AFM_QWEN_GDN_PHASE_STATE_ROUNDING"] ?? "0"
+        XCTAssertTrue(["0", "1"].contains(roundingInput))
+        guard ["0", "1"].contains(roundingInput) else { return }
+        let roundState = roundingInput == "1"
         XCTAssertTrue((0...2048).contains(freeSteps), "Bounded diagnostic only; zero means teacher forcing only")
         guard teacher.count == 64, (0...2048).contains(freeSteps) else { return }
         let output = URL(fileURLWithPath: outputPath, isDirectory: true)
@@ -236,10 +266,17 @@ final class QwenGDNPhaseFactorialTests: XCTestCase {
         XCTAssertTrue(layers.allSatisfy { !$0.referenceGatedDeltaPrefillNormalizationForTesting },
             "Do not combine this phase test with the old capture-disabling diagnostic")
         let originalPolicies = layers.map(\.gatedDeltaNormalizationForTesting)
+        let originalPersistence = layers.map(\.gatedDeltaStatePersistenceForTesting)
+        for layer in layers {
+            layer.gatedDeltaStatePersistenceForTesting = roundState ? .bfloat16RoundTrip : .unchanged
+        }
         defer {
-            for (layer, policy) in zip(layers, originalPolicies) {
+            for (index, layer) in layers.enumerated() {
+                let policy = originalPolicies[index]
                 layer.gatedDeltaNormalizationForTesting = policy
                 layer.clearGatedDeltaNormalizationDispatchesForTesting()
+                layer.gatedDeltaStatePersistenceForTesting = originalPersistence[index]
+                layer.clearGatedDeltaStatePersistenceRecordsForTesting()
             }
         }
         let eos = context.configuration.eosTokenIds.union([context.tokenizer.eosTokenId].compactMap { $0 })
@@ -264,15 +301,20 @@ final class QwenGDNPhaseFactorialTests: XCTestCase {
             var firstStates: [[String: Any]] = []
             for (step, token) in teacher.enumerated() {
                 var calls: [[[Int]]] = []
+                var persistence: [[Qwen4ExpGDNStatePersistenceRecordForTesting]] = []
                 for (d, decodePolicy) in [(0, Qwen4ExpGDNNormalizationForTesting.ordinary), (1, .reference)] {
                     select(decodePolicy, layers: layers)
                     logits[d] = forward(token, model: model, cache: caches[d])
                     let records = dispatches(layers, policy: decodePolicy)
                     XCTAssertTrue(records.allSatisfy { $0.count == 1 && $0[0].width == 1 })
                     calls.append(records.map { $0[0].schedule })
+                    persistence.append(persistenceRecords(layers).map { $0[0] })
                 }
                 XCTAssertEqual(calls[0], calls[1], "D arms must have identical actual singleton dispatch")
-                teacherCalls.append(["step": step + 1, "token": token, "schedule": calls[0]])
+                XCTAssertEqual(persistence[0].map(\.schedule), persistence[1].map(\.schedule))
+                teacherCalls.append(["step": step + 1, "token": token, "schedule": calls[0],
+                    "persistence_by_decode_arm": try JSONSerialization.jsonObject(
+                        with: JSONEncoder().encode(persistence))])
                 comparisons.append(logitComparison(logits[0], logits[1], step: step + 1))
                 if step == 0 {
                     firstStates = compareStates(caches[0], caches[1],
@@ -300,6 +342,7 @@ final class QwenGDNPhaseFactorialTests: XCTestCase {
                     let paragraphs = text.components(separatedBy: "\n\n").filter { $0.count > 60 }
                     let repeatCount = Dictionary(grouping: paragraphs, by: { $0 }).values.map(\.count).max() ?? 0
                     let records = layers.map(\.gatedDeltaNormalizationDispatchesForTesting)
+                    let persistence = persistenceRecords(layers)
                     let forwarded = tokens.count - (stopped ? 1 : 0)
                     XCTAssertTrue(records.allSatisfy { calls in
                         calls.count == forwarded && calls.allSatisfy {
@@ -312,11 +355,20 @@ final class QwenGDNPhaseFactorialTests: XCTestCase {
                         "tool_close_marker": text.contains("</tool_call>"),
                         "maximum_exact_long_paragraph_repeats": repeatCount,
                         "dispatches": try JSONSerialization.jsonObject(with: JSONEncoder().encode(records)),
+                        "persistence": try JSONSerialization.jsonObject(with: JSONEncoder().encode(persistence)),
+                        "state_round_trips": persistence.flatMap { $0 }.reduce(0) { $0 + $1.stateRoundTrips },
+                        "snapshot_round_trips": persistence.flatMap { $0 }.reduce(0) { $0 + $1.snapshotRoundTrips },
                         "completion_note": "Markers and EOS do not certify a declared valid tool or useful final answer; inspect raw text. No tool executed."]
                     print("GDN_PHASE_FREE arm=P\(p)D\(d) tokens=\(tokens.count) eos=\(stopped)")
                 }
             }
             reports["P\(p)"] = ["schedule": try JSONSerialization.jsonObject(with: JSONEncoder().encode(prompt.schedule)),
+                "prompt_persistence_by_request": try JSONSerialization.jsonObject(
+                    with: JSONEncoder().encode(prompt.persistenceByRequest)),
+                "prompt_state_round_trips": prompt.persistenceByRequest.flatMap { $0 }.flatMap { $0 }
+                    .reduce(0) { $0 + $1.stateRoundTrips },
+                "prompt_snapshot_round_trips": prompt.persistenceByRequest.flatMap { $0 }.flatMap { $0 }
+                    .reduce(0) { $0 + $1.snapshotRoundTrips },
                 "initial_states": initialStates, "teacher_calls": teacherCalls,
                 "teacher_forced": comparisons, "states_after_first_teacher": firstStates,
                 "states_after_last_teacher": compareStates(caches[0], caches[1],
@@ -327,6 +379,8 @@ final class QwenGDNPhaseFactorialTests: XCTestCase {
             "fixture_sha256": SHA256.hash(data: fixtureData).description,
             "teacher": teacherPath, "teacher_sha256": SHA256.hash(data: teacherData).description,
             "teacher_tokens": teacher, "final_tokens": finalHistory.tokens.count,
+            "state_rounding": roundState,
+            "state_rounding_definition": "Uniform post-forward BF16-to-FP32 persistence for every ancestor/P/D/free call; separately rounds saved inline snapshot1 if present. No phase-entry/restore cast. Slot1 remains FP32 and compiled identities/kernel inputs are unchanged. Extra casts add graph work: this is not a speed benchmark or complete reference-state parity.",
             "final_cached_prefix": finalHistory.cachedPrefix, "gdn_layers": layers.count,
             "phase_definition": "P covers all ancestor/prompt calls, including singleton tails. D covers identical teacher or greedy continuation tokens. Default serving policy is unchanged.",
             "claim_limit": "Same-schedule arithmetic diagnosis, not a speed benchmark or evidence of a general task-quality improvement. The current 8b frozen warm-33K API control already completed successfully.",

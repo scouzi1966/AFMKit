@@ -3416,6 +3416,36 @@ enum Qwen4ExpGDNNormalizationForTesting: String, Codable {
     case reference
 }
 
+/// Persistence-only diagnostic. Nil is the serving default. Both explicit
+/// policies retain FP32 storage and the same compiled functions and kernels.
+enum Qwen4ExpGDNStatePersistenceForTesting: String, Codable {
+    case unchanged
+    case bfloat16RoundTrip
+}
+
+struct Qwen4ExpGDNStatePersistenceRecordForTesting: Equatable, Codable {
+    let width: Int
+    let inputWasImplicitZero: Bool
+    let inputDType: String
+    let storedDType: String
+    let stateShape: [Int]
+    let compiled: Bool
+    let capturedBoundary: Bool
+    let packedBoundaryEligible: Bool
+    let stateRoundTrips: Int
+    let snapshotRoundTrips: Int
+
+    var schedule: [Int] {
+        [width, compiled ? 1 : 0, capturedBoundary ? 1 : 0,
+         packedBoundaryEligible ? 1 : 0]
+    }
+}
+
+func qwen4ExpRoundRecurrentStateForTesting(_ state: MLXArray) -> MLXArray {
+    precondition(state.dtype == .float32)
+    return state.asType(.bfloat16).asType(.float32)
+}
+
 struct Qwen4ExpGDNDispatchForTesting: Equatable, Codable {
     let batchSize: Int
     let width: Int
@@ -3492,6 +3522,8 @@ private final class Qwen4ExpGatedDeltaNet: Module {
     var referencePrefillQKNormalizationForTesting = false
     var normalizationForTesting: Qwen4ExpGDNNormalizationForTesting?
     var normalizationDispatchesForTesting: [Qwen4ExpGDNDispatchForTesting] = []
+    var statePersistenceForTesting: Qwen4ExpGDNStatePersistenceForTesting?
+    var statePersistenceRecordsForTesting: [Qwen4ExpGDNStatePersistenceRecordForTesting] = []
     private static let compileDecode =
         ProcessInfo.processInfo.environment["AFM_QWEN_COMPILE_GDN_DECODE"] != "0"
             && HardwareInfo.isModelOwnedCompiledDecodeSupported
@@ -3661,6 +3693,8 @@ private final class Qwen4ExpGatedDeltaNet: Module {
         cache: ArraysCache?,
         verificationPolicy: MTPVerificationPolicy? = nil
     ) -> MLXArray {
+        precondition(statePersistenceForTesting == nil || verificationPolicy == nil,
+            "Persistence diagnostic excludes verification and MTP")
         if verificationPolicy != nil,
            x.dim(1) > 1,
            Self.verifyLinearSequential
@@ -3705,8 +3739,54 @@ private final class Qwen4ExpGatedDeltaNet: Module {
                 return verified[0]
             }
         }
-        return callSingle(
-            x, cache: cache, verificationPolicy: verificationPolicy)
+        guard let persistence = statePersistenceForTesting else {
+            return callSingle(x, cache: cache, verificationPolicy: verificationPolicy)
+        }
+        guard let layerCache = cache as? Qwen4ExpLayerCache else {
+            preconditionFailure("Persistence diagnostic requires a request-owned Qwen cache")
+        }
+        precondition(x.dim(0) == 1 && keyHeadDim == 128 && valueHeadDim == 128
+            && (x.dtype == .bfloat16 || x.dtype == .float16)
+            && layerCache.mtpVerificationWidth == nil
+            && layerCache.gatedDeltaRollback == nil && layerCache.pleRollback == nil
+            && !referencePrefillQKNormalizationForTesting,
+            "Persistence diagnostic is restricted to qualified ordinary AR")
+        let shape = [1, valueHeads, valueHeadDim, keyHeadDim]
+        let incoming = layerCache[1]
+        if let incoming {
+            precondition(incoming.dtype == .float32 && incoming.shape == shape)
+        }
+        // The intervention is outside every compiled closure and after the
+        // uninterrupted ordinary forward. Selecting a policy never transforms
+        // an incoming/just-restored cache or changes a phase-entry state.
+        let output = callSingle(x, cache: layerCache, verificationPolicy: nil)
+        guard let state = layerCache[1] else {
+            preconditionFailure("Ordinary forward must persist recurrent state")
+        }
+        precondition(state.dtype == .float32 && state.shape == shape)
+        let snapshot = layerCache.prefillCapture?.arrays[1]
+        if let snapshot {
+            precondition(snapshot.dtype == .float32 && snapshot.shape == shape)
+        }
+        let round = persistence == .bfloat16RoundTrip
+        if round {
+            layerCache[1] = qwen4ExpRoundRecurrentStateForTesting(state)
+            if let snapshot {
+                // Round only the saved branch, never the live interior state.
+                layerCache.prefillCapture?.arrays[1] = qwen4ExpRoundRecurrentStateForTesting(snapshot)
+            }
+        }
+        let dispatch = normalizationDispatchesForTesting.last!
+        statePersistenceRecordsForTesting.append(.init(
+            width: x.dim(1), inputWasImplicitZero: incoming == nil,
+            inputDType: String(describing: incoming?.dtype ?? .float32),
+            storedDType: String(describing: layerCache[1]!.dtype), stateShape: shape,
+            compiled: dispatch.compiled, capturedBoundary: snapshot != nil,
+            packedBoundaryEligible: supportsGatedDeltaBoundaryCapture(width: x.dim(1),
+                keyDimension: keyHeadDim, valueDimension: valueHeadDim, stateType: .float32),
+            stateRoundTrips: round ? 1 : 0,
+            snapshotRoundTrips: round && snapshot != nil ? 1 : 0))
+        return output
     }
 
     func uncompiledVerificationForTesting(
@@ -3732,7 +3812,7 @@ private final class Qwen4ExpGatedDeltaNet: Module {
             hasVerificationPolicy: verificationPolicy != nil,
             batchCompileEnabled: Self.compileBatchDecode)
             && supportsCompiledPrework(input: x)
-        if let diagnostic = normalizationForTesting {
+        if normalizationForTesting != nil || statePersistenceForTesting != nil {
             precondition(b == 1 && keyHeadDim == 128 && valueHeadDim == 128
                 && verificationPolicy == nil,
                 "Normalization factorial is restricted to qualified single-slot AR")
@@ -3740,7 +3820,7 @@ private final class Qwen4ExpGatedDeltaNet: Module {
                 batchSize: b, width: l, compiled: useCompiled,
                 capturesBoundary: (cache as? Qwen4ExpLayerCache)?.prefillCapture != nil,
                 verification: verificationPolicy != nil,
-                referenceNormalization: diagnostic == .reference))
+                referenceNormalization: normalizationForTesting == .reference))
         }
         if useCompiled {
             let convolutionState = cache?[0] ?? MLXArray.zeros(
@@ -5492,6 +5572,22 @@ final class Qwen4ExpDecoderLayer: Module {
 
     func clearGatedDeltaNormalizationDispatchesForTesting() {
         linearAttention?.normalizationDispatchesForTesting.removeAll(keepingCapacity: true)
+    }
+
+    var gatedDeltaStatePersistenceForTesting: Qwen4ExpGDNStatePersistenceForTesting? {
+        get { linearAttention?.statePersistenceForTesting }
+        set {
+            precondition(isLinear)
+            linearAttention!.statePersistenceForTesting = newValue
+        }
+    }
+
+    var gatedDeltaStatePersistenceRecordsForTesting: [Qwen4ExpGDNStatePersistenceRecordForTesting] {
+        linearAttention?.statePersistenceRecordsForTesting ?? []
+    }
+
+    func clearGatedDeltaStatePersistenceRecordsForTesting() {
+        linearAttention?.statePersistenceRecordsForTesting.removeAll(keepingCapacity: true)
     }
 
     func rollbackGatedDeltaForTesting(_ cache: ArraysCache, keeping count: Int) {
