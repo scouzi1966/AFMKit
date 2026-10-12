@@ -37,6 +37,16 @@ final class QwenWarmR5BoundaryParityTests: XCTestCase {
         try require(raw == "on" && policy == .stockWrapper, "Gate capture requires on plus stock_wrapper")
         return true
     }
+    private enum HCPolicy: String { case stock, layer0DownDQPrefill = "layer0_down_dq_prefill" }
+    private func hcPolicy(_ raw: String?, gates: GatePolicy?, capture: Bool) throws -> HCPolicy? {
+        guard let raw else { return nil }
+        guard let policy = HCPolicy(rawValue: raw) else { throw Failure.invalid("Unknown HC policy") }
+        try require(gates == .stockWrapper && capture, "Explicit HC policy requires stock_wrapper plus capture")
+        return policy
+    }
+    private static func usesHCDownDQ(_ policy: HCPolicy, rows: Int) -> Bool {
+        policy == .layer0DownDQPrefill && rows >= 128
+    }
     private struct GateObservation {
         let input: MLXArray
         let output: MLXArray
@@ -82,20 +92,31 @@ final class QwenWarmR5BoundaryParityTests: XCTestCase {
     }
 
     private final class HCProjection: QuantizedLinear {
+        let policy: HCPolicy
         var prefillObserver: ((MLXArray, MLXArray) -> Void)?
-        init(_ original: QuantizedLinear) {
+        init(_ original: QuantizedLinear, policy: HCPolicy) {
+            self.policy = policy
             super.init(weight: original.weight, bias: original.bias, scales: original.scales,
                 biases: original.biases, groupSize: original.groupSize, bits: original.bits, mode: original.mode)
             freeze()
         }
         override func callAsFunction(_ x: MLXArray) -> MLXArray {
-            let output = super.callAsFunction(x)
+            let output: MLXArray
+            if QwenWarmR5BoundaryParityTests.usesHCDownDQ(policy, rows: x.size / x.dim(-1)) {
+                precondition(x.dtype == .bfloat16 && x.dim(-1) == 10240 && bias == nil)
+                // Same BF16 dequantize+GEMM formula credited above. This test
+                // extends it below the reference2048 threshold, only on one
+                // layer0 down projection. Startup/tail/decode stay stock.
+                let dense = dequantized(weight, scales: scales, biases: biases,
+                    groupSize: groupSize, bits: bits, mode: mode, dtype: .bfloat16)
+                output = matmul(x, dense.T)
+            } else { output = super.callAsFunction(x) }
             if x.size / x.dim(-1) > 1 { prefillObserver?(x, output) }
             return output
         }
     }
 
-    private func installHCObservers(_ model: Qwen4ExpModel) throws -> [String: HCProjection] {
+    private func installHCObservers(_ model: Qwen4ExpModel, policy: HCPolicy?) throws -> [String: HCProjection] {
         let before = Dictionary(uniqueKeysWithValues: model.namedModules())
         let parentName = "model.layers.0.attn_hyper_connection"
         let parent = try XCTUnwrap(before[parentName])
@@ -108,7 +129,7 @@ final class QwenWarmR5BoundaryParityTests: XCTestCase {
                 && old.weight.shape == [outputs, inputs / 8] && old.scales.shape == [outputs, inputs / 64]
                 && old.scales.dtype == .bfloat16 && old.biases?.shape == old.scales.shape
                 && old.biases?.dtype == .bfloat16, "Unexpected HC projection checkpoint layout")
-            let replacement = HCProjection(old)
+            let replacement = HCProjection(old, policy: name == "down" ? (policy ?? .stock) : .stock)
             try require(replacement.weight === old.weight && replacement.scales === old.scales
                 && replacement.biases === old.biases && replacement.bias === old.bias, "HC parameter identity changed")
             replacements[name] = replacement; children[child] = replacement
@@ -420,6 +441,25 @@ final class QwenWarmR5BoundaryParityTests: XCTestCase {
         }
     }
 
+    func testHCPolicyIsStrictAndLeavesStartupTailDecodeStock() throws {
+        XCTAssertNil(try hcPolicy(nil, gates: nil, capture: false))
+        XCTAssertEqual(try hcPolicy("stock", gates: .stockWrapper, capture: true), .stock)
+        XCTAssertEqual(try hcPolicy("layer0_down_dq_prefill", gates: .stockWrapper, capture: true), .layer0DownDQPrefill)
+        for raw in ["", "off", "nil", "layer0_down_dq_prefill "] {
+            XCTAssertThrowsError(try hcPolicy(raw, gates: .stockWrapper, capture: true))
+        }
+        for raw in ["stock", "layer0_down_dq_prefill"] {
+            XCTAssertThrowsError(try hcPolicy(raw, gates: nil, capture: true))
+            XCTAssertThrowsError(try hcPolicy(raw, gates: .fp32Input, capture: true))
+            XCTAssertThrowsError(try hcPolicy(raw, gates: .stockWrapper, capture: false))
+        }
+        for width in [1, 23, 30, 31, 127] { XCTAssertFalse(Self.usesHCDownDQ(.layer0DownDQPrefill, rows: width)) }
+        for width in [128, 172, 475, 530, 595, 740, 6630, 8192] {
+            XCTAssertTrue(Self.usesHCDownDQ(.layer0DownDQPrefill, rows: width))
+            XCTAssertFalse(Self.usesHCDownDQ(.stock, rows: width))
+        }
+    }
+
     func testSavedWarmR5BoundaryParity() async throws {
         let env = ProcessInfo.processInfo.environment
         let prefix = "AFM_QWEN_WARM_R5_"
@@ -432,6 +472,7 @@ final class QwenWarmR5BoundaryParityTests: XCTestCase {
         let outputPath = try XCTUnwrap(env[prefix + "OUT"])
         let gates = try gatePolicy(env[prefix + "GATE_POLICY"])
         let capture = try captureGates(env[prefix + "CAPTURE_LAYER0_GATES"], policy: gates)
+        let hc = try hcPolicy(env[prefix + "HC_POLICY"], gates: gates, capture: capture)
         try require(!env.keys.contains { $0.hasPrefix("AFM_QWEN_") && !$0.hasPrefix(prefix) }, "Conflicting Qwen override")
         try require(["AFM_GDN_PACKED", "MLX_DISABLE_COMPILE", "VMLX_ENABLE_UNSAFE_COMPILE",
             "MLXPRESS_ENABLE_UNSAFE_COMPILE"].allSatisfy { env[$0] == nil }, "Default arithmetic/compile controls required")
@@ -449,7 +490,7 @@ final class QwenWarmR5BoundaryParityTests: XCTestCase {
             return try Data(contentsOf: source)
         }
         try await runModel(fixture, plan: plan, fixtureURL: url, fixtureSHA: expectedSHA, outputPath: outputPath,
-            gatePolicy: gates, captureLayer0Gates: capture)
+            gatePolicy: gates, captureLayer0Gates: capture, hcPolicy: hc)
     }
 
     private struct Call: Codable {
@@ -755,13 +796,16 @@ final class QwenWarmR5BoundaryParityTests: XCTestCase {
             "calls_by_arm": widths, "prefix_tokens": 8667, "B_vs_C": comparisons,
             "replacement_names": ["model.layers.0.attn_hyper_connection.input_mix_weight_down",
                 "model.layers.0.attn_hyper_connection.input_mix_weight_up"], "parameter_objects_preserved": true,
-            "scope": "Two passive stock QuantizedLinear subclasses installed before startup; super called exactly once, unchanged result returned. Capture B/C after startup through8667 only, no eval in forward, clear before30+1/decode. Down input is existing HC-normalized input; up input is existing SiLU(down/4); neither is recomputed. Eight native BF16 arrays (~732MB) materialize after old prompt observations. No force-unsplit helper, alternate projection, HC fusion change or recurrence hook. Retention may alter allocation/lifetime; mandatory six+192 score-byte control. This localizes the first saved seam difference, not a complete causal/performance/quality proof."]
+            "hc_projection_policy": metadata["hc_projection_policy"] ?? "stock",
+            "scope": "Two observed QuantizedLinear subclasses installed before startup, original packed objects retained. Stock policy calls super once; optional layer0_down_dq_prefill changes only down rows>=128 to BF16DQ+GEMM, leaving up/startup/tail/decode stock. Capture B/C after startup through8667 only, no observer eval in forward, clear before30+1/decode. Down input is existing HC-normalized input; up input is existing SiLU(down/4); neither is recomputed. Eight native BF16 arrays (~732MB) materialize after old prompt observations. No force-unsplit helper, HC fusion change or recurrence hook. Retention may alter allocation/lifetime; mandatory six+192 score-byte stock control. This localizes a saved seam difference, not a complete causal/performance/quality proof."]
     }
 
     private func runModel(_ fixture: Fixture, plan: Plan, fixtureURL: URL, fixtureSHA: String,
-                          outputPath: String, gatePolicy: GatePolicy?, captureLayer0Gates: Bool) async throws {
+                          outputPath: String, gatePolicy: GatePolicy?, captureLayer0Gates: Bool, hcPolicy: HCPolicy?) async throws {
         let teacherIDs = try gatePolicy.map { _ in try fixedTeacher(prompt: fixture.histories[4].tokens, fixtureSHA: fixtureSHA) }
-        let policyLabel = gatePolicy.map { "gate_projection_" + $0.rawValue } ?? "literal_nil"
+        let hcLabel = (hcPolicy ?? .stock).rawValue
+        let policyLabel = (gatePolicy.map { "gate_projection_" + $0.rawValue } ?? "literal_nil")
+            + (hcPolicy == .layer0DownDQPrefill ? "_hc_" + hcLabel : "")
         let teacherLabel = gatePolicy == nil ? "A_radix_MLX_ArgMaxSampler_BF16_no_processors" : "fixed_saved_baseline_64_decisions"
         let modelURL = URL(fileURLWithPath: "/Volumes/edata2/models/qualification/Qwen3.8-Flash-Next-ddalcu-vision-overlay-20261001")
         let driver = URL(fileURLWithPath: #filePath).resolvingSymlinksInPath()
@@ -789,7 +833,7 @@ final class QwenWarmR5BoundaryParityTests: XCTestCase {
         let samplerPath = "vendor/MLX/mlx-swift-lm/Libraries/MLXLMCommon/Evaluate.swift"
         let samplerSHA = "eaccd6835d77e91fab0c7feff84736a568800ae3221ba94f4483c0a278d9dd97"
         try require(try fileDigest(sourceRoot.appendingPathComponent(samplerPath)) == samplerSHA, "Raw sampler source changed")
-        let provenance: [String: Any] = ["source_base_revision": "9468b3b07088e0834d89afffe17404ae678150f3",
+        let provenance: [String: Any] = ["source_base_revision": "ab33327ae7045a03294236a8f7c0d30e2f53404d",
             "source_sha256": pins, "driver_source_sha256": driverSHA, "driver_source": driver.path,
             "test_executable": executable.path, "test_executable_sha256": try fileDigest(executable),
             "fixture": fixtureURL.path, "fixture_sha256": fixtureSHA, "capture_binary_sha256": fixture.source_binary_sha256,
@@ -798,6 +842,7 @@ final class QwenWarmR5BoundaryParityTests: XCTestCase {
             "gate_projection_policy": gatePolicy?.rawValue ?? "nil", "teacher_mode": teacherLabel,
             "capture_layer0_gates": captureLayer0Gates,
             "capture_layer0_hc": captureLayer0Gates,
+            "hc_projection_policy": hcLabel, "hc_policy_explicit": hcPolicy != nil,
             "teacher_summary": gatePolicy == nil ? NSNull() : Self.evidenceRoot + Self.teacherSummary as Any,
             "teacher_summary_sha256": gatePolicy == nil ? NSNull() : Self.teacherSummarySHA as Any,
             "decision_limit": Self.decisionLimit, "eos_token_ids": Self.eosIDs,
@@ -815,7 +860,7 @@ final class QwenWarmR5BoundaryParityTests: XCTestCase {
         let gateNames = try gatePolicy.map { try installGates(model, policy: $0) } ?? []
         var gateObservations: [String: [String: [GateObservation]]] = [:]
         var hcObservations: [String: [String: [GateObservation]]] = [:]
-        let observedHC = try captureLayer0Gates ? installHCObservers(model) : [:]
+        let observedHC = try captureLayer0Gates ? installHCObservers(model, policy: hcPolicy) : [:]
         var observedGates: [String: GateProjection] = [:]
         if captureLayer0Gates {
             let modules = Dictionary(uniqueKeysWithValues: model.namedModules())
@@ -1014,6 +1059,7 @@ final class QwenWarmR5BoundaryParityTests: XCTestCase {
         try save(arrays: scores, metadata: ["fixture_sha256": fixtureSHA, "driver_source_sha256": driverSHA,
             "capture_point": "raw_last_prompt_model_row_before_sampler", "policy": policyLabel,
             "gate_projection_policy": gatePolicy?.rawValue ?? "nil",
+            "hc_projection_policy": hcLabel,
             "r5_ids_sha256_le_u32": fixture.histories[4].tokens_sha256_le_u32,
             "startup_ids_sha256_le_u32": fixture.captured_startup.tokens_sha256_le_u32,
             "dtype_note": "BF16 model rows losslessly stored as FP32"], url: scoreURL)
@@ -1022,6 +1068,7 @@ final class QwenWarmR5BoundaryParityTests: XCTestCase {
         let gateCapture: [String: Any]? = try captureLayer0Gates ? saveGateObservations(gateObservations,
             output: output, metadata: ["fixture_sha256": fixtureSHA, "driver_source_sha256": driverSHA,
                 "capture_point": "layer0_gate_input_and_output_references_no_forward_eval", "gate_projection_policy": "stock_wrapper",
+                "hc_projection_policy": hcLabel,
                 "r5_ids_sha256_le_u32": fixture.histories[4].tokens_sha256_le_u32,
                 "captured_prefix_ids_sha256_le_u32": try tokenDigest(Array(tokens.prefix(8667))), "prefix_tokens": "8667"]) : nil
         try require(observedGates.values.allSatisfy { $0.prefillObserver == nil }, "Observer survived into continuation")
@@ -1029,6 +1076,7 @@ final class QwenWarmR5BoundaryParityTests: XCTestCase {
         let hcCapture: [String: Any]? = try captureLayer0Gates ? saveHCObservations(hcObservations,
             output: output, metadata: ["fixture_sha256": fixtureSHA, "driver_source_sha256": driverSHA,
                 "capture_point": "layer0_hc_input_and_output_references_no_forward_eval", "gate_projection_policy": "stock_wrapper",
+                "hc_projection_policy": hcLabel,
                 "r5_ids_sha256_le_u32": fixture.histories[4].tokens_sha256_le_u32,
                 "captured_prefix_ids_sha256_le_u32": try tokenDigest(Array(tokens.prefix(8667))), "prefix_tokens": "8667"]) : nil
         hcObservations.removeAll()
@@ -1097,6 +1145,7 @@ final class QwenWarmR5BoundaryParityTests: XCTestCase {
         try save(arrays: decisionScores, metadata: ["fixture_sha256": fixtureSHA, "driver_source_sha256": driverSHA,
             "capture_point": gatePolicy == nil ? "raw_model_row_on_shared_A_raw_greedy_prefix" : "raw_model_row_on_fixed_saved_baseline_prefix",
             "policy": policyLabel, "gate_projection_policy": gatePolicy?.rawValue ?? "nil",
+            "hc_projection_policy": hcLabel,
             "r5_ids_sha256_le_u32": fixture.histories[4].tokens_sha256_le_u32,
             "teacher": teacherLabel, "decision_limit": String(Self.decisionLimit),
             "dtype_note": "BF16 model rows losslessly stored as FP32"], url: decisionURL)
@@ -1113,8 +1162,10 @@ final class QwenWarmR5BoundaryParityTests: XCTestCase {
             "first_B_C_strict_winner_difference": firstBCStrict.map { $0 as Any } ?? NSNull(),
             "scope": "At most64 rows including prompt decision0. With absent gate policy, A's actual BF16 MLX ArgMaxSampler selects the shared teacher as before. With any explicit gate policy, including stock_wrapper, the pinned baseline's64 teacher IDs are fixed; new sampler selections are observations only, never fed. All three live caches receive the same63 non-EOS IDs using ordinary singleton host-PLE forwarding. No clone/restore or own-B/C choice feed; unused final row is not fed. Raw sampler diagnosis only: no serving processors, grammar, suppression, reasoning cap or loop guard. Genuine divergence is saved, not an automatic test failure. Saved baseline teachers are diagnostic IDs, not historical/native serving IDs."]
         try qualified()
-        try write(["status": "complete", "schema_version": captureLayer0Gates ? 5 : 3, "provenance": provenance,
+        try write(["status": "complete", "schema_version": captureLayer0Gates ? 6 : 3, "provenance": provenance,
             "policy": policyLabel, "gate_projection_policy": gatePolicy?.rawValue ?? "nil", "nil_gdn_arithmetic_hooks": true,
+            "hc_projection_policy": hcLabel, "hc_policy_explicit": hcPolicy != nil,
+            "hc_policy_scope": "Absent/stock retains original math; explicit layer0_down_dq_prefill is an immutable test-only policy on model.layers.0.attn_hyper_connection.input_mix_weight_down for rows>=128. Only this one projection uses BF16 dequant+GEMM; HC-up, all other layers, a/b gates, startup23/30/1, tail30/1 and singleton decode stay stock. Requires stock_wrapper plus bounded capture and unchanged saved64 teacher. Extends reference formula below2048 experimentally; not all97 HC-down projections or a serving/default change. Stock198 output byte control is mandatory; no performance/quality claim.",
             "gate_replacement_names": gateNames, "gate_parameter_objects_preserved": true,
             "gate_policy_scope": "Only72 linear_attn.in_proj_a/b modules are replaced before any forward on a fresh model. Original packed weight/scales/biases objects are retained. stock_wrapper calls the original implementation; fp32_input applies all widths and casts output immediately back to BF16; reference_wide_dq uses activation-dtype dequant+GEMM only at>=2048 rows and stock below; all_width_dq extends that formula to every width, experimentally. Model GDN hooks remain nil, separately from this projection intervention. Stock-wrapper must reproduce baseline six prompt vectors and all192 saved decision rows externally before interpreting intervention arms. Not a speed/quality result.",
             "schedule": schedules, "scores": scoreReports,
@@ -1127,7 +1178,7 @@ final class QwenWarmR5BoundaryParityTests: XCTestCase {
             "shared_decisions": continuation,
             "startup_comparisons": ["A_vs_B": startupAB, "A_vs_C": startupAC],
             "final_logit_comparisons": finalComparisons,
-            "scope": "Prompt-boundary and bounded shared-prefix raw-greedy numerical diagnosis, not serving reproduction, speed, or task quality. Startup54 is processed before each arm, but its original four generated IDs and all prior generated IDs are unavailable and not replayed. A executes abandoned prompt tails then generic radix restores; B never restores and consumes only R5 prefixes. A/B share model-forward prefix widths and materialized shared-boundary entry states, not identical total graph/copy work: A also executes abandoned tails. B snapshots enqueue copies and evaluates boundary state before continuing. Snapshot baselines first hash after each donor prompt tail; later prompt-request immutability is checked, but pretail/historical-decode-stress immutability is not claimed. All prompt observations and comparisons are materialized before new shared continuation. Published primary arrays are actually byte-compared in this producer; only their descriptors/hashes, not tensor payloads, are exported. Derived score bank, implicit flag, host history and offsets are reported separately; expected restore differences are not automatic corruption. CPU rankings/ties are descriptive; separately recorded MLX raw greedy choices are new diagnostic selections, not observed serving decisions. GDN model test hooks remain nil and unobserved; the separate gate_projection_policy explicitly declares any projection intervention."], to: output.appendingPathComponent("summary.json"))
+            "scope": "Prompt-boundary and bounded shared-prefix raw-greedy numerical diagnosis, not serving reproduction, speed, or task quality. Startup54 is processed before each arm, but its original four generated IDs and all prior generated IDs are unavailable and not replayed. A executes abandoned prompt tails then generic radix restores; B never restores and consumes only R5 prefixes. A/B share model-forward prefix widths and materialized shared-boundary entry states, not identical total graph/copy work: A also executes abandoned tails. B snapshots enqueue copies and evaluates boundary state before continuing. Snapshot baselines first hash after each donor prompt tail; later prompt-request immutability is checked, but pretail/historical-decode-stress immutability is not claimed. All prompt observations and comparisons are materialized before new shared continuation. Published primary arrays are actually byte-compared in this producer; only their descriptors/hashes, not tensor payloads, are exported. Derived score bank, implicit flag, host history and offsets are reported separately; expected restore differences are not automatic corruption. CPU rankings/ties are descriptive; separately recorded MLX raw greedy choices are new diagnostic selections, not observed serving decisions. GDN model test hooks remain nil and unobserved; gate_projection_policy and hc_projection_policy separately declare their scoped projection interventions."], to: output.appendingPathComponent("summary.json"))
         XCTAssertTrue(immutability.allSatisfy { $0["unchanged"] as? Bool == true }, "Retained primary snapshot changed; evidence saved")
     }
 
