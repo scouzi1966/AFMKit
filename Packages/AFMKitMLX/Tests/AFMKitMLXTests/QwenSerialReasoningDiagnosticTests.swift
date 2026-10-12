@@ -33,6 +33,23 @@ final class QwenSerialReasoningDiagnosticTests: XCTestCase {
         XCTAssertEqual(error.localizedDescription, "Exact diagnostic guard failed")
     }
 
+    func testSerialARLaneAcceptsDefaultZeroAndOneButRejectsConcurrentOrMTP() {
+        for limit in [0, 1] {
+            XCTAssertTrue(Diagnostic.isSerialARLane(maxConcurrent: limit,
+                hasScheduler: false, mtpEnabled: false, hasBinding: false))
+            XCTAssertFalse(Diagnostic.isSerialARLane(maxConcurrent: limit,
+                hasScheduler: true, mtpEnabled: false, hasBinding: false))
+            XCTAssertFalse(Diagnostic.isSerialARLane(maxConcurrent: limit,
+                hasScheduler: false, mtpEnabled: true, hasBinding: false))
+            XCTAssertFalse(Diagnostic.isSerialARLane(maxConcurrent: limit,
+                hasScheduler: false, mtpEnabled: false, hasBinding: true))
+        }
+        for limit in [-1, 2, 15] {
+            XCTAssertFalse(Diagnostic.isSerialARLane(maxConcurrent: limit,
+                hasScheduler: false, mtpEnabled: false, hasBinding: false))
+        }
+    }
+
     func testOnlyUnpaddedSingletonQwenVLTextIsCanonicalized() throws {
         try Device.withDefaultDevice(.cpu) {
             let ids = MLXArray([Int32(7), 9, 11]).reshaped(1, 3)

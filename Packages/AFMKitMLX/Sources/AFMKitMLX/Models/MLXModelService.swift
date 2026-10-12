@@ -4517,7 +4517,9 @@ public final class MLXModelService:
             // explicitly requested. A loaded vision tower is fine: media
             // inputs, not --vlm itself, are excluded.
             try QwenSerialReasoningDiagnostic.require(
-                maxConcurrent == 1 && requestScheduler == nil && !mtpEnabled && mtpBinding == nil
+                QwenSerialReasoningDiagnostic.isSerialARLane(
+                    maxConcurrent: maxConcurrent, hasScheduler: requestScheduler != nil,
+                    mtpEnabled: mtpEnabled, hasBinding: mtpBinding != nil)
                     && eagle3DrafterPath == nil && !afmDSparkEnabled()
                     && resolvedMedia.mediaKinds.isEmpty && (stop?.isEmpty ?? true)
                     && responseFormat == nil && !wantLogprobs && !ignoreEndOfSequence

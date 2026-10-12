@@ -149,6 +149,16 @@ final class QwenSerialReasoningDiagnostic: @unchecked Sendable {
         return LMInput(tokens: input.text.tokens.reshaped(-1))
     }
 
+    /// AFM's default serial setting is zero; one is also serial. The scheduler
+    /// is installed only for a concurrent lane, and an available embedded MTP
+    /// head does not count as an active binding when --mtp is absent.
+    static func isSerialARLane(
+        maxConcurrent: Int, hasScheduler: Bool, mtpEnabled: Bool, hasBinding: Bool
+    ) -> Bool {
+        (maxConcurrent == 0 || maxConcurrent == 1)
+            && !hasScheduler && !mtpEnabled && !hasBinding
+    }
+
     static func validate(_ conditions: Conditions, parameters: GenerateParameters) throws {
         try require(conditions.serial && !conditions.speculative && !conditions.media
             && !conditions.stops && !conditions.grammar && conditions.supportedModel
