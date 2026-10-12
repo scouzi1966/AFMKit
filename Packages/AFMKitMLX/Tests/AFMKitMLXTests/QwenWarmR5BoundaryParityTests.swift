@@ -81,6 +81,50 @@ final class QwenWarmR5BoundaryParityTests: XCTestCase {
         }
     }
 
+    private final class HCProjection: QuantizedLinear {
+        var prefillObserver: ((MLXArray, MLXArray) -> Void)?
+        init(_ original: QuantizedLinear) {
+            super.init(weight: original.weight, bias: original.bias, scales: original.scales,
+                biases: original.biases, groupSize: original.groupSize, bits: original.bits, mode: original.mode)
+            freeze()
+        }
+        override func callAsFunction(_ x: MLXArray) -> MLXArray {
+            let output = super.callAsFunction(x)
+            if x.size / x.dim(-1) > 1 { prefillObserver?(x, output) }
+            return output
+        }
+    }
+
+    private func installHCObservers(_ model: Qwen4ExpModel) throws -> [String: HCProjection] {
+        let before = Dictionary(uniqueKeysWithValues: model.namedModules())
+        let parentName = "model.layers.0.attn_hyper_connection"
+        let parent = try XCTUnwrap(before[parentName])
+        var replacements: [String: HCProjection] = [:], children: [String: Module] = [:]
+        for (name, inputs, outputs) in [("down", 10240, 320), ("up", 320, 10240)] {
+            let child = "input_mix_weight_" + name
+            let old = try XCTUnwrap(before[parentName + "." + child] as? QuantizedLinear)
+            try require(type(of: old) == QuantizedLinear.self && old.bias == nil && old.mode == .affine
+                && old.bits == 4 && old.groupSize == 64 && old.weight.dtype == .uint32
+                && old.weight.shape == [outputs, inputs / 8] && old.scales.shape == [outputs, inputs / 64]
+                && old.scales.dtype == .bfloat16 && old.biases?.shape == old.scales.shape
+                && old.biases?.dtype == .bfloat16, "Unexpected HC projection checkpoint layout")
+            let replacement = HCProjection(old)
+            try require(replacement.weight === old.weight && replacement.scales === old.scales
+                && replacement.biases === old.biases && replacement.bias === old.bias, "HC parameter identity changed")
+            replacements[name] = replacement; children[child] = replacement
+        }
+        try parent.update(modules: ModuleChildren.unflattened(children), verify: .noUnusedKeys)
+        let after = Dictionary(uniqueKeysWithValues: model.namedModules())
+        try require(Set(before.keys) == Set(after.keys), "HC observer changed module tree")
+        for (name, old) in before {
+            let short = name == parentName + ".input_mix_weight_down" ? "down"
+                : name == parentName + ".input_mix_weight_up" ? "up" : ""
+            let expected: Module = replacements[short].map { $0 as Module } ?? old
+            try require(after[name] === expected, "Unintended HC module replacement")
+        }
+        return replacements
+    }
+
     private func installGates(_ model: Qwen4ExpModel, policy: GatePolicy) throws -> [String] {
         let before = Dictionary(uniqueKeysWithValues: model.namedModules())
         var replacements: [String: GateProjection] = [:]
@@ -645,6 +689,75 @@ final class QwenWarmR5BoundaryParityTests: XCTestCase {
             "scope": "Layer0 stock a/b inputs and projection outputs before GDN prework, B five prefix calls versus C two. Captured references only, no extra eval inside forward; materialized after all old prompt observations, before continuation. Observers cleared before30+1 and all singleton decode. Array retention may alter allocation/lifetime: six prompt plus192 decision payloads must remain byte-exact versus stock no-observer control. First differing saved coordinate is not a complete per-layer causal trace. No numerical repair, serving, quality or timing claim."]
     }
 
+    // HC inputs have10240 channels: compare two native BF16 byte buffers,
+    // avoiding full Float/Double expansions of these ~177MB tensors.
+    private func compareBF16Observation(_ a: MLXArray, _ b: MLXArray) throws -> [String: Any] {
+        try require(a.dtype == .bfloat16 && b.dtype == .bfloat16 && a.shape == b.shape, "HC comparison geometry")
+        let left = a.asData(access: .copy).data, right = b.asData(access: .copy).data
+        try require(left.count == right.count && left.count == a.size * 2, "HC byte count")
+        var first: Int?, firstLeft: Float = 0, firstRight: Float = 0
+        var sum = 0.0, maximum = 0.0, finite = true
+        left.withUnsafeBytes { lhs in
+            right.withUnsafeBytes { rhs in
+                let l = lhs.bindMemory(to: UInt16.self), r = rhs.bindMemory(to: UInt16.self)
+                for index in l.indices {
+                    let x = Float(bitPattern: UInt32(l[index].littleEndian) << 16)
+                    let y = Float(bitPattern: UInt32(r[index].littleEndian) << 16)
+                    if !x.isFinite || !y.isFinite { finite = false; continue }
+                    if first == nil && l[index] != r[index] { first = index; firstLeft = x; firstRight = y }
+                    let delta = Double(x) - Double(y)
+                    sum += delta * delta; maximum = max(maximum, abs(delta))
+                }
+            }
+        }
+        try require(finite, "Nonfinite HC observation")
+        return ["raw_payload_equal": first == nil, "rms_difference": sqrt(sum / Double(a.size)),
+            "max_absolute_difference": maximum,
+            "first_differing_token_zero_based": first.map { $0 / a.dim(-1) as Any } ?? NSNull(),
+            "first_differing_channel": first.map { $0 % a.dim(-1) as Any } ?? NSNull(),
+            "B_value": first.map { _ in firstLeft as Any } ?? NSNull(),
+            "C_value": first.map { _ in firstRight as Any } ?? NSNull()]
+    }
+
+    private func saveHCObservations(_ observations: [String: [String: [GateObservation]]],
+                                    output: URL, metadata: [String: String]) throws -> [String: Any] {
+        let widths = ["B_live": [6630, 595, 530, 172, 740], "C_cold": [8192, 475]]
+        try require(Set(observations.keys) == Set(widths.keys), "Missing HC captured arm")
+        var tensors: [String: MLXArray] = [:], reports: [String: Any] = [:], comparisons: [String: Any] = [:]
+        for arm in ["B_live", "C_cold"] {
+            let projections = try XCTUnwrap(observations[arm]), expected = try XCTUnwrap(widths[arm])
+            try require(Set(projections.keys) == Set(["down", "up"]), "Unexpected HC observer set")
+            for (name, inputs, outputs) in [("down", 10240, 320), ("up", 320, 10240)] {
+                let samples = try XCTUnwrap(projections[name])
+                try require(samples.count == expected.count, "Unexpected HC call count")
+                for index in expected.indices {
+                    try require(samples[index].input.shape == [1, expected[index], inputs]
+                        && samples[index].output.shape == [1, expected[index], outputs]
+                        && samples[index].input.dtype == .bfloat16 && samples[index].output.dtype == .bfloat16,
+                        "Unexpected HC observation geometry/dtype")
+                }
+                tensors[arm + "-" + name + "-input"] = concatenated(samples.map(\.input), axis: 1)
+                tensors[arm + "-" + name + "-output"] = concatenated(samples.map(\.output), axis: 1)
+            }
+        }
+        eval(Array(tensors.values))
+        for (key, value) in tensors {
+            reports[key] = ["dtype": "bfloat16", "shape": value.shape,
+                "raw_payload_sha256": digest(value.asData(access: .copy).data)]
+        }
+        for name in ["down-input", "down-output", "up-input", "up-output"] {
+            comparisons[name] = try compareBF16Observation(try XCTUnwrap(tensors["B_live-" + name]),
+                try XCTUnwrap(tensors["C_cold-" + name]))
+        }
+        let url = output.appendingPathComponent("layer0-hc-prefill.safetensors")
+        try save(arrays: tensors, metadata: metadata, url: url)
+        return ["file": url.lastPathComponent, "file_sha256": try fileDigest(url), "tensors": reports,
+            "calls_by_arm": widths, "prefix_tokens": 8667, "B_vs_C": comparisons,
+            "replacement_names": ["model.layers.0.attn_hyper_connection.input_mix_weight_down",
+                "model.layers.0.attn_hyper_connection.input_mix_weight_up"], "parameter_objects_preserved": true,
+            "scope": "Two passive stock QuantizedLinear subclasses installed before startup; super called exactly once, unchanged result returned. Capture B/C after startup through8667 only, no eval in forward, clear before30+1/decode. Down input is existing HC-normalized input; up input is existing SiLU(down/4); neither is recomputed. Eight native BF16 arrays (~732MB) materialize after old prompt observations. No force-unsplit helper, alternate projection, HC fusion change or recurrence hook. Retention may alter allocation/lifetime; mandatory six+192 score-byte control. This localizes the first saved seam difference, not a complete causal/performance/quality proof."]
+    }
+
     private func runModel(_ fixture: Fixture, plan: Plan, fixtureURL: URL, fixtureSHA: String,
                           outputPath: String, gatePolicy: GatePolicy?, captureLayer0Gates: Bool) async throws {
         let teacherIDs = try gatePolicy.map { _ in try fixedTeacher(prompt: fixture.histories[4].tokens, fixtureSHA: fixtureSHA) }
@@ -676,7 +789,7 @@ final class QwenWarmR5BoundaryParityTests: XCTestCase {
         let samplerPath = "vendor/MLX/mlx-swift-lm/Libraries/MLXLMCommon/Evaluate.swift"
         let samplerSHA = "eaccd6835d77e91fab0c7feff84736a568800ae3221ba94f4483c0a278d9dd97"
         try require(try fileDigest(sourceRoot.appendingPathComponent(samplerPath)) == samplerSHA, "Raw sampler source changed")
-        let provenance: [String: Any] = ["source_base_revision": "2d6224a8f9cfab6995c17cef67b87b9f4ecf80b5",
+        let provenance: [String: Any] = ["source_base_revision": "9468b3b07088e0834d89afffe17404ae678150f3",
             "source_sha256": pins, "driver_source_sha256": driverSHA, "driver_source": driver.path,
             "test_executable": executable.path, "test_executable_sha256": try fileDigest(executable),
             "fixture": fixtureURL.path, "fixture_sha256": fixtureSHA, "capture_binary_sha256": fixture.source_binary_sha256,
@@ -684,6 +797,7 @@ final class QwenWarmR5BoundaryParityTests: XCTestCase {
             "model_file_sha256": modelPins, "nil_gdn_arithmetic_hooks": true,
             "gate_projection_policy": gatePolicy?.rawValue ?? "nil", "teacher_mode": teacherLabel,
             "capture_layer0_gates": captureLayer0Gates,
+            "capture_layer0_hc": captureLayer0Gates,
             "teacher_summary": gatePolicy == nil ? NSNull() : Self.evidenceRoot + Self.teacherSummary as Any,
             "teacher_summary_sha256": gatePolicy == nil ? NSNull() : Self.teacherSummarySHA as Any,
             "decision_limit": Self.decisionLimit, "eos_token_ids": Self.eosIDs,
@@ -700,6 +814,8 @@ final class QwenWarmR5BoundaryParityTests: XCTestCase {
         // gate after any startup, forward, or lazy compiled closure has run.
         let gateNames = try gatePolicy.map { try installGates(model, policy: $0) } ?? []
         var gateObservations: [String: [String: [GateObservation]]] = [:]
+        var hcObservations: [String: [String: [GateObservation]]] = [:]
+        let observedHC = try captureLayer0Gates ? installHCObservers(model) : [:]
         var observedGates: [String: GateProjection] = [:]
         if captureLayer0Gates {
             let modules = Dictionary(uniqueKeysWithValues: model.namedModules())
@@ -714,6 +830,13 @@ final class QwenWarmR5BoundaryParityTests: XCTestCase {
                         gateObservations[arm, default: [:]][name, default: []].append(GateObservation(input: input, output: output))
                     }
                 } else { gate.prefillObserver = nil }
+            }
+            for (name, projection) in observedHC {
+                if let arm {
+                    projection.prefillObserver = { input, output in
+                        hcObservations[arm, default: [:]][name, default: []].append(GateObservation(input: input, output: output))
+                    }
+                } else { projection.prefillObserver = nil }
             }
         }
         defer { setGateObservers(nil) }
@@ -902,6 +1025,13 @@ final class QwenWarmR5BoundaryParityTests: XCTestCase {
                 "r5_ids_sha256_le_u32": fixture.histories[4].tokens_sha256_le_u32,
                 "captured_prefix_ids_sha256_le_u32": try tokenDigest(Array(tokens.prefix(8667))), "prefix_tokens": "8667"]) : nil
         try require(observedGates.values.allSatisfy { $0.prefillObserver == nil }, "Observer survived into continuation")
+        try require(observedHC.values.allSatisfy { $0.prefillObserver == nil }, "HC observer survived into continuation")
+        let hcCapture: [String: Any]? = try captureLayer0Gates ? saveHCObservations(hcObservations,
+            output: output, metadata: ["fixture_sha256": fixtureSHA, "driver_source_sha256": driverSHA,
+                "capture_point": "layer0_hc_input_and_output_references_no_forward_eval", "gate_projection_policy": "stock_wrapper",
+                "r5_ids_sha256_le_u32": fixture.histories[4].tokens_sha256_le_u32,
+                "captured_prefix_ids_sha256_le_u32": try tokenDigest(Array(tokens.prefix(8667))), "prefix_tokens": "8667"]) : nil
+        hcObservations.removeAll()
 
         // One shared trajectory: unchanged A-greedy when absent, otherwise the
         // fixed saved baseline teacher. B/C never feed their own choices.
@@ -983,7 +1113,7 @@ final class QwenWarmR5BoundaryParityTests: XCTestCase {
             "first_B_C_strict_winner_difference": firstBCStrict.map { $0 as Any } ?? NSNull(),
             "scope": "At most64 rows including prompt decision0. With absent gate policy, A's actual BF16 MLX ArgMaxSampler selects the shared teacher as before. With any explicit gate policy, including stock_wrapper, the pinned baseline's64 teacher IDs are fixed; new sampler selections are observations only, never fed. All three live caches receive the same63 non-EOS IDs using ordinary singleton host-PLE forwarding. No clone/restore or own-B/C choice feed; unused final row is not fed. Raw sampler diagnosis only: no serving processors, grammar, suppression, reasoning cap or loop guard. Genuine divergence is saved, not an automatic test failure. Saved baseline teachers are diagnostic IDs, not historical/native serving IDs."]
         try qualified()
-        try write(["status": "complete", "schema_version": captureLayer0Gates ? 4 : 3, "provenance": provenance,
+        try write(["status": "complete", "schema_version": captureLayer0Gates ? 5 : 3, "provenance": provenance,
             "policy": policyLabel, "gate_projection_policy": gatePolicy?.rawValue ?? "nil", "nil_gdn_arithmetic_hooks": true,
             "gate_replacement_names": gateNames, "gate_parameter_objects_preserved": true,
             "gate_policy_scope": "Only72 linear_attn.in_proj_a/b modules are replaced before any forward on a fresh model. Original packed weight/scales/biases objects are retained. stock_wrapper calls the original implementation; fp32_input applies all widths and casts output immediately back to BF16; reference_wide_dq uses activation-dtype dequant+GEMM only at>=2048 rows and stock below; all_width_dq extends that formula to every width, experimentally. Model GDN hooks remain nil, separately from this projection intervention. Stock-wrapper must reproduce baseline six prompt vectors and all192 saved decision rows externally before interpreting intervention arms. Not a speed/quality result.",
@@ -993,6 +1123,7 @@ final class QwenWarmR5BoundaryParityTests: XCTestCase {
             "restore_donor_7927_comparison": restoreDonor, "snapshot_immutability": immutability,
             "cold_8667_comparison": coldComparison, "auxiliary_7927": auxiliaryReports,
             "layer0_gate_capture": gateCapture.map { $0 as Any } ?? NSNull(),
+            "layer0_hc_capture": hcCapture.map { $0 as Any } ?? NSNull(),
             "shared_decisions": continuation,
             "startup_comparisons": ["A_vs_B": startupAB, "A_vs_C": startupAC],
             "final_logit_comparisons": finalComparisons,
