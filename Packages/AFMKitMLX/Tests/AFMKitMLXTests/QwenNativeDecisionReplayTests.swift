@@ -71,6 +71,20 @@ final class QwenNativeDecisionReplayTests: XCTestCase {
         try JSONSerialization.data(withJSONObject: value, options: [.prettyPrinted, .sortedKeys])
             .write(to: url, options: .withoutOverwriting)
     }
+    private func stateRoundingOption(_ value: String?) throws -> Bool {
+        guard let value else { return false }
+        try require(value == "off" || value == "on", "State rounding accepts only absent, off or on")
+        return value == "on"
+    }
+
+    func testNativeStatePhaseOptionsKeepAbsentAndOffLiteralNil() throws {
+        XCTAssertFalse(try stateRoundingOption(nil))
+        XCTAssertFalse(try stateRoundingOption("off"))
+        XCTAssertTrue(try stateRoundingOption("on"))
+        for value in ["", "0", "1", "false", "true", "OFF", "ON", " on", "on "] {
+            XCTAssertThrowsError(try stateRoundingOption(value))
+        }
+    }
 
     // Foundation-only validation: no native tensor is loaded into MLX or the model.
     private func tensor(_ data: Data, key: String) throws -> NativeTensor {
@@ -199,6 +213,10 @@ final class QwenNativeDecisionReplayTests: XCTestCase {
         try require(!env.keys.contains { $0.hasPrefix("AFM_QWEN_") && !$0.hasPrefix(option) }, "Conflicting Qwen override")
         try require(["AFM_GDN_PACKED", "MLX_DISABLE_COMPILE", "VMLX_ENABLE_UNSAFE_COMPILE",
             "MLXPRESS_ENABLE_UNSAFE_COMPILE"].allSatisfy { env[$0] == nil }, "Default compile/recurrence controls required")
+        // XCTest-only phase controls. Off uses nil, never the explicit unchanged observer.
+        let prefillStateRounding = try stateRoundingOption(env[option + "PREFILL_STATE_ROUNDING"])
+        let decodeStateRounding = try stateRoundingOption(env[option + "DECODE_STATE_ROUNDING"])
+        let policy = prefillStateRounding || decodeStateRounding ? "phase_state_rounding" : "literal_nil"
         let evidence = URL(fileURLWithPath: Self.evidence, isDirectory: true)
         let native = URL(fileURLWithPath: nativePath, isDirectory: true).resolvingSymlinksInPath()
         try require(nativePath.hasPrefix("/") && native.path.hasPrefix(Self.evidence), "Native evidence must be external")
@@ -289,8 +307,9 @@ final class QwenNativeDecisionReplayTests: XCTestCase {
             && !FileManager.default.fileExists(atPath: output.path), "Fresh external output required")
         try require(Darwin.mkdir(output.path, 0o700) == 0, "Exclusive output creation failed")
         let executable = try XCTUnwrap(Bundle(for: Self.self).executableURL)
-        let provenance: [String: Any] = ["source_base_revision": "71502ac861cb06b974651b1c602fb7e81a4e8301",
+        let provenance: [String: Any] = ["source_base_revision": "5dfb9cde617df70839dc36f6ec360bd2bdb0dd65",
             "source_sha256": pins, "driver_source_sha256": try fileDigest(driverURL),
+            "prefill_state_rounding": prefillStateRounding, "decode_state_rounding": decodeStateRounding,
             "test_executable": executable.path, "test_executable_sha256": try fileDigest(executable),
             "fixture": fixture.path, "fixture_sha256": Self.fixtureSHA, "config_sha256": configSHA,
             "weight_index_sha256": indexSHA, "generation_config_sha256": generationSHA,
@@ -306,21 +325,75 @@ final class QwenNativeDecisionReplayTests: XCTestCase {
         try require(HardwareInfo.isModelOwnedCompiledDecodeSupported && Qwen4ExpGatedDeltaPrework.enabled, "Qualified baseline hardware required")
         let context = try await LLMModelFactory.shared.load(configuration: ModelConfiguration(directory: modelURL))
         let model = try XCTUnwrap(context.model as? Qwen4ExpModel)
-        let layers = model.namedModules().compactMap { $0.1 as? Qwen4ExpDecoderLayer }.filter(\.isLinear)
-        try require(layers.count == 36 && model.vocabularySize == Self.vocabulary, "Unexpected architecture")
-        func unchangedPolicies() throws {
-            try require(layers.allSatisfy { $0.gatedDeltaFP32L2ForTesting == nil
-                && $0.gatedDeltaNormalizationForTesting == nil && $0.gatedDeltaStatePersistenceForTesting == nil
-                && $0.gatedDeltaStockSigmoidLookupForTesting == nil && !$0.referenceGatedDeltaPrefillNormalizationForTesting
-                && $0.gatedDeltaFP32L2DispatchesForTesting.isEmpty
-                && $0.gatedDeltaNormalizationDispatchesForTesting.isEmpty }, "Literal nil route must remain unobserved/unchanged")
+        let namedLayers = model.namedModules().compactMap { name, module -> (String, Qwen4ExpDecoderLayer)? in
+            guard let layer = module as? Qwen4ExpDecoderLayer, layer.isLinear else { return nil }
+            return (name, layer)
         }
-        try unchangedPolicies()
+        let layers = namedLayers.map { $0.1 }
+        try require(layers.count == 36 && model.vocabularySize == Self.vocabulary, "Unexpected architecture")
+        func qualifiedPolicies(roundState: Bool) throws {
+            try require(layers.allSatisfy { $0.gatedDeltaFP32L2ForTesting == nil
+                && $0.gatedDeltaNormalizationForTesting == nil
+                && $0.gatedDeltaStatePersistenceForTesting == (roundState ? .bfloat16RoundTrip : nil)
+                && $0.gatedDeltaStockSigmoidLookupForTesting == nil && !$0.referenceGatedDeltaPrefillNormalizationForTesting
+                && $0.gatedDeltaFP32L2DispatchesForTesting.isEmpty }, "Only requested persistence may differ from literal nil")
+        }
+        func selectStateRounding(_ enabled: Bool) throws {
+            // The existing setter only selects post-call behavior. Never cast,
+            // replace or restore a cache here, including the P-to-D transition.
+            for layer in layers { layer.gatedDeltaStatePersistenceForTesting = enabled ? .bfloat16RoundTrip : nil }
+            try qualifiedPolicies(roundState: enabled)
+        }
+        func clearPersistenceRecords() {
+            for layer in layers {
+                layer.clearGatedDeltaNormalizationDispatchesForTesting()
+                layer.clearGatedDeltaStatePersistenceRecordsForTesting()
+            }
+        }
+        func persistenceReport(enabled: Bool, expectedWidths: [Int], coldPrefill: Bool) throws -> [String: Any] {
+            try qualifiedPolicies(roundState: enabled)
+            let records = layers.map(\.gatedDeltaStatePersistenceRecordsForTesting)
+            let calls = layers.map(\.gatedDeltaNormalizationDispatchesForTesting)
+            for (stored, dispatched) in zip(records, calls) {
+                if !enabled {
+                    try require(stored.isEmpty && dispatched.isEmpty, "Literal nil acquired a diagnostic observer")
+                    continue
+                }
+                try require(stored.map(\.width) == expectedWidths && dispatched.map(\.width) == expectedWidths,
+                    "Persistence intervention changed actual call geometry")
+                for (index, pair) in zip(stored, dispatched).enumerated() {
+                    let (record, call) = pair
+                    try require(record.inputDType == "float32" && record.storedDType == "float32"
+                        && record.stateShape == [1, 48, 128, 128] && record.stateRoundTrips == 1
+                        && record.snapshotRoundTrips == 0 && !record.capturedBoundary
+                        && record.inputWasImplicitZero == (coldPrefill && index == 0)
+                        && record.packedBoundaryEligible == (record.width > 1)
+                        && record.compiled == (record.width == 1) && record.compiled == call.compiled
+                        && call.batchSize == 1 && !call.verification && !call.referenceNormalization
+                        && !call.stockSigmoidLookup && !call.capturesBoundary,
+                        "Unexpected persistence, arithmetic, capture or compiled dispatch")
+                }
+            }
+            let flat = records.flatMap { $0 }
+            return ["policy": enabled ? "bfloat16RoundTrip" : "nil", "observed": enabled,
+                "calls_by_layer": try json(records), "dispatches_by_layer": try json(calls),
+                "call_count": flat.count, "state_round_trips": flat.reduce(0) { $0 + $1.stateRoundTrips },
+                "snapshot_round_trips": flat.reduce(0) { $0 + $1.snapshotRoundTrips }]
+        }
+        try qualifiedPolicies(roundState: false)
+        try require(layers.allSatisfy { $0.gatedDeltaNormalizationDispatchesForTesting.isEmpty
+            && $0.gatedDeltaStatePersistenceRecordsForTesting.isEmpty }, "Unexpected initial diagnostic records")
+        defer {
+            for layer in layers { layer.gatedDeltaStatePersistenceForTesting = nil }
+            clearPersistenceRecords()
+        }
+        try selectStateRounding(prefillStateRounding)
         let radix = RadixTreeCache(modelID: "native-decision-baseline-nil")
         var finalCache: [KVCache] = []
         var nextLogits: MLXArray?
         var schedules: [[String: Any]] = []
         for (historyIndex, history) in histories.enumerated() {
+            clearPersistenceRecords()
             let cache = model.newCache(parameters: nil)
             try require(cache.count == 48, "Wrong cache layer count")
             let match = MLXPrefixReplayPolicy.validatedRestoreMatch(radix.findExactBoundaryMatch(history.tokens), cache: cache)
@@ -353,7 +426,9 @@ final class QwenNativeDecisionReplayTests: XCTestCase {
             schedules.append(["request": history.request, "tokens": history.tokens.count,
                 "restored_prefix": 0, "prefill_step_size": 8192, "checkpoint_payloads": payloads,
                 "expected_geometry_not_an_observation": [history.tokens.count - 31, 30, 1],
-                "dispatch_observation": "unavailable_for_literal_nil"])
+                "dispatch_observation": prefillStateRounding ? "actual_persistence_hook_records" : "unavailable_for_literal_nil",
+                "persistence": try persistenceReport(enabled: prefillStateRounding,
+                    expectedWidths: [history.tokens.count - 31, 30, 1], coldPrefill: true)])
             if historyIndex + 1 == histories.count { finalCache = cache; nextLogits = logits }
             else {
                 let states = MLXPrefixReplayPolicy.snapshotLayerStates(cache)
@@ -362,6 +437,11 @@ final class QwenNativeDecisionReplayTests: XCTestCase {
                     promptLogits: MLXPrefixReplayPolicy.promptBoundaryLogits(prepared.output.logits), statesAreIndependentSnapshots: true)
             }
         }
+        // Decision0 and the entire prompt cache are already evaluated. The
+        // selected D policy first rounds a *newly written* singleton state;
+        // it cannot change row0 or row1 for fixed P. Compare that externally.
+        try selectStateRounding(decodeStateRounding)
+        clearPersistenceRecords()
         var scores: [String: MLXArray] = [:]
         var bindings: [String: String] = [:]
         var reports: [[String: Any]] = []
@@ -383,6 +463,8 @@ final class QwenNativeDecisionReplayTests: XCTestCase {
                 "native_status": row.status, "native_reason": row.reason, "prefix_tokens": prompt.count + fed.count,
                 "prefix_ids_sha256_le_u32": sharedSHA, "afm_raw_argmax": argmax,
                 "afm_raw_argmax_tied_ids": tiedIDs, "afm_raw_argmax_tie_rule": "CPU descriptive lowest ID",
+                "score_id13": values[13], "score_id310": values[310],
+                "score_id13_minus_id310": values[13] - values[310],
                 "afm_raw_payload_sha256": digest(logits.asData(access: .copy).data)])
             if index + 1 < rows.count {
                 try require(row.status == "emitted", "Only emitted native IDs may be forwarded")
@@ -398,15 +480,22 @@ final class QwenNativeDecisionReplayTests: XCTestCase {
                 fed.append(token)
             }
         }
-        try unchangedPolicies()
+        let decodePersistence = try persistenceReport(enabled: decodeStateRounding,
+            expectedWidths: Array(repeating: 1, count: fed.count), coldPrefill: false)
         let bindingJSON = try XCTUnwrap(String(data: JSONSerialization.data(withJSONObject: bindings, options: .sortedKeys), encoding: .utf8))
         let scoresURL = output.appendingPathComponent("nil-native-prefix-logits.safetensors")
-        try save(arrays: scores, metadata: ["policy": "literal_nil", "fixture_sha256": Self.fixtureSHA,
+        try save(arrays: scores, metadata: ["policy": policy, "fixture_sha256": Self.fixtureSHA,
+            "prefill_state_rounding": prefillStateRounding ? "on" : "off",
+            "decode_state_rounding": decodeStateRounding ? "on" : "off",
             "capture_point": "raw_last_model_row_before_sampler", "native_manifest_sha256": digest(manifestData),
             "prefix_ids_sha256_le_u32_by_tensor": bindingJSON,
             "dtype_note": "Unprocessed BF16 model rows losslessly stored as FP32, as in the existing phase diagnostic."], url: scoresURL)
-        try write(["status": "complete", "provenance": provenance, "policy": "literal_nil",
-            "normalization": "default", "state_rounding": false, "sigmoid_lookup": false, "join_final_span": false,
+        try write(["status": "complete", "provenance": provenance, "policy": policy,
+            "normalization": "default", "state_rounding": prefillStateRounding || decodeStateRounding,
+            "prefill_state_rounding": prefillStateRounding, "decode_state_rounding": decodeStateRounding,
+            "sigmoid_lookup": false, "join_final_span": false,
+            "gdn_layer_names": namedLayers.map { $0.0 }, "decode_persistence": decodePersistence,
+            "state_phase_scope": "Only persisted slot1 rounds BF16-to-FP32 after each enabled ordinary GDN call; no live-interior, input, restore or phase-entry cast. P includes startup54 and all cold7255 calls, including final prompt singleton; D is selected after prompt/cache eval and covers native-teacher singletons. Off is literal nil with no dispatch observer. Fixed-P row0/row1 equality and off/off parity to the earlier57-row baseline are external comparison gates. This adds diagnostic casts/recording and is not a speed benchmark.",
             "schedule": schedules, "native_manifest": try json(manifest), "native_fed_tokens": fed,
             "decisions": reports, "scores_file": scoresURL.lastPathComponent, "scores_file_sha256": try fileDigest(scoresURL),
             "scope": "Shared-prefix numerical diagnosis only. Decision0 is the final prompt row; each later row follows exactly the previous native-emitted token. A saved native terminal row is compared but never fed; unresolved lookahead is ignored. The final emitted row need not be fed when no next saved row exists. AFM raw argmax is descriptive CPU lowest-ID ranking, unmasked, never a teacher; exact winning ties are recorded but the actual loaded sampler's tie behavior is not attested. A claimed first natural-generation divergence additionally requires native AFM free-generation IDs on the same prefix, if available. Native raw vectors precede sampling suppression. No free continuation, tool execution, speed or task-quality claim. AFM uses original split30+1, native final31; no schedule-parity claim."],
