@@ -8,7 +8,7 @@ import MLXNN
 @testable import AFMKitMLX
 import XCTest
 
-/// Opt-in prompt-only cache-boundary diagnosis, not generation or a benchmark.
+/// Opt-in cache-boundary/shared-prefix raw-greedy diagnosis, not serving or a benchmark.
 /// All synthetic IDs below exist only in CPU unit tests and are never written
 /// as captured evidence. The full model stage requires a hash-bound real capture.
 final class QwenWarmR5BoundaryParityTests: XCTestCase {
@@ -17,6 +17,8 @@ final class QwenWarmR5BoundaryParityTests: XCTestCase {
     private static let lengths = [6661, 7256, 7786, 7958, 8698]
     private static let restoredPrefixes = [0, 6630, 7225, 7755, 7927]
     private static let vocabulary = 248320
+    private static let decisionLimit = 64
+    private static let eosIDs = [248046, 248044]
 
     // All paths are relative to the external evidence root. The separately
     // supplied whole-fixture SHA binds this declaration; hashing source files
@@ -218,6 +220,22 @@ final class QwenWarmR5BoundaryParityTests: XCTestCase {
                 return try XCTUnwrap(files[path])
             })
         }
+    }
+
+    private func mayFeedDecision(index: Int, token: Int) throws -> Bool {
+        try require((0..<Self.decisionLimit).contains(index) && (0..<Self.vocabulary).contains(token),
+            "Invalid bounded diagnostic decision")
+        return index + 1 < Self.decisionLimit && !Self.eosIDs.contains(token)
+    }
+
+    func testSharedDecisionBoundsNeverFeedEOSOrAnUnusedLastToken() throws {
+        XCTAssertTrue(try mayFeedDecision(index: 0, token: 9764))
+        XCTAssertTrue(try mayFeedDecision(index: 62, token: 13))
+        XCTAssertFalse(try mayFeedDecision(index: 63, token: 13))
+        for token in Self.eosIDs { XCTAssertFalse(try mayFeedDecision(index: 0, token: token)) }
+        for index in [-1, 64] { XCTAssertThrowsError(try mayFeedDecision(index: index, token: 13)) }
+        for token in [-1, Self.vocabulary] { XCTAssertThrowsError(try mayFeedDecision(index: 0, token: token)) }
+        XCTAssertNotEqual(try tokenDigest([9764, 13]), try tokenDigest([13, 9764]))
     }
 
     func testSavedWarmR5BoundaryParity() async throws {
@@ -453,12 +471,17 @@ final class QwenWarmR5BoundaryParityTests: XCTestCase {
         try require(Darwin.mkdir(output.path, 0o700) == 0, "Exclusive output creation failed")
         let executable = try XCTUnwrap(Bundle(for: Self.self).executableURL)
         let driverSHA = try fileDigest(driver)
-        let provenance: [String: Any] = ["source_base_revision": "c06bd4ccf366eb269c72517ec8a589fb25f604be",
+        let samplerPath = "vendor/MLX/mlx-swift-lm/Libraries/MLXLMCommon/Evaluate.swift"
+        let samplerSHA = "eaccd6835d77e91fab0c7feff84736a568800ae3221ba94f4483c0a278d9dd97"
+        try require(try fileDigest(sourceRoot.appendingPathComponent(samplerPath)) == samplerSHA, "Raw sampler source changed")
+        let provenance: [String: Any] = ["source_base_revision": "887b62a93216d15e9ba3ae001c2e8f0eb586aae6",
             "source_sha256": pins, "driver_source_sha256": driverSHA, "driver_source": driver.path,
             "test_executable": executable.path, "test_executable_sha256": try fileDigest(executable),
             "fixture": fixtureURL.path, "fixture_sha256": fixtureSHA, "capture_binary_sha256": fixture.source_binary_sha256,
             "capture_provider_revision": fixture.source_provider_revision, "model_directory": modelURL.path,
             "model_file_sha256": modelPins, "nil_arithmetic_hooks": true,
+            "decision_limit": Self.decisionLimit, "eos_token_ids": Self.eosIDs,
+            "raw_sampler_source": samplerPath, "raw_sampler_source_sha256": samplerSHA,
             "startup_tokens": 54, "startup_ids_sha256_le_u32": fixture.captured_startup.tokens_sha256_le_u32,
             "r5_ids_sha256_le_u32": fixture.histories[4].tokens_sha256_le_u32,
             "binding_limit": "Source hashes and current executable bytes are recorded, not a loaded-kernel or source-to-binary attestation. All weight-shard bytes and loaded runtime libraries require external provenance. Capture file hashes bind declarations, not an independently parsed extraction proof."]
@@ -519,6 +542,7 @@ final class QwenWarmR5BoundaryParityTests: XCTestCase {
         try startup("A_radix", radix: radix)
         var aCheckpoints: [Snapshot] = [], baselines: [[TensorDescriptor]] = [], immutability: [[String: Any]] = []
         var restored7927: Snapshot?, restoredAux: Auxiliary?
+        var aFinalCache: [KVCache]?
         for (index, history) in fixture.histories.enumerated() {
             var cache = model.newCache(parameters: nil)
             let match = MLXPrefixReplayPolicy.validatedRestoreMatch(radix.findExactBoundaryMatch(history.tokens), cache: cache)
@@ -568,7 +592,7 @@ final class QwenWarmR5BoundaryParityTests: XCTestCase {
                     "unchanged": try descriptors(prior) == baseline])
             }
             for value in retained { aCheckpoints.append(value); baselines.append(try descriptors(value)) }
-            if index == 4 { scores["A_radix-final"] = last }
+            if index == 4 { scores["A_radix-final"] = last; aFinalCache = cache }
             else {
                 let arrays = MLXPrefixReplayPolicy.snapshotLayerStates(cache); eval(arrays.flatMap { $0 })
                 radix.insert(tokens: history.tokens, layerStates: arrays, layerMetaStates: cache.map(\.metaState),
@@ -602,7 +626,11 @@ final class QwenWarmR5BoundaryParityTests: XCTestCase {
         recording.calls = []
         let cCache = model.newCache(parameters: nil)
         var coldBoundaries: [Int] = []
-        let cold = try prepare(tokens, cCache, prefix: 0) { boundary, _, _ in coldBoundaries.append(boundary) }
+        var coldCheckpoint: Snapshot?
+        let cold = try prepare(tokens, cCache, prefix: 0) { boundary, arrays, metadata in
+            coldBoundaries.append(boundary)
+            coldCheckpoint = Snapshot(boundary: boundary, arrays: arrays, metadata: metadata)
+        }
         scores["C_cold-final"] = try row(cold.output, cache: cCache)
         try checkCalls(plan.coldR5Widths)
         try require(coldBoundaries == [8667] && cold.inlineCheckpointCount == 0 && cold.finalSnapshot == nil, "Cold route changed")
@@ -613,12 +641,21 @@ final class QwenWarmR5BoundaryParityTests: XCTestCase {
         let checkpointComparisons = try zip(aCheckpoints, bCheckpoints).map { try compare($0, $1, stage: "published_A_vs_live_B") }
         let restoreComparison = try compare(try XCTUnwrap(restored7927), bCheckpoints[3], stage: "restored_A_vs_live_B")
         let restoreDonor = try compare(aCheckpoints[3], try XCTUnwrap(restored7927), stage: "A_donor_vs_restored")
+        let coldComparison = try compare(bCheckpoints[4], try XCTUnwrap(coldCheckpoint), stage: "live_B_vs_cold_C")
         var scoreReports: [String: Any] = [:]
         for (key, value) in scores { scoreReports[key] = scoreReport(value) }
         let startupAB = scoreComparison(try XCTUnwrap(scores["A_radix-startup"]), try XCTUnwrap(scores["B_live-startup"]))
         let startupAC = scoreComparison(try XCTUnwrap(scores["A_radix-startup"]), try XCTUnwrap(scores["C_cold-startup"]))
         try require(startupAB["raw_payload_equal"] as? Bool == true && startupAC["raw_payload_equal"] as? Bool == true,
             "Startup control changed across arms")
+        // Materialize ALL pre-existing prompt-only observations/comparisons
+        // before any continuation changes the live caches. The six old rows
+        // remain a separate external byte-exact regression gate.
+        let auxiliaryReports = ["A_radix_restored": auxiliaryReport(try XCTUnwrap(restoredAux)),
+            "B_live": auxiliaryReport(try XCTUnwrap(bAux))]
+        let finalComparisons = ["A_vs_B": scoreComparison(try XCTUnwrap(scores["A_radix-final"]), try XCTUnwrap(scores["B_live-final"])),
+            "A_vs_C": scoreComparison(try XCTUnwrap(scores["A_radix-final"]), try XCTUnwrap(scores["C_cold-final"])),
+            "B_vs_C": scoreComparison(try XCTUnwrap(scores["B_live-final"]), try XCTUnwrap(scores["C_cold-final"]))]
         let scoreURL = output.appendingPathComponent("raw-prompt-logits.safetensors")
         try save(arrays: scores, metadata: ["fixture_sha256": fixtureSHA, "driver_source_sha256": driverSHA,
             "capture_point": "raw_last_prompt_model_row_before_sampler", "policy": "literal_nil",
@@ -626,18 +663,94 @@ final class QwenWarmR5BoundaryParityTests: XCTestCase {
             "startup_ids_sha256_le_u32": fixture.captured_startup.tokens_sha256_le_u32,
             "dtype_note": "BF16 model rows losslessly stored as FP32"], url: scoreURL)
         try qualified()
-        try write(["status": "complete", "schema_version": 1, "provenance": provenance,
+
+        // One shared trajectory, selected by A's actual MLX raw greedy sampler.
+        // B/C never feed their own choices. This is not captured serving IDs,
+        // nor a serving processor/grammar/suppression/stop-policy reproduction.
+        let arms = ["A_radix", "B_live", "C_cold"]
+        let liveCaches = [try XCTUnwrap(aFinalCache), bCache, cCache]
+        var nextRows = try arms.map { try XCTUnwrap(scores[$0 + "-final"]) }
+        let sampler = ArgMaxSampler()
+        var fed: [Int] = [], decisions: [[String: Any]] = [], decisionScores: [String: MLXArray] = [:]
+        var decisionCalls: [String: [Call]] = [:]
+        var firstABBytes: Int?, firstABChoice: Int?, firstABStrict: Int?
+        var firstBCBytes: Int?, firstBCChoice: Int?, firstBCStrict: Int?
+        var endReason = "row_limit"
+        recording.calls = []
+        for index in 0..<Self.decisionLimit {
+            try Task.checkCancellation()
+            try require(fed.count == index, "Shared teacher prefix drifted")
+            let prefixSHA = try tokenDigest(tokens + fed)
+            var armReports: [String: Any] = [:], selections: [Int] = [], winningSets: [Set<Int>] = []
+            for (armIndex, arm) in arms.enumerated() {
+                let scores = nextRows[armIndex]
+                // The saved FP32 rows are lossless BF16 casts. Restore that
+                // dtype for the actual ordinary ArgMaxSampler operation.
+                let selected = sampler.sample(logits: scores.asType(.bfloat16)).item(Int.self)
+                let report = scoreReport(scores)
+                let ties = try XCTUnwrap(report["raw_argmax_tied_ids"] as? [Int])
+                try require(ties.contains(selected), "MLX argmax did not select a raw winning token")
+                let key = String(format: "%@-decision-%03d", arm, index)
+                decisionScores[key] = scores
+                selections.append(selected); winningSets.append(Set(ties))
+                armReports[arm] = ["tensor": key, "mlx_raw_argmax": selected, "scores": report]
+            }
+            let ab = scoreComparison(nextRows[0], nextRows[1]), bc = scoreComparison(nextRows[1], nextRows[2])
+            let abBytes = ab["raw_payload_equal"] as? Bool == true, bcBytes = bc["raw_payload_equal"] as? Bool == true
+            let abStrict = winningSets[0].isDisjoint(with: winningSets[1])
+            let bcStrict = winningSets[1].isDisjoint(with: winningSets[2])
+            if !abBytes && firstABBytes == nil { firstABBytes = index }
+            if selections[0] != selections[1] && firstABChoice == nil { firstABChoice = index }
+            if abStrict && firstABStrict == nil { firstABStrict = index }
+            if !bcBytes && firstBCBytes == nil { firstBCBytes = index }
+            if selections[1] != selections[2] && firstBCChoice == nil { firstBCChoice = index }
+            if bcStrict && firstBCStrict == nil { firstBCStrict = index }
+            let teacher = selections[0]
+            let feed = try mayFeedDecision(index: index, token: teacher)
+            decisions.append(["index": index, "prefix_tokens": tokens.count + fed.count,
+                "prefix_ids_sha256_le_u32": prefixSHA, "teacher_token_id": teacher, "teacher_fed": feed,
+                "arms": armReports, "A_vs_B": ab, "B_vs_C": bc,
+                "A_B_selected_ids_differ": selections[0] != selections[1], "B_C_selected_ids_differ": selections[1] != selections[2],
+                "A_B_winning_sets_disjoint": abStrict, "B_C_winning_sets_disjoint": bcStrict])
+            if !feed { endReason = Self.eosIDs.contains(teacher) ? "teacher_eos" : "row_limit"; break }
+            for (armIndex, arm) in arms.enumerated() {
+                let result = recording(LMInput.Text(tokens: MLXArray([teacher]).reshaped(1, 1)), cache: liveCaches[armIndex],
+                    state: nil, hostTokenIDs: model.consumesHostTokenIDs ? [teacher] : nil)
+                nextRows[armIndex] = try row(result, cache: liveCaches[armIndex])
+                decisionCalls[arm, default: []].append(try XCTUnwrap(recording.calls.last))
+            }
+            fed.append(teacher)
+        }
+        try checkCalls(Array(repeating: 1, count: fed.count * arms.count))
+        for arm in arms where decisionCalls[arm] == nil { decisionCalls[arm] = [] }
+        let decisionURL = output.appendingPathComponent("shared-decision-logits.safetensors")
+        try save(arrays: decisionScores, metadata: ["fixture_sha256": fixtureSHA, "driver_source_sha256": driverSHA,
+            "capture_point": "raw_model_row_on_shared_A_raw_greedy_prefix", "policy": "literal_nil",
+            "r5_ids_sha256_le_u32": fixture.histories[4].tokens_sha256_le_u32,
+            "teacher": "A_radix_MLX_ArgMaxSampler_BF16_no_processors", "decision_limit": String(Self.decisionLimit),
+            "dtype_note": "BF16 model rows losslessly stored as FP32"], url: decisionURL)
+        let continuation: [String: Any] = ["limit": Self.decisionLimit, "rows": decisions, "fed_token_ids": fed,
+            "end_reason": endReason, "calls_by_arm": try json(decisionCalls),
+            "scores_file": decisionURL.lastPathComponent, "scores_file_sha256": try fileDigest(decisionURL),
+            "A_B_all_rows_payload_equal": firstABBytes == nil,
+            "first_A_B_payload_difference": firstABBytes.map { $0 as Any } ?? NSNull(),
+            "first_A_B_selected_id_difference": firstABChoice.map { $0 as Any } ?? NSNull(),
+            "first_A_B_strict_winner_difference": firstABStrict.map { $0 as Any } ?? NSNull(),
+            "first_B_C_payload_difference": firstBCBytes.map { $0 as Any } ?? NSNull(),
+            "first_B_C_selected_id_difference": firstBCChoice.map { $0 as Any } ?? NSNull(),
+            "first_B_C_strict_winner_difference": firstBCStrict.map { $0 as Any } ?? NSNull(),
+            "scope": "At most64 rows including prompt decision0. A's actual BF16 MLX ArgMaxSampler selects one shared ID per step; all three live caches receive that same ID with ordinary singleton host-PLE forwarding. No clone/restore or own-B/C choice feed. EOS248046/248044 is observed but never fed; unused final row also is not fed. Raw sampler diagnosis only: no serving processors, grammar, suppression, reasoning cap or loop guard. Genuine A/B or B/C divergence is saved, not an automatic test failure. These are newly generated diagnostic IDs, not historical/native serving IDs."]
+        try qualified()
+        try write(["status": "complete", "schema_version": 2, "provenance": provenance,
             "policy": "literal_nil", "schedule": schedules, "scores": scoreReports,
             "scores_file": scoreURL.lastPathComponent, "scores_file_sha256": try fileDigest(scoreURL),
             "checkpoint_comparisons": checkpointComparisons, "restored_7927_comparison": restoreComparison,
             "restore_donor_7927_comparison": restoreDonor, "snapshot_immutability": immutability,
-            "auxiliary_7927": ["A_radix_restored": auxiliaryReport(try XCTUnwrap(restoredAux)),
-                "B_live": auxiliaryReport(try XCTUnwrap(bAux))],
+            "cold_8667_comparison": coldComparison, "auxiliary_7927": auxiliaryReports,
+            "shared_decisions": continuation,
             "startup_comparisons": ["A_vs_B": startupAB, "A_vs_C": startupAC],
-            "final_logit_comparisons": ["A_vs_B": scoreComparison(try XCTUnwrap(scores["A_radix-final"]), try XCTUnwrap(scores["B_live-final"])),
-                "A_vs_C": scoreComparison(try XCTUnwrap(scores["A_radix-final"]), try XCTUnwrap(scores["C_cold-final"])),
-                "B_vs_C": scoreComparison(try XCTUnwrap(scores["B_live-final"]), try XCTUnwrap(scores["C_cold-final"]))],
-            "scope": "Prompt-only numerical diagnosis, not serving reproduction, free generation, speed, or task quality. Startup54 is processed before each arm, but its original four generated IDs and all prior generated IDs are unavailable and not replayed. A executes abandoned prompt tails then generic radix restores; B never restores and consumes only R5 prefixes. A/B share model-forward prefix widths and materialized shared-boundary entry states, not identical total graph/copy work: A also executes abandoned tails. B snapshots enqueue copies and evaluates boundary state before continuing. Snapshot baselines first hash after each donor prompt tail; later immutability is checked, but pretail/decode-stress immutability is not claimed. Published primary arrays are actually byte-compared in this producer; only their descriptors/hashes, not tensor payloads, are exported. Derived score bank, implicit flag, host history and offsets are reported separately; expected restore differences are not automatic corruption. CPU argmax/ties are descriptive, not observed serving decisions. Nil arithmetic hooks remain unobserved and unchanged."], to: output.appendingPathComponent("summary.json"))
+            "final_logit_comparisons": finalComparisons,
+            "scope": "Prompt-boundary and bounded shared-prefix raw-greedy numerical diagnosis, not serving reproduction, speed, or task quality. Startup54 is processed before each arm, but its original four generated IDs and all prior generated IDs are unavailable and not replayed. A executes abandoned prompt tails then generic radix restores; B never restores and consumes only R5 prefixes. A/B share model-forward prefix widths and materialized shared-boundary entry states, not identical total graph/copy work: A also executes abandoned tails. B snapshots enqueue copies and evaluates boundary state before continuing. Snapshot baselines first hash after each donor prompt tail; later prompt-request immutability is checked, but pretail/historical-decode-stress immutability is not claimed. All prompt observations and comparisons are materialized before new shared continuation. Published primary arrays are actually byte-compared in this producer; only their descriptors/hashes, not tensor payloads, are exported. Derived score bank, implicit flag, host history and offsets are reported separately; expected restore differences are not automatic corruption. CPU rankings/ties are descriptive; separately recorded MLX raw greedy choices are new diagnostic selections, not observed serving decisions. Nil arithmetic hooks remain unobserved and unchanged."], to: output.appendingPathComponent("summary.json"))
         XCTAssertTrue(immutability.allSatisfy { $0["unchanged"] as? Bool == true }, "Retained primary snapshot changed; evidence saved")
     }
 
