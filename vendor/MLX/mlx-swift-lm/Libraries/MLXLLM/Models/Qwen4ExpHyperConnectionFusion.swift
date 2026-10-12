@@ -3,6 +3,28 @@
 // Decode-width hyper-connection kernels adapted from the Qwen Next equations
 // and launch geometry in https://github.com/ddalcu/mlx-serve (MIT licensed).
 // The kernels retain the stock graph as a fail-closed fallback.
+//
+// The BF16 grouped-prefill reduction and staged rounding below are adapted
+// from ddalcu/mlx-serve's hc_prefill_norm.metal.
+// Copyright (c) 2026 David Dalcu
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in all
+// copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
 
 import Foundation
 import MLX
@@ -124,8 +146,13 @@ enum Qwen4ExpHyperConnectionFusion {
     /// normalization-only kernel: the downstream quantized projections remain
     /// on MLX's tiled matrix-multiply path. The decode compound kernels below
     /// are optimized for a handful of rows and are not suitable for prefill.
-    /// Launch geometry follows ddalcu/mlx-serve's grouped HC normalization
-    /// implementation (MIT licensed).
+    /// BF16's default four-values-per-thread path follows ddalcu/mlx-serve
+    /// v26.10.1, commit 02bee553f48cd3bc7d82aba0f8073820bd924738,
+    /// src/kernels/hc_prefill_norm.metal (MIT): contiguous reads, two SIMD
+    /// reductions, and BF16 normalization before the folded gamma multiply.
+    /// AFM stores gamma-1, so reconstruct gamma in BF16 inside this same
+    /// dispatch. FP16 and the existing forced-256-thread diagnostic fallback
+    /// retain their prior arithmetic. No projection or decode path changes.
     private static let prefillNormalizeKernel = MLXFast.metalKernel(
         name: "qwen4_exp_hc_prefill_normalize",
         inputNames: ["x_in", "norm_weight", "epsilon"],
@@ -136,7 +163,8 @@ enum Qwen4ExpHyperConnectionFusion {
             const uint simd_group = simdgroup_index_in_threadgroup;
             const uint stream = threadgroup_position_in_grid.x;
             const uint row = threadgroup_position_in_grid.y;
-            threadgroup float sums[THREADS / 32];
+            threadgroup float sums[REFERENCE_BF16 ? 32 : THREADS / 32];
+            threadgroup float shared_inverse_rms;
             constexpr int elements_per_thread = HIDDEN / THREADS;
             const int stream_base = int(stream) * HIDDEN;
             const device T* input = x_in + size_t(row) * size_t(HC * HIDDEN);
@@ -145,23 +173,44 @@ enum Qwen4ExpHyperConnectionFusion {
             float values[elements_per_thread];
             float sum = 0.0f;
             for (int element = 0; element < elements_per_thread; ++element) {
-                const int index = stream_base + int(tid) + THREADS * element;
+                const int index = stream_base + (REFERENCE_BF16
+                    ? int(tid) * 4 + element : int(tid) + THREADS * element);
                 const float value = float(input[index]);
                 values[element] = value;
                 sum += value * value;
             }
             sum = simd_sum(sum);
-            if (lane == 0) sums[simd_group] = sum;
-            threadgroup_barrier(mem_flags::mem_threadgroup);
-            float total = 0.0f;
-            for (int group = 0; group < THREADS / 32; ++group) total += sums[group];
-            const float inverse_rms = precise::rsqrt(
-                total / float(HIDDEN) + epsilon);
+            float inverse_rms;
+            if (REFERENCE_BF16) {
+                if (simd_group == 0) sums[lane] = 0.0f;
+                threadgroup_barrier(mem_flags::mem_threadgroup);
+                if (lane == 0) sums[simd_group] = sum;
+                threadgroup_barrier(mem_flags::mem_threadgroup);
+                if (simd_group == 0) {
+                    sum = simd_sum(sums[lane]);
+                    if (lane == 0) shared_inverse_rms = precise::rsqrt(
+                        sum / float(HIDDEN) + epsilon);
+                }
+                threadgroup_barrier(mem_flags::mem_threadgroup);
+                inverse_rms = shared_inverse_rms;
+            } else {
+                if (lane == 0) sums[simd_group] = sum;
+                threadgroup_barrier(mem_flags::mem_threadgroup);
+                float total = 0.0f;
+                for (int group = 0; group < THREADS / 32; ++group) total += sums[group];
+                inverse_rms = precise::rsqrt(total / float(HIDDEN) + epsilon);
+            }
 
             for (int element = 0; element < elements_per_thread; ++element) {
-                const int index = stream_base + int(tid) + THREADS * element;
-                output[index] = T(values[element] * inverse_rms
-                    * (float(norm_weight[index]) + 1.0f));
+                const int index = stream_base + (REFERENCE_BF16
+                    ? int(tid) * 4 + element : int(tid) + THREADS * element);
+                if (REFERENCE_BF16) {
+                    const T gamma = T(float(norm_weight[index]) + 1.0f);
+                    output[index] = T(float(T(values[element] * inverse_rms)) * float(gamma));
+                } else {
+                    output[index] = T(values[element] * inverse_rms
+                        * (float(norm_weight[index]) + 1.0f));
+                }
             }
         """)
 
@@ -171,8 +220,9 @@ enum Qwen4ExpHyperConnectionFusion {
     /// of the HC stream without changing the projection or MoE graphs.
     ///
     /// The scheduling idea and two-rounding pending-write contract follow
-    /// ddalcu/mlx-serve's `hc_prefill_norm.metal` (MIT licensed). The norm
-    /// itself deliberately preserves AFM's qualified single final rounding.
+    /// the same pinned ddalcu/mlx-serve `hc_prefill_norm.metal` (MIT) above.
+    /// BF16's default geometry also preserves its staged normalization/gamma
+    /// rounding; the pending stream remains two-rounded before normalization.
     private static let prefillNormalizePendingKernel = MLXFast.metalKernel(
         name: "qwen4_exp_hc_prefill_normalize_pending",
         inputNames: [
@@ -185,7 +235,8 @@ enum Qwen4ExpHyperConnectionFusion {
             const uint simd_group = simdgroup_index_in_threadgroup;
             const uint stream = threadgroup_position_in_grid.x;
             const uint row = threadgroup_position_in_grid.y;
-            threadgroup float sums[THREADS / 32];
+            threadgroup float sums[REFERENCE_BF16 ? 32 : THREADS / 32];
+            threadgroup float shared_inverse_rms;
             constexpr int elements_per_thread = HIDDEN / THREADS;
             const int stream_base = int(stream) * HIDDEN;
             const device T* input = x_in + size_t(row) * size_t(HC * HIDDEN);
@@ -198,7 +249,8 @@ enum Qwen4ExpHyperConnectionFusion {
             float values[elements_per_thread];
             float sum = 0.0f;
             for (int element = 0; element < elements_per_thread; ++element) {
-                const int index = stream_base + int(tid) + THREADS * element;
+                const int index = stream_base + (REFERENCE_BF16
+                    ? int(tid) * 4 + element : int(tid) + THREADS * element);
                 const T delta = T(float(pending[index - stream_base]) * gate);
                 const T value = T(float(input[index]) + float(delta));
                 written[index] = value;
@@ -206,17 +258,37 @@ enum Qwen4ExpHyperConnectionFusion {
                 sum += float(value) * float(value);
             }
             sum = simd_sum(sum);
-            if (lane == 0) sums[simd_group] = sum;
-            threadgroup_barrier(mem_flags::mem_threadgroup);
-            float total = 0.0f;
-            for (int group = 0; group < THREADS / 32; ++group) total += sums[group];
-            const float inverse_rms = precise::rsqrt(
-                total / float(HIDDEN) + epsilon);
+            float inverse_rms;
+            if (REFERENCE_BF16) {
+                if (simd_group == 0) sums[lane] = 0.0f;
+                threadgroup_barrier(mem_flags::mem_threadgroup);
+                if (lane == 0) sums[simd_group] = sum;
+                threadgroup_barrier(mem_flags::mem_threadgroup);
+                if (simd_group == 0) {
+                    sum = simd_sum(sums[lane]);
+                    if (lane == 0) shared_inverse_rms = precise::rsqrt(
+                        sum / float(HIDDEN) + epsilon);
+                }
+                threadgroup_barrier(mem_flags::mem_threadgroup);
+                inverse_rms = shared_inverse_rms;
+            } else {
+                if (lane == 0) sums[simd_group] = sum;
+                threadgroup_barrier(mem_flags::mem_threadgroup);
+                float total = 0.0f;
+                for (int group = 0; group < THREADS / 32; ++group) total += sums[group];
+                inverse_rms = precise::rsqrt(total / float(HIDDEN) + epsilon);
+            }
 
             for (int element = 0; element < elements_per_thread; ++element) {
-                const int index = stream_base + int(tid) + THREADS * element;
-                output[index] = T(values[element] * inverse_rms
-                    * (float(norm_weight[index]) + 1.0f));
+                const int index = stream_base + (REFERENCE_BF16
+                    ? int(tid) * 4 + element : int(tid) + THREADS * element);
+                if (REFERENCE_BF16) {
+                    const T gamma = T(float(norm_weight[index]) + 1.0f);
+                    output[index] = T(float(T(values[element] * inverse_rms)) * float(gamma));
+                } else {
+                    output[index] = T(values[element] * inverse_rms
+                        * (float(norm_weight[index]) + 1.0f));
+                }
             }
         """)
 
@@ -262,7 +334,8 @@ enum Qwen4ExpHyperConnectionFusion {
         input: MLXArray,
         normWeight: MLXArray,
         groupSize: Int,
-        epsilon: Float
+        epsilon: Float,
+        referenceHCRounding: Bool = false
     ) -> MLXArray? {
         guard prefillNormalizationEnabled,
               Device.defaultDevice().deviceType == .gpu,
@@ -292,6 +365,8 @@ enum Qwen4ExpHyperConnectionFusion {
             template: [
                 ("T", input.dtype), ("HC", hcCount), ("HIDDEN", groupSize),
                 ("THREADS", threadCount),
+                ("REFERENCE_BF16", referenceHCRounding
+                    && input.dtype == .bfloat16 && prefillReferenceNormGeometryEnabled),
             ],
             grid: (threadCount * hcCount, rows, 1),
             threadGroup: (threadCount, 1, 1),
@@ -342,6 +417,7 @@ enum Qwen4ExpHyperConnectionFusion {
             template: [
                 ("T", input.dtype), ("HC", hcCount), ("HIDDEN", groupSize),
                 ("THREADS", threadCount),
+                ("REFERENCE_BF16", input.dtype == .bfloat16 && prefillReferenceNormGeometryEnabled),
             ],
             grid: (threadCount * hcCount, rows, 1),
             threadGroup: (threadCount, 1, 1),

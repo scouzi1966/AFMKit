@@ -218,15 +218,20 @@ final class Qwen4ExpZeroCenteredRMSNorm: Module {
     @ParameterInfo(key: "weight") var weight: MLXArray
     let groupSize: Int
     let eps: Float
+    // Only an HC owner opts into its wide-prefill rounding contract. Generic
+    // grouped norms (including PLE) retain their existing arithmetic.
+    let referenceHCPrefillNormalization: Bool
 
     /// Request-isolated checkpoint diagnosis only; no public API or environment
     /// option enables this. Tests restore it before releasing their model.
     /// Keep the production precision contract until whole-model qualification.
     var referenceGroupedPrefillRoundingForTesting = false
 
-    init(dimensions: Int, groupSize: Int? = nil, eps: Float) {
+    init(dimensions: Int, groupSize: Int? = nil, eps: Float,
+         referenceHCPrefillNormalization: Bool = false) {
         self.groupSize = groupSize ?? dimensions
         self.eps = eps
+        self.referenceHCPrefillNormalization = referenceHCPrefillNormalization
         _weight.wrappedValue = MLXArray.zeros([dimensions])
     }
 
@@ -257,7 +262,8 @@ final class Qwen4ExpZeroCenteredRMSNorm: Module {
             input: x,
             normWeight: weight,
             groupSize: groupSize,
-            epsilon: eps)
+            epsilon: eps,
+            referenceHCRounding: referenceHCPrefillNormalization)
         {
             return fused
         }
@@ -479,7 +485,8 @@ final class Qwen4ExpGatedResidual: Module {
         hiddenSize = config.hiddenSize
         let width = hcCount * hiddenSize
         _hcNorm.wrappedValue = Qwen4ExpZeroCenteredRMSNorm(
-            dimensions: width, groupSize: hiddenSize, eps: config.rmsNormEps)
+            dimensions: width, groupSize: hiddenSize, eps: config.rmsNormEps,
+            referenceHCPrefillNormalization: true)
         _inputMixWeightDown.wrappedValue = Linear(width, config.hcLowRank, bias: false)
         _inputMixWeightUp.wrappedValue = Linear(config.hcLowRank, width, bias: false)
         if useCombine {
