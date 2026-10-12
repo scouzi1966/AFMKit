@@ -217,7 +217,8 @@ enum Qwen4ExpGatedDeltaPrework {
         valueHeadDimension: Int,
         convolutionKernel: Int,
         allowBatch: Bool = batchEnabled,
-        referencePrefillQKNormalization: Bool = false
+        referencePrefillQKNormalization: Bool = false,
+        referenceQKNormalizationAllWidthsForTesting: Bool = false
     ) -> Qwen4ExpGatedDeltaPreworkOutput? {
         let verifyWidth = projected.ndim == 3 ? projected.dim(1) : 0
         let batchSize = projected.ndim == 3 ? projected.dim(0) : 0
@@ -248,7 +249,9 @@ enum Qwen4ExpGatedDeltaPrework {
               // The flag is internal/default-off; decode and verifier calls
               // do not silently acquire different arithmetic.
               !referencePrefillQKNormalization || (
-                batchSize == 1 && verifyWidth >= minimumReferencePrefillSequenceLength
+                batchSize == 1
+                    && verifyWidth >= (referenceQKNormalizationAllWidthsForTesting
+                        ? minimumWidth : minimumReferencePrefillSequenceLength)
                     && keyHeadDimension == referenceNormalizationHeadDimension),
               prior.dtype == projected.dtype,
               convolutionWeight.dtype == projected.dtype,

@@ -253,6 +253,136 @@ final class QwenOnePassPromptCaptureTests: XCTestCase {
         XCTAssertNil(session.takePromptState())
     }
 
+    func testNormalizationPhaseDiagnosticPreservesARCaptureAndIndependentPrefix() async throws {
+        let (model, _) = try await fixture()
+        let layers = model.namedModules().compactMap { $0.1 as? Qwen4ExpDecoderLayer }.filter(\.isLinear)
+        defer { layers.forEach { $0.gatedDeltaNormalizationForTesting = nil } }
+        let prefix = (0..<97).map { $0 % 29 + 1 }
+        let donor = prefix + Array(repeating: 11, count: 31)
+        var schedules: [[[Int]]] = []
+        func forward(_ tokens: [Int], _ cache: [KVCache]) -> LMOutput {
+            model(LMInput.Text(tokens: MLXArray(tokens).reshaped(1, -1)), cache: cache,
+                state: nil, hostTokenIDs: model.consumesHostTokenIDs ? tokens : nil)
+        }
+        func completedArrays(_ cache: KVCache, layerIndex: Int) -> [MLXArray?] {
+            guard let recurrent = cache as? Qwen4ExpLayerCache else { return arrays(cache) }
+            // Generic radix restore compacts a non-PLE recurrent cache to its
+            // two active slots. PLE layer IDs are one-based; after a completed
+            // forward their two additional slots must both be present.
+            let count = model.configuration.pleLayerIDs.contains(layerIndex + 1) ? 4 : 2
+            XCTAssertEqual(recurrent.state.count, count, "Layer \(layerIndex) active slots")
+            guard recurrent.state.count == count else { return [] }
+            return (0..<count).map { recurrent[$0] }
+                + Array<MLXArray?>(repeating: nil, count: 4 - count)
+        }
+        for policy in [Qwen4ExpGDNNormalizationForTesting.ordinary, .reference] {
+            for layer in layers {
+                layer.gatedDeltaNormalizationForTesting = policy
+                layer.clearGatedDeltaNormalizationDispatchesForTesting()
+            }
+            let capturedCache = model.newCache(parameters: nil)
+            let captured = try XCTUnwrap(model.prefillCapturingBoundary(
+                LMInput.Text(tokens: MLXArray(donor).reshaped(1, -1)), cache: capturedCache,
+                state: nil, restoredPrefix: 0, boundary: prefix.count,
+                hostTokenIDs: model.consumesHostTokenIDs ? donor : nil),
+                "Neither diagnostic arithmetic may disable one-pass capture")
+            eval(captured.output.logits, capturedCache)
+            let calls = layers.map(\.gatedDeltaNormalizationDispatchesForTesting)
+            XCTAssertTrue(calls.allSatisfy {
+                $0.count == 1 && $0[0].width == 128 && $0[0].capturesBoundary
+                    && !$0[0].compiled && !$0[0].verification
+                    && $0[0].referenceNormalization == (policy == .reference)
+            })
+            schedules.append(calls.map { $0[0].schedule })
+            let controlCache = model.newCache(parameters: nil)
+            let control = forward(donor, controlCache)
+            eval(control.logits, controlCache)
+            equal(captured.output.logits, control.logits, "capture does not change full output")
+            for (index, pair) in zip(capturedCache, controlCache).enumerated() {
+                equal(completedArrays(pair.0, layerIndex: index),
+                    completedArrays(pair.1, layerIndex: index), "capture does not change final state")
+            }
+            let independent = model.newCache(parameters: nil)
+            let independentOutput = forward(prefix, independent)
+            eval(independentOutput.logits, independent)
+            let expected = MLXPrefixReplayPolicy.snapshotLayerStates(independent)
+            XCTAssertEqual(captured.metadata, independent.map(\.metaState))
+            XCTAssertEqual(captured.states.count, expected.count)
+            var restored = model.newCache(parameters: nil)
+            for index in restored.indices {
+                XCTAssertEqual(captured.states[index].count, expected[index].count)
+                for (a, b) in zip(captured.states[index], expected[index]) {
+                    equal(a, b, "97-token independent prefix, layer \(index)")
+                }
+                MLXPrefixReplayPolicy.installLayerState(captured.states[index], into: &restored[index],
+                    sourceBoundary: prefix.count)
+                restored[index].metaState = captured.metadata[index]
+            }
+            // Same 31-token continuation from an independent prefix and its
+            // captured counterpart. No verifier/MTP arithmetic participates.
+            let continuation = Array(donor.dropFirst(prefix.count))
+            let a = forward(continuation, independent), b = forward(continuation, restored)
+            eval(a.logits, b.logits, independent, restored)
+            equal(a.logits, b.logits, "independent/captured continuation")
+            let restoreCompleted = try XCTUnwrap(Qwen4ExpMTPPromptState.captureCacheForTesting(
+                restored, pleLayerIDs: model.configuration.pleLayerIDs))
+            let cloned = model.newCache(parameters: nil)
+            restoreCompleted(cloned)
+            for (index, pair) in zip(independent, restored).enumerated() {
+                equal(completedArrays(pair.0, layerIndex: index),
+                    completedArrays(pair.1, layerIndex: index), "independent/captured continuation state")
+                equal(completedArrays(pair.1, layerIndex: index),
+                    completedArrays(cloned[index], layerIndex: index), "compacted-cache complete clone")
+                XCTAssertEqual(pair.1.offset, cloned[index].offset)
+                XCTAssertEqual(pair.1.metaState, cloned[index].metaState)
+                if let source = pair.1 as? Qwen4ExpLayerCache,
+                   let copy = cloned[index] as? Qwen4ExpLayerCache {
+                    XCTAssertEqual(source.hostNGramHistory, copy.hostNGramHistory)
+                }
+            }
+        }
+        XCTAssertEqual(schedules[0], schedules[1], "Capture scheduling must not depend on arithmetic")
+    }
+
+    func testNormalizationPhaseDiagnosticSelectsStableActualSingletonClosures() async throws {
+        try XCTSkipUnless(HardwareInfo.isModelOwnedCompiledDecodeSupported,
+            "This test must exercise the model-owned compiled closures")
+        try XCTSkipIf(ProcessInfo.processInfo.environment["AFM_QWEN_COMPILE_GDN_DECODE"] == "0",
+            "Compiled decode is explicitly disabled")
+        let (model, _) = try await fixture()
+        let layer = try XCTUnwrap(model.namedModules().compactMap { $0.1 as? Qwen4ExpDecoderLayer }
+            .first { $0.isLinear })
+        defer { layer.gatedDeltaNormalizationForTesting = nil }
+        let input = MLXArray((0..<128).map { Float($0 % 19 - 9) / 128 })
+            .reshaped(1, 1, 128).asType(.bfloat16)
+        var outputs: [MLXArray] = [], states: [MLXArray] = []
+        let policies: [Qwen4ExpGDNNormalizationForTesting?] = [nil, .reference, .ordinary, .reference]
+        for policy in policies {
+            layer.gatedDeltaNormalizationForTesting = policy
+            layer.clearGatedDeltaNormalizationDispatchesForTesting()
+            let cache = Qwen4ExpLayerCache()
+            cache[1] = MLXArray.ones([1, 2, 128, 128], dtype: .float32) * 0.01
+            let output = layer.gatedDeltaDecodeForTesting(input, cache: cache)
+            eval(output, cache)
+            if let policy {
+                let record = try XCTUnwrap(layer.gatedDeltaNormalizationDispatchesForTesting.first)
+                XCTAssertEqual(layer.gatedDeltaNormalizationDispatchesForTesting.count, 1)
+                XCTAssertTrue(record.compiled)
+                XCTAssertFalse(record.capturesBoundary)
+                XCTAssertEqual(record.width, 1)
+                XCTAssertEqual(record.referenceNormalization, policy == .reference)
+            }
+            outputs.append(output)
+            states.append(try XCTUnwrap(cache[1]))
+        }
+        equal(outputs[0], outputs[2], "explicit ordinary equals unchanged default trace")
+        equal(states[0], states[2], "explicit ordinary equals unchanged default recurrent state")
+        equal(outputs[1], outputs[3], "reference trace is stable across an ordinary call")
+        equal(states[1], states[3], "reference state is stable across an ordinary call")
+        XCTAssertGreaterThan(abs(states[0] - states[1]).max().item(Float.self), 0,
+            "Actual model-owned compiled functions must select distinct arithmetic")
+    }
+
     func testAttentionCropPreservesOptionalSlotsLaggingBanksAndProvenance() throws {
         try MLXMetalLibrary.ensureAvailable(verbose: false)
         for capacity in [false, true] {

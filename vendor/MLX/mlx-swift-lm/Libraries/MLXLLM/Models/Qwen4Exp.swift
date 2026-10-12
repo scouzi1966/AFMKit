@@ -3409,6 +3409,28 @@ private final class Qwen4ExpAttention: Module {
 
 // MARK: - Gated DeltaNet
 
+/// Internal checkpoint diagnostic only. No request or environment option sets
+/// this policy; nil retains all production dispatch and arithmetic defaults.
+enum Qwen4ExpGDNNormalizationForTesting: String, Codable {
+    case ordinary
+    case reference
+}
+
+struct Qwen4ExpGDNDispatchForTesting: Equatable, Codable {
+    let batchSize: Int
+    let width: Int
+    let compiled: Bool
+    let capturesBoundary: Bool
+    let verification: Bool
+    let referenceNormalization: Bool
+
+    /// Arithmetic is the intervention; every other dispatch choice must match.
+    var schedule: [Int] {
+        [batchSize, width, compiled ? 1 : 0, capturesBoundary ? 1 : 0,
+         verification ? 1 : 0]
+    }
+}
+
 @inline(__always)
 func qwen4ExpShouldUseCompiledGDNDecode(
     compileEnabled: Bool,
@@ -3468,6 +3490,8 @@ private final class Qwen4ExpGatedDeltaNet: Module {
     let captureRecurrentStates: Bool
     // Checkpoint diagnostic only; never set by runtime configuration.
     var referencePrefillQKNormalizationForTesting = false
+    var normalizationForTesting: Qwen4ExpGDNNormalizationForTesting?
+    var normalizationDispatchesForTesting: [Qwen4ExpGDNDispatchForTesting] = []
     private static let compileDecode =
         ProcessInfo.processInfo.environment["AFM_QWEN_COMPILE_GDN_DECODE"] != "0"
             && HardwareInfo.isModelOwnedCompiledDecodeSupported
@@ -3507,11 +3531,17 @@ private final class Qwen4ExpGatedDeltaNet: Module {
     /// states explicit prevents a compiled closure from retaining request
     /// cache objects and leaves verification/rollback on the eager path.
     private lazy var compiledDecode = makeCompiledDecode()
+    // The Boolean is immutable inside each trace. Changing a test phase selects
+    // another closure, never changes a value captured by an already-built trace.
+    private lazy var compiledReferenceDecodeForTesting = makeCompiledDecode(
+        referenceNormalizationForTesting: true)
     // Batch traces never reuse the singleton compiled-function identity. The
     // bounded model-owned table retains functions, not request cache objects.
     private var compiledBatchDecodes: [Int: @Sendable ([MLXArray]) -> [MLXArray]] = [:]
 
-    private func makeCompiledDecode() -> @Sendable ([MLXArray]) -> [MLXArray] {
+    private func makeCompiledDecode(
+        referenceNormalizationForTesting: Bool = false
+    ) -> @Sendable ([MLXArray]) -> [MLXArray] {
         let body: ([MLXArray]) -> [MLXArray] = { [unowned self] arguments in
             CompiledDecodeTrace.withActive {
                 let x = arguments[0]
@@ -3540,7 +3570,9 @@ private final class Qwen4ExpGatedDeltaNet: Module {
                     valueHeads: self.valueHeads,
                     keyHeadDimension: self.keyHeadDim,
                     valueHeadDimension: self.valueHeadDim,
-                    convolutionKernel: self.convKernel)
+                    convolutionKernel: self.convKernel,
+                    referencePrefillQKNormalization: referenceNormalizationForTesting,
+                    referenceQKNormalizationAllWidthsForTesting: referenceNormalizationForTesting)
                 precondition(
                     prework != nil,
                     "compiled Qwen GDN decode requires the fused one-token prework")
@@ -3693,21 +3725,32 @@ private final class Qwen4ExpGatedDeltaNet: Module {
         // Keep the proven B=1 compiled-function identity unchanged. Opt-in
         // batches have their own shape-specific traces and truly batch-indexed
         // prework. Unknown shapes/verification still use the eager path.
-        if qwen4ExpShouldUseCompiledGDNDecode(
+        let useCompiled = qwen4ExpShouldUseCompiledGDNDecode(
             compileEnabled: Self.compileDecode,
             batchSize: b,
             sequenceLength: l,
             hasVerificationPolicy: verificationPolicy != nil,
-            batchCompileEnabled: Self.compileBatchDecode),
-           supportsCompiledPrework(input: x)
-        {
+            batchCompileEnabled: Self.compileBatchDecode)
+            && supportsCompiledPrework(input: x)
+        if let diagnostic = normalizationForTesting {
+            precondition(b == 1 && keyHeadDim == 128 && valueHeadDim == 128
+                && verificationPolicy == nil,
+                "Normalization factorial is restricted to qualified single-slot AR")
+            normalizationDispatchesForTesting.append(.init(
+                batchSize: b, width: l, compiled: useCompiled,
+                capturesBoundary: (cache as? Qwen4ExpLayerCache)?.prefillCapture != nil,
+                verification: verificationPolicy != nil,
+                referenceNormalization: diagnostic == .reference))
+        }
+        if useCompiled {
             let convolutionState = cache?[0] ?? MLXArray.zeros(
                 [b, convKernel - 1, keyDim * 2 + valueDim], dtype: x.dtype)
             let recurrentState = cache?[1] ?? MLXArray.zeros(
                 [b, valueHeads, valueHeadDim, keyHeadDim], dtype: .float32)
             let function: @Sendable ([MLXArray]) -> [MLXArray]
             if b == 1 {
-                function = compiledDecode
+                function = normalizationForTesting == .reference
+                    ? compiledReferenceDecodeForTesting : compiledDecode
             } else if let existing = compiledBatchDecodes[b] {
                 function = existing
             } else {
@@ -3748,10 +3791,15 @@ private final class Qwen4ExpGatedDeltaNet: Module {
                 keyHeadDimension: keyHeadDim,
                 valueHeadDimension: valueHeadDim,
                 convolutionKernel: convKernel,
-                referencePrefillQKNormalization: referencePrefillQKNormalizationForTesting
-                    && b == 1
-                    && l >= Qwen4ExpGatedDeltaPrework.minimumReferencePrefillSequenceLength)
+                referencePrefillQKNormalization: normalizationForTesting.map { $0 == .reference }
+                    ?? (referencePrefillQKNormalizationForTesting && b == 1
+                        && l >= Qwen4ExpGatedDeltaPrework.minimumReferencePrefillSequenceLength),
+                referenceQKNormalizationAllWidthsForTesting: normalizationForTesting == .reference)
             : nil
+        if normalizationForTesting == .reference {
+            precondition(fusedPrework != nil,
+                "Diagnostic must not silently fall back to ordinary normalization")
+        }
 
         let q: MLXArray
         let k: MLXArray
@@ -5428,6 +5476,22 @@ final class Qwen4ExpDecoderLayer: Module {
             precondition(isLinear)
             linearAttention!.referencePrefillQKNormalizationForTesting = newValue
         }
+    }
+
+    var gatedDeltaNormalizationForTesting: Qwen4ExpGDNNormalizationForTesting? {
+        get { linearAttention?.normalizationForTesting }
+        set {
+            precondition(isLinear)
+            linearAttention!.normalizationForTesting = newValue
+        }
+    }
+
+    var gatedDeltaNormalizationDispatchesForTesting: [Qwen4ExpGDNDispatchForTesting] {
+        linearAttention?.normalizationDispatchesForTesting ?? []
+    }
+
+    func clearGatedDeltaNormalizationDispatchesForTesting() {
+        linearAttention?.normalizationDispatchesForTesting.removeAll(keepingCapacity: true)
     }
 
     func rollbackGatedDeltaForTesting(_ cache: ArraysCache, keeping count: Int) {
@@ -7776,6 +7840,30 @@ public final class Qwen4ExpMTPPromptState {
         guard let layer = rows.map({ Layer(cache, keeping: $0) }) ?? Layer(cache) else { return nil }
         eval(layer.arrays)
         return { layer.restore(into: $0) }
+    }
+
+    /// Clone a completed prompt for paired diagnostics without changing the
+    /// generic radix restore policy or dropping derived banks/position origin.
+    static func captureCacheForTesting(
+        _ cache: [KVCache], pleLayerIDs: [Int]
+    ) -> (([KVCache]) -> Void)? {
+        let layers: [Layer] = cache.enumerated().compactMap { index, item in
+            guard let recurrent = item as? Qwen4ExpLayerCache else { return Layer(item) }
+            // This seam accepts completed prompts only. Generic radix restore
+            // can compact a non-PLE backing store to two slots; do not read its
+            // absent trailing slots. The model's PLE IDs are one-based.
+            let count = pleLayerIDs.contains(index + 1) ? 4 : 2
+            guard recurrent.state.count == count else { return nil }
+            let values = (0..<count).map { recurrent[$0].map { $0 * 1 } }
+                + Array<MLXArray?>(repeating: nil, count: 4 - count)
+            return .recurrent(values, recurrent.hostNGramHistory, recurrent.offset)
+        }
+        guard layers.count == cache.count else { return nil }
+        eval(layers.flatMap(\.arrays))
+        return { target in
+            precondition(target.count == layers.count)
+            for (layer, destination) in zip(layers, target) { layer.restore(into: destination) }
+        }
     }
 
     public let promptIds: [Int]
