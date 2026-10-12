@@ -25,7 +25,7 @@ enum MLXReplayPrefill {
         let finalSnapshot: Snapshot?
         let inlineCheckpointCount: Int
     }
-    enum CaptureError: Error { case invalidSnapshot }
+    enum CaptureError: Error { case invalidSnapshot, unsupportedFinalSpanDiagnostic }
     static let minimumCheckpointStride = 256
     static let maximumCheckpoints = 8
 
@@ -104,6 +104,7 @@ enum MLXReplayPrefill {
         captureCoarseAnchorInline: Bool = false,
         captureFinalSnapshot: Bool = false,
         captureFinalCheckpoint: Bool = true,
+        joinBackoffFinalSpanForTesting: Bool = false,
         checkpoint: ((Int, [[MLXArray]], [[String]]) -> Void)? = nil,
         checkCancellation: (() throws -> Void)? = nil,
         didCompleteChunk: ((Range<Int>) -> Void)? = nil,
@@ -111,6 +112,31 @@ enum MLXReplayPrefill {
     ) throws -> Prepared {
         precondition(!inputTokens.isEmpty && restoredPrefix >= 0 && restoredPrefix < inputTokens.count)
         let finalBoundary = inputTokens.count - 1
+        let finalForwardStart: Int
+        if joinBackoffFinalSpanForTesting {
+            // Diagnostic only, never selected by serving configuration. Keep
+            // the ordinary path below unchanged, including its final singleton.
+            // This narrow experiment cannot satisfy an N-1 checkpoint request
+            // without reintroducing a split or adding an interior capture.
+            guard type(of: model) == Qwen4ExpModel.self,
+                  promptSnapshotBackoffTokens == 31, prefillStepSize >= 31,
+                  radix == nil, checkpoint != nil,
+                  !retainCoarseAnchor, !captureCoarseAnchorInline,
+                  !captureFinalSnapshot, !captureFinalCheckpoint,
+                  didCompleteChunk == nil else {
+                throw CaptureError.unsupportedFinalSpanDiagnostic
+            }
+            // David Dalcu's MIT-licensed SSM snapshot-backoff final-span
+            // schedule (see LICENSE-mlx-serve): preserve the real N-31
+            // checkpoint, then forward held-back30 + final1 together. A warm
+            // suffix within that window needs no new checkpoint. Cold prompts
+            // of <=31 tokens retain the existing singleton-ending schedule.
+            let remaining = inputTokens.count - restoredPrefix
+            finalForwardStart = remaining > 31 ? inputTokens.count - 31
+                : (restoredPrefix > 0 ? restoredPrefix : finalBoundary)
+        } else {
+            finalForwardStart = finalBoundary
+        }
         var consumed = restoredPrefix
         var state: LMOutput.State?
         var finalSnapshot: Snapshot?
@@ -124,8 +150,17 @@ enum MLXReplayPrefill {
             && checkpoints.count == 2 && adapter != nil ? checkpoints.first : nil
         let scheduledCheckpoints = inlineAnchor.map { anchor in checkpoints.filter { $0 != anchor } }
             ?? checkpoints
-        for boundary in scheduledCheckpoints
-            + [finalBoundary] {
+        let loopBoundaries: [Int]
+        if joinBackoffFinalSpanForTesting {
+            // The final-span start can already be the near-end checkpoint or
+            // the restored boundary. Never capture either boundary twice.
+            let earlier = scheduledCheckpoints.filter { $0 > restoredPrefix && $0 <= finalForwardStart }
+            loopBoundaries = earlier + (finalForwardStart > restoredPrefix
+                && earlier.last != finalForwardStart ? [finalForwardStart] : [])
+        } else {
+            loopBoundaries = scheduledCheckpoints + [finalBoundary]
+        }
+        for boundary in loopBoundaries {
             try Task.checkCancellation()
             try checkCancellation?()
             while boundary > consumed {
@@ -206,6 +241,18 @@ enum MLXReplayPrefill {
         }
         try Task.checkCancellation()
         try checkCancellation?()
+        if joinBackoffFinalSpanForTesting && finalForwardStart < finalBoundary {
+            let tail = Array(inputTokens[finalForwardStart...])
+            let output = model(LMInput.Text(tokens: MLXArray(tail)[.newAxis]),
+                cache: cache, state: state,
+                hostTokenIDs: model.consumesHostTokenIDs ? tail : nil)
+            guard output.state == nil else { throw CaptureError.invalidSnapshot }
+            // Project all tail rows through the ordinary model/head first.
+            // Narrowing hidden before the head would introduce a separate
+            // GEMM/GEMV arithmetic factor. Consumers still receive [1,1,V].
+            return Prepared(output: LMOutput(logits: MLXPrefixReplayPolicy.promptBoundaryLogits(output.logits)),
+                finalSnapshot: nil, inlineCheckpointCount: inlineCheckpointCount)
+        }
         let finalToken = inputTokens[finalBoundary]
         let output = model(LMInput.Text(tokens: MLXArray([finalToken]).reshaped([1, 1])),
                      cache: cache, state: state,

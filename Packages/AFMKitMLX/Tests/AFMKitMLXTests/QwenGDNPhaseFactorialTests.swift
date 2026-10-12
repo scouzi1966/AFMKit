@@ -8,8 +8,8 @@ import MLXNN
 import XCTest
 
 /// Opt-in, saved-input arithmetic experiment, not a serving policy or a speed
-/// benchmark. No generated tool call is executed. Keep the ordinary AR cache
-/// policy, including its metadata behavior, identical in all four arms.
+/// benchmark. No generated tool call is executed. Keep the selected AR cache
+/// schedule and metadata behavior identical in all four normalization arms.
 final class QwenGDNPhaseFactorialTests: XCTestCase {
     private struct History: Decodable {
         let request: Int
@@ -27,12 +27,26 @@ final class QwenGDNPhaseFactorialTests: XCTestCase {
         let callsByLayer: [[[Int]]]
     }
 
+    private struct CheckpointTensor: Codable {
+        let dtype: String
+        let shape: [Int]
+        let sha256: String
+    }
+
+    private struct CheckpointPayload: Codable {
+        let boundary: Int
+        let layers: [[CheckpointTensor]]
+        let metadata: [[String]]
+    }
+
     private struct Prompt {
         let logits: MLXArray
         let restore: ([KVCache]) -> Void
         let schedule: [RequestSchedule]
         let persistenceByRequest: [[[Qwen4ExpGDNStatePersistenceRecordForTesting]]]
         let sigmoidLookupCallsByRequest: [Int]
+        let finalSpanWidthsByRequest: [Int]
+        let checkpointPayloadsByRequest: [[CheckpointPayload]]
     }
 
     private func select(_ policy: Qwen4ExpGDNNormalizationForTesting,
@@ -94,13 +108,16 @@ final class QwenGDNPhaseFactorialTests: XCTestCase {
 
     private func prepare(_ histories: [History], model: Qwen4ExpModel,
                          layers: [Qwen4ExpDecoderLayer],
-                         policy: Qwen4ExpGDNNormalizationForTesting) throws -> Prompt {
+                         policy: Qwen4ExpGDNNormalizationForTesting,
+                         joinFinalSpan: Bool) throws -> Prompt {
         let radix = RadixTreeCache(modelID: "gdn-phase-\(policy.rawValue)")
         var schedule: [RequestSchedule] = []
         var finalLogits: MLXArray?
         var finalRestore: (([KVCache]) -> Void)?
         var persistenceByRequest: [[[Qwen4ExpGDNStatePersistenceRecordForTesting]]] = []
         var sigmoidLookupCallsByRequest: [Int] = []
+        var finalSpanWidthsByRequest: [Int] = []
+        var checkpointPayloadsByRequest: [[CheckpointPayload]] = []
         for (historyIndex, history) in histories.enumerated() {
             select(policy, layers: layers)
             var cache = model.newCache(parameters: nil)
@@ -122,13 +139,18 @@ final class QwenGDNPhaseFactorialTests: XCTestCase {
                 }
             }
             var checkpoints: [Int] = []
+            var checkpointPayloads: [(Int, [[MLXArray]], [[String]])] = []
             let prepared = try MLXReplayPrefill.prepareWithSnapshot(
                 model: model, cache: cache, inputTokens: history.tokens,
                 restoredPrefix: prefix, prefillStepSize: history.prefillStepSize,
                 promptSnapshotBackoffTokens: 31, retainCoarseAnchor: false,
                 captureCoarseAnchorInline: false, captureFinalCheckpoint: false,
+                joinBackoffFinalSpanForTesting: joinFinalSpan,
                 checkpoint: { boundary, states, metadata in
                     checkpoints.append(boundary)
+                    // Retain the already-independent snapshot only. Hashing
+                    // here would add a synchronization point before the tail.
+                    checkpointPayloads.append((boundary, states, metadata))
                     radix.insert(tokens: Array(history.tokens.prefix(boundary)),
                         layerStates: states, layerMetaStates: metadata,
                         statesAreIndependentSnapshots: true)
@@ -138,13 +160,35 @@ final class QwenGDNPhaseFactorialTests: XCTestCase {
             XCTAssertNil(prepared.output.state)
             let logits = prepared.output.logits[0, -1].asType(.float32)
             eval(logits, cache)
+            checkpointPayloadsByRequest.append(checkpointPayloads.map { boundary, states, metadata in
+                CheckpointPayload(boundary: boundary, layers: states.map { layer in
+                    layer.map { tensor in
+                        CheckpointTensor(dtype: String(describing: tensor.dtype), shape: tensor.shape,
+                            sha256: SHA256.hash(data: tensor.asData(access: .copy).data).description)
+                    }
+                }, metadata: metadata)
+            })
             let records = dispatches(layers, policy: policy)
             persistenceByRequest.append(persistenceRecords(layers))
             sigmoidLookupCallsByRequest.append(records.flatMap { $0 }.filter(\.stockSigmoidLookup).count)
+            finalSpanWidthsByRequest.append(try XCTUnwrap(records.first?.last?.width))
             for calls in records {
                 XCTAssertEqual(calls.reduce(0) { $0 + $1.width }, history.tokens.count - prefix)
-                XCTAssertEqual(calls.last?.width, 1, "Final prompt singleton belongs to P, not D")
+                if joinFinalSpan {
+                    let expectedWidth = prefix > 0 || history.tokens.count > 31
+                        ? min(31, history.tokens.count - prefix) : 1
+                    XCTAssertEqual(calls.last?.width, expectedWidth,
+                        "Joined prompt tail, including its final token, belongs entirely to P")
+                } else {
+                    XCTAssertEqual(calls.last?.width, 1, "Final prompt singleton belongs to P, not D")
+                }
             }
+            XCTAssertEqual(checkpoints, MLXReplayPrefill.boundaries(restoredPrefix: prefix,
+                finalBoundary: history.tokens.count - 1, promptSnapshotBackoffTokens: 31),
+                "Tail geometry must neither lose the earlier checkpoint nor duplicate a restored boundary")
+            XCTAssertEqual(prepared.output.logits.shape, [1, 1, model.vocabularySize])
+            XCTAssertNil(prepared.finalSnapshot)
+            XCTAssertEqual(prepared.inlineCheckpointCount, 0)
             schedule.append(RequestSchedule(request: history.request, tokens: history.tokens.count,
                 prefix: prefix, checkpoints: checkpoints,
                 inlineCheckpoints: prepared.inlineCheckpointCount,
@@ -169,7 +213,9 @@ final class QwenGDNPhaseFactorialTests: XCTestCase {
         }
         return Prompt(logits: try XCTUnwrap(finalLogits), restore: try XCTUnwrap(finalRestore),
             schedule: schedule, persistenceByRequest: persistenceByRequest,
-            sigmoidLookupCallsByRequest: sigmoidLookupCallsByRequest)
+            sigmoidLookupCallsByRequest: sigmoidLookupCallsByRequest,
+            finalSpanWidthsByRequest: finalSpanWidthsByRequest,
+            checkpointPayloadsByRequest: checkpointPayloadsByRequest)
     }
 
     private func compareStates(_ left: [KVCache], _ right: [KVCache],
@@ -264,6 +310,15 @@ final class QwenGDNPhaseFactorialTests: XCTestCase {
         XCTAssertTrue(["0", "1"].contains(lookupInput))
         guard ["0", "1"].contains(lookupInput) else { return }
         let sigmoidLookup = lookupInput == "1"
+        let finalSpanInput = env["AFM_QWEN_GDN_PHASE_JOIN_FINAL_SPAN"] ?? "0"
+        XCTAssertTrue(["0", "1"].contains(finalSpanInput))
+        guard ["0", "1"].contains(finalSpanInput) else { return }
+        let joinFinalSpan = finalSpanInput == "1"
+        if joinFinalSpan {
+            XCTAssertTrue(histories.allSatisfy { $0.prefillStepSize >= 31 },
+                "A diagnostic tail must not exceed the caller's chunk bound")
+            guard histories.allSatisfy({ $0.prefillStepSize >= 31 }) else { return }
+        }
         XCTAssertTrue((0...2048).contains(freeSteps), "Bounded diagnostic only; zero means teacher forcing only")
         guard teacher.count == 64, (0...2048).contains(freeSteps) else { return }
         let output = URL(fileURLWithPath: outputPath, isDirectory: true)
@@ -299,7 +354,8 @@ final class QwenGDNPhaseFactorialTests: XCTestCase {
         var reports: [String: Any] = [:]
         var savedLogits: [String: MLXArray] = [:]
         for (p, promptPolicy) in [(0, Qwen4ExpGDNNormalizationForTesting.ordinary), (1, .reference)] {
-            let prompt = try prepare(histories, model: model, layers: layers, policy: promptPolicy)
+            let prompt = try prepare(histories, model: model, layers: layers, policy: promptPolicy,
+                joinFinalSpan: joinFinalSpan)
             if let baselineSchedule {
                 XCTAssertEqual(prompt.schedule, baselineSchedule,
                     "Arithmetic intervention must not change any ancestor call shape, capture or compile eligibility")
@@ -383,6 +439,9 @@ final class QwenGDNPhaseFactorialTests: XCTestCase {
                 "prompt_persistence_by_request": try JSONSerialization.jsonObject(
                     with: JSONEncoder().encode(prompt.persistenceByRequest)),
                 "prompt_sigmoid_lookup_calls_by_request": prompt.sigmoidLookupCallsByRequest,
+                "prompt_final_span_widths_by_request": prompt.finalSpanWidthsByRequest,
+                "prompt_checkpoint_payloads_by_request": try JSONSerialization.jsonObject(
+                    with: JSONEncoder().encode(prompt.checkpointPayloadsByRequest)),
                 "prompt_state_round_trips": prompt.persistenceByRequest.flatMap { $0 }.flatMap { $0 }
                     .reduce(0) { $0 + $1.stateRoundTrips },
                 "prompt_snapshot_round_trips": prompt.persistenceByRequest.flatMap { $0 }.flatMap { $0 }
@@ -398,12 +457,19 @@ final class QwenGDNPhaseFactorialTests: XCTestCase {
             "teacher": teacherPath, "teacher_sha256": SHA256.hash(data: teacherData).description,
             "teacher_tokens": teacher, "final_tokens": finalHistory.tokens.count,
             "state_rounding": roundState,
+            "join_final_span": joinFinalSpan,
+            "checkpoint_payload_scope": "Per-layer/slot raw tensor hashes, shapes, dtypes and metadata cover exactly the independent payload supplied to radix. Hashing occurs after final prefill eval, not at the checkpoint. Transient host mirrors and derived arrays absent from that payload are not claimed hash-attested; tiny-model tests cover completed cache and host-history semantics separately.",
+            "final_span_scope": "Test-only whole-model prompt geometry: unchanged prefix/checkpoint at N-31, ordinary full-tail forward and full-row LM head, then last-logit slice. Restored suffixes <=31 forward once without a duplicate checkpoint; cold prompts <=31 retain singleton ending. No coarse/inline capture, N-1 snapshot or interleaving. Initial schedule-only comparison is P0D0 with state_rounding=false and sigmoid_lookup=false; other arithmetic factors must be matched between runs. Not a speed benchmark or production policy.",
             "sigmoid_lookup": sigmoidLookup, "sigmoid_lookup_minimum_width": 17,
             "sigmoid_lookup_scope": "Test-only prework convolution SiLU and beta at B1/S>=17; all singleton compiled closures, output gates, Q/K policy, recurrence and persistence policy unchanged. Two immutable 128KiB dtype tables, lazy on first eligible use; not a speed benchmark.",
             "state_rounding_definition": "Uniform post-forward BF16-to-FP32 persistence for every ancestor/P/D/free call; separately rounds saved inline snapshot1 if present. No phase-entry/restore cast. Slot1 remains FP32 and compiled identities/kernel inputs are unchanged. Extra casts add graph work: this is not a speed benchmark or complete reference-state parity.",
             "final_cached_prefix": finalHistory.cachedPrefix, "gdn_layers": layers.count,
-            "phase_definition": "P covers all ancestor/prompt calls, including singleton tails. D covers identical teacher or greedy continuation tokens. Default serving policy is unchanged.",
-            "claim_limit": "Same-schedule arithmetic diagnosis, not a speed benchmark or evidence of a general task-quality improvement. The current 8b frozen warm-33K API control already completed successfully.",
+            "phase_definition": joinFinalSpan
+                ? "P covers all ancestor/prompt calls, including every row of the joined final span. D covers identical teacher or greedy continuation tokens. Default serving policy is unchanged."
+                : "P covers all ancestor/prompt calls, including singleton tails. D covers identical teacher or greedy continuation tokens. Default serving policy is unchanged.",
+            "claim_limit": joinFinalSpan
+                ? "Controlled prompt-schedule diagnosis; arithmetic flags are recorded and must be held fixed between controls. Not a speed benchmark or evidence of general task quality or complete reference parity."
+                : "Same-schedule arithmetic diagnosis, not a speed benchmark or evidence of a general task-quality improvement. The current 8b frozen warm-33K API control already completed successfully.",
             "reports": reports]
         try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys])
             .write(to: output.appendingPathComponent("summary.json"), options: .withoutOverwriting)
