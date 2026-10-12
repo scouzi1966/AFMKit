@@ -32,6 +32,7 @@ final class QwenGDNPhaseFactorialTests: XCTestCase {
         let restore: ([KVCache]) -> Void
         let schedule: [RequestSchedule]
         let persistenceByRequest: [[[Qwen4ExpGDNStatePersistenceRecordForTesting]]]
+        let sigmoidLookupCallsByRequest: [Int]
     }
 
     private func select(_ policy: Qwen4ExpGDNNormalizationForTesting,
@@ -48,12 +49,16 @@ final class QwenGDNPhaseFactorialTests: XCTestCase {
         -> [[Qwen4ExpGDNDispatchForTesting]] {
         let records = layers.map(\.gatedDeltaNormalizationDispatchesForTesting)
         XCTAssertFalse(records.isEmpty)
-        for calls in records {
+        for (layer, calls) in zip(layers, records) {
             XCTAssertFalse(calls.isEmpty)
             XCTAssertTrue(calls.allSatisfy {
                 $0.batchSize == 1 && !$0.verification
                     && $0.referenceNormalization == (policy == .reference)
             }, "Every actual GDN call must use the requested semantic phase")
+            XCTAssertTrue(calls.allSatisfy {
+                $0.stockSigmoidLookup == (layer.gatedDeltaStockSigmoidLookupForTesting == true
+                    && $0.batchSize == 1 && $0.width >= 17)
+            }, "Only qualified wide prework may use the sigmoid table")
         }
         return records
     }
@@ -95,6 +100,7 @@ final class QwenGDNPhaseFactorialTests: XCTestCase {
         var finalLogits: MLXArray?
         var finalRestore: (([KVCache]) -> Void)?
         var persistenceByRequest: [[[Qwen4ExpGDNStatePersistenceRecordForTesting]]] = []
+        var sigmoidLookupCallsByRequest: [Int] = []
         for (historyIndex, history) in histories.enumerated() {
             select(policy, layers: layers)
             var cache = model.newCache(parameters: nil)
@@ -134,6 +140,7 @@ final class QwenGDNPhaseFactorialTests: XCTestCase {
             eval(logits, cache)
             let records = dispatches(layers, policy: policy)
             persistenceByRequest.append(persistenceRecords(layers))
+            sigmoidLookupCallsByRequest.append(records.flatMap { $0 }.filter(\.stockSigmoidLookup).count)
             for calls in records {
                 XCTAssertEqual(calls.reduce(0) { $0 + $1.width }, history.tokens.count - prefix)
                 XCTAssertEqual(calls.last?.width, 1, "Final prompt singleton belongs to P, not D")
@@ -161,7 +168,8 @@ final class QwenGDNPhaseFactorialTests: XCTestCase {
             print("GDN_PHASE_PROMPT phase=\(policy.rawValue) request=\(history.request) prefix=\(prefix) tokens=\(history.tokens.count)")
         }
         return Prompt(logits: try XCTUnwrap(finalLogits), restore: try XCTUnwrap(finalRestore),
-            schedule: schedule, persistenceByRequest: persistenceByRequest)
+            schedule: schedule, persistenceByRequest: persistenceByRequest,
+            sigmoidLookupCallsByRequest: sigmoidLookupCallsByRequest)
     }
 
     private func compareStates(_ left: [KVCache], _ right: [KVCache],
@@ -252,6 +260,10 @@ final class QwenGDNPhaseFactorialTests: XCTestCase {
         XCTAssertTrue(["0", "1"].contains(roundingInput))
         guard ["0", "1"].contains(roundingInput) else { return }
         let roundState = roundingInput == "1"
+        let lookupInput = env["AFM_QWEN_GDN_PHASE_SIGMOID_LOOKUP"] ?? "0"
+        XCTAssertTrue(["0", "1"].contains(lookupInput))
+        guard ["0", "1"].contains(lookupInput) else { return }
+        let sigmoidLookup = lookupInput == "1"
         XCTAssertTrue((0...2048).contains(freeSteps), "Bounded diagnostic only; zero means teacher forcing only")
         guard teacher.count == 64, (0...2048).contains(freeSteps) else { return }
         let output = URL(fileURLWithPath: outputPath, isDirectory: true)
@@ -267,8 +279,10 @@ final class QwenGDNPhaseFactorialTests: XCTestCase {
             "Do not combine this phase test with the old capture-disabling diagnostic")
         let originalPolicies = layers.map(\.gatedDeltaNormalizationForTesting)
         let originalPersistence = layers.map(\.gatedDeltaStatePersistenceForTesting)
+        let originalLookup = layers.map(\.gatedDeltaStockSigmoidLookupForTesting)
         for layer in layers {
             layer.gatedDeltaStatePersistenceForTesting = roundState ? .bfloat16RoundTrip : .unchanged
+            layer.gatedDeltaStockSigmoidLookupForTesting = sigmoidLookup
         }
         defer {
             for (index, layer) in layers.enumerated() {
@@ -277,6 +291,7 @@ final class QwenGDNPhaseFactorialTests: XCTestCase {
                 layer.clearGatedDeltaNormalizationDispatchesForTesting()
                 layer.gatedDeltaStatePersistenceForTesting = originalPersistence[index]
                 layer.clearGatedDeltaStatePersistenceRecordsForTesting()
+                layer.gatedDeltaStockSigmoidLookupForTesting = originalLookup[index]
             }
         }
         let eos = context.configuration.eosTokenIds.union([context.tokenizer.eosTokenId].compactMap { $0 })
@@ -348,6 +363,7 @@ final class QwenGDNPhaseFactorialTests: XCTestCase {
                         calls.count == forwarded && calls.allSatisfy {
                             $0.batchSize == 1 && $0.width == 1 && !$0.verification
                                 && $0.referenceNormalization == (decodePolicy == .reference)
+                                && !$0.stockSigmoidLookup
                         }
                     })
                     free["P\(p)D\(d)"] = ["tokens": tokens, "text": text, "eos": stopped,
@@ -355,6 +371,7 @@ final class QwenGDNPhaseFactorialTests: XCTestCase {
                         "tool_close_marker": text.contains("</tool_call>"),
                         "maximum_exact_long_paragraph_repeats": repeatCount,
                         "dispatches": try JSONSerialization.jsonObject(with: JSONEncoder().encode(records)),
+                        "sigmoid_lookup_calls": records.flatMap { $0 }.filter(\.stockSigmoidLookup).count,
                         "persistence": try JSONSerialization.jsonObject(with: JSONEncoder().encode(persistence)),
                         "state_round_trips": persistence.flatMap { $0 }.reduce(0) { $0 + $1.stateRoundTrips },
                         "snapshot_round_trips": persistence.flatMap { $0 }.reduce(0) { $0 + $1.snapshotRoundTrips },
@@ -365,6 +382,7 @@ final class QwenGDNPhaseFactorialTests: XCTestCase {
             reports["P\(p)"] = ["schedule": try JSONSerialization.jsonObject(with: JSONEncoder().encode(prompt.schedule)),
                 "prompt_persistence_by_request": try JSONSerialization.jsonObject(
                     with: JSONEncoder().encode(prompt.persistenceByRequest)),
+                "prompt_sigmoid_lookup_calls_by_request": prompt.sigmoidLookupCallsByRequest,
                 "prompt_state_round_trips": prompt.persistenceByRequest.flatMap { $0 }.flatMap { $0 }
                     .reduce(0) { $0 + $1.stateRoundTrips },
                 "prompt_snapshot_round_trips": prompt.persistenceByRequest.flatMap { $0 }.flatMap { $0 }
@@ -380,6 +398,8 @@ final class QwenGDNPhaseFactorialTests: XCTestCase {
             "teacher": teacherPath, "teacher_sha256": SHA256.hash(data: teacherData).description,
             "teacher_tokens": teacher, "final_tokens": finalHistory.tokens.count,
             "state_rounding": roundState,
+            "sigmoid_lookup": sigmoidLookup, "sigmoid_lookup_minimum_width": 17,
+            "sigmoid_lookup_scope": "Test-only prework convolution SiLU and beta at B1/S>=17; all singleton compiled closures, output gates, Q/K policy, recurrence and persistence policy unchanged. Two immutable 128KiB dtype tables, lazy on first eligible use; not a speed benchmark.",
             "state_rounding_definition": "Uniform post-forward BF16-to-FP32 persistence for every ancestor/P/D/free call; separately rounds saved inline snapshot1 if present. No phase-entry/restore cast. Slot1 remains FP32 and compiled identities/kernel inputs are unchanged. Extra casts add graph work: this is not a speed benchmark or complete reference-state parity.",
             "final_cached_prefix": finalHistory.cachedPrefix, "gdn_layers": layers.count,
             "phase_definition": "P covers all ancestor/prompt calls, including singleton tails. D covers identical teacher or greedy continuation tokens. Default serving policy is unchanged.",

@@ -490,6 +490,133 @@ final class QwenOnePassPromptCaptureTests: XCTestCase {
         }
     }
 
+    func testSigmoidLookupDiagnosticLeavesActualSingletonAndWidth16Unchanged() async throws {
+        try XCTSkipUnless(HardwareInfo.isModelOwnedCompiledDecodeSupported,
+            "This test must exercise the original model-owned compiled singleton")
+        try XCTSkipIf(ProcessInfo.processInfo.environment["AFM_QWEN_COMPILE_GDN_DECODE"] == "0")
+        let (model, _) = try await fixture()
+        let layer = try XCTUnwrap(model.namedModules().compactMap { $0.1 as? Qwen4ExpDecoderLayer }
+            .first { $0.isLinear })
+        defer {
+            layer.gatedDeltaNormalizationForTesting = nil
+            layer.gatedDeltaStockSigmoidLookupForTesting = nil
+        }
+        for normalization in [Qwen4ExpGDNNormalizationForTesting.ordinary, .reference] {
+            layer.gatedDeltaNormalizationForTesting = normalization
+            for width in [1, 16, 17] {
+                let input = MLXArray((0..<(width * 128)).map { Float($0 % 19 - 9) / 128 })
+                    .reshaped(1, width, 128).asType(.bfloat16)
+                var original: (MLXArray, Qwen4ExpLayerCache)?
+                var lookup: (MLXArray, Qwen4ExpLayerCache)?
+                let policies: [Bool?] = [nil, false, true, false, true]
+                for policy in policies {
+                    layer.gatedDeltaStockSigmoidLookupForTesting = policy
+                    layer.clearGatedDeltaNormalizationDispatchesForTesting()
+                    let cache = persistenceCache()
+                    let output = layer.gatedDeltaDecodeForTesting(input, cache: cache)
+                    eval(output, cache)
+                    let record = try XCTUnwrap(layer.gatedDeltaNormalizationDispatchesForTesting.first)
+                    XCTAssertEqual(layer.gatedDeltaNormalizationDispatchesForTesting.count, 1)
+                    XCTAssertEqual(record.width, width)
+                    XCTAssertEqual(record.compiled, width == 1)
+                    XCTAssertEqual(record.stockSigmoidLookup, policy == true && width >= 17)
+                    XCTAssertFalse(record.capturesBoundary)
+                    if let original {
+                        if policy != true || width < 17 {
+                            equal(output, original.0, "Nil/off and every narrow call preserve the original trace")
+                            equal(arrays(cache), arrays(original.1), "Nil/off/narrow state is exact")
+                        } else if let lookup {
+                            equal(output, lookup.0, "Interleaved lookup forward is stable")
+                            equal(arrays(cache), arrays(lookup.1), "Interleaved lookup state is stable")
+                        } else { lookup = (output, cache) }
+                    } else { original = (output, cache) }
+                }
+            }
+        }
+    }
+
+    func testSigmoidLookupDiagnosticRetainsWideCaptureAndPrefixRestore() async throws {
+        let (model, _) = try await fixture()
+        let layers = model.namedModules().compactMap { $0.1 as? Qwen4ExpDecoderLayer }.filter(\.isLinear)
+        defer { layers.forEach {
+            $0.gatedDeltaNormalizationForTesting = nil
+            $0.gatedDeltaStockSigmoidLookupForTesting = nil
+        } }
+        let prefix = (0..<97).map { $0 % 29 + 1 }
+        let donor = prefix + Array(repeating: 11, count: 31)
+        func forward(_ tokens: [Int], _ cache: [KVCache]) -> LMOutput {
+            model(LMInput.Text(tokens: MLXArray(tokens).reshaped(1, -1)), cache: cache,
+                state: nil, hostTokenIDs: model.consumesHostTokenIDs ? tokens : nil)
+        }
+        for normalization in [Qwen4ExpGDNNormalizationForTesting.ordinary, .reference] {
+            layers.forEach {
+                $0.gatedDeltaNormalizationForTesting = normalization
+                $0.gatedDeltaStockSigmoidLookupForTesting = true
+                $0.clearGatedDeltaNormalizationDispatchesForTesting()
+                XCTAssertNil($0.gatedDeltaStatePersistenceForTesting,
+                    "Hold recurrent persistence fixed: this is a sigmoid-only capture check")
+            }
+            let cache = model.newCache(parameters: nil)
+            let captured = try XCTUnwrap(model.prefillCapturingBoundary(
+                LMInput.Text(tokens: MLXArray(donor).reshaped(1, -1)), cache: cache,
+                state: nil, restoredPrefix: 0, boundary: 97,
+                hostTokenIDs: model.consumesHostTokenIDs ? donor : nil))
+            eval(captured.output.logits, cache)
+            XCTAssertTrue(layers.allSatisfy {
+                let records = $0.gatedDeltaNormalizationDispatchesForTesting
+                return records.count == 1 && records[0].width == 128
+                    && records[0].stockSigmoidLookup && records[0].capturesBoundary
+                    && !records[0].compiled && !records[0].verification
+            })
+            let controlCache = model.newCache(parameters: nil)
+            let control = forward(donor, controlCache)
+            eval(control.logits, controlCache)
+            equal(captured.output.logits, control.logits, "Lookup retains uninterrupted donor output")
+            for (a, b) in zip(cache, controlCache) {
+                equal(arrays(a), arrays(b), "Lookup donor final state")
+                XCTAssertEqual(a.offset, b.offset)
+                XCTAssertEqual(a.metaState, b.metaState)
+                if let a = a as? Qwen4ExpLayerCache, let b = b as? Qwen4ExpLayerCache {
+                    XCTAssertEqual(a.hostNGramHistory, b.hostNGramHistory)
+                }
+            }
+            let independent = model.newCache(parameters: nil)
+            let prefixOutput = forward(prefix, independent)
+            eval(prefixOutput.logits, independent)
+            let expected = MLXPrefixReplayPolicy.snapshotLayerStates(independent)
+            XCTAssertEqual(captured.metadata, independent.map(\.metaState))
+            var restored = model.newCache(parameters: nil)
+            for index in restored.indices {
+                XCTAssertEqual(captured.states[index].count, expected[index].count)
+                for (a, b) in zip(captured.states[index], expected[index]) {
+                    equal(a, b, "Lookup capture matches independent97 prefix")
+                }
+                MLXPrefixReplayPolicy.installLayerState(captured.states[index], into: &restored[index], sourceBoundary: 97)
+                restored[index].metaState = captured.metadata[index]
+            }
+            let tail = Array(donor.dropFirst(97))
+            let a = forward(tail, independent), b = forward(tail, restored)
+            eval(a.logits, b.logits, independent, restored)
+            equal(a.logits, b.logits, "Lookup captured-prefix continuation")
+            for (x, y) in zip(independent, restored) {
+                // Completed generic caches have two or four active slots;
+                // avoid assuming a compacted non-PLE cache has four slots.
+                if let x = x as? Qwen4ExpAttentionCache, let y = y as? Qwen4ExpAttentionCache {
+                    equal(x.promptReplayArraysForTesting, y.promptReplayArraysForTesting,
+                        "Lookup restored complete attention state")
+                } else {
+                    equal(x.state.map { Optional($0) }, y.state.map { Optional($0) },
+                        "Lookup restored active recurrent state")
+                    if let x = x as? Qwen4ExpLayerCache, let y = y as? Qwen4ExpLayerCache {
+                        XCTAssertEqual(x.hostNGramHistory, y.hostNGramHistory)
+                    }
+                }
+                XCTAssertEqual(x.offset, y.offset)
+                XCTAssertEqual(x.metaState, y.metaState)
+            }
+        }
+    }
+
     func testNormalizationPhaseDiagnosticPreservesARCaptureAndIndependentPrefix() async throws {
         let (model, _) = try await fixture()
         let layers = model.namedModules().compactMap { $0.1 as? Qwen4ExpDecoderLayer }.filter(\.isLinear)

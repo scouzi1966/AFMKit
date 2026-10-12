@@ -31,16 +31,9 @@ enum Qwen4ExpGatedDeltaPrework {
     static let enabled =
         ProcessInfo.processInfo.environment["AFM_QWEN_FUSED_GDN_PREWORK"] != "0"
 
-    private static let kernel = MLXFast.metalKernel(
-        name: "qwen4_exp_gated_delta_verify_prework",
-        inputNames: [
-            "projected", "prior", "convolution_weight",
-            "projected_a", "projected_b", "a_log", "dt_bias",
-        ],
-        outputNames: [
-            "queries", "keys", "values", "next_prior", "gate", "beta",
-        ],
-        source: """
+    // Keep these source bytes unchanged for the serving/default kernel. The
+    // diagnostic variant substitutes only the two sigmoid expressions below.
+    private static let kernelSource = """
             const uint lane = thread_position_in_threadgroup.x;
             // Request-major token indexing, following David Dalcu's
             // MIT-licensed mlx-serve gdnPreworkFused. Convolution history is
@@ -201,7 +194,77 @@ enum Qwen4ExpGatedDeltaPrework {
                     }
                 }
             }
-        """)
+        """
+
+    private static let kernel = MLXFast.metalKernel(
+        name: "qwen4_exp_gated_delta_verify_prework",
+        inputNames: [
+            "projected", "prior", "convolution_weight",
+            "projected_a", "projected_b", "a_log", "dt_bias",
+        ],
+        outputNames: [
+            "queries", "keys", "values", "next_prior", "gate", "beta",
+        ],
+        source: kernelSource)
+
+    // David Dalcu's MIT-licensed 16-bit lookup technique (see
+    // LICENSE-mlx-serve) avoids custom-kernel versus stock-metallib math-mode
+    // differences. Use raw unsigned bits, never numeric float conversion:
+    // negative values occupy the upper half of each 65,536-entry table.
+    // Only explicitly enabled wide diagnostics materialize these tables.
+    nonisolated(unsafe) private static let sigmoidTableBF16ForTesting = makeSigmoidTableForTesting(.bfloat16)
+    nonisolated(unsafe) private static let sigmoidTableFP16ForTesting = makeSigmoidTableForTesting(.float16)
+
+    private static func makeSigmoidTableForTesting(_ dtype: DType) -> MLXArray {
+        let bits = MLXArray((0..<(1 << 16)).map { UInt16($0) })
+        let table = MLX.sigmoid(bits.view(dtype: dtype))
+        MLX.eval(table)
+        return table
+    }
+
+    static func sigmoidTableForTesting(dtype: DType) -> MLXArray? {
+        switch dtype {
+        case .bfloat16: sigmoidTableBF16ForTesting
+        case .float16: sigmoidTableFP16ForTesting
+        default: nil
+        }
+    }
+
+    private static let lookupKernelForTesting: MLXFast.MLXFastKernel = {
+        // Exact substitutions keep the legacy kernel's source, name, argument
+        // list and specialization unchanged. Fail closed if that source moves.
+        let oldActivation = """
+                const T sigmoid_tail = T(1) /
+                    (T(1) + metal::exp(metal::abs(convolution)));
+                const T activation = convolution * (
+                    convolution < T(0) ? sigmoid_tail : T(1) - sigmoid_tail);
+        """
+        let newActivation = """
+                const T activation = convolution * sigmoid_table[as_type<ushort>(convolution)];
+        """
+        let oldBeta = """
+                    const T sigmoid_tail = T(1) /
+                        (T(1) + metal::exp(metal::abs(beta_input)));
+                    beta[scalar_index] = beta_input < T(0)
+                        ? sigmoid_tail
+                        : T(1) - sigmoid_tail;
+        """
+        let newBeta = """
+                    beta[scalar_index] = sigmoid_table[as_type<ushort>(beta_input)];
+        """
+        precondition(kernelSource.components(separatedBy: oldActivation).count == 2)
+        precondition(kernelSource.components(separatedBy: oldBeta).count == 2)
+        let source = kernelSource.replacingOccurrences(of: oldActivation, with: newActivation)
+            .replacingOccurrences(of: oldBeta, with: newBeta)
+        return MLXFast.metalKernel(
+            name: "qwen4_exp_gated_delta_stock_sigmoid_prework_diagnostic",
+            inputNames: [
+                "projected", "prior", "convolution_weight",
+                "projected_a", "projected_b", "a_log", "dt_bias", "sigmoid_table",
+            ],
+            outputNames: ["queries", "keys", "values", "next_prior", "gate", "beta"],
+            source: source)
+    }()
 
     static func call(
         projected: MLXArray,
@@ -218,7 +281,8 @@ enum Qwen4ExpGatedDeltaPrework {
         convolutionKernel: Int,
         allowBatch: Bool = batchEnabled,
         referencePrefillQKNormalization: Bool = false,
-        referenceQKNormalizationAllWidthsForTesting: Bool = false
+        referenceQKNormalizationAllWidthsForTesting: Bool = false,
+        stockSigmoidLookupForTesting: Bool = false
     ) -> Qwen4ExpGatedDeltaPreworkOutput? {
         let verifyWidth = projected.ndim == 3 ? projected.dim(1) : 0
         let batchSize = projected.ndim == 3 ? projected.dim(0) : 0
@@ -263,11 +327,12 @@ enum Qwen4ExpGatedDeltaPrework {
             return nil
         }
 
-        let outputs = kernel(
-            [
-                projected, prior, convolutionWeight,
-                projectedA, projectedB, aLog, dtBias,
-            ],
+        let useLookup = stockSigmoidLookupForTesting && batchSize == 1 && verifyWidth >= 17
+        let selectedKernel = useLookup ? lookupKernelForTesting : kernel
+        var inputs = [projected, prior, convolutionWeight, projectedA, projectedB, aLog, dtBias]
+        if useLookup { inputs.append(sigmoidTableForTesting(dtype: projected.dtype)!) }
+        let outputs = selectedKernel(
+            inputs,
             template: [
                 ("T", projected.dtype),
                 ("KEY_HEADS", keyHeads),

@@ -3453,6 +3453,7 @@ struct Qwen4ExpGDNDispatchForTesting: Equatable, Codable {
     let capturesBoundary: Bool
     let verification: Bool
     let referenceNormalization: Bool
+    let stockSigmoidLookup: Bool
 
     /// Arithmetic is the intervention; every other dispatch choice must match.
     var schedule: [Int] {
@@ -3522,6 +3523,7 @@ private final class Qwen4ExpGatedDeltaNet: Module {
     var referencePrefillQKNormalizationForTesting = false
     var normalizationForTesting: Qwen4ExpGDNNormalizationForTesting?
     var normalizationDispatchesForTesting: [Qwen4ExpGDNDispatchForTesting] = []
+    var stockSigmoidLookupForTesting: Bool?
     var statePersistenceForTesting: Qwen4ExpGDNStatePersistenceForTesting?
     var statePersistenceRecordsForTesting: [Qwen4ExpGDNStatePersistenceRecordForTesting] = []
     private static let compileDecode =
@@ -3695,6 +3697,8 @@ private final class Qwen4ExpGatedDeltaNet: Module {
     ) -> MLXArray {
         precondition(statePersistenceForTesting == nil || verificationPolicy == nil,
             "Persistence diagnostic excludes verification and MTP")
+        precondition(stockSigmoidLookupForTesting == nil || verificationPolicy == nil,
+            "Sigmoid lookup diagnostic excludes verification and MTP")
         if verificationPolicy != nil,
            x.dim(1) > 1,
            Self.verifyLinearSequential
@@ -3812,7 +3816,9 @@ private final class Qwen4ExpGatedDeltaNet: Module {
             hasVerificationPolicy: verificationPolicy != nil,
             batchCompileEnabled: Self.compileBatchDecode)
             && supportsCompiledPrework(input: x)
-        if normalizationForTesting != nil || statePersistenceForTesting != nil {
+        let useStockSigmoidLookup = stockSigmoidLookupForTesting == true && b == 1 && l >= 17
+        if normalizationForTesting != nil || statePersistenceForTesting != nil
+            || stockSigmoidLookupForTesting != nil {
             precondition(b == 1 && keyHeadDim == 128 && valueHeadDim == 128
                 && verificationPolicy == nil,
                 "Normalization factorial is restricted to qualified single-slot AR")
@@ -3820,7 +3826,8 @@ private final class Qwen4ExpGatedDeltaNet: Module {
                 batchSize: b, width: l, compiled: useCompiled,
                 capturesBoundary: (cache as? Qwen4ExpLayerCache)?.prefillCapture != nil,
                 verification: verificationPolicy != nil,
-                referenceNormalization: normalizationForTesting == .reference))
+                referenceNormalization: normalizationForTesting == .reference,
+                stockSigmoidLookup: useStockSigmoidLookup))
         }
         if useCompiled {
             let convolutionState = cache?[0] ?? MLXArray.zeros(
@@ -3874,11 +3881,16 @@ private final class Qwen4ExpGatedDeltaNet: Module {
                 referencePrefillQKNormalization: normalizationForTesting.map { $0 == .reference }
                     ?? (referencePrefillQKNormalizationForTesting && b == 1
                         && l >= Qwen4ExpGatedDeltaPrework.minimumReferencePrefillSequenceLength),
-                referenceQKNormalizationAllWidthsForTesting: normalizationForTesting == .reference)
+                referenceQKNormalizationAllWidthsForTesting: normalizationForTesting == .reference,
+                stockSigmoidLookupForTesting: useStockSigmoidLookup)
             : nil
         if normalizationForTesting == .reference {
             precondition(fusedPrework != nil,
                 "Diagnostic must not silently fall back to ordinary normalization")
+        }
+        if useStockSigmoidLookup {
+            precondition(fusedPrework != nil,
+                "Diagnostic must not silently fall back to ordinary sigmoid")
         }
 
         let q: MLXArray
@@ -5572,6 +5584,14 @@ final class Qwen4ExpDecoderLayer: Module {
 
     func clearGatedDeltaNormalizationDispatchesForTesting() {
         linearAttention?.normalizationDispatchesForTesting.removeAll(keepingCapacity: true)
+    }
+
+    var gatedDeltaStockSigmoidLookupForTesting: Bool? {
+        get { linearAttention?.stockSigmoidLookupForTesting }
+        set {
+            precondition(isLinear)
+            linearAttention!.stockSigmoidLookupForTesting = newValue
+        }
     }
 
     var gatedDeltaStatePersistenceForTesting: Qwen4ExpGDNStatePersistenceForTesting? {

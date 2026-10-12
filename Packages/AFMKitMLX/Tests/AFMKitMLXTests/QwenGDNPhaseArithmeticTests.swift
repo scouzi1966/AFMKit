@@ -132,6 +132,186 @@ final class QwenGDNPhaseArithmeticTests: XCTestCase {
         }
     }
 
+    private func sigmoidInputs(width: Int, valueHeads: Int, dtype: DType) -> [MLXArray] {
+        let count = (2 + valueHeads) * headDimension
+        let identity = (0..<(count * convolutionKernel)).map {
+            Float($0 % convolutionKernel == convolutionKernel - 1 ? 1 : 0)
+        }
+        return [
+            MLXArray.zeros([1, width, count], dtype: dtype),
+            MLXArray.zeros([1, convolutionKernel - 1, count], dtype: dtype),
+            MLXArray(identity).reshaped(count, convolutionKernel, 1).asType(dtype),
+            MLXArray.zeros([1, width, valueHeads], dtype: dtype),
+            MLXArray.zeros([1, width, valueHeads], dtype: dtype),
+            MLXArray.zeros([valueHeads], dtype: dtype),
+            MLXArray.zeros([valueHeads], dtype: dtype),
+        ]
+    }
+
+    private func sigmoidPrework(
+        _ inputs: [MLXArray], valueHeads: Int, lookup: Bool?, reference: Bool = false
+    ) throws -> Qwen4ExpGatedDeltaPreworkOutput {
+        if let lookup {
+            return try XCTUnwrap(Qwen4ExpGatedDeltaPrework.call(
+                projected: inputs[0], prior: inputs[1], convolutionWeight: inputs[2],
+                projectedA: inputs[3], projectedB: inputs[4], aLog: inputs[5], dtBias: inputs[6],
+                keyHeads: 1, valueHeads: valueHeads, keyHeadDimension: headDimension,
+                valueHeadDimension: headDimension, convolutionKernel: convolutionKernel,
+                referencePrefillQKNormalization: reference,
+                referenceQKNormalizationAllWidthsForTesting: reference,
+                stockSigmoidLookupForTesting: lookup))
+        }
+        // Exercise the unchanged default argument separately from explicit off.
+        return try XCTUnwrap(Qwen4ExpGatedDeltaPrework.call(
+            projected: inputs[0], prior: inputs[1], convolutionWeight: inputs[2],
+            projectedA: inputs[3], projectedB: inputs[4], aLog: inputs[5], dtBias: inputs[6],
+            keyHeads: 1, valueHeads: valueHeads, keyHeadDimension: headDimension,
+            valueHeadDimension: headDimension, convolutionKernel: convolutionKernel,
+            referencePrefillQKNormalization: reference,
+            referenceQKNormalizationAllWidthsForTesting: reference))
+    }
+
+    private func preworkArrays(_ result: Qwen4ExpGatedDeltaPreworkOutput) -> [MLXArray] {
+        [result.queries, result.keys, result.values, result.convolutionState, result.gate, result.beta]
+    }
+
+    private func isNaN16(_ bits: UInt16, dtype: DType) -> Bool {
+        let exponent: UInt16 = dtype == .bfloat16 ? 0x7f80 : 0x7c00
+        let fraction: UInt16 = dtype == .bfloat16 ? 0x007f : 0x03ff
+        return bits & exponent == exponent && bits & fraction != 0
+    }
+
+    private func bitMismatches16(_ actual: MLXArray, _ expected: MLXArray) -> [Int] {
+        let a = actual.view(dtype: .uint16).asArray(UInt16.self)
+        let b = expected.view(dtype: .uint16).asArray(UInt16.self)
+        return zip(a, b).enumerated().compactMap { index, pair in
+            let equal = isNaN16(pair.1, dtype: expected.dtype)
+                ? isNaN16(pair.0, dtype: actual.dtype) : pair.0 == pair.1
+            return equal ? nil : index
+        }
+    }
+
+    private func assertBits16(
+        _ actual: MLXArray, _ expected: MLXArray, _ label: String,
+        file: StaticString = #filePath, line: UInt = #line
+    ) {
+        XCTAssertEqual(actual.shape, expected.shape, label, file: file, line: line)
+        XCTAssertEqual(actual.dtype, expected.dtype, label, file: file, line: line)
+        guard actual.shape == expected.shape, actual.dtype == expected.dtype else { return }
+        let mismatches = bitMismatches16(actual, expected)
+        XCTAssertEqual(mismatches.count, 0,
+            "\(label); first differing flat indices: \(Array(mismatches.prefix(8)))", file: file, line: line)
+    }
+
+    func testStockSigmoidLookupBetaCoversEvery16BitInputInActualPrework() throws {
+        try MLXMetalLibrary.ensureAvailable(verbose: false)
+        // 2,048 rows x 32 value heads covers every raw bit pattern once while
+        // keeping projected QKV at ~17 MiB per dtype, not 65,536 full rows.
+        let width = 2048, nv = 32
+        let bits = (0..<(1 << 16)).map { UInt16($0) }
+        for dtype: DType in [.bfloat16, .float16] {
+            var inputs = sigmoidInputs(width: width, valueHeads: nv, dtype: dtype)
+            inputs[4] = MLXArray(bits).view(dtype: dtype).reshaped(1, width, nv)
+            let expected = MLX.sigmoid(inputs[4])
+            eval(expected)
+            let table = try XCTUnwrap(Qwen4ExpGatedDeltaPrework.sigmoidTableForTesting(dtype: dtype))
+            XCTAssertEqual(table.shape, [1 << 16])
+            assertBits16(table, expected.reshaped(1 << 16), "table domain \(dtype)")
+            let ordinary = try sigmoidPrework(inputs, valueHeads: nv, lookup: false)
+            let stock = try sigmoidPrework(inputs, valueHeads: nv, lookup: true)
+            eval(preworkArrays(ordinary) + preworkArrays(stock))
+            assertBits16(stock.beta, expected, "exhaustive beta \(dtype)")
+            // Q/K/V have zero convolution input: sigmoid(0) is exactly 1/2.
+            // Neither scalar decay nor raw convolution history is intervened on.
+            for index in 0..<5 {
+                assertBits16(preworkArrays(stock)[index], preworkArrays(ordinary)[index],
+                    "beta-only sweep unchanged output \(index) \(dtype)")
+            }
+            let nanInputs = bits.filter { isNaN16($0, dtype: dtype) }.count
+            XCTAssertEqual(nanInputs, dtype == .bfloat16 ? 254 : 2046)
+            // Do not assert the reference source's historical -6.84375 result
+            // holds on this device/toolchain. Record what this sweep observes.
+            print("GDN_SIGMOID_BETA dtype=\(dtype) inputs=65536 nan_inputs=\(nanInputs) "
+                + "ordinary_vs_stock_bit_or_nan_class_mismatches=\(bitMismatches16(ordinary.beta, expected).count)")
+        }
+    }
+
+    func testStockSigmoidLookupSiLUMatchesIndependentFiniteConvolutionOracle() throws {
+        try MLXMetalLibrary.ensureAvailable(verbose: false)
+        let width = 17, nv = 32
+        let count = (2 + nv) * headDimension, valueCount = nv * headDimension
+        for dtype: DType in [.bfloat16, .float16] {
+            let exponent: UInt16 = dtype == .bfloat16 ? 0x7f80 : 0x7c00
+            var projectedBits = [UInt16](repeating: 0, count: width * count)
+            for index in 0..<(width * valueCount) {
+                let raw = UInt16(index % (1 << 16))
+                // Infinite inputs would produce 0*Inf at the zero convolution
+                // taps. Enumerate every finite value; cover nonfinite sigmoid
+                // inputs in the independent exhaustive beta test above.
+                let finite = raw & exponent == exponent ? UInt16(0) : raw
+                projectedBits[(index / valueCount) * count + 2 * headDimension + index % valueCount] = finite
+            }
+            var inputs = sigmoidInputs(width: width, valueHeads: nv, dtype: dtype)
+            inputs[0] = MLXArray(projectedBits).view(dtype: dtype).reshaped(1, width, count)
+            let convolved = MLX.conv1d(concatenated([inputs[1], inputs[0]], axis: 1),
+                inputs[2], groups: count)
+            eval(convolved)
+            let rawV = convolved[0..., 0..., (2 * headDimension)...]
+                .reshaped(1, width, nv, headDimension)
+            let sigmoidV = MLX.sigmoid(rawV)
+            eval(sigmoidV)
+            let expectedV = rawV * sigmoidV
+            eval(expectedV)
+            let ordinary = try sigmoidPrework(inputs, valueHeads: nv, lookup: false)
+            let stock = try sigmoidPrework(inputs, valueHeads: nv, lookup: true)
+            eval(preworkArrays(ordinary) + preworkArrays(stock))
+            assertBits16(stock.values, expectedV, "finite convolution SiLU \(dtype)")
+            for index in [0, 1, 3, 4, 5] {
+                assertBits16(preworkArrays(stock)[index], preworkArrays(ordinary)[index],
+                    "V-only sweep unchanged output \(index) \(dtype)")
+            }
+            print("GDN_SIGMOID_SILU dtype=\(dtype) finite_input_patterns="
+                + "\((1 << 16) - (dtype == .bfloat16 ? 256 : 2048)) "
+                + "ordinary_vs_stock_bit_or_nan_class_mismatches=\(bitMismatches16(ordinary.values, expectedV).count)")
+        }
+    }
+
+    func testStockSigmoidLookupWidthThresholdAndInterleavedOffControls() throws {
+        try MLXMetalLibrary.ensureAvailable(verbose: false)
+        let nv = 2, count = (2 + nv) * headDimension
+        let representatives: [Float] = [0, -Float.zero, -6.84375, 6.84375, -1, 1, -0.003, 0.003]
+        for dtype: DType in [.bfloat16, .float16] {
+            for width in [16, 17] {
+                var inputs = sigmoidInputs(width: width, valueHeads: nv, dtype: dtype)
+                inputs[0] = MLXArray((0..<(width * count)).map { representatives[$0 % representatives.count] })
+                    .reshaped(1, width, count).asType(dtype)
+                inputs[4] = MLXArray((0..<(width * nv)).map { representatives[$0 % representatives.count] })
+                    .reshaped(1, width, nv).asType(dtype)
+                eval(inputs)
+                let inputBytes = inputs.map { $0.asData(access: .copy).data }
+                for reference in [false, true] {
+                    let original = try sigmoidPrework(inputs, valueHeads: nv, lookup: nil, reference: reference)
+                    let off = try sigmoidPrework(inputs, valueHeads: nv, lookup: false, reference: reference)
+                    let on = try sigmoidPrework(inputs, valueHeads: nv, lookup: true, reference: reference)
+                    let offAgain = try sigmoidPrework(inputs, valueHeads: nv, lookup: false, reference: reference)
+                    let controls = [off, offAgain] + (width == 16 ? [on] : [])
+                    for control in controls {
+                        for (a, b) in zip(preworkArrays(control), preworkArrays(original)) {
+                            assertBits16(a, b, "off/threshold dtype=\(dtype) S=\(width) rms=\(reference)")
+                        }
+                    }
+                    assertBits16(on.gate, off.gate, "lookup never changes decay")
+                    assertBits16(on.convolutionState, off.convolutionState, "lookup never changes raw history")
+                    if width == 17 {
+                        assertBits16(on.beta, MLX.sigmoid(inputs[4]), "representative beta including signed zeros")
+                    }
+                    XCTAssertEqual(inputs.map { $0.asData(access: .copy).data }, inputBytes,
+                        "Lookup cannot own or mutate projected data or convolution history")
+                }
+            }
+        }
+    }
+
     private func checkArithmetic(uniformHeads: Bool) throws {
         try MLXMetalLibrary.ensureAvailable(verbose: false)
         for dtype: DType in [.bfloat16, .float16] {
