@@ -461,20 +461,20 @@ final class Qwen4ExpGatedResidual: Module {
                 verificationPolicy: nil, role: .hyperConnection)
         }
         let down = projectedDown[0..., ..<normalized.dim(1)]
-        let activated = silu(down / Float(hcCount))
+        let activated = Qwen4ExpHCActivation.silu(down / Float(hcCount))
         let up = qwen4ExpVerificationLinear(inputMixWeightUp, activated,
             verificationPolicy: nil, role: .hyperConnection)
         let mixed = Qwen4ExpHyperConnectionFusion.mixGroupedPrefill(
             up: up, normalized: normalized, groupSize: hiddenSize)
             ?? {
                 let shape = Array(normalized.shape.dropLast())
-                return (sigmoid(up).reshaped(shape + [hcCount, hiddenSize])
+                return (Qwen4ExpHCActivation.sigmoid(up).reshaped(shape + [hcCount, hiddenSize])
                     * normalized.reshaped(shape + [hcCount, hiddenSize])).mean(axis: -2)
             }()
         let injectionProjection = qwen4ExpVerificationLinear(
             blockInjectWeight!, normalized, verificationPolicy: nil,
             role: .hyperConnection)
-        let injection = 2 * sigmoid(injectionProjection / Float(hcCount))
+        let injection = 2 * Qwen4ExpHCActivation.sigmoid(injectionProjection / Float(hcCount))
         return [("hc_normalized", normalized), ("hc_down", down),
             ("hc_activated", activated), ("hc_up", up),
             ("hc_mixed", mixed), ("hc_injection", injection)]
@@ -503,17 +503,17 @@ final class Qwen4ExpGatedResidual: Module {
             inputMixWeightDown, normalized, verificationPolicy: verificationPolicy,
             role: .hyperConnection)
         let up = qwen4ExpVerificationLinear(
-            inputMixWeightUp, silu(down / Float(hcCount)),
+            inputMixWeightUp, Qwen4ExpHCActivation.silu(down / Float(hcCount)),
             verificationPolicy: verificationPolicy,
             role: .hyperConnection)
         let mixed = Qwen4ExpHyperConnectionFusion.mixGroupedPrefill(
             up: up, normalized: normalized, groupSize: hiddenSize)
             ?? {
                 let shape = Array(normalized.shape.dropLast())
-                return (sigmoid(up).reshaped(shape + [hcCount, hiddenSize])
+                return (Qwen4ExpHCActivation.sigmoid(up).reshaped(shape + [hcCount, hiddenSize])
                     * normalized.reshaped(shape + [hcCount, hiddenSize])).mean(axis: -2)
             }()
-        let injection = 2 * sigmoid(qwen4ExpVerificationLinear(
+        let injection = 2 * Qwen4ExpHCActivation.sigmoid(qwen4ExpVerificationLinear(
             blockInjectWeight!, normalized, verificationPolicy: verificationPolicy,
             role: .hyperConnection) / Float(hcCount))
         return (mixed, residual, injection)
@@ -527,7 +527,7 @@ final class Qwen4ExpGatedResidual: Module {
             inputMixWeightDown, normalized, verificationPolicy: verificationPolicy,
             role: .hyperConnection)
         let up = qwen4ExpVerificationLinear(
-            inputMixWeightUp, silu(down / Float(hcCount)),
+            inputMixWeightUp, Qwen4ExpHCActivation.silu(down / Float(hcCount)),
             verificationPolicy: verificationPolicy,
             role: .hyperConnection)
         if let fused = Qwen4ExpHyperConnectionFusion.mixGroupedPrefill(
@@ -536,7 +536,7 @@ final class Qwen4ExpGatedResidual: Module {
             return fused
         }
         let shape = Array(normalized.shape.dropLast())
-        return (sigmoid(up).reshaped(shape + [hcCount, hiddenSize])
+        return (Qwen4ExpHCActivation.sigmoid(up).reshaped(shape + [hcCount, hiddenSize])
             * normalized.reshaped(shape + [hcCount, hiddenSize])).mean(axis: -2)
     }
 

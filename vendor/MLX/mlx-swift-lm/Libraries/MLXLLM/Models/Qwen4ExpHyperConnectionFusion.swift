@@ -320,12 +320,13 @@ enum Qwen4ExpHyperConnectionFusion {
         """)
 
     // Materialized once on first use. Every UInt16 bit pattern is represented
-    // by the corresponding BF16 value before MLX computes the lookup result.
+    // by the corresponding BF16 value before the qualified HC sigmoid computes
+    // the lookup result, preserving the reference library's math mode.
     nonisolated(unsafe) private static let sigmoidTableBF16: MLXArray = {
         let values = (0 ..< (1 << 16)).map { index in
             Float(bitPattern: UInt32(index) << 16)
         }
-        let table = MLX.sigmoid(MLXArray(values).asType(.bfloat16))
+        let table = Qwen4ExpHCActivation.sigmoid(MLXArray(values).asType(.bfloat16))
         MLX.eval(table)
         return table
     }()
@@ -1119,7 +1120,7 @@ enum Qwen4ExpHyperConnectionFusion {
                     verificationPolicy: verificationPolicy, role: .hyperConnection)
             }
             let projectedDown = projection(quantizedDown, normalized)
-            let projectedUp = projection(quantizedUp, silu(projectedDown / Float(hcCount)))
+            let projectedUp = projection(quantizedUp, Qwen4ExpHCActivation.silu(projectedDown / Float(hcCount)))
             let mixed: MLXArray
             if input.dtype == .bfloat16 {
                 mixed = prefillMixKernel(
@@ -1133,7 +1134,7 @@ enum Qwen4ExpHyperConnectionFusion {
                 mixed = (sigmoid(projectedUp).reshaped(rows, hcCount, hiddenSize)
                     * normalized.reshaped(rows, hcCount, hiddenSize)).mean(axis: -2)
             }
-            let injection = 2 * sigmoid(projection(quantizedInject, normalized) / Float(hcCount))
+            let injection = 2 * Qwen4ExpHCActivation.sigmoid(projection(quantizedInject, normalized) / Float(hcCount))
             let leading = Array(input.shape.dropLast())
             return Qwen4ExpHyperConnectionFusionOutput(
                 mixed: mixed.reshaped(leading + [hiddenSize]),
