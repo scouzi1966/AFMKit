@@ -218,7 +218,7 @@ final class Qwen4ExpZeroCenteredRMSNorm: Module {
     @ParameterInfo(key: "weight") var weight: MLXArray
     let groupSize: Int
     let eps: Float
-    // Only an HC owner opts into its wide-prefill rounding contract. Generic
+    // Only an HC owner opts into its prefill rounding contract. Generic
     // grouped norms (including PLE) retain their existing arithmetic.
     let referenceHCPrefillNormalization: Bool
 
@@ -235,7 +235,7 @@ final class Qwen4ExpZeroCenteredRMSNorm: Module {
         _weight.wrappedValue = MLXArray.zeros([dimensions])
     }
 
-    func callAsFunction(_ x: MLXArray) -> MLXArray {
+    func callAsFunction(_ x: MLXArray, allowShortHCPrefill: Bool = false) -> MLXArray {
         let originalShape = x.shape
         if originalShape.last == groupSize {
             // Use the canonical optimized RMS kernel for a full-width group.
@@ -263,7 +263,8 @@ final class Qwen4ExpZeroCenteredRMSNorm: Module {
             normWeight: weight,
             groupSize: groupSize,
             epsilon: eps,
-            referenceHCRounding: referenceHCPrefillNormalization)
+            referenceHCRounding: referenceHCPrefillNormalization,
+            allowShortHCPrefill: allowShortHCPrefill)
         {
             return fused
         }
@@ -567,7 +568,8 @@ final class Qwen4ExpGatedResidual: Module {
             return (fused.mixed, input, fused.injection)
         }
         return mixNormalized(
-            hcNorm(input), residual: input, verificationPolicy: verificationPolicy)
+            hcNorm(input, allowShortHCPrefill: verificationPolicy == nil),
+            residual: input, verificationPolicy: verificationPolicy)
     }
 
     func mixAfterInjection(
@@ -654,7 +656,9 @@ final class Qwen4ExpGatedResidual: Module {
         {
             return fused.mixed
         }
-        return combineNormalized(hcNorm(input), verificationPolicy: verificationPolicy)
+        return combineNormalized(
+            hcNorm(input, allowShortHCPrefill: verificationPolicy == nil),
+            verificationPolicy: verificationPolicy)
     }
 
     func combineAfterInjection(

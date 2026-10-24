@@ -68,11 +68,12 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
         let model = try XCTUnwrap(context.model as? Qwen4ExpModel)
         var records = [[String: Any]]()
         var prefixStateHashes = [String]()
+        var productionScoreBytes = [Data]()
         func writeReport() throws {
             let report: [String: Any] = [
                 "fixture_sha256": digest(data), "records": records,
                 "checkpoint": fixture.model,
-                "scope": "Diagnostic raw logits on reference teacher prefixes. Default production split30+1 versus test-only whole-model final31; a third joined arm rounds persistent GDN state to BF16 values between forwards while retaining FP32 buffers and AFM dispatch. No generated tools, sampling, task quality or performance claim.",
+                "scope": "Diagnostic raw logits on reference teacher prefixes. Production split30+1, joined final31, and BF16 state-value counterfactuals. A reconstructed split must exactly reproduce production before its state intervention is interpreted. FP32 buffers and AFM dispatch are retained. No generated tools, sampling, task quality or performance claim.",
                 "reference_state_limit": "Reference captures use its own default state policy; changing tail geometry does not align every numerical policy.",
                 "test_executable_sha256": digest(try Data(contentsOf:
                     XCTUnwrap(Bundle(for: Self.self).executableURL))),
@@ -80,8 +81,10 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
             try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys])
                 .write(to: root.appendingPathComponent("report.json"), options: .atomic)
         }
-        for arm in ["production-split", "joined-final31", "joined-final31-bf16-state"] {
-            let roundState = arm == "joined-final31-bf16-state"
+        for arm in ["production-split", "joined-final31", "joined-final31-bf16-state",
+                    "reconstructed-split", "reconstructed-split-bf16-state"] {
+            let roundState = arm.hasSuffix("bf16-state")
+            let splitTail = arm.hasPrefix("reconstructed-split")
             var cache: [KVCache] = []
             var next: MLXArray?
             func persistState() throws {
@@ -126,10 +129,15 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
                                    prefixStateHashes, "Both arms must start the tail from identical states")
                     try persistState()
                     let tail = Array(history.tokens[boundary...])
-                    let result = model(LMInput.Text(tokens: MLXArray(tail)[.newAxis]), cache: cache,
-                                       state: nil, hostTokenIDs: model.consumesHostTokenIDs ? tail : nil)
-                    XCTAssertNil(result.state)
-                    next = result.logits[0, -1].asType(.float32)
+                    let chunks = splitTail ? [Array(tail.dropLast()), [try XCTUnwrap(tail.last)]] : [tail]
+                    for chunk in chunks {
+                        let result = model(LMInput.Text(tokens: MLXArray(chunk)[.newAxis]), cache: cache,
+                                           state: nil, hostTokenIDs: model.consumesHostTokenIDs ? chunk : nil)
+                        XCTAssertNil(result.state)
+                        next = result.logits[0, -1].asType(.float32)
+                        eval(try XCTUnwrap(next), cache)
+                        try persistState()
+                    }
                 }
                 eval(try XCTUnwrap(next), cache)
                 // Startup retains production geometry/precision in every arm.
@@ -145,6 +153,12 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
                 let reference = try XCTUnwrap(loadArrays(url: URL(fileURLWithPath: row.scores))["raw_decision_logits"])
                     .reshaped(-1).asType(.float32)
                 eval(actual, reference)
+                if arm == "production-split" {
+                    productionScoreBytes.append(actual.asData(access: .copy).data)
+                } else if arm == "reconstructed-split" {
+                    XCTAssertEqual(actual.asData(access: .copy).data, productionScoreBytes[index],
+                                   "Reconstructed split must reproduce the real preparation path at decision \(index)")
+                }
                 let a = actual.asArray(Float.self), r = reference.asArray(Float.self)
                 XCTAssertEqual(a.count, 248320)
                 XCTAssertEqual(a.count, r.count)

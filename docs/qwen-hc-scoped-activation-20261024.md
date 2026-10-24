@@ -517,3 +517,47 @@ and attempted fixed-length request, response, launch command, and server log.
 This candidate remains unpromoted. The combined HC/output-gate intervention
 must first pass native component and common-prefix diagnostics, then be judged
 by actual coding outcomes rather than an isolated shorter answer.
+
+## Combined HC/output-gate correction and state/chunk factorial
+
+Reapply only the bounded short-HC runtime/test correction from `c6c432c9`
+on top of `7a0065bd`. This is a new interaction experiment, not a reversal of
+the short-HC-only acceptance decision. No serving state precision, prefill
+chunk policy, MTP behavior, CLI option or environment default is changed.
+
+`qwen-output-gate-hc-interaction-tests-20261024.log`: 14 tests pass. The HC
+and output-gate fixtures remain bit-exact, and the ordinary/compiled GDN
+continuation control passes. Build: 308.97 seconds; tests: 23.20 seconds.
+The production common-prefix score comparison is 56/57; joined final31 is
+56/57; joined final31 with BF16 state values reaches 57/57, with unique winners.
+
+The follow-up completes the chunk/state factorial. Before interpreting its
+state intervention, a manually reconstructed split30+1 path must reproduce
+**every byte of all 57 production score tensors**. That control passes.
+
+| Diagnostic chunk policy | Persistent GDN values | Raw winner overlap | Disjoint decisions |
+|---|---|---:|---|
+| Actual production split30+1 | FP32 | 56/57 | 7 |
+| Reconstructed split30+1 | FP32 | 56/57 | 7 |
+| Reconstructed split30+1 | BF16-rounded | 56/57 | 43 |
+| Joined final31 | FP32 | 56/57 | 7 |
+| Joined final31 | BF16-rounded | 57/57 | None |
+
+The split/BF16 arm also has a tie at decision 39; the joined/BF16 arm has no
+ties. Rounding alone removes decision 7's mismatch but introduces a later one.
+This identifies an interaction on this fixture; it does not establish that
+the complete native runtime has been replicated or that coding quality is fixed.
+
+The checkpoint declares `text_config.mamba_ssm_dtype=float32`, and AFM uses
+FP32 state. Reference `src/model.zig:ModelConfig.ssmStateDtype` chooses BF16
+for non-Hadamard packs. The test deliberately retains FP32 buffers/dispatch
+while rounding state values between forwards. Its startup54 is unchanged.
+This counterfactual avoids conflating arithmetic with a different kernel path,
+but is not the reference's full storage/runtime policy. Do not silently change
+serving precision based on this result.
+
+`qwen-output-gate-hc-state-factorial-tests-20261024.log`: one diagnostic passes,
+94.81-second incremental build, 36.47-second execution. All five arms, input
+hashes, raw scores and source bindings are retained in
+`QwenOutputGateHCStateFactorialScores20261024`. Next: API qualification of the
+combined arithmetic correction with unchanged serving precision/chunking.
