@@ -350,3 +350,30 @@ Artifacts: `QwenHCTailQualification20261024/REPORT.md`, `analysis.json`,
 `QwenHCTailCandidateBinary20261024/PROVENANCE.json`. The five-versus-five task
 results above belong to `eb9acc43`, not the rejected candidate. Main and the
 installed release were not modified.
+
+## Recurrence source/compiler control after restoring the baseline
+
+`diagnose-gdn-recurrence-source-20261024.py` executes AFM's packed recurrence
+source and the pinned reference's stock/blocked recurrence source in the same
+reference MLX-C runtime. All inputs are shared checkpoint-derived prework;
+both arms deliberately use FP32 state. Widths 17, 30, 64, 128 and 256 each
+have zero and nonzero initial-state controls. This isolates reduction order
+from state-storage precision; it is not the reference's complete model policy.
+
+`QwenGDNRecurrenceSourceTests` then runs the ten saved fixtures through AFM's
+actual `gatedDeltaKernel` dispatch. All output and final-state values agree
+exactly with the independently executed AFM-source control. At widths 17 and
+30, they also agree exactly with the reference recurrence. At 64–256, the
+blocked reference reduction differs in 9–97 output elements per fixture
+(393,216–1,572,864 values), with maximum output difference 0.00048828125.
+Final FP32-state differences have maximum absolute magnitude 0.000001669.
+
+`qwen-gdn-recurrence-production-20261024.log`: two tests passed, including the
+existing compiled-decode continuation test. Build: 301.44 seconds; tests:
+0.184 seconds. Fixtures and source hashes live in
+`QwenGDNRecurrenceSource20261024/analysis.json` under the artifact root.
+
+This does not establish whole-model or coding parity. It rules out a large
+recurrence formula/dispatch discrepancy on these bounded same-precision
+fixtures. The active runtime remains the restored `eb9acc43` implementation;
+no recurrence, precision, CLI or default policy was changed for this control.
