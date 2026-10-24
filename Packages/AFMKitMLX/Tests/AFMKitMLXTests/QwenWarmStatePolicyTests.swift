@@ -27,6 +27,7 @@ final class QwenWarmStatePolicyTests: XCTestCase {
         let files: [String: String]
         let expected_control_counts: [Int]
         let max_tokens: Int
+        let arms: [String]?
     }
     private let prefillStep = 8192
     private let backoff = 31
@@ -93,20 +94,26 @@ final class QwenWarmStatePolicyTests: XCTestCase {
             ], options: [.prettyPrinted, .sortedKeys])
                 .write(to: root.appendingPathComponent("report.json"), options: .atomic)
         }
-        for arm in ["production", "reconstructed-split", "split-bf16-state",
-                    "joined-tail", "joined-tail-bf16-state"] {
+        let defaultArms = ["production", "reconstructed-split", "split-bf16-state",
+                           "joined-tail", "joined-tail-bf16-state"]
+        let arms = fixture.arms ?? defaultArms
+        XCTAssertEqual(Array(arms.prefix(2)), ["production", "reconstructed-split"])
+        XCTAssertEqual(Set(arms).count, arms.count)
+        XCTAssertTrue(Set(arms).isSubset(of: Set(defaultArms + ["joined-tail-bf16-storage"])))
+        for arm in arms {
             let roundState = arm.hasSuffix("bf16-state")
+            let bf16Storage = arm.hasSuffix("bf16-storage")
             let joined = arm.hasPrefix("joined-tail")
             let radix = RadixTreeCache(modelID: "warm-state-diagnostic-" + arm)
             func persist(_ cache: [KVCache]) throws {
-                guard roundState else { return }
+                guard roundState || bf16Storage else { return }
                 let layers = cache.compactMap { $0 as? Qwen4ExpLayerCache }
                 XCTAssertEqual(layers.count, 36)
                 for layer in layers {
                     let state = try XCTUnwrap(layer[1])
-                    XCTAssertEqual(state.dtype, .float32)
+                    XCTAssertEqual(state.dtype, bf16Storage ? .bfloat16 : .float32)
                     // Retain FP32 storage and dispatch; isolate stored values.
-                    layer[1] = state.asType(.bfloat16).asType(.float32)
+                    if roundState { layer[1] = state.asType(.bfloat16).asType(.float32) }
                 }
                 eval(cache)
             }
@@ -157,6 +164,13 @@ final class QwenWarmStatePolicyTests: XCTestCase {
                     }
                     for layer in cache where layer.isTrimmable && layer.offset > 0 && !(layer is RotatingKVCache) {
                         layer.truncateToOffset()
+                    }
+                } else if bf16Storage {
+                    let recurrent = cache.compactMap { $0 as? Qwen4ExpLayerCache }
+                    XCTAssertEqual(recurrent.count, 36)
+                    for layer in recurrent {
+                        XCTAssertNil(layer[1])
+                        layer[1] = MLXArray.zeros([1, 48, 128, 128], dtype: .bfloat16)
                     }
                 }
                 var boundaries = [Int]()

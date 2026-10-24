@@ -657,3 +657,18 @@ The Release diagnostic passes one test with both controls enforced:
 `QwenWarmStatePolicyScores20261024`, its `api-control-semantics.json`, fixture
 with 89 hash bindings, and `qwen-warm-state-policy-tests-20261024.log`.
 No serving runtime or default was changed by this diagnostic.
+
+The actual-storage follow-up initializes the recurrent buffers as BF16 before
+the first request and retains that dtype through each restored prefix and
+decode. This changes AFM's prefill dispatch: the current packed kernel admits
+FP32 state only. Both original controls pass again. The BF16-storage arm emits
+61, 72, 274, 80 and 1,354 tokens, with **every generated ID identical** to the
+joined-tail/BF16-value-rounding arm above. Changing the buffer dtype does not
+close the remaining difference on these histories. This is not justification
+for a serving precision change or a performance claim.
+
+`QwenWarmBF16StorageScores20261024` retains the outputs; the test passes in
+94.24 seconds after a 96.21-second incremental build. Its fixture explicitly
+selects three arms, requires the production/reconstructed controls first, and
+rejects unknown or duplicate arm names. The earlier five-arm fixture/results
+remain unchanged.
