@@ -136,3 +136,59 @@ compiled HC state/continuation and request-budget tests also pass. This is
 neither a new performance baseline nor proof that coding loops are resolved.
 Log: `qwen-gdn-native-arithmetic-tests-retry-20261024.log`; component results:
 `QwenGDNPreworkOracle20261024/afm-native-arithmetic-results.json`.
+
+
+## Integrated GDN candidate: not accepted
+
+Candidate `a3de3d1675420ed95347024ad3ca379f934471dc`, consumer
+`6839b0566dbd166f11ad4203db9568165ac8ff49`, binary SHA-256
+`6dfb6764598be8364f367bc533ddebfaac63c04bec1882aa9909fc45397193d4`
+completed all five saved requests with calls, but did not recover the preserved
+control or reference behavior. Results (output tokens / HTTP seconds):
+
+| Request | Reference | Preserved HC | HC + GDN candidate |
+|---|---:|---:|---:|
+| 1 | 72 / 6.61 | 58 / 6.12 | 59 / 6.40 |
+| 2 | 67 / 1.88 | 79 / 2.14 | 70 / 2.04 |
+| 3 | 84 / 2.08 | 181 / 3.70 | 626 / 10.80 |
+| 4 | 123 / 2.46 | 74 / 1.72 | 335 / 6.02 |
+| 5 | 1,824 / 29.13 | 4,030 / 65.72 | 6,256 / 101.10 |
+
+The final response repeated sections of planned code. Do not promote this
+candidate based on its primitive test results. All normalized request hashes
+agree; tools were not executed. Artifacts: `QwenGDNNativeFive20261024`.
+
+A separate final-request cap of 512 tokens, preserving the first four request
+limits at 16,384, took 9.095 seconds for preserved HC, 9.136 seconds for this
+candidate, and 8.825 seconds for the reference. AFM's native generation rates
+were 62.70 and 62.61 tok/s respectively; the reference profile did not expose
+native generation timing. Both engines reused 7,927/8,698 input tokens according
+to their server logs. This single-observation latency diagnostic does not qualify
+quality or statistical performance. Report: `QwenGDN512-comparison-20261024.md`.
+The initial reference launch failed before starting inference because the harness
+was pointed at an AFM-only archive. Its log is preserved; the successful retry
+uses the established reference archive and identical saved input messages.
+
+Inspection after this failed candidate found incomplete call-site integration:
+`makeCompiledDecode` still called prework with the legacy default. The ordinary
+prefill/verifier call site selected native normalization, but production compiled
+single-token decode did not. The helper oracle therefore did not establish that
+the serving decoder actually used the candidate arithmetic. The next test must
+compare the real compiled one-token block with the ordinary block, including
+persistent state, before another whole-model acceptance run.
+
+
+The new `QwenGDNCompiledArithmeticTests` first reproduced eight assertion
+failures: output and recurrent state differed at each of four continuation steps
+for BF16/128-head geometry. FP16/128 and BF16/64 controls passed. After wiring
+the same normalization policy into `makeCompiledDecode`, all comparisons pass
+exactly. Existing tests for batch row removal/reordering, compile eligibility,
+and compiled verification rollback also pass (3/3). Tests use the actual compiled
+model block, not only the prework helper. This fixes the experimental call-site
+inconsistency; full-model behavioral acceptance remains pending.
+
+Evidence: `qwen-gdn-compiled-red-retry-20261024.log`,
+`qwen-gdn-compiled-green-20261024.log`, and
+`qwen-gdn-compiled-regression-20261024.log`. The first test compilation had an
+async/autoclosure error in fixture construction, corrected before the red run;
+its separate `qwen-gdn-compiled-red-20261024.log` is retained.

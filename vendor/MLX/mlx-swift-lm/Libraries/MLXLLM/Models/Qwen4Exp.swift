@@ -3547,7 +3547,13 @@ private final class Qwen4ExpGatedDeltaNet: Module {
                     valueHeads: self.valueHeads,
                     keyHeadDimension: self.keyHeadDim,
                     valueHeadDimension: self.valueHeadDim,
-                    convolutionKernel: self.convKernel)
+                    convolutionKernel: self.convKernel,
+                    // Match the ordinary prefill/verifier path. Leaving this
+                    // at the helper's legacy default changes Q/K arithmetic
+                    // when the same sequence enters compiled decode.
+                    referenceArithmetic: Qwen4ExpGatedDeltaPrework.usesReferenceArithmetic(
+                        dtype: x.dtype, keyHeadDimension: self.keyHeadDim,
+                        valueHeadDimension: self.valueHeadDim))
                 precondition(
                     prework != nil,
                     "compiled Qwen GDN decode requires the fused one-token prework")
