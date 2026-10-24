@@ -4052,14 +4052,27 @@ public final class MLXModelService:
                         }).output
                 }
             }
+            let wantsReasoningBudget = templateInjectedThink
+                && (context.model is Qwen4ExpModel || context.model is Qwen4ExpVL)
+                && QwenReasoningBudgetPolicy.tokenLimit(context: scratch.userInput.additionalContext) != nil
+                && QwenReasoningBudgetPolicy.supports(parameters: params)
+            let budgetInput = wantsReasoningBudget ? QwenReasoningBudgetPolicy.iteratorInput(
+                generateInput, hasPreparedPrefill: preparedPrefill != nil) : nil
+            let reasoningBudget = try QwenReasoningBudgetPolicy.make(
+                context: scratch.userInput.additionalContext,
+                isQwenNext: budgetInput != nil && (context.model is Qwen4ExpModel || context.model is Qwen4ExpVL),
+                templateOpenedThink: templateInjectedThink, parameters: params,
+                terminalTokenIDs: context.configuration.resolvedEOSTokenIds(tokenizer: context.tokenizer),
+                encode: { context.tokenizer.encode(text: $0) })
             let generationIterator = try TokenIterator(
-                input: generateInput,
+                input: reasoningBudget == nil ? generateInput : budgetInput!,
                 model: context.model,
                 cache: generationCache,
                 parameters: params,
                 processorPrompt: cachedTokenCount > 0 ? MLXArray(inputTokens) : nil,
                 preparedPrefill: preparedPrefill,
-                promptBoundaryObserver: promptBoundaryObserver
+                promptBoundaryObserver: promptBoundaryObserver,
+                reasoningBudget: reasoningBudget
             )
             let (generationStream, generationTask) = MLXLMCommon.generateTask(
                 promptTokenCount: generateInput.text.tokens.size,
@@ -5134,15 +5147,28 @@ public final class MLXModelService:
                                     }).output
                             }
                         }
+                        let wantsReasoningBudget = templateInjectedThink
+                            && (context.model is Qwen4ExpModel || context.model is Qwen4ExpVL)
+                            && QwenReasoningBudgetPolicy.tokenLimit(context: streamScratch.userInput.additionalContext) != nil
+                            && QwenReasoningBudgetPolicy.supports(parameters: params)
+                        let budgetInput = wantsReasoningBudget ? QwenReasoningBudgetPolicy.iteratorInput(
+                            generateInput, hasPreparedPrefill: preparedPrefill != nil) : nil
+                        let reasoningBudget = try QwenReasoningBudgetPolicy.make(
+                            context: streamScratch.userInput.additionalContext,
+                            isQwenNext: budgetInput != nil && (context.model is Qwen4ExpModel || context.model is Qwen4ExpVL),
+                            templateOpenedThink: templateInjectedThink, parameters: params,
+                            terminalTokenIDs: context.configuration.resolvedEOSTokenIds(tokenizer: context.tokenizer),
+                            encode: { context.tokenizer.encode(text: $0) })
                         do {
                             generationIterator = try TokenIterator(
-                                input: generateInput,
+                                input: reasoningBudget == nil ? generateInput : budgetInput!,
                                 model: context.model,
                                 cache: generationCache,
                                 parameters: params,
                                 processorPrompt: streamCachedTokens > 0 ? MLXArray(inputTokens) : nil,
                                 preparedPrefill: preparedPrefill,
-                                promptBoundaryObserver: promptBoundaryObserver
+                                promptBoundaryObserver: promptBoundaryObserver,
+                                reasoningBudget: reasoningBudget
                             )
                         } catch {
                             if debugLogging {
