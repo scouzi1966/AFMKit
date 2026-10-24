@@ -561,3 +561,99 @@ serving precision based on this result.
 hashes, raw scores and source bindings are retained in
 `QwenOutputGateHCStateFactorialScores20261024`. Next: API qualification of the
 combined arithmetic correction with unchanged serving precision/chunking.
+
+## Combined-correction serving qualification: not accepted
+
+The `12a44c24` provider was built with consumer `6839b056`. Frozen binary
+`QwenOutputGateHCCandidateBinary20261024/afm` has SHA-256
+`a597e2135d9f4ff067a0fb078961839972797f123817a053c113c9014fe569a6`.
+Neither main nor the installed AFM was changed. The checkpoint remains
+`/Volumes/edata2/models/qualification/Qwen3.8-Flash-Next-ddalcu-vision-overlay-20261001`.
+
+The five saved API histories generated 58, 56, 523, 233 and 179 tokens
+(1,049 total; 25.559 seconds summed HTTP time). These were independent saved
+histories, not an executed coding task: the fifth response inspects files
+instead of implementing the reference response's work. Its shorter length
+was not accepted as a productivity win.
+
+The subsequent fresh Orbital pair used pinned Codex 0.162.1, greedy sampling,
+MTP off, thinking on, prefix cache enabled, and the established
+180k-output-token/60-minute/240-request limits. Tools and their results were
+preserved; each engine started in a fresh task directory.
+
+| Engine | Elapsed seconds | Output tokens | Requests | Project checks | Native decode tok/s | Prefill seconds |
+|---|---:|---:|---:|---:|---:|---:|
+| AFM candidate | 1,110.15 | 61,721 | 58 | 8/11 | 61.10 | 57.37 |
+| Frozen reference | 544.12 | 33,140 | 24 | 11/11 | Not logged | Not logged |
+
+AFM took 2.0403 times as long and generated 1.8624 times as many tokens.
+This is one exploratory pair, not a new five-run distribution, and does not
+prove which arithmetic change caused the outcome. It is insufficient for
+promotion. The earlier five-run baseline and every preserved binary remain
+available; no result has been replaced by this sample.
+
+The AFM failures were an insufficient rendered scene, failed raycast selection,
+and a browser exception from a negative animation delta. Both engines had zero
+API errors. AFM generation consumed 1,010.17 seconds, about 91% of task time;
+1,519,702 of 1,564,942 reported prompt tokens were cached. Its trace contains
+repetitive late self-checking, including one 5,282-token inspection response.
+The cache worked on this task; the dominant expense was extra generation.
+There were zero detected forced reasoning transitions for AFM and one for the
+reference. Do not equate the reference's HTTP token rate with native decode.
+
+An opening-request audit found identical model-visible input and identical
+semantic opening responses across the five `eb9acc43` baseline processes.
+The combined candidate changes the opening reasoning wording but retains the
+same first tool call. Later histories contain changing shell timings/IDs and
+different model actions. This does not support blaming the five-run variance
+on random opening answers or claiming identical later prompts.
+
+Evidence under the existing external evaluation root:
+
+- `QwenOutputGateHCOrbitalPair20261024/REPORT.md`, `analysis.json`,
+  `report-sha256.json`, launch pins and all request/response artifacts.
+- `OrbitalOutputGateHCAFM20261024` and
+  `OrbitalOutputGateHCReference20261024`: full projects and independent checks.
+- `QwenOutputGateHCFive20261024`: fixed-history API diagnostic.
+
+## Warm-cache state/chunk factorial: controls qualified, no default change
+
+`QwenWarmStatePolicyTests` adds a test-only diagnostic using five captured native
+AFM prompt-ID histories. It restores the actual radix boundaries
+0, 6630, 7225, 7755 and 7927, generates between restores, and retains each
+response's prompt-backoff snapshot. It does not execute emitted tools or feed
+newly generated text into the subsequent frozen history.
+
+The production control reproduces all five current API output counts.
+External comparison also verifies exact reasoning text and parsed tool names
+and arguments for all five. The reconstructed split path reproduces every
+generated control token ID. This is stronger than matching response length
+alone. It is not a complete SSE lifecycle comparison.
+
+| Test-only policy | R1 | R2 | R3 | R4 | R5 |
+|---|---:|---:|---:|---:|---:|
+| Production split, FP32 state | 58 | 56 | 523 | 233 | 179 |
+| Reconstructed split, FP32 state | 58 | 56 | 523 | 233 | 179 |
+| Split, BF16-rounded state values | 63 | 79 | 128 | 485 | 2048, capped |
+| Joined tail, FP32 state | 63 | 51 | 458 | 96 | 2048, capped |
+| Joined tail, BF16-rounded state values | 61 | 72 | 274 | 80 | 1354 |
+| Saved reference API responses | 72 | 67 | 84 | 123 | 1824 |
+
+Counts describe different generated responses, not equivalent accomplished
+work. The alternative policies do not reproduce the reference responses.
+The earlier 57/57 cold-prefix winner agreement therefore does not generalize
+to these warm histories. Neither precision nor chunking is approved as a
+serving-default change from this experiment.
+
+Limitations: the BF16 intervention rounds stored values while retaining FP32
+buffers and dispatch; it is not the full native BF16-storage implementation.
+The captured startup prompt is known, but its historical four generated IDs
+were not recorded; the test generates four fresh startup tokens. Alternate
+responses are bounded at 2,048 tokens and API reasoning-budget transitions are
+not simulated. The actual API control's responses are all below that bound.
+
+The Release diagnostic passes one test with both controls enforced:
+308.25-second build, 208.06-second test. Evidence is
+`QwenWarmStatePolicyScores20261024`, its `api-control-semantics.json`, fixture
+with 89 hash bindings, and `qwen-warm-state-policy-tests-20261024.log`.
+No serving runtime or default was changed by this diagnostic.
