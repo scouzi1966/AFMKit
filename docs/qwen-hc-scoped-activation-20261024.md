@@ -377,3 +377,47 @@ This does not establish whole-model or coding parity. It rules out a large
 recurrence formula/dispatch discrepancy on these bounded same-precision
 fixtures. The active runtime remains the restored `eb9acc43` implementation;
 no recurrence, precision, CLI or default policy was changed for this control.
+
+## Current common-prefix scores: tail scheduling and state precision
+
+`QwenNativePrefixGeometryTests` reuses the validated native cold-R2 capture
+from October 12, on the same checkpoint and exact 7,255 input token IDs.
+The native capture's on/off and historical semantic controls are verified,
+and the diagnostic binds 75 files by SHA-256, including source, native binary,
+libraries, model descriptors and all 57 raw score tensors. These are preserved
+native captures, not a newly timed reference run. Only native-emitted tokens
+are fed back; the final terminal decision is compared but never fed.
+
+| Current AFM diagnostic arm | Raw winning-token sets overlap reference | Disjoint decision indices (zero-based) |
+|---|---:|---|
+| Production split: final 30 tokens then singleton | 52/57 | 7, 29, 30, 39, 43 |
+| Test-only joined final 31 tokens | 54/57 | 7, 29, 43 |
+| Joined final 31, BF16 persistent-state values | 54/57 | 7, 29, 30 |
+
+All arms use the same production startup54 and identical cold-prefix cache
+contents before the tail intervention. The third arm rounds only GDN state
+after the cold prefix, final tail and each subsequent singleton; buffers
+remain FP32 to keep AFM dispatch unchanged. It is a numerical counterfactual,
+not a complete port of the reference's storage/kernel policies. It does not
+change convolution, PLE or attention caches, and does not change serving code.
+
+At decision 7 the reference prefers token 13, while all AFM arms prefer token
+310. AFM's margin over token 13 is 0.5, 0.375 and 0.25 respectively. The reference
+selected token is a raw winner in every one of the 57 native rows, so an
+unobserved native sampling mask is not needed to explain these comparisons.
+Raw score agreement is not coding quality and neither intervention resolves
+the first difference. No scheduling or precision default is promoted.
+
+The first two arms were run again when adding the state control. All 57 raw
+score tensors per arm reproduce exactly (dtype, shape and payload); archive
+byte ordering differs because tensor dictionary serialization order is not
+stable. This distinction is checked explicitly rather than mistaking archive
+SHA differences for numerical nondeterminism.
+
+Logs: `qwen-current-native-prefix-geometry-retry-20261024.log` (one diagnostic,
+16.487 seconds), `qwen-current-native-prefix-state-20261024.log` (one diagnostic,
+23.018 seconds; incremental build 92.73 seconds). The initial compile failed
+on a missing explicit `self` in the new test closure; that original log is
+retained. Reports and all score vectors are in
+`QwenCurrentNativePrefixGeometry20261024` and `QwenCurrentNativePrefixState20261024`.
+Fixture preparation: `prepare-current-native-prefix-fixture-20261024.py`.
