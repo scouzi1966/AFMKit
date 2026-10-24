@@ -421,3 +421,39 @@ on a missing explicit `self` in the new test closure; that original log is
 retained. Reports and all score vectors are in
 `QwenCurrentNativePrefixGeometry20261024` and `QwenCurrentNativePrefixState20261024`.
 Fixture preparation: `prepare-current-native-prefix-fixture-20261024.py`.
+
+## GDN output gate: new source discrepancy and candidate correction
+
+The reference's `GDN_NORMGATE_SOURCE` switches to its MLX sigmoid lookup at
+S >= 17 and fuses the output RMS normalization/gate for prefill. AFM's output
+gate retained inline fast exp through width 32 and a composed MLX fallback
+above it. The already qualified precise HC activation had not been applied to
+this separate output-gate call site.
+
+`capture-gdn-output-gate-oracle-20261024.py` executes the exact native kernel
+in the frozen native MLX-C library. Inputs combine saved shared recurrence
+stimuli with checkpoint-derived Z projections and norm weights; this isolates
+the output gate, and is not a full-layer capture. An additional synthetic
+case covers every finite BF16 gate value. On the unchanged runtime the native
+comparison fails six cases: 14/104,448 and 24/184,320 output values differ at
+widths 17/30, and 55, 91 and 173 values differ at widths 64/128/256. Widths 1
+and 8 match. The synthetic finite sweep has exactly one differing value.
+
+The candidate reuses the qualified precise sigmoid table and extends the
+existing fused gate only to single-sequence BF16 sigmoid-gated prefills with
+128-wide heads. Narrow decode retains its inline arithmetic; non-BF16,
+batched and other head widths retain fallback, and wide swish gates remain
+excluded. There is no state precision change or new runtime option. The table
+is immutable and evaluated once. Fusion removes separate prefill norm/gate
+temporaries; actual serving performance still requires measurement.
+
+`qwen-gdn-output-gate-red-20261024.log` retains the six baseline failures.
+`qwen-gdn-output-gate-green-retry-20261024.log`: five tests pass, with exact
+agreement on all 3,201,024 output-gate values, a small always-running numerical
+regression test, scope controls, compiled-decode continuation and recurrence
+source controls. A test-only scalar argument compile error in the initial
+green build is retained in its original log. No assertion was relaxed.
+
+This candidate is not yet a demonstrated coding-quality or serving-speed
+improvement. The preserved `270adc06…` binary remains the serving baseline
+until the candidate's score, fixed-request and timing gates are evaluated.
