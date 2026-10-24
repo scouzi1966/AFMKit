@@ -336,8 +336,7 @@ enum Qwen4ExpHyperConnectionFusion {
         normWeight: MLXArray,
         groupSize: Int,
         epsilon: Float,
-        referenceHCRounding: Bool = false,
-        allowShortHCPrefill: Bool = false
+        referenceHCRounding: Bool = false
     ) -> MLXArray? {
         guard prefillNormalizationEnabled,
               Device.defaultDevice().deviceType == .gpu,
@@ -353,14 +352,7 @@ enum Qwen4ExpHyperConnectionFusion {
         let rows = input.size / input.dim(-1)
         let threadCount = prefillReferenceNormGeometryEnabled
             ? groupSize / 4 : 256
-        // The reference HC prefill kernel also covers cached prompt tails
-        // above the singleton/verification envelope (hc_prefill.zig: S > 16).
-        // Require an HC owner, ordinary prefill, BF16, and one sequence; do not
-        // change generic/PLE norms, speculative verification, or batch rows.
-        let shortHCPrefill = allowShortHCPrefill && referenceHCRounding
-            && prefillReferenceNormGeometryEnabled && input.dtype == .bfloat16
-            && input.ndim == 3 && input.dim(0) == 1 && rows > maximumRows
-        guard rows >= 128 || shortHCPrefill,
+        guard rows >= 128,
               hcCount > 1, hcCount <= 8,
               threadCount >= 32, threadCount <= 1_024,
               threadCount.isMultiple(of: 32),

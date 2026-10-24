@@ -222,86 +222,10 @@ final class QwenHCPrefillReferenceNormalizationTests: XCTestCase {
         assertBitsEqual(defaultHelper, legacy, "Pure helper default does not widen HC scope")
         XCTAssertFalse(arrayEqual(legacy, input).item(Bool.self),
                        "Scope fixture must distinguish old and staged BF16 arithmetic")
-        // An HC tag alone does not change singleton/verification arithmetic.
+        // An HC tag does not change singleton/tail fallback arithmetic.
         for width in [1, 23, 30, 31, 127] {
             let short = input[0..., 0..<width, 0...]
             assertBitsEqual(hcNorm(short), generic(short), "Unchanged short width \(width)")
-        }
-    }
-
-    func testShortPrefillRequiresExplicitHCOwnerAndPreservesOtherPaths() throws {
-        try requireDefaultGPUPath()
-        let hidden = 256
-        for rows in [17, 23, 30, 31, 64, 127] {
-            let weight = normWeights(hidden: hidden, dtype: .bfloat16)
-            let input = values(rows * hc * hidden, modulus: 251, divisor: 32, dtype: .bfloat16)
-                .reshaped(1, rows, hc * hidden)
-            let actual = try XCTUnwrap(Qwen4ExpHyperConnectionFusion.normalizeGroupedPrefill(
-                input: input, normWeight: weight, groupSize: hidden, epsilon: epsilon,
-                referenceHCRounding: true, allowShortHCPrefill: true))
-            assertBitsEqual(actual, stagedNorm(input, weight: weight, hidden: hidden),
-                            "Short HC prefill rows=\(rows)")
-            XCTAssertNil(Qwen4ExpHyperConnectionFusion.normalizeGroupedPrefill(
-                input: input, normWeight: weight, groupSize: hidden, epsilon: epsilon,
-                referenceHCRounding: false, allowShortHCPrefill: true), "PLE stays unchanged")
-            XCTAssertNil(Qwen4ExpHyperConnectionFusion.normalizeGroupedPrefill(
-                input: input, normWeight: weight, groupSize: hidden, epsilon: epsilon,
-                referenceHCRounding: true), "Verification stays unchanged")
-            for shape in [[rows, hc * hidden], [rows, 1, hc * hidden]] {
-                XCTAssertNil(Qwen4ExpHyperConnectionFusion.normalizeGroupedPrefill(
-                    input: input.reshaped(shape), normWeight: weight,
-                    groupSize: hidden, epsilon: epsilon,
-                    referenceHCRounding: true, allowShortHCPrefill: true), "Batch rows stay unchanged")
-            }
-            XCTAssertNil(Qwen4ExpHyperConnectionFusion.normalizeGroupedPrefill(
-                input: input.asType(.float16), normWeight: weight.asType(.float16),
-                groupSize: hidden, epsilon: epsilon,
-                referenceHCRounding: true, allowShortHCPrefill: true), "FP16 stays unchanged")
-        }
-        for rows in [1, 8, 16] {
-            XCTAssertNil(Qwen4ExpHyperConnectionFusion.normalizeGroupedPrefill(
-                input: MLXArray.zeros([1, rows, hc * hidden], dtype: .bfloat16),
-                normWeight: MLXArray.zeros([hc * hidden], dtype: .bfloat16),
-                groupSize: hidden, epsilon: epsilon,
-                referenceHCRounding: true, allowShortHCPrefill: true), "Decode stays unchanged")
-        }
-    }
-
-    func testHCProductionReadAndFinalMixerSelectShortPrefillOnlyOutsideVerification() throws {
-        try requireDefaultGPUPath()
-        let config = try JSONDecoder().decode(Qwen4ExpTextConfiguration.self, from: Data("""
-            {"hidden_size":256,"num_hidden_layers":1,"num_attention_heads":2,
-             "num_key_value_heads":1,"moe_intermediate_size":64,
-             "shared_expert_intermediate_size":64,"num_experts_per_tok":1,
-             "num_experts":2,"layer_types":["linear_attention"],"vocab_size":32,
-             "hc_count":4,"hc_lowrank":8,"rms_norm_eps":0.000001}
-            """.utf8))
-        let owner = Qwen4ExpGatedResidual(config)
-        owner.update(parameters: owner.mapParameters { MLXArray.zeros($0.shape, dtype: .bfloat16) })
-        let weight = normWeights(hidden: 256, dtype: .bfloat16)
-        owner.hcNorm.update(parameters: owner.hcNorm.mapParameters { _ in weight })
-        // Zero projections => sigmoid=1/2. Non-unit RMS exposes the missing
-        // normalized-output rounding; a unit-RMS fixture would hide it because
-        // both paths already reconstruct gamma in the input dtype.
-        for rows in [17, 30, 127] {
-            let input = values(rows * hc * 256, modulus: 251, divisor: 32, dtype: .bfloat16)
-                .reshaped(1, rows, hc * 256)
-            let normalized = stagedNorm(input, weight: weight, hidden: 256)
-            let expected = (normalized.reshaped(1, rows, hc, 256) * Float(0.5)).mean(axis: -2)
-            assertBitsEqual(owner.mix(input).0, expected, "Production HC read rows=\(rows)")
-            assertBitsEqual(owner.combine(input), expected, "Production final HC rows=\(rows)")
-            let pending = MLXArray.zeros([1, rows, 256], dtype: .bfloat16)
-            let gates = MLXArray.ones([1, rows, hc], dtype: .bfloat16)
-            assertBitsEqual(owner.mixAfterInjection(output: pending, residual: input, weights: gates).0,
-                            expected, "Pending HC read rows=\(rows)")
-            assertBitsEqual(owner.combineAfterInjection(output: pending, residual: input, weights: gates),
-                            expected, "Pending final HC rows=\(rows)")
-            let legacy = (owner.hcNorm(input).reshaped(1, rows, hc, 256) * Float(0.5)).mean(axis: -2)
-            assertBitsEqual(owner.mix(input, verificationPolicy: .batched).0, legacy,
-                            "Batched verification unchanged rows=\(rows)")
-            assertBitsEqual(owner.combine(input, verificationPolicy: .batched), legacy,
-                            "Final verification unchanged rows=\(rows)")
-            XCTAssertFalse(arrayEqual(expected, legacy).item(Bool.self), "Fixture must detect missing owner wiring")
         }
     }
 

@@ -289,7 +289,7 @@ must preserve non-HC, non-BF16, singleton, MTP and batching contracts and repeat
 the same-request latency and behavior checks before promotion.
 
 
-## Short HC prefill: reproduced and bounded correction
+## Short HC prefill: reproduced; correction rejected after serving check
 
 `qwen-hc-tail-red-20261024.log` reproduced six numerical failures on the
 unchanged runtime: 690,565 of 2,990,080 BF16 values differed at widths 17, 23,
@@ -312,6 +312,41 @@ distinguish the two paths; its explicit sensitivity assertion failed in
 `qwen-hc-tail-green-20261024.log`. It was corrected to use non-unit RMS, without
 changing runtime code or relaxing the assertions. Both logs are retained.
 
-Serving latency and behavioral qualification of this correction are pending.
-The frozen five-versus-five results above belong to the preceding binary, not
-this correction. Nothing has been promoted to main or a release.
+Correction commit `c6c432c9f210e9d8b298396916cc827a87b791f9` was built and
+preserved as binary SHA-256
+`75c66faaf24ff2ad4fef325857e01464c16c8b7578121559a63f0853a7dc734b`.
+The same five saved requests returned valid, parseable tool calls, but generated
+8,301 tokens in 140.51 seconds versus the preceding binary's 2,901 tokens in
+55.54 seconds and the reference's 2,170 in 42.16 seconds. Individual candidate
+counts are 55, 79, 1,275, 871 and 6,021. Tools were not executed; these are
+fixed-request behavior/latency results, not whole-task quality scores.
+
+Three fresh-server fixed-length comparisons followed. The final request hash
+is identical across all nine runs; it generates exactly 512 tokens each time.
+Earlier four requests retain their original 16,384 output limit.
+
+| Arm | Median HTTP seconds | Min–max seconds |
+|---|---:|---:|
+| Preceding AFM `eb9acc43` | 9.145 | 9.079–9.161 |
+| Short-tail candidate `c6c432c9` | 9.099 | 9.071–9.116 |
+| Reference `02bee553` | 8.797 | 8.742–8.803 |
+
+HTTP time includes prefill and transport; reference native decode timing is
+unavailable in this profile. AFM cache reuse remains 7,927/8,698 input tokens
+in the final fixed-length request. The small median difference is insufficient
+to justify the observed increase in generated work.
+
+**Decision: reject the short-tail experiment for recovery-baseline promotion.**
+Restore the provider runtime and tests exactly to `eb9acc43`, retaining its
+compiled-decode consistency correction and request reasoning budget. The short-tail
+candidate, diagnostic tests, red/green logs and binary are retained in commit
+`c6c432c9` and external artifacts; they are not part of the active runtime.
+The arithmetic mismatch is still known and has not been declared resolved.
+The preceding binary still fails full coding parity; this rollback does not
+make it release-qualified or recover the historical best task result.
+
+Artifacts: `QwenHCTailQualification20261024/REPORT.md`, `analysis.json`,
+`status.json`, every command and response, plus frozen
+`QwenHCTailCandidateBinary20261024/PROVENANCE.json`. The five-versus-five task
+results above belong to `eb9acc43`, not the rejected candidate. Main and the
+installed release were not modified.
