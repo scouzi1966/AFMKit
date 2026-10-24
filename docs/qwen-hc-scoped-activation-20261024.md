@@ -120,3 +120,19 @@ does not yet attribute all reasoning loops to that normalization difference.
 Artifacts: `QwenGDNPreworkOracle20261024`,
 `capture-gdn-prework-oracle-20261024.py` and
 `qwen-gdn-native-prework-tests-20261024.log`.
+
+The subsequent GDN intervention selects reference RMS normalization for BF16
+128-dimensional Q/K heads, including singleton decode. It uses the qualified
+sigmoid table at widths >=17 and retains the native narrow JIT sigmoid below
+that boundary. Other dtypes/head geometries retain the existing path. No
+environment variable or user option enables this candidate. It remains on
+the isolated experimental branch pending API and task qualification.
+
+Focused tests passed 20/20. All 48 native-kernel component comparisons match
+exactly (6,602,400 BF16 values), across widths 1, 3, 8, 17, 30, 128, 172 and
+256. A separate synthetic boundary test exercises the known -6.84375 sigmoid
+case at prefill widths 17, 30 and 128. The existing FP16/legacy normalization,
+compiled HC state/continuation and request-budget tests also pass. This is
+neither a new performance baseline nor proof that coding loops are resolved.
+Log: `qwen-gdn-native-arithmetic-tests-retry-20261024.log`; component results:
+`QwenGDNPreworkOracle20261024/afm-native-arithmetic-results.json`.

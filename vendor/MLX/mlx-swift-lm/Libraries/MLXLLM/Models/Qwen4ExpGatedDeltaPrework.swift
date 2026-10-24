@@ -25,6 +25,22 @@ enum Qwen4ExpGatedDeltaPrework {
     private static let maximumBatchedSequenceLength = 8
     static let minimumReferencePrefillSequenceLength = 128
     private static let referenceNormalizationHeadDimension = 128
+    private static let referenceTableMinimumWidth = 17
+    // Source: ddalcu/mlx-serve, MIT, 02bee553, GDN_PREWORK_SOURCE.
+    // Its Q/K RMS reduction is FP32 even for a singleton. BF16 prefill uses
+    // the library's sigmoid table; narrow decode uses the typed JIT formula.
+    static func usesReferenceArithmetic(dtype: DType, keyHeadDimension: Int,
+                                        valueHeadDimension: Int) -> Bool {
+        dtype == .bfloat16 && keyHeadDimension == referenceNormalizationHeadDimension
+            && valueHeadDimension == referenceNormalizationHeadDimension
+    }
+
+    nonisolated(unsafe) private static let referenceSigmoidTable: MLXArray = {
+        let values = (0 ..< (1 << 16)).map { Float(bitPattern: UInt32($0) << 16) }
+        let result = Qwen4ExpHCActivation.sigmoid(MLXArray(values).asType(.bfloat16))
+        eval(result)
+        return result
+    }()
     static let batchEnabled =
         ProcessInfo.processInfo.environment["AFM_QWEN_BATCH_GDN_PREWORK"] == "1"
 
@@ -35,7 +51,7 @@ enum Qwen4ExpGatedDeltaPrework {
         name: "qwen4_exp_gated_delta_verify_prework",
         inputNames: [
             "projected", "prior", "convolution_weight",
-            "projected_a", "projected_b", "a_log", "dt_bias",
+            "projected_a", "projected_b", "a_log", "dt_bias", "sigmoid_table",
         ],
         outputNames: [
             "queries", "keys", "values", "next_prior", "gate", "beta",
@@ -92,10 +108,15 @@ enum Qwen4ExpGatedDeltaPrework {
                 // Match the model graph's convolution output rounding before
                 // applying its stable SiLU formulation in the model dtype.
                 const T convolution = T(accumulator);
-                const T sigmoid_tail = T(1) /
-                    (T(1) + metal::exp(metal::abs(convolution)));
-                const T activation = convolution * (
-                    convolution < T(0) ? sigmoid_tail : T(1) - sigmoid_tail);
+                T sigmoid_value;
+                if constexpr (REFERENCE_SIGMOID_TABLE) {
+                    sigmoid_value = sigmoid_table[as_type<ushort>(convolution)];
+                } else {
+                    const T sigmoid_tail = T(1) /
+                        (T(1) + metal::exp(metal::abs(convolution)));
+                    sigmoid_value = convolution < T(0) ? sigmoid_tail : T(1) - sigmoid_tail;
+                }
+                const T activation = convolution * sigmoid_value;
                 activated[element] = activation;
                 if constexpr (REFERENCE_QK_NORMALIZATION) {
                     // ddalcu/mlx-serve (MIT), v26.9.2 gatedDeltaNet uses
@@ -163,11 +184,14 @@ enum Qwen4ExpGatedDeltaPrework {
                     // computeG/sigmoid graph and mlx-serve's packed prework.
                     const uint scalar_index = row_token * uint(VALUE_HEADS) + head;
                     const T beta_input = projected_b[scalar_index];
-                    const T sigmoid_tail = T(1) /
-                        (T(1) + metal::exp(metal::abs(beta_input)));
-                    beta[scalar_index] = beta_input < T(0)
-                        ? sigmoid_tail
-                        : T(1) - sigmoid_tail;
+                    if constexpr (REFERENCE_SIGMOID_TABLE) {
+                        beta[scalar_index] = sigmoid_table[as_type<ushort>(beta_input)];
+                    } else {
+                        const T sigmoid_tail = T(1) /
+                            (T(1) + metal::exp(metal::abs(beta_input)));
+                        beta[scalar_index] = beta_input < T(0)
+                            ? sigmoid_tail : T(1) - sigmoid_tail;
+                    }
 
                     const T biased_a = T(
                         float(projected_a[scalar_index]) + float(dt_bias[head]));
@@ -217,7 +241,8 @@ enum Qwen4ExpGatedDeltaPrework {
         valueHeadDimension: Int,
         convolutionKernel: Int,
         allowBatch: Bool = batchEnabled,
-        referencePrefillQKNormalization: Bool = false
+        referencePrefillQKNormalization: Bool = false,
+        referenceArithmetic: Bool = false
     ) -> Qwen4ExpGatedDeltaPreworkOutput? {
         let verifyWidth = projected.ndim == 3 ? projected.dim(1) : 0
         let batchSize = projected.ndim == 3 ? projected.dim(0) : 0
@@ -244,6 +269,8 @@ enum Qwen4ExpGatedDeltaPrework {
               aLog.shape == [valueHeads],
               dtBias.shape == [valueHeads],
               supportedType,
+              !referenceArithmetic || usesReferenceArithmetic(dtype: projected.dtype,
+                keyHeadDimension: keyHeadDimension, valueHeadDimension: valueHeadDimension),
               // Fail closed outside the qualified single-SIMD RMS geometry.
               // The flag is internal/default-off; decode and verifier calls
               // do not silently acquire different arithmetic.
@@ -260,10 +287,12 @@ enum Qwen4ExpGatedDeltaPrework {
             return nil
         }
 
+        let useTable = referenceArithmetic && verifyWidth >= referenceTableMinimumWidth
         let outputs = kernel(
             [
                 projected, prior, convolutionWeight,
                 projectedA, projectedB, aLog, dtBias,
+                useTable ? referenceSigmoidTable : projected,
             ],
             template: [
                 ("T", projected.dtype),
@@ -274,7 +303,8 @@ enum Qwen4ExpGatedDeltaPrework {
                 ("CHANNELS", channels),
                 ("VERIFY_WIDTH", verifyWidth),
                 ("SIMD_WIDTH", SIMDWidth),
-                ("REFERENCE_QK_NORMALIZATION", referencePrefillQKNormalization),
+                ("REFERENCE_QK_NORMALIZATION", referenceArithmetic || referencePrefillQKNormalization),
+                ("REFERENCE_SIGMOID_TABLE", useTable),
             ],
             grid: (SIMDWidth, batchSize * verifyWidth, 2 * keyHeads + valueHeads),
             threadGroup: (SIMDWidth, 1, 1),

@@ -3757,7 +3757,10 @@ private final class Qwen4ExpGatedDeltaNet: Module {
                 convolutionKernel: convKernel,
                 referencePrefillQKNormalization: referencePrefillQKNormalizationForTesting
                     && b == 1
-                    && l >= Qwen4ExpGatedDeltaPrework.minimumReferencePrefillSequenceLength)
+                    && l >= Qwen4ExpGatedDeltaPrework.minimumReferencePrefillSequenceLength,
+                referenceArithmetic: Qwen4ExpGatedDeltaPrework.usesReferenceArithmetic(
+                    dtype: x.dtype, keyHeadDimension: keyHeadDim,
+                    valueHeadDimension: valueHeadDim))
             : nil
 
         let q: MLXArray
