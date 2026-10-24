@@ -19,6 +19,7 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
         let prefix_ids_sha256_le_u32: String
     }
     private struct Fixture: Decodable {
+        let case_id: String?
         let model: String
         let histories: [History]
         let rows: [Row]
@@ -55,10 +56,22 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
         for (path, expected) in fixture.files {
             XCTAssertEqual(digest(try Data(contentsOf: URL(fileURLWithPath: path))), expected, path)
         }
-        XCTAssertEqual(fixture.histories.map(\.request), [0, 2])
-        XCTAssertEqual(fixture.histories.map { $0.tokens.count }, [54, 7255])
-        XCTAssertEqual(fixture.rows.count, 57)
-        XCTAssertEqual(fixture.rows.last?.status, "terminal")
+        switch fixture.case_id ?? "cold-r2-57" {
+        case "cold-r2-57":
+            XCTAssertEqual(fixture.histories.map(\.request), [0, 2])
+            XCTAssertEqual(fixture.histories.map { $0.tokens.count }, [54, 7255])
+            XCTAssertEqual(fixture.rows.count, 57)
+            XCTAssertEqual(fixture.rows.last?.status, "terminal")
+        case "opening-r1-64":
+            XCTAssertEqual(fixture.histories.map(\.request), [0, 1])
+            XCTAssertEqual(fixture.histories.map { $0.tokens.count }, [54, 6661])
+            XCTAssertEqual(fixture.rows.count, 64)
+            XCTAssertTrue(fixture.rows.allSatisfy { $0.status == "emitted" })
+        default:
+            XCTFail("Unqualified native prefix fixture")
+            return
+        }
+        let probeRequest = fixture.histories[1].request
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
         try data.write(to: root.appendingPathComponent("fixture.json"), options: .withoutOverwriting)
         try MLXMetalLibrary.ensureAvailable(verbose: false)
@@ -110,7 +123,7 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
                         checkpoint: { boundary, states, _ in
                             boundaries.append(boundary)
                             eval(states.flatMap { $0 })
-                            if history.request == 2 {
+                            if history.request == probeRequest {
                                 prefixStateHashes = states.flatMap { $0 }.map {
                                     self.digest($0.asData(access: .copy).data)
                                 }
@@ -141,8 +154,8 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
                 }
                 eval(try XCTUnwrap(next), cache)
                 // Startup retains production geometry/precision in every arm.
-                // The counterfactual only begins at cold request 2.
-                if history.request == 2 { try persistState() }
+                // The counterfactual only begins at the captured request.
+                if history.request == probeRequest { try persistState() }
             }
             var prefix = fixture.histories[1].tokens
             var scores = [String: MLXArray]()

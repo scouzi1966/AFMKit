@@ -672,3 +672,35 @@ for a serving precision change or a performance claim.
 selects three arms, requires the production/reconstructed controls first, and
 rejects unknown or duplicate arm names. The earlier five-arm fixture/results
 remain unchanged.
+
+## Opening-request native scores: prompt identity proved, parity not proved
+
+The frozen reference, capture-disabled reference, and capture-enabled reference
+produce identical opening answers and usage in fresh processes. The captured
+6,661 prompt token IDs hash to
+`92f782746a9817f9e41ba2f850d1a457e7905880ff183aeffb352625eb99b575`,
+identical to AFM's captured prompt. This rules out prompt formatting as the
+opening-request difference, without making a claim about later warm histories.
+
+`QwenNativePrefixGeometryTests` now accepts an explicit `opening-r1-64` fixture
+in addition to the unchanged `cold-r2-57` case. Each arm receives the reference's
+same emitted prefixes; AFM-generated tokens do not feed the next decision.
+
+| Diagnostic arm | Overlapping top-score choices |
+|---|---:|
+| Production split, FP32 state | 58/64 |
+| Reconstructed split, FP32 state | 58/64, byte-identical scores to production |
+| Joined final 31, FP32 state | 59/64 |
+| Joined final 31, BF16-rounded state | 59/64 |
+| Reconstructed split, BF16-rounded state | 61/64 |
+
+No arm reproduces every native decision. State precision and tail geometry
+alone are not established fixes. The release test passes its control assertions
+in 34.82 seconds after a 96.14-second build; a passing diagnostic is **not** a
+passing parity gate. Runtime and serving defaults remain unchanged.
+
+Evidence: `QwenOpeningNativeDecisionsRetry20261024`,
+`QwenOpeningPrefixFixture20261024.json`, `QwenOpeningPrefixScores20261024`,
+and `qwen-opening-prefix-tests-20261024.log` under the external evaluation root.
+The initial capture attempt is retained separately: its copied capture binary
+could not find a relative libllama dependency, so no score comparison used it.
