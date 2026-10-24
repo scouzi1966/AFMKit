@@ -7,6 +7,36 @@ with the earlier HC normalization correction (`6598268f`, replayed as
 candidate was wired into Qwen HC SiLU, sigmoid injection/mixing, and its BF16
 sigmoid table. Shared MLX arithmetic and non-BF16 paths remain unchanged.
 
+**Promotion rejected after the five-request comparison.** All 34 focused tests
+passed, including the exhaustive activation oracle, but full-model behavior
+worsened. Primitive agreement must not be presented as a completed reasoning fix.
+
+| Fixed request | Reference tokens / seconds | Preserved HC tokens / seconds | Scoped candidate tokens / seconds |
+|---|---:|---:|---:|
+| 1 | 72 / 6.61 | 58 / 6.12 | 72 / 8.95 |
+| 2 | 67 / 1.88 | 79 / 2.14 | 67 / 1.97 |
+| 3 | 84 / 2.08 | 181 / 3.70 | 1,038 / 17.34 |
+| 4 | 123 / 2.46 | 74 / 1.72 | 1,706 / 27.68 |
+| 5 | 1,824 / 29.13 | 4,030 / 65.72 | 8,291 / 133.46 |
+
+All five normalized request hashes match. These are fixed HTTP requests with
+unexecuted tool calls, not five complete coding projects. Same ddalcu vision
+overlay checkpoint; MTP off, thinking and prefix cache on. Durations include
+request startup/JIT overhead. Candidate request 5 repeats its plan before the
+budget transition and a tool call. The candidate is `d626cbe5`, consumer
+`6839b056`, binary SHA-256
+`874a682cd1d34dba1e3b559a4894914abd073f383dd4ec93f7def8d5d565260a`.
+Preserved HC control `6598268f` reproduced its historical output counts exactly.
+
+The conditional 512-token speed comparison did not run because requests 3 and
+4 already exceeded its cap. No controlled performance acceptance is claimed.
+The saved native capture explicitly calls `compileQwen4Hc`; its compiled HC
+path was verified before further investigation. It remains a forward diagnostic,
+not a replacement for HTTP and complete coding-task qualification.
+
+Full outputs and comparison are preserved outside Git in
+`QwenHCScopedFive20261024/COMPARISON.md` under the artifact root below.
+
 ## Evidence
 
 The saved layer-0 reference capture contains 2,773,440 BF16 HC activation
@@ -62,3 +92,31 @@ The original captured payload hashes are recorded in the CPU analysis JSON.
 Library, metallib, and derived fixture hashes belong in the generated oracle
 manifest. GPU diagnostics must run after the paired coding tasks, never during
 their timing measurements.
+
+## Downstream isolation after the failed candidate
+
+`QwenHCCapturedChainTests` compared seven successive same-input operations over
+the captured five prefill spans (6,630, 595, 530, 172 and 740 rows). All 35
+comparisons were bit-exact: 139,504,032 compared BF16 values, zero differences.
+This includes HC down/up, activation, fused/composed mixing and a/b projections.
+It qualifies these operators on the saved inputs, not the whole forward graph.
+Artifacts: `QwenHCChain20261024` and `qwen-hc-chain-tests-20261024.log`.
+
+The next diagnostic executes the frozen reference's exact `GDN_PREWORK_SOURCE`
+with its native MLX-C library. Both engines receive the same QKV, convolution
+history, a/b and checkpoint parameters. These stimuli derive from the captured
+layer-zero HC output; they are not claimed as a full native forward capture.
+At widths 1, 3, 8, 17, 30, 128, 172 and 256, the AFM production-default
+prework has query/key differences. Values, convolution history, forget gates
+and beta match on this fixture. For example, at width 30, Q differs in
+22,562/61,440 values and K in 23,090/61,440. At width 256, the differences are
+194,736/524,288 and 196,476/524,288 respectively.
+
+The existing test-only reference normalization removes every measured
+difference at widths 128, 172 and 256; it is not wired into normal serving.
+The next intervention must qualify this arithmetic for short tails/decode as
+well as wide prefill, then repeat the identical HTTP requests. This evidence
+does not yet attribute all reasoning loops to that normalization difference.
+Artifacts: `QwenGDNPreworkOracle20261024`,
+`capture-gdn-prework-oracle-20261024.py` and
+`qwen-gdn-native-prework-tests-20261024.log`.
