@@ -192,3 +192,74 @@ Evidence: `qwen-gdn-compiled-red-retry-20261024.log`,
 `qwen-gdn-compiled-regression-20261024.log`. The first test compilation had an
 async/autoclosure error in fixture construction, corrected before the red run;
 its separate `qwen-gdn-compiled-red-20261024.log` is retained.
+
+## Compiled normalization correction: serving results
+
+Provider `eb9acc431cc67bb315c6ee49675a231b9b402e04`, consumer `6839b056`,
+preserved binary SHA-256
+`270adc062464ae3612bad67b24d96e1542c0027e47bafdd930218bae7d02e3c1`.
+The release build passed. The five identical saved requests returned valid tool
+calls with output counts 65, 62, 710, 136, and 1,928, in 6.518, 1.904, 12.324,
+2.782, and 32.010 seconds. Total HTTP time is 55.54 seconds against 42.16 for
+the frozen reference: still 31.7% slower over those five requests. These calls
+were not executed and do not establish coding-task quality.
+
+A separate capped 512-token final request took 9.162 seconds, versus preserved
+HC 9.095 and reference 8.825. AFM native decode was 62.46 tok/s, versus preserved
+HC 62.70. Reference native decode timing is unavailable in this profile. These
+single observations do not establish statistical performance equivalence.
+
+Fresh Orbital runs use the pinned Codex 0.162.1 client, identical first request,
+the same ddalcu vision-overlay checkpoint, MTP off, thinking/prefix cache on,
+temperature 0, top-p 1, top-k 0, seed 123, and 180k-token/60-minute task limits.
+Each starts a fresh server and project. One inference process runs at a time.
+Five runs per engine are in progress; the following is an interim snapshot,
+not a completed qualification:
+
+| Engine/run | Seconds | Output tokens | Requests | Checks | Native decode tok/s |
+|---|---:|---:|---:|---:|---:|
+| AFM 1 | 363.04 | 20,224 | 20 | 10/11 | 62.20 |
+| Reference 1 | 390.64 | 22,851 | 24 | 11/11 | not logged |
+| AFM 2 | 1,216.66 | 66,794 | 81 | 3/11 | 60.87 |
+| Reference 2 | 426.21 | 25,702 | 17 | 11/11 | not logged |
+| AFM 3 | 413.19 | 22,849 | 27 | 11/11 | 61.36 |
+
+AFM run 1 violates the explicit dropdown value/label contract. Run 2's generated
+JavaScript requires `id="planet-count"`, but its HTML only supplies
+`data-testid="planet-count"`; startup fails and dependent interaction checks
+fail. It also emits one malformed tool call (`command` instead of `cmd`). Run 3
+passes all checks. No run has an HTTP/API failure or forced reasoning transition.
+These observations identify generated-code defects but do not resolve whether
+an inference discrepancy contributes to their frequency. Do not attribute them
+solely to model quality. A successful first or third run does not cancel run 2.
+
+The first response is identical across all three AFM runs. The first differing
+model-visible input between runs 1 and 2 is the shell's generated chunk ID in
+request 2. Later requests and trajectories diverge. This is evidence about
+repeatability, not proof that the identifier caused the eventual app failure.
+No receipts, task requirements, or evaluation rules were changed to improve scores.
+
+Artifacts: `QwenGDNConsistentFive20261024/COMPARISON.md` and
+`QwenGDNConsistentRepeatability20261024/REPORT.md` under the artifact root.
+The latter is refreshed as the batch completes and includes every failure,
+per-run launches, binary identities, raw interactions, and distribution statistics.
+
+## Next bounded diagnosis, not a qualified fix
+
+The reference's `hc_prefill.zig` permits BF16 HC prefill for B=1...2 and S>16.
+AFM's `normalizeGroupedPrefill`, `normalizeGroupedPrefillAfterInjection`, and
+`mixGroupedPrefill` currently require at least 128 rows. Short fragments in the
+17...127 range therefore use different normalization/mixing paths. Existing HC
+capture parity covered widths 6,630, 595, 530, 172 and 740; it did not cover this
+boundary. The singleton fused path is separate and must not be widened casually.
+
+Staged, not yet executed: `capture-hc-tail-oracle-20261024.py` and
+`QwenHCTailReferenceTests.swift` in the artifact root. The oracle executes the
+pinned reference's exact HC normalization Metal source using its actual MLX-C
+library at widths 17, 23, 30, 31, 64, 127 and 128. Inputs reuse saved normalized
+HC activations as shared stimuli and actual checkpoint gamma; they are not a
+capture of the model's actual pre-normalization activation. The test will compare
+the production HC norm against these outputs after the timed coding batch.
+No runtime policy has changed for this diagnostic. Any subsequent intervention
+must preserve non-HC, non-BF16, singleton, MTP and batching contracts and repeat
+the same-request latency and behavior checks before promotion.
