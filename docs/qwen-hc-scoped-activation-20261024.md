@@ -1,5 +1,23 @@
 # Qwen HC activation arithmetic investigation
 
+## Current acceptance state
+
+No candidate in this document establishes coding parity or qualifies a release.
+The preserved serving baseline is provider `eb9acc43`, binary `270adc06…`.
+Its five coding runs average 804.59 seconds versus 504.81 for the reference,
+with 44/55 versus 52/55 acceptance checks. Keep those full-task results separate
+from component equality, fixed-input responses, and raw decode throughput.
+
+The output-gate candidate `7a0065bd` is preserved as binary `48d07045…`.
+It improves raw winning-token overlap on the native-prefix diagnostic from
+52/57 to 56/57, but increases total output and HTTP time on the five-request
+screen. It has **not** replaced the baseline. The next controlled experiment
+combines the known short-HC correction with this output-gate correction;
+the earlier short-HC-only candidate remains rejected. Main and installed
+binaries are unchanged.
+
+The sections below retain the history of each intervention, including failures.
+
 This branch is an experiment, not a replacement for the preserved performance
 builds. It combines the already isolated request-budget safeguard (`2235ab88`)
 with the earlier HC normalization correction (`6598268f`, replayed as
@@ -457,3 +475,45 @@ green build is retained in its original log. No assertion was relaxed.
 This candidate is not yet a demonstrated coding-quality or serving-speed
 improvement. The preserved `270adc06…` binary remains the serving baseline
 until the candidate's score, fixed-request and timing gates are evaluated.
+
+## Output-gate candidate: serving screen completed, not promoted
+
+Provider `7a0065bd8eff471c34a28987e9df733348203d21` and consumer
+`6839b0566dbd166f11ad4203db9568165ac8ff49` build successfully in 246.63 seconds.
+Frozen binary SHA-256:
+`48d07045eb3688c0368af9635a8c4ed1dde2bf221b7c9ddc63d1ebcd5c7d0e78`.
+
+On the preserved native-prefix score fixture, production overlap improves to
+56/57, but decision 7 remains different: AFM prefers token 310 over the native
+token 13 by 0.875 (previous margin 0.5). The joined-tail arm is 54/57 and the
+joined/BF16-state counterfactual is 56/57. A winning-token-set overlap can also
+be a tie; these are not sampled response or quality claims.
+
+Fresh serving screen, same checkpoint and five normalized HTTP request hashes:
+
+| Arm | Output tokens | Summed HTTP seconds |
+|---|---:|---:|
+| Preserved control `eb9acc43` | 2,901 | 54.713 |
+| Output-gate candidate `7a0065bd` | 3,069 | 57.883 |
+| Reference `02bee553` | 2,170 | 41.114 |
+
+Candidate counts are 72, 67, 428, 2,008 and 494; control counts reproduce
+65, 62, 710, 136 and 1,928. Reference reproduces 72, 67, 84, 123 and 1,824.
+All responses contain parseable tool arguments. Tools were not executed.
+The shorter candidate request 5 asks for another inspection instead of the
+control's file write, so it is not evidence of increased task productivity.
+
+The predeclared 512-token timing guard fails: the candidate finishes naturally
+at 494 tokens while the control reaches 512. The failed driver log is retained;
+do not compare those unlike lengths as a fixed-length speed improvement.
+Remaining repeated timing runs were not run. Future timing qualification must
+use a cap every arm reaches. The native candidate generation rate on this
+494-token request is approximately 62.5 tok/s; this is not reference raw-decode
+parity because reference native generation timing is absent from this profile.
+
+Artifacts: `QwenOutputGateQualification20261024/REPORT.md`, `analysis.json`,
+`status.json`; `QwenOutputGateCandidatePrefixScores20261024`; every free-length
+and attempted fixed-length request, response, launch command, and server log.
+This candidate remains unpromoted. The combined HC/output-gate intervention
+must first pass native component and common-prefix diagnostics, then be judged
+by actual coding outcomes rather than an isolated shorter answer.
