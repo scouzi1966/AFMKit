@@ -2554,3 +2554,47 @@ identity. Native scores, histories, model hashes and expected counts are unchang
 
 This is an isolated experimental checkpoint. Serving output and latency still
 need comparison before the optimization can be retained or promoted.
+
+
+#### Radix-mask serving result and remaining serial overlap gap
+
+Frozen experimental source `37758bf2a9088490f94fd90e77e2ef9f9b4a56b8`;
+binary SHA-256 `9d2d55c066dfcef10377586a7ebbc60f0baee44a1156d0ce15b85cddfc6d7e96`.
+All five actual-task fixed-input AFM responses are unchanged from `aabb2eaf`.
+The latest long response is 8,277 tokens and identical to the reference: AFM
+137.434s, reference 124.178s (+10.7% elapsed); no long-response gain is claimed.
+
+Three balanced fresh-process cycles for the first four requests confirm:
+
+| Request | Previous AFM median s | Radix AFM median s | Reference median s | AFM time change | AFM/reference elapsed | AFM decode before/after tok/s |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 6.185 | 6.146 | 6.094 | -0.6% | +0.9% | 57.6 / 61.3 |
+| 2 | 2.014 | 1.944 | 1.762 | -3.5% | +10.4% | 57.0 / 61.5 |
+| 3 | 2.029 | 1.932 | 1.775 | -4.8% | +8.8% | 56.9 / 61.4 |
+| 4 | 4.312 | 3.998 | 3.687 | -7.3% | +8.5% | 56.3 / 61.4 |
+
+Every response is unchanged against its own engine baseline. Request 4 retains
+the already documented cross-engine argument difference. Reference raw decode
+is not logged; API elapsed must not be presented as that metric. Evidence:
+`QwenRadixMaskActualInputFive20261025` and
+`QwenRadixMaskShortRepeated20261025/{REPORT.md,comparison.json}`. This supports
+retaining the mask change on the experimental branch, not a release or a claim
+of full coding-task parity.
+
+A separate bounded host profile attributes roughly 5.3ms/token to graph
+construction and 8.6–9.2ms/token inside submission. Submission includes runtime
+backpressure and cannot be called CPU compute or pure GPU time. The follow-up
+schedule sweep preserves output but disabling AFM's eight-layer submission
+schedule makes it slower; four layers is too small a gain to justify a default
+change on this single diagnostic pass. The first sweep launcher accepted but
+did not apply its override; `QwenRadixMaskLadderDiagnostic20261025/VALIDITY.json`
+marks those runs invalid as a sweep. `QwenRadixMaskLadderVerified20261025`
+records the corrected, checked child-environment overrides and results.
+
+The reference source identifies a separate overlap mechanism:
+`src/generate.zig::lazyForward` builds the next graph on private PLE leaves,
+then calls `flushDeferredPle` after graph construction. AFM's serial path still
+loads PLE eagerly; its existing private-leaf barrier is currently limited to
+multi-token verification. The next isolated experiment reuses that barrier for
+the qualified serial mapped-table path, fills all leaves before dispatch, and
+checks exact score/output equivalence before any performance conclusion.
