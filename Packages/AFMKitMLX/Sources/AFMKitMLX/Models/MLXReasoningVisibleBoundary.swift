@@ -30,11 +30,14 @@ final class MLXReasoningEndBoundary: @unchecked Sendable {
     }
 
     func endOffset(in text: String, whileInsideReasoning: Bool) -> String.Index? {
+        guard whileInsideReasoning else {
+            suffix = ""
+            return nil
+        }
         let prefix = suffix
         let combined = prefix + text
         defer { suffix = String(combined.suffix(max(0, endTag.count - 1))) }
-        guard whileInsideReasoning, !endTag.isEmpty,
-              let range = combined.range(of: endTag) else { return nil }
+        guard !endTag.isEmpty, let range = combined.range(of: endTag) else { return nil }
         let suffixEnd = combined.index(combined.startIndex, offsetBy: prefix.count)
         guard range.upperBound > suffixEnd else { return nil }
         let currentOffset = combined.distance(from: suffixEnd, to: range.upperBound)

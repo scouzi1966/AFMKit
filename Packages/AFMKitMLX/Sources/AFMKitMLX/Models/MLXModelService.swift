@@ -5275,9 +5275,12 @@ public final class MLXModelService:
                                                 let outcome = stopBuffer.consume(afterThink)
                                                 if let visible = outcome.text {
                                                     continuation.yield(StreamChunk(
-                                                        text: visible,
-                                                        logprobs: resolved,
-                                                        stoppedBySequence: outcome.stopped ? true : nil
+                                                        copying: StreamChunk(
+                                                            text: visible,
+                                                            logprobs: resolved,
+                                                            stoppedBySequence: outcome.stopped ? true : nil
+                                                        ),
+                                                        generatedTokenCount: 0
                                                     ))
                                                 }
                                                 if outcome.stopped {

@@ -21,5 +21,7 @@ final class MLXReasoningEndBoundaryTests: XCTestCase {
     func testLiteralEndMarkerOutsideReasoningDoesNotArmBoundary() {
         let boundary = MLXReasoningEndBoundary(endTag: "</think>")
         XCTAssertNil(boundary.endOffset(in: "literal </think>\n text", whileInsideReasoning: false))
+        XCTAssertNil(boundary.endOffset(in: "literal </thi", whileInsideReasoning: false))
+        XCTAssertNil(boundary.endOffset(in: "nk> then <think>real reasoning", whileInsideReasoning: true))
     }
 }
