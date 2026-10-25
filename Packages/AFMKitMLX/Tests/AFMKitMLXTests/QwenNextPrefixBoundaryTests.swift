@@ -52,12 +52,13 @@ final class QwenNextPrefixBoundaryTests: XCTestCase {
     }
 
     private func finish(_ tokens: [Int], restoredPrefix: Int,
-                        model: Qwen4ExpModel, cache: [KVCache]) throws -> Result {
+                        model: Qwen4ExpModel, cache: [KVCache],
+                        prefillStepSize: Int = AFMMLXPrefillPolicy.throughputOptimizedStepSize) throws -> Result {
         var chunks: [[Int]] = []
         let output = try MLXReplayPrefill.prepareWithSnapshot(
             model: model, cache: cache, inputTokens: tokens,
             restoredPrefix: restoredPrefix,
-            prefillStepSize: AFMMLXPrefillPolicy.throughputOptimizedStepSize,
+            prefillStepSize: prefillStepSize,
             promptSnapshotBackoffTokens: 31, captureFinalCheckpoint: false,
             // Preserve production's earlier-checkpoint geometry and copies.
             checkpoint: { _, states, _ in eval(states.flatMap { $0 }) },
@@ -221,6 +222,326 @@ final class QwenNextPrefixBoundaryTests: XCTestCase {
             .write(to: output.appendingPathComponent("summary.json"), options: .withoutOverwriting)
         print("PREFIX_DIFFERENTIAL cold_split=\(abs(cold.logits - split.logits).max().item(Float.self)) split_restore=\(abs(split.logits - restored.logits).max().item(Float.self))")
         try traceFirstLayer(tokens, model: model, output: output)
+    }
+
+    /// Match the reference's direct split fixture without inheriting earlier turns.
+    /// The optional joined tail is diagnostic, never a production policy change.
+    func testExactCheckpointMatchedReferenceSplit() async throws {
+        let env = ProcessInfo.processInfo.environment
+        guard let path = env["AFM_QWEN_TOOL_HISTORY_MODEL"],
+              let fixture = env["AFM_QWEN_TOOL_HISTORY_FIXTURE"],
+              let destination = env["AFM_QWEN_TOOL_HISTORY_OUT"] else {
+            throw XCTSkip("Explicit model, frozen token histories and output required")
+        }
+        struct History: Decodable {
+            let request: Int
+            let tokens: [Int]
+            let cachedPrefix: Int
+            let prefillStepSize: Int
+        }
+        let histories = try JSONDecoder().decode([History].self,
+            from: Data(contentsOf: URL(fileURLWithPath: fixture)))
+        let history = try XCTUnwrap(histories.last)
+        let output = URL(fileURLWithPath: destination, isDirectory: true)
+        try XCTSkipIf(FileManager.default.fileExists(atPath: destination), "Never overwrite evidence")
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        try MLXMetalLibrary.ensureAvailable(verbose: false)
+        let context = try await LLMModelFactory.shared.load(configuration:
+            ModelConfiguration(directory: URL(fileURLWithPath: path)))
+        let model = try XCTUnwrap(context.model as? Qwen4ExpModel)
+        let joinedTail = env["AFM_QWEN_TOOL_HISTORY_JOINED_TAIL"] == "1"
+        let teacherTokens: [Int]? = try env["AFM_QWEN_TOOL_HISTORY_TEACHER"].map {
+            try JSONDecoder().decode([Int].self, from: Data(contentsOf: URL(fileURLWithPath: $0)))
+        }
+        if let teacherTokens { XCTAssertEqual(teacherTokens.count, 64) }
+        func prefill(_ cache: [KVCache], from start: Int, to end: Int) {
+            var cursor = start
+            while cursor < end {
+                let stop = min(cursor + history.prefillStepSize, end)
+                forward(Array(history.tokens[cursor..<stop]), model: model, cache: cache)
+                cursor = stop
+            }
+        }
+        func complete(_ cache: [KVCache], from start: Int) -> MLXArray {
+            prefill(cache, from: start, to: history.tokens.count - 31)
+            if joinedTail {
+                return forward(Array(history.tokens.suffix(31)), model: model, cache: cache)
+            }
+            forward(Array(history.tokens[(history.tokens.count - 31)..<(history.tokens.count - 1)]),
+                    model: model, cache: cache)
+            return forward([history.tokens.last!], model: model, cache: cache)
+        }
+        let cold = model.newCache(parameters: nil)
+        let split = model.newCache(parameters: nil)
+        prefill(split, from: 0, to: history.cachedPrefix)
+        let saved = capture(split)
+        let restored = restore(saved, model: model)
+        var logits = [complete(cold, from: 0), complete(split, from: history.cachedPrefix),
+                      complete(restored, from: history.cachedPrefix)]
+        _ = compareStates(capture(split), capture(restored), requireExact: true)
+        let coldSplitStates = compareStates(capture(cold), capture(split), requireExact: false)
+        var steps: [[String: Any]] = []
+        for step in 0..<64 {
+            XCTAssertEqual(abs(logits[1] - logits[2]).max().item(Float.self), 0)
+            let teacher = argMax(logits[0]).item(Int.self)
+            let warm = argMax(logits[1]).item(Int.self)
+            steps.append(["step": step, "cold_token": teacher, "warm_token": warm,
+                          "max_logit_error": abs(logits[0] - logits[1]).max().item(Float.self)])
+            if step == 63 { break }
+            let inputToken = teacherTokens?[step] ?? teacher
+            logits = [cold, split, restored].map { forward([inputToken], model: model, cache: $0) }
+        }
+        let report: [String: Any] = ["model": path, "fixture": fixture,
+            "tokens": history.tokens.count, "prefix": history.cachedPrefix,
+            "chunk": history.prefillStepSize, "joined_tail": joinedTail,
+            "teacher_tokens": teacherTokens ?? steps.compactMap { $0["cold_token"] as? Int },
+            "cold_split_states": coldSplitStates,
+            "teacher_forced_decode": steps]
+        try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys])
+            .write(to: output.appendingPathComponent("summary.json"), options: .withoutOverwriting)
+        print("MATCHED_SPLIT joined_tail=\(joinedTail) disagreements=\(steps.filter { ($0["cold_token"] as? Int) != ($0["warm_token"] as? Int) }.count)/64")
+    }
+
+    /// Reconstruct the captured tool-history cache boundaries without executing
+    /// tools or generating replacement histories. Compare a live continuation
+    /// with its radix round-trip separately from the cold execution schedule.
+    func testExactCheckpointToolHistorySnapshotDifferential() async throws {
+        let environment = ProcessInfo.processInfo.environment
+        guard let modelPath = environment["AFM_QWEN_TOOL_HISTORY_MODEL"],
+              let fixturePath = environment["AFM_QWEN_TOOL_HISTORY_FIXTURE"],
+              let outputPath = environment["AFM_QWEN_TOOL_HISTORY_OUT"] else {
+            throw XCTSkip("Explicit checkpoint, rendered tool histories and output required")
+        }
+        struct History: Decodable {
+            let request: Int
+            let tokens: [Int]
+            let cachedPrefix: Int
+            let prefillStepSize: Int
+        }
+        let histories = try JSONDecoder().decode([History].self,
+            from: Data(contentsOf: URL(fileURLWithPath: fixturePath)))
+        XCTAssertGreaterThan(histories.count, 1)
+        let output = URL(fileURLWithPath: outputPath, isDirectory: true)
+        try XCTSkipIf(FileManager.default.fileExists(atPath: output.path), "Never overwrite evidence")
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        try MLXMetalLibrary.ensureAvailable(verbose: false)
+        let context = try await LLMModelFactory.shared.load(configuration:
+            ModelConfiguration(directory: URL(fileURLWithPath: modelPath)))
+        let model = try XCTUnwrap(context.model as? Qwen4ExpModel)
+        let radix = RadixTreeCache(modelID: "thinking-history-differential")
+        let bf16State = environment["AFM_QWEN_TOOL_HISTORY_BF16_STATE"] == "1"
+        func newDiagnosticCache() -> [KVCache] {
+            let cache = model.newCache(parameters: nil)
+            if bf16State {
+                for case let layer as Qwen4ExpLayerCache in cache {
+                    layer[1] = MLXArray.zeros([1, model.configuration.linearNumValueHeads,
+                        model.configuration.linearValueHeadDim, model.configuration.linearKeyHeadDim], dtype: .bfloat16)
+                }
+            }
+            return cache
+        }
+        let gdnLayers = model.namedModules().compactMap { $0.1 as? Qwen4ExpDecoderLayer }
+            .filter(\.isLinear)
+        let originalNormalizations = gdnLayers.map(\.referenceGatedDeltaPrefillNormalizationForTesting)
+        if let override = environment["AFM_QWEN_TOOL_HISTORY_REFERENCE_NORM"] {
+            gdnLayers.forEach { $0.referenceGatedDeltaPrefillNormalizationForTesting = override == "1" }
+        }
+        let referenceNormalization = gdnLayers.allSatisfy(\.referenceGatedDeltaPrefillNormalizationForTesting)
+        defer {
+            for (layer, original) in zip(gdnLayers, originalNormalizations) {
+                layer.referenceGatedDeltaPrefillNormalizationForTesting = original
+            }
+        }
+        let canonicalBoundaries = environment["AFM_QWEN_TOOL_HISTORY_CANONICAL"] == "1"
+        let liveControl = environment["AFM_QWEN_TOOL_HISTORY_LIVE_CONTROL"] == "1"
+        XCTAssertFalse(liveControl && canonicalBoundaries, "Live control requires the recorded near-end schedule")
+        let stepSize = try XCTUnwrap(histories.first).prefillStepSize
+        XCTAssertGreaterThan(stepSize, 0)
+        XCTAssertTrue(histories.allSatisfy { $0.prefillStepSize == stepSize })
+        var schedule: [[String: Any]] = []
+        var livePrefixChunks: [[Int]] = []
+        var target: RadixPrefixMatch?
+        for (historyIndex, history) in histories.enumerated() {
+            var cache = newDiagnosticCache()
+            let match = MLXPrefixReplayPolicy.validatedRestoreMatch(
+                radix.findExactBoundaryMatch(history.tokens), cache: cache)
+            if !canonicalBoundaries {
+                XCTAssertEqual(match.prefixLen, history.cachedPrefix,
+                               "Diagnostic must reconstruct the actual API cache boundary")
+            }
+            if history.request == histories.last!.request {
+                target = match
+                break
+            }
+            if liveControl {
+                // Reconstruct ONLY the ancestor of the next restored state.
+                // Discarded final-tail work must not advance this independent
+                // cache. Derive ranges without adding a didCompleteChunk
+                // callback: that would change production's evaluation timing.
+                let nextBoundary = histories[historyIndex + 1].cachedPrefix
+                XCTAssertEqual(nextBoundary, history.tokens.count - 31)
+                XCTAssertGreaterThan(nextBoundary, match.prefixLen)
+                XCTAssertEqual(Array(history.tokens.prefix(nextBoundary)),
+                    Array(histories.last!.tokens.prefix(nextBoundary)))
+                var cursor = match.prefixLen
+                while cursor < nextBoundary {
+                    let end = cursor + min(stepSize, nextBoundary - cursor)
+                    livePrefixChunks.append([cursor, end])
+                    cursor = end
+                }
+            }
+            let prefix = MLXPrefixReplayPolicy.effectivePrefixLength(
+                matchedPrefix: match.prefixLen, inputTokenCount: history.tokens.count,
+                requiresExactBoundary: true, forcedSuffix: nil, sourceTokenCount: match.sourceTokenCount,
+                allowsSingletonExtension: false)
+            if prefix > 0 {
+                let states = MLXPrefixReplayPolicy.restoredLayerStates(try XCTUnwrap(match.layerStates), cache: cache)
+                for index in cache.indices {
+                    cache[index].state = states[index]
+                    cache[index].metaState = match.layerMetaStates?[index] ?? []
+                }
+            }
+            let result = try MLXReplayPrefill.prepareWithSnapshot(model: model, cache: cache,
+                inputTokens: history.tokens, restoredPrefix: prefix,
+                prefillStepSize: stepSize,
+                promptSnapshotBackoffTokens: 31, captureFinalCheckpoint: false,
+                checkpoint: { boundary, states, metadata in
+                    guard !canonicalBoundaries else { return }
+                    radix.insert(tokens: Array(history.tokens.prefix(boundary)),
+                        layerStates: states, layerMetaStates: metadata,
+                        statesAreIndependentSnapshots: true)
+                }, didCompleteChunk: canonicalBoundaries ? { range in
+                    guard range.upperBound.isMultiple(of: stepSize) else { return }
+                    let saved = self.capture(cache)
+                    radix.insert(tokens: Array(history.tokens.prefix(range.upperBound)),
+                        layerStates: saved.states, layerMetaStates: saved.metadata,
+                        statesAreIndependentSnapshots: true)
+                } : nil)
+            eval(result.output.logits, cache)
+            let captured = capture(cache)
+            if !canonicalBoundaries {
+                radix.insert(tokens: history.tokens, layerStates: captured.states,
+                    layerMetaStates: captured.metadata,
+                    promptLogits: MLXPrefixReplayPolicy.promptBoundaryLogits(result.output.logits),
+                    statesAreIndependentSnapshots: true)
+            }
+            schedule.append(["request": history.request, "tokens": history.tokens.count, "prefix": prefix])
+            print("THINKING_HISTORY request=\(history.request) tokens=\(history.tokens.count) prefix=\(prefix)")
+        }
+        let history = try XCTUnwrap(histories.last)
+        let match = try XCTUnwrap(target)
+        XCTAssertGreaterThan(match.prefixLen, 1)
+        let savedStates = try XCTUnwrap(match.layerStates)
+        let savedMetadata = try XCTUnwrap(match.layerMetaStates)
+        func cacheFromMatch() throws -> [KVCache] {
+            var cache = model.newCache(parameters: nil)
+            let states = MLXPrefixReplayPolicy.restoredLayerStates(savedStates, cache: cache)
+            for index in cache.indices {
+                cache[index].state = states[index]
+                cache[index].metaState = savedMetadata[index]
+            }
+            return cache
+        }
+        let firstCache = try cacheFromMatch()
+        let boundary = capture(firstCache)
+        let first = try finish(history.tokens, restoredPrefix: match.prefixLen, model: model,
+                               cache: firstCache, prefillStepSize: stepSize)
+        let secondCache = restore(boundary, model: model)
+        let second = try finish(history.tokens, restoredPrefix: match.prefixLen, model: model,
+                                cache: secondCache, prefillStepSize: stepSize)
+        let persisted = compare(first, second, requireExact: true)
+        let coldCache = newDiagnosticCache()
+        let cold = try finish(history.tokens, restoredPrefix: 0, model: model,
+                             cache: coldCache, prefillStepSize: stepSize)
+        let coldComparison = compare(cold, first, requireExact: false)
+        var liveComparison: [String: Any] = [:]
+        if liveControl {
+            let liveCache = newDiagnosticCache()
+            var cursor = 0
+            for range in livePrefixChunks {
+                XCTAssertEqual(range[0], cursor, "Live prefix must be contiguous without replay")
+                forward(Array(history.tokens[range[0]..<range[1]]), model: model, cache: liveCache)
+                cursor = range[1]
+            }
+            XCTAssertEqual(cursor, match.prefixLen)
+            let live = try finish(history.tokens, restoredPrefix: cursor, model: model,
+                                  cache: liveCache, prefillStepSize: stepSize)
+            liveComparison = compare(live, first, requireExact: true)
+        }
+        if canonicalBoundaries {
+            XCTAssertEqual(abs(cold.logits - first.logits).max().item(Float.self), 0,
+                           "Aligned cached prefill must match the cold execution schedule")
+        }
+        try save(arrays: ["cold": cold.logits, "restored": first.logits, "round_trip": second.logits],
+                 url: output.appendingPathComponent("logits.safetensors"))
+        var coldLogits = cold.logits
+        var restoredLogits = first.logits
+        var teacherForced: [[String: Any]] = []
+        // Both arms receive identical continuation IDs. Divergence here is
+        // execution/state behavior, not different prompts or sampled histories.
+        let diagnosticDecodeSteps = 64
+        let teacherTokens: [Int]? = try environment["AFM_QWEN_TOOL_HISTORY_TEACHER"].map {
+            try JSONDecoder().decode([Int].self, from: Data(contentsOf: URL(fileURLWithPath: $0)))
+        }
+        if let teacherTokens { XCTAssertEqual(teacherTokens.count, diagnosticDecodeSteps) }
+        for step in 0..<diagnosticDecodeSteps {
+            let next = argMax(coldLogits).item(Int.self)
+            let other = argMax(restoredLogits).item(Int.self)
+            if canonicalBoundaries { XCTAssertEqual(next, other, "Canonical continuation step \(step)") }
+            teacherForced.append(["step": step, "cold_token": next, "restored_token": other,
+                "cold_text": context.tokenizer.decode(tokens: [next]),
+                "restored_text": context.tokenizer.decode(tokens: [other]),
+                "max_logit_error": abs(coldLogits - restoredLogits).max().item(Float.self)])
+            let teacher = teacherTokens?[step] ?? next
+            coldLogits = forward([teacher], model: model, cache: coldCache)
+            restoredLogits = forward([teacher], model: model, cache: firstCache)
+        }
+        var freeDecode: [String: Any] = [:]
+        if let value = environment["AFM_QWEN_TOOL_HISTORY_FREE_STEPS"], let limit = Int(value) {
+            XCTAssertTrue((1...16384).contains(limit))
+            let eos = context.configuration.eosTokenIds.union([context.tokenizer.eosTokenId].compactMap { $0 })
+            for (name, result) in [("cold", cold), ("warm", first)] {
+                let cache = restore(result.cache, model: model)
+                var logits = result.logits
+                var generated: [Int] = []
+                var stopped = false
+                for _ in 0..<limit {
+                    let token = argMax(logits).item(Int.self)
+                    generated.append(token)
+                    if eos.contains(token) { stopped = true; break }
+                    logits = forward([token], model: model, cache: cache)
+                }
+                let text = context.tokenizer.decode(tokens: generated)
+                if environment["AFM_QWEN_TOOL_HISTORY_REQUIRE_COMPLETION"] == "1" {
+                    XCTAssertTrue(stopped, "\(name) exhausted its budget on this frozen tool request")
+                    XCTAssertTrue(text.contains("</think>"), "\(name) never completed thinking")
+                    XCTAssertTrue(text.contains("</tool_call>"), "\(name) never completed its tool call")
+                    let paragraphs = text.components(separatedBy: "\n\n").filter { $0.count > 60 }
+                    let counts = Dictionary(grouping: paragraphs, by: { $0 }).values.map(\.count)
+                    XCTAssertLessThanOrEqual(counts.max() ?? 0, 2, "\(name) repeated long reasoning paragraphs")
+                }
+                freeDecode[name] = ["tokens": generated, "text": text,
+                                    "eos": stopped, "limit": limit]
+                print("THINKING_FREE arm=\(name) tokens=\(generated.count) eos=\(stopped)")
+            }
+        }
+        let report: [String: Any] = ["model": modelPath, "fixture": fixturePath,
+            "canonical_boundaries": canonicalBoundaries, "prefill_step_size": stepSize,
+            "reference_gdn_normalization": referenceNormalization,
+            "bf16_recurrent_state": bf16State,
+            "teacher_tokens": teacherTokens ?? teacherForced.compactMap { $0["cold_token"] as? Int },
+            "history_schedule": schedule, "tokens": history.tokens.count, "restored_prefix": match.prefixLen,
+            "cold_chunks": cold.chunks, "restored_chunks": first.chunks,
+            "cold_vs_restored": coldComparison, "same_chunks_round_trip": persisted,
+            "independent_live_prefix_chunks": livePrefixChunks,
+            "independent_live_vs_restored": liveComparison,
+            "teacher_forced_decode": teacherForced,
+            "free_decode": freeDecode,
+            "cold_token": context.tokenizer.decode(tokens: [argMax(cold.logits).item(Int.self)]),
+            "restored_token": context.tokenizer.decode(tokens: [argMax(first.logits).item(Int.self)])]
+        try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys])
+            .write(to: output.appendingPathComponent("summary.json"), options: .withoutOverwriting)
+        print("THINKING_DIFFERENTIAL prefix=\(match.prefixLen) cold_token=\(argMax(cold.logits).item(Int.self)) restored_token=\(argMax(first.logits).item(Int.self))")
     }
 
     /// Replay the first-layer equations on identical inputs, before PLE,

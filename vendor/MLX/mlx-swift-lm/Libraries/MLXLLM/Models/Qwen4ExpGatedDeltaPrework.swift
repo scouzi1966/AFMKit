@@ -23,7 +23,7 @@ enum Qwen4ExpGatedDeltaPrework {
     private static let minimumWidth = 1
     static let maximumBatchSize = 32
     private static let maximumBatchedSequenceLength = 8
-    static let minimumReferencePrefillSequenceLength = 128
+    static let minimumReferencePrefillSequenceLength = 16
     private static let referenceNormalizationHeadDimension = 128
     private static let referenceTableMinimumWidth = 17
     // Source: ddalcu/mlx-serve, MIT, 02bee553, GDN_PREWORK_SOURCE.
@@ -41,6 +41,18 @@ enum Qwen4ExpGatedDeltaPrework {
         eval(result)
         return result
     }()
+    /// Select only the qualified reference arm. Other supported head widths
+    /// must still reach ordinary fused prework, rather than fail its guard and
+    /// unnecessarily fall back to the generic graph.
+    static func shouldUseReferencePrefillNormalization(
+        enabled: Bool, batchSize: Int, sequenceLength: Int,
+        keyHeadDimension: Int, valueHeadDimension: Int, hasVerificationPolicy: Bool
+    ) -> Bool {
+        enabled && batchSize == 1 && !hasVerificationPolicy
+            && sequenceLength >= minimumReferencePrefillSequenceLength
+            && keyHeadDimension == referenceNormalizationHeadDimension
+            && valueHeadDimension == referenceNormalizationHeadDimension
+    }
     static let batchEnabled =
         ProcessInfo.processInfo.environment["AFM_QWEN_BATCH_GDN_PREWORK"] == "1"
 
@@ -272,8 +284,8 @@ enum Qwen4ExpGatedDeltaPrework {
               !referenceArithmetic || usesReferenceArithmetic(dtype: projected.dtype,
                 keyHeadDimension: keyHeadDimension, valueHeadDimension: valueHeadDimension),
               // Fail closed outside the qualified single-SIMD RMS geometry.
-              // The flag is internal/default-off; decode and verifier calls
-              // do not silently acquire different arithmetic.
+              // Only caller-designated single-slot prefills enter this arm;
+              // decode and verifier calls retain their existing arithmetic.
               !referencePrefillQKNormalization || (
                 batchSize == 1 && verifyWidth >= minimumReferencePrefillSequenceLength
                     && keyHeadDimension == referenceNormalizationHeadDimension),

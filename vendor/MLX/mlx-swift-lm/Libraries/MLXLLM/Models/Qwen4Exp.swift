@@ -894,6 +894,7 @@ final class Qwen4ExpQSAPositionTables {
 }
 
 final class Qwen4ExpAttentionCache: KVCache, UniformBatchKVCache, CopyOnWriteKVCacheState {
+    private static let metadataVersion = "qwen4-exp-attention-v1"
     var offset = 0
     var offsetArray: MLXArray? { nil }
     var maxSize: Int? { nil }
@@ -1325,8 +1326,20 @@ final class Qwen4ExpAttentionCache: KVCache, UniformBatchKVCache, CopyOnWriteKVC
     }
 
     var metaState: [String] {
-        get { [] }
-        set { precondition(newValue.isEmpty) }
+        get {
+            [Self.metadataVersion, hasOnlyImplicitIndexPositions ? "implicit" : "explicit"]
+        }
+        set {
+            // Older tensor-only snapshots do not establish position provenance.
+            // Preserve the conservative inference made by the state setter.
+            guard !newValue.isEmpty else { return }
+            precondition(newValue.count == 2 && newValue[0] == Self.metadataVersion
+                && (newValue[1] == "implicit" || newValue[1] == "explicit"))
+            // Materializing ordinary text positions for sparse QSA must not
+            // turn a radix restore into an explicit-position/vision execution
+            // path. Only model-owned metadata may reestablish this provenance.
+            hasOnlyImplicitIndexPositions = newValue[1] == "implicit"
+        }
     }
 
     /// Prompt replay preserves optional-field positions, unlike the compact
@@ -4172,8 +4185,7 @@ private final class Qwen4ExpGatedDeltaNet: Module {
                   aLogDType: aLog.dtype, dtBiasDType: dtBias.dtype,
                   channels: channels, keyHeadDimension: keyHeadDim,
                   valueHeadDimension: valueHeadDim, convolutionKernel: convKernel),
-              aLog.shape == [valueHeads], dtBias.shape == [valueHeads],
-              !referencePrefillQKNormalizationForTesting
+              aLog.shape == [valueHeads], dtBias.shape == [valueHeads]
         else { return false }
         if let prior = cache[0], prior.shape != [1, convKernel - 1, channels]
             || prior.dtype != dtype { return false }
