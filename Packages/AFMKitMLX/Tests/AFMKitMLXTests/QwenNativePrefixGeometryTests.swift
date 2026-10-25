@@ -30,9 +30,11 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
         let passive_qsa: Bool?
         let passive_qsa_layer: Int?
         let passive_qsa_all_layers: Bool?
+        let passive_ple_convolution: Bool?
         let passive_decode_indices: [Int]?
         let reference_ple_norm: Bool?
         let reference_ple_scale: Bool?
+        let reference_ple_convolution_activation: Bool?
         let reference_ple_all_widths: Bool?
         let reference_shared_activation: Bool?
         let reference_routed_prefill_activation: Bool?
@@ -131,11 +133,15 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
         defer { for hc in hcModules { hc.referenceDecodeNormForTesting = false } }
         let allDecoderLayers = model.namedModules().compactMap { $0.1 as? Qwen4ExpDecoderLayer }
         for layer in allDecoderLayers {
+            layer.referencePLEConvolutionActivationForTesting = fixture.reference_ple_convolution_activation ?? false
+            layer.passivePLEConvolutionForTesting = fixture.passive_ple_convolution ?? false
             layer.referenceSharedActivationForTesting = fixture.reference_shared_activation ?? false
             layer.referenceDownReductionForTesting = fixture.reference_down_reduction ?? false
             layer.referenceRoutedDecodeActivationForTesting = fixture.reference_routed_decode_activation ?? false
         }
         defer { for layer in allDecoderLayers {
+            layer.referencePLEConvolutionActivationForTesting = false
+            layer.passivePLEConvolutionForTesting = false
             layer.referenceSharedActivationForTesting = false
             layer.referenceDownReductionForTesting = false
             layer.referenceRoutedDecodeActivationForTesting = false
@@ -248,6 +254,7 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
                 "passive_qsa_all_layers_diagnostic_only": allQSA,
                 "reference_ple_norm_diagnostic_only": fixture.reference_ple_norm ?? false,
                 "reference_ple_scale_diagnostic_only": fixture.reference_ple_scale ?? false,
+                "reference_ple_convolution_activation_diagnostic_only": fixture.reference_ple_convolution_activation ?? false,
                 "reference_ple_all_widths_diagnostic_only": fixture.reference_ple_all_widths ?? false,
                 "reference_shared_activation_diagnostic_only": fixture.reference_shared_activation ?? false,
                 "reference_routed_prefill_activation_diagnostic_only": fixture.reference_routed_prefill_activation ?? false,
@@ -365,7 +372,7 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
                             ? value : value[0..., (value.dim(1) - 1)..., 0...]
                     }
                     if index == 1 {
-                        XCTAssertEqual(layer.passivePLEStagesForTesting.count, 8)
+                        XCTAssertEqual(layer.passivePLEStagesForTesting.count, fixture.passive_ple_convolution == true ? 9 : 8)
                         for (name, value) in layer.passivePLEStagesForTesting {
                             let flat = value.reshaped(1, passiveWidth, -1)
                             stages[name] = flat[0..., (max(0, passiveWidth - 16))..., 0...]

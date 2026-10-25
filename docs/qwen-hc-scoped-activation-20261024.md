@@ -18,14 +18,13 @@ candidate (`12a44c24`, binary `a597e213…`) also failed its exploratory task pa
 same-prefix arithmetic diagnosis; no new coding-parity result is claimed.
 Main and installed binaries are unchanged.
 
-As of 2026-10-25 02:15 EDT, the combined diagnostic matches all **64/64
-full vocabulary score arrays bit for bit** on the opening request. All 306
-retained intermediate arrays at each of decisions 6, 11 and 12 also match.
-This requires the reference-matched joined-tail / BF16-state-value arm and
-the complete diagnostic recipe. It is not a production-default result.
-A second, 7,255-token cold request remains unresolved: 56/57 winning-token
-sets overlap. After the short-prefill activation correction, its first 16
-full score arrays match exactly; a later mismatch starts at decode step 16.
+As of 2026-10-25 02:57 EDT, the combined diagnostic matches all **64/64
+opening and 57/57 second-request full vocabulary score arrays bit for bit**.
+All 405 retained intermediate arrays at second-request decision 16 also match.
+This requires the joined-tail / BF16-state-value arm and the complete diagnostic
+recipe. It is not the production-default or API cache path. The last missing
+second-request difference was PLE's convolution activation at the BF16 input
+-6.84375. The older 64-decision guard still passes after that correction.
 There is no new coding or throughput acceptance. The eight-lane expert
 reduction's earlier component median was 2.74% slower and is not promoted.
 
@@ -1952,3 +1951,40 @@ Evidence: `QwenColdR2TailActivation20261025`,
 `QwenColdR2Step16CaptureScores20261025`, `QwenColdR2Step16Native20261025`,
 `qwen-cold-r2-tail-corrected-comparison-20261025.json`, and
 `qwen-cold-r2-step16-comparison-20261025.json`.
+
+
+### PLE convolution activation and cold-prefix equality, 2026-10-25 02:57 EDT
+
+Retaining the existing raw convolution result does not change any of the 285
+score payloads. The isolated test reproduces the saved AFM output with the
+ordinary activation, including its single different value. Replacing only the
+activation with the already qualified precise helper removes that difference.
+The offending input is -6.84375, the same BF16 activation boundary found in HC,
+attention and routed experts. No n-gram data or convolution weights changed.
+
+The full cold second request now has 57/57 bit-exact complete vocabulary score
+arrays in the joined-final31-bf16-state arm, including the terminal decision.
+All 405 step-16 intermediate arrays shared by the two captures are exact;
+the extra AFM-only raw convolution is excluded from that comparison. The other
+four arms remain useful negative controls: none has exact complete score
+arrays. This is evidence for the complete recipe, not a partial fix promotion.
+The opening regression guard remains 64/64 exact. The PLE diagnostic defaults
+to false and has no CLI/environment selection. Serving defaults are unchanged.
+
+Focused activation test: 0.180 s; second-request diagnostic: 37.220 s; opening
+guard: 35.423 s. These include diagnostic work and are not throughput benchmarks.
+All model runs used the same ddalcu four-bit vision-overlay checkpoint and were
+serialized on the GPU. No whole coding project was rerun for this checkpoint.
+
+The earlier post-assertion XCTest crash has more specific evidence: main-thread
+Metal teardown overlaps a still-running async test task entering the next arm.
+The expectation failure ended the XCTest case before that task unwound. This
+is a diagnostic harness lifecycle problem; it is not evidence of a serving
+crash. A throwing failure path and an intentional failure run are next.
+
+Evidence: `QwenPLEConvActivation20261025`,
+`QwenColdR2PLEConvCaptureScores20261025`,
+`QwenColdR2PLEConvCorrectedScores20261025`,
+`QwenOpeningPLEConvGuard20261025`,
+`qwen-cold-r2-step16-ple-corrected-comparison-20261025.json`, and
+`qwen-prefix-assertion-lifecycle-20261025.json`.

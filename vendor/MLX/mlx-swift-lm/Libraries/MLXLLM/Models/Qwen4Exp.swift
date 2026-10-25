@@ -5033,13 +5033,24 @@ private final class Qwen4ExpPLE: Module {
     var passiveWidthForTesting: Int?
     var passiveStagesForTesting: [String: MLXArray] = [:]
     var referenceGateScaleForTesting = false
+    var referenceConvolutionActivationForTesting = false
+    var passiveConvolutionForTesting = false {
+        didSet { if !passiveConvolutionForTesting { capturedConvolution = nil } }
+    }
+    private var capturedConvolution: MLXArray?
 
     private func shortConv(_ x: MLXArray, cache: ArraysCache?) -> MLXArray {
         let prior = cache?[2] ?? MLXArray.zeros(
             [x.dim(0), shortStateLength, x.dim(2)], dtype: x.dtype)
         let input = concatenated([prior, x], axis: 1)
         cache?[2] = input[0..., (input.dim(1) - shortStateLength)...]
-        return silu(conv1d(input))
+        let convolution = conv1d(input)
+        if passiveConvolutionForTesting, passiveWidthForTesting == x.dim(1),
+           passiveStagesForTesting.isEmpty {
+            capturedConvolution = convolution
+        }
+        return referenceConvolutionActivationForTesting
+            ? Qwen4ExpHCActivation.silu(convolution) : silu(convolution)
     }
 
     /// Share fixed-size PLE math without sharing the request's n-gram history.
@@ -5093,7 +5104,9 @@ private final class Qwen4ExpPLE: Module {
         let nextState = convolutionHistory[
             0..., (convolutionHistory.dim(1) - shortStateLength)..., 0...]
         for row in rows.indices { rows[row][2] = nextState[row..<(row + 1)] }
-        return gated + silu(conv1d(convolutionHistory))
+        let convolution = conv1d(convolutionHistory)
+        return gated + (referenceConvolutionActivationForTesting
+            ? Qwen4ExpHCActivation.silu(convolution) : silu(convolution))
     }
 
     func callAsFunction(
@@ -5180,6 +5193,10 @@ private final class Qwen4ExpPLE: Module {
                 "ple-gated": gated, "ple-conv-input": convolutionInputs,
                 "ple-output": output,
             ]
+            if passiveConvolutionForTesting, let capturedConvolution {
+                passiveStagesForTesting["ple-convolution"] = capturedConvolution
+                self.capturedConvolution = nil
+            }
         }
         profiler?.lap(output, stage: .residual)
         profiler?.report()
@@ -5714,6 +5731,14 @@ final class Qwen4ExpDecoderLayer: Module {
     var referencePLEGateScaleForTesting: Bool {
         get { ple?.referenceGateScaleForTesting ?? false }
         set { ple?.referenceGateScaleForTesting = newValue }
+    }
+    var referencePLEConvolutionActivationForTesting: Bool {
+        get { ple?.referenceConvolutionActivationForTesting ?? false }
+        set { ple?.referenceConvolutionActivationForTesting = newValue }
+    }
+    var passivePLEConvolutionForTesting: Bool {
+        get { ple?.passiveConvolutionForTesting ?? false }
+        set { ple?.passiveConvolutionForTesting = newValue }
     }
 
     var referenceBlockedRecurrenceForTesting: Bool {
