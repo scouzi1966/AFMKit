@@ -3317,6 +3317,10 @@ private final class Qwen4ExpAttention: Module {
             batch: b, queryLength: l, keyLength: (cache?.offset ?? 0) + l, dtype: q.dtype)
         {
             let cached = cache?.update(keys: k, values: v) ?? (k, v)
+            if indexer.passiveAttentionCaptureForTesting {
+                indexer.retainPassive("attention-cached-key", cached.0, length: l, offset: offset)
+                indexer.retainPassive("attention-cached-value", cached.1, length: l, offset: offset)
+            }
             if let sparse = Qwen4ExpQSAVerificationSparseAttention.call(
                 queries: q, keys: cached.0, values: cached.1, scale: scale,
                 selectedBlocks: selectedBlocks, compressionRatio: indexer.compressRatio)
@@ -3386,6 +3390,10 @@ private final class Qwen4ExpAttention: Module {
             }
         } else if case let .some(.decodeScores(scores)) = qsaSelection {
             let cached = cache?.update(keys: k, values: v) ?? (k, v)
+            if indexer.passiveAttentionCaptureForTesting {
+                indexer.retainPassive("attention-cached-key", cached.0, length: l, offset: offset)
+                indexer.retainPassive("attention-cached-value", cached.1, length: l, offset: offset)
+            }
             if let decoded = Qwen4ExpQSAFusedDecodeAttention.call(
                 queries: q,
                 keys: cached.0,
@@ -3422,6 +3430,10 @@ private final class Qwen4ExpAttention: Module {
             }
         } else if case let .some(.blocks(selectedBlocks)) = qsaSelection {
             let cached = cache?.update(keys: k, values: v) ?? (k, v)
+            if indexer.passiveAttentionCaptureForTesting {
+                indexer.retainPassive("attention-cached-key", cached.0, length: l, offset: offset)
+                indexer.retainPassive("attention-cached-value", cached.1, length: l, offset: offset)
+            }
             if let decoded = Qwen4ExpQSADecodeAttention.call(
                 queries: q,
                 keys: cached.0,
@@ -3454,6 +3466,10 @@ private final class Qwen4ExpAttention: Module {
             }
         } else {
             let cached = cache?.update(keys: k, values: v) ?? (k, v)
+            if indexer.passiveAttentionCaptureForTesting {
+                indexer.retainPassive("attention-cached-key", cached.0, length: l, offset: offset)
+                indexer.retainPassive("attention-cached-value", cached.1, length: l, offset: offset)
+            }
             let usesCausalMask: Bool
             if case .causal = effectiveMask {
                 usesCausalMask = true

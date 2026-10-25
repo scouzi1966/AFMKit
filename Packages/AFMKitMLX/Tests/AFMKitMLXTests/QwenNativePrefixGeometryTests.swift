@@ -179,8 +179,8 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
             XCTAssertEqual(passiveIndexers.count, 1)
             for indexer in passiveIndexers {
                 indexer.passiveCaptureWidthForTesting = passiveWidth
-                indexer.passiveCaptureOffsetForTesting = passiveWidth == 31 ? 6630 : 0
-                indexer.passiveAttentionCaptureForTesting = passiveWidth == 31
+                indexer.passiveCaptureOffsetForTesting = passiveWidth == 1 ? 6661 : (passiveWidth == 31 ? 6630 : 0)
+                indexer.passiveAttentionCaptureForTesting = passiveWidth == 31 || passiveWidth == 1
             }
         }
         defer { for indexer in passiveIndexers {
@@ -342,7 +342,13 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
                 }
                 if fixture.passive_qsa == true {
                     for indexer in passiveIndexers {
-                        XCTAssertEqual(indexer.passiveStagesForTesting.count, passiveWidth == 31 ? 11 : 4)
+                        if passiveWidth == 1 {
+                            XCTAssertTrue(Set(["attention-query", "attention-key", "attention-value",
+                                "attention-cached-key", "attention-cached-value", "attention-heads", "attention-gate"])
+                                .isSubset(of: Set(indexer.passiveStagesForTesting.keys)))
+                        } else {
+                            XCTAssertEqual(indexer.passiveStagesForTesting.count, passiveWidth == 31 ? 11 : 4)
+                        }
                         for (name, value) in indexer.passiveStagesForTesting { stages[name] = value }
                         indexer.passiveCaptureForTesting = false
                         indexer.passiveStagesForTesting = [:]
@@ -360,6 +366,9 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
                 for (_, layer) in passiveLayers {
                     layer.passivePrefillWidthForTesting = 1
                     layer.passivePLEWidthForTesting = 1
+                }
+                for indexer in passiveIndexers {
+                    indexer.passiveCaptureForTesting = fixture.passive_qsa == true
                 }
             }
             var prefix = fixture.histories[1].tokens

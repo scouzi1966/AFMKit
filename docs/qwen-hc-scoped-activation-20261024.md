@@ -1484,3 +1484,103 @@ Evidence: `QwenNativeDecodeHCWrite20261025`,
 `QwenOpeningHCWriteCorrectedScores20261025`,
 `qwen-first-decode-hc-write-comparison-20261025.json`, and
 `qwen-hc-write-rounding-scalar-cases-20261025.json`.
+
+
+### First decode attention capture, 2026-10-25 00:40 EDT
+
+A model-free BF16 residual-write regression test passes at 1, 2 and 16 rows,
+including default/true/false/true kernel-cache transitions (0.207 s). The
+release build completed in 146.20 s. The selected scalar expectations come
+from the independent native capture, not a second copy of the tested formula.
+
+The first-decode attention capture retains the existing projection results,
+cache views and attention heads without adding outputs to a compiled closure.
+Native frozen/off/on controls preserve response and all 64 score arrays; AFM
+preserves all 320 previous arrays (35.060 s). Previous captured intermediates
+remain unchanged in both engines. Native capture binary SHA-256:
+`a3aa6fa5bc6bca26ae2a3b86bbed61823c0faac1b2acf6f59c4a836229c04965`.
+
+| Layer 3 stage | Different / values |
+| --- | ---: |
+| Query | 0 / 6,144 |
+| Current key | 0 / 512 |
+| Current value | 0 / 512 |
+| Full cached keys | 0 / 3,410,944 |
+| Full cached values | 0 / 3,410,944 |
+| Output gate | 0 / 6,144 |
+| QSA queries | 0 / 512 |
+| QSA pooled keys | 0 / 213,120 |
+| Attention heads | 1,234 / 6,144 |
+
+Head RMS is 0.0005583751; maximum difference is 0.015625. This rules out Q/K/V
+projection or cached operand differences at this boundary. It does not yet
+separate selection from attention reduction. A model-free captured-tensor
+test compares native-mask SDPA, AFM direct sparse attention and the actual
+AFM selector, with alternating component timings. These are not whole-model
+throughput measurements.
+
+Evidence: `QwenOpeningFirstDecodeAttentionNative20261025`,
+`QwenOpeningFirstDecodeAttentionScores20261025`,
+`qwen-first-decode-attention-comparison-20261025.json`, and
+`QwenHCWriteRoundingTests.swift`.
+
+
+### First decode attention isolation and fallback, 2026-10-25
+
+The captured-tensor release test passes (build 99.46 s; test 0.087 s).
+AFM selects exactly the same 512 blocks and 6,662-position mask as native.
+Stock masked SDPA reproduces all 6,144 native head values; AFM's direct sparse
+kernel differs in 1,234 values and exactly reproduces the captured AFM heads.
+This identifies attention arithmetic, rather than selection or cache contents,
+as the cause of the layer-3 difference. Thirty alternating component samples
+(after eight warmups) give medians 0.352500 ms for stock masked SDPA and
+0.366812 ms for direct sparse attention. These include component evaluation;
+they are not server throughput or whole-model latency measurements.
+
+A fresh full-prefix diagnostic run uses the existing
+`AFM_QWEN_QSA_DECODE_ATTENTION=0` fallback, retaining all prior diagnostic
+policies. No serving default or runtime implementation was changed.
+
+| Fixed-prefix arm | Direct winners / 64 | Stock winners / 64 | Direct mean RMS | Stock mean RMS |
+| --- | ---: | ---: | ---: | ---: |
+| Production 30+1 | 60 | 59 | 0.580782 | 0.573638 |
+| Joined 31, F32 state | 59 | 61 | 0.599941 | 0.564778 |
+| Joined 31, BF16 state values | 60 | 58 | 0.463317 | 0.491325 |
+| Reconstructed 30+1 | 60 | 59 | 0.580782 | 0.573638 |
+| Reconstructed 30+1, BF16 state values | 58 | 59 | 0.525417 | 0.500456 |
+
+Layer 3 now matches exactly, but first-decode whole-score RMS slightly worsens
+from 0.284543 to 0.288002. The mixed 64-step result prevents promotion. Layer 1
+and layer 4 MLP outputs each differ by one BF16 value (maximum
+6.103515625e-5); layer 1's difference disappears by layer 2, while layer 4's
+survives into layer 5. Later differences cannot yet be attributed independently.
+The next isolation uses native layer-4 MLP input and native MoE stage captures.
+There is no new coding-quality, API latency, or full-model throughput claim.
+
+Evidence: `QwenNativeDecodeAttention20261025`,
+`QwenOpeningStockAttentionScores20261025`,
+`qwen-stock-attention-comparison-20261025.json`, and
+`qwen-first-decode-attention-isolation-tests-20261025.log`.
+
+
+### First decode layer-4 expert isolation, 2026-10-25 00:55 EDT
+
+The generalized layer-selectable MoE test builds in 104.53 s and passes in
+2.463 s. Frozen/off/on reference controls preserve all 64 score arrays and the
+saved response. Reference capture binary SHA-256:
+`e3acbe553072857417e780a16c1ad1a6b5ce56b5f889c271943f7159f6532e9f`.
+On exactly the native layer-4 input, both ordinary and compiled AFM reproduce
+the captured AFM output. Router logits, selected experts, route scores, shared
+expert body and shared gate/output all match native exactly. The routed output
+alone differs by one value (RMS 1.2063132e-6, maximum 6.103515625e-5).
+This excludes the surrounding HC input and compiled shared-expert tail here.
+
+Source inspection identifies a candidate: native `gatherQmvDownReduceSource`
+uses eight lanes per output row and four rows per SIMD group, with XOR shuffle
+reduction; AFM's group-64 path uses 32 lanes per row and `simd_sum`. The gate/up
+formulas and sequential BF16 expert weighting have the same written order.
+The lane-layout hypothesis is not yet validated; no default is changed.
+
+Evidence: `QwenOpeningFirstDecodeLayer4MoENative20261025`,
+`QwenNativeDecodeLayer4MoE20261025`, and
+`qwen-first-decode-layer4-moe-tests-20261025.log`.
