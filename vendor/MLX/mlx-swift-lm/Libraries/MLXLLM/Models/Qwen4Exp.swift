@@ -807,6 +807,19 @@ final class Qwen4ExpMultimodalRoPE {
             base: base, scale: 1, offset: offset)
     }
 
+    /// Native plain-text pooled-key spectrum. Deliberately isolated from
+    /// multimodal tables until independently qualified for those coordinates.
+    func referenceTextFrequenciesForTesting(positionIDs: MLXArray, dtype: DType)
+        -> (MLXArray, MLXArray)
+    {
+        precondition(positionIDs.ndim == 2)
+        let coefficient: Float = -2 * log(base) / Float(dimensions)
+        let inverse = exp(MLXArray(0..<(dimensions / 2)).asType(.float32) * coefficient)
+        let angles = positionIDs.asType(.float32)[0..., 0..., .newAxis] * inverse
+        let embedded = concatenated([angles, angles], axis: -1)
+        return (cos(embedded).asType(dtype), sin(embedded).asType(dtype))
+    }
+
     fileprivate func hasSameGeometry(as other: Qwen4ExpMultimodalRoPE) -> Bool {
         dimensions == other.dimensions && base == other.base && mropeSection == other.mropeSection
     }
@@ -2120,6 +2133,14 @@ final class Qwen4ExpQSAIndexer: Module {
     // Reference text queries use scalar MLX RoPE; pooled keys retain cos/sin.
     // Diagnostic only: leave explicit multimodal positions and serving unchanged.
     var referenceScalarTextQueriesForTesting = false
+    var referencePooledTextSpectrumForTesting = false
+    var passiveCaptureForTesting = false
+    var passiveStagesForTesting: [String: MLXArray] = [:]
+    private func retainPassive(_ key: String, _ value: MLXArray, length: Int, offset: Int) {
+        if passiveCaptureForTesting, length == 6630, offset == 0,
+           passiveStagesForTesting[key] == nil { passiveStagesForTesting[key] = value }
+    }
+
 
     private static let compileDecode =
         ProcessInfo.processInfo.environment[
@@ -2313,7 +2334,7 @@ final class Qwen4ExpQSAIndexer: Module {
     private func prepareBlockKeys(
         _ rawKeys: MLXArray, positionIDs: MLXArray,
         sharedTables: Qwen4ExpQSAPositionTables? = nil,
-        offset: Int = 0
+        offset: Int = 0, referenceTextSpectrum: Bool = false
     ) -> MLXArray {
         let pooled = rawKeys
             .reshaped(rawKeys.dim(0), rawKeys.dim(1) / compressRatio, compressRatio, headDim)
@@ -2321,8 +2342,10 @@ final class Qwen4ExpQSAIndexer: Module {
         let normalized = expandedDimensions(kLayerNorm(pooled), axis: 1)
         return rope.apply(
             normalized, positionIDs: positionIDs,
-            sharedFrequencies: sharedTables?.frequencies(offset: offset, count: pooled.dim(1),
-                stride: compressRatio, batch: rawKeys.dim(0), dtype: normalized.dtype)
+            sharedFrequencies: referenceTextSpectrum
+                ? rope.referenceTextFrequenciesForTesting(positionIDs: positionIDs, dtype: normalized.dtype)
+                : sharedTables?.frequencies(offset: offset, count: pooled.dim(1),
+                    stride: compressRatio, batch: rawKeys.dim(0), dtype: normalized.dtype)
         ).squeezed(axis: 1)
     }
 
@@ -2389,6 +2412,7 @@ final class Qwen4ExpQSAIndexer: Module {
             let qk = projectedQK ?? qwen4ExpVerificationLinear(
                 indexQKProj, hidden, verificationPolicy: verificationPolicy,
                 role: .indexer)
+            retainPassive("qsa-qk", qk, length: length, offset: previousOffset)
             let splitPoint = heads * headDim
             let parts = MLX.split(qk, indices: [splitPoint], axis: -1)
             queryRows = parts[0]
@@ -2489,7 +2513,9 @@ final class Qwen4ExpQSAIndexer: Module {
             // The first sparse call can initialize the full historical bank.
             // Compile only bounded newly completed blocks, never that history.
             let sharedBlockTables = cache?.hasOnlyImplicitIndexPositions == true ? sharedTables : nil
-            let newBlockKeys = sharedBlockTables != nil
+            let newBlockKeys = referencePooledTextSpectrumForTesting && providedPositionIDs == nil
+                ? prepareBlockKeys(rawKeys, positionIDs: blockPositionIDs, referenceTextSpectrum: true)
+                : sharedBlockTables != nil
                 ? prepareBlockKeys(rawKeys, positionIDs: blockPositionIDs,
                     sharedTables: sharedBlockTables, offset: rawStart)
                 : compiledStrictPreparation
@@ -2503,6 +2529,8 @@ final class Qwen4ExpQSAIndexer: Module {
         } else {
             blockKeys = cachedBlockKeys!
         }
+        retainPassive("qsa-queries", queries, length: length, offset: previousOffset)
+        retainPassive("qsa-pooled", blockKeys, length: length, offset: previousOffset)
         // A one-token decode does not benefit from the row-batched selector;
         // its score-sheet setup is measurable on every generated token. Keep
         // the original single-row graph for decode and reserve vectorization
@@ -2586,10 +2614,10 @@ final class Qwen4ExpQSAIndexer: Module {
         {
             return .mask(mask)
         }
-        return .mask(Qwen4ExpQSAGather.maskFromBlocks(
-            selectedBlocks,
-            keyLength: totalLength,
-            compressionRatio: compressRatio))
+        let selectedMask = Qwen4ExpQSAGather.maskFromBlocks(
+            selectedBlocks, keyLength: totalLength, compressionRatio: compressRatio)
+        retainPassive("qsa-selection", selectedMask, length: length, offset: previousOffset)
+        return .mask(selectedMask)
     }
 
     private func combinedSparsePipeline(
@@ -5523,6 +5551,11 @@ final class Qwen4ExpDecoderLayer: Module {
     var referenceSharedActivationForTesting: Bool {
         get { mlp.sharedExpert.referenceActivationForTesting }
         set { mlp.sharedExpert.referenceActivationForTesting = newValue }
+    }
+
+    var referencePooledIndexerSpectrumForTesting: Bool {
+        get { selfAttention?.indexer.referencePooledTextSpectrumForTesting ?? false }
+        set { selfAttention?.indexer.referencePooledTextSpectrumForTesting = newValue }
     }
 
     var referenceScalarIndexerQueriesForTesting: Bool {

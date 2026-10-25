@@ -24,12 +24,14 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
         let prefill_projection: String?
         let passive_forward: Bool?
         let passive_full_rows: Bool?
+        let passive_qsa: Bool?
         let reference_ple_norm: Bool?
         let reference_ple_scale: Bool?
         let reference_ple_all_widths: Bool?
         let reference_shared_activation: Bool?
         let reference_scalar_prefill_rope: Bool?
         let reference_scalar_indexer_queries: Bool?
+        let reference_pooled_indexer_spectrum: Bool?
         let reference_attention_prefill_gate: Bool?
         let model: String
         let histories: [History]
@@ -105,12 +107,14 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
         for layer in allDecoderLayers {
             layer.referenceScalarPrefillRoPEForTesting = fixture.reference_scalar_prefill_rope ?? false
             layer.referenceScalarIndexerQueriesForTesting = fixture.reference_scalar_indexer_queries ?? false
+            layer.referencePooledIndexerSpectrumForTesting = fixture.reference_pooled_indexer_spectrum ?? false
             layer.referenceAttentionPrefillGateForTesting = fixture.reference_attention_prefill_gate ?? false
         }
         defer {
             for layer in allDecoderLayers {
                 layer.referenceScalarPrefillRoPEForTesting = false
                 layer.referenceScalarIndexerQueriesForTesting = false
+                layer.referencePooledIndexerSpectrumForTesting = false
                 layer.referenceAttentionPrefillGateForTesting = false
             }
         }
@@ -137,6 +141,17 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
                 layer.referencePLEGateScaleForTesting = false
             }
         }
+        let passiveIndexers = model.namedModules().compactMap { name, module -> Qwen4ExpQSAIndexer? in
+            guard name.hasPrefix("model.layers.3."), let indexer = module as? Qwen4ExpQSAIndexer else { return nil }
+            return indexer
+        }
+        if fixture.passive_qsa == true {
+            XCTAssertEqual(passiveIndexers.count, 1)
+            for indexer in passiveIndexers { indexer.passiveCaptureForTesting = true }
+        }
+        defer { for indexer in passiveIndexers {
+            indexer.passiveCaptureForTesting = false; indexer.passiveStagesForTesting = [:]
+        } }
         let projectionPolicy = fixture.prefill_projection ?? "unchanged"
         XCTAssertTrue(["unchanged", "control", "dense"].contains(projectionPolicy))
         let projections = projectionPolicy == "unchanged" ? [] :
@@ -165,6 +180,7 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
                 "reference_shared_activation_diagnostic_only": fixture.reference_shared_activation ?? false,
                 "reference_scalar_prefill_rope_diagnostic_only": fixture.reference_scalar_prefill_rope ?? false,
                 "reference_scalar_indexer_queries_diagnostic_only": fixture.reference_scalar_indexer_queries ?? false,
+                "reference_pooled_indexer_spectrum_diagnostic_only": fixture.reference_pooled_indexer_spectrum ?? false,
                 "reference_attention_prefill_gate_diagnostic_only": fixture.reference_attention_prefill_gate ?? false,
                 "projection_engagement": projections.map { ["module": $0.0, "widths": $0.1.engagementReport] as [String: Any] },
                 "peak_active_memory_bytes": Memory.peakMemory,
@@ -260,6 +276,14 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
                     layer.passivePrefillStagesForTesting = [:]
                     layer.passivePLEWidthForTesting = nil
                     layer.passivePLEStagesForTesting = [:]
+                }
+                if fixture.passive_qsa == true {
+                    for indexer in passiveIndexers {
+                        XCTAssertEqual(indexer.passiveStagesForTesting.count, 4)
+                        for (name, value) in indexer.passiveStagesForTesting { stages[name] = value }
+                        indexer.passiveCaptureForTesting = false
+                        indexer.passiveStagesForTesting = [:]
+                    }
                 }
                 // Existing first-token eval above has already completed.
                 try save(arrays: stages, url: root.appendingPathComponent("passive-forward.safetensors"))

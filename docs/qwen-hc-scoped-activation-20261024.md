@@ -1062,3 +1062,74 @@ inspection of QSA's prepared queries, pooled keys, and selected mask. Evidence:
 `QwenOpeningIndexerControlScores20261024`, `QwenOpeningIndexerScalarScores20261024`,
 `qwen-indexer-scalar-full-comparison-20261024.json`. Build 186.11 seconds;
 capture tests about 35 seconds each. The query intervention remains disabled.
+
+
+### Passive QSA tensors identify a pooled-key spectrum mismatch
+
+The next frozen/off/on native capture again preserves replies, usage and all
+64 raw score arrays. All 51 prior native intermediate payloads are exact.
+AFM's capture test passes in 35.44 seconds and preserves all prior intermediate
+and 320 score payloads. This qualified capture gives:
+
+| QSA stage | Different values / total |
+|---|---:|
+| Projected queries and keys | 0 / 4,243,200 |
+| Rotated queries, scalar diagnostic | 0 / 3,394,560 |
+| Pooled rotated keys | 214 / 212,096 |
+| Actual boolean attention mask | 160 / 43,956,900 |
+
+The 160 mask differences occur at exactly the 20 positions with differing
+layer-3 attention outputs. Each swaps one four-token block for another. The
+first position, 4,317, selects token block 1,612--1,615 only in AFM, versus
+2,552--2,555 only in the reference. This localizes the remaining difference to
+the selection inputs or calculation, rather than unexplained attention output.
+
+Native `ropeInvFreq` constructs its spectrum as `exp(j * (-2*log(theta)/D))`;
+AFM uses `1 / pow(theta, 2*j/D)`. Both describe the same mathematical spectrum
+but can round differently in FP32 before BF16 cosine/sine values are formed.
+A separate captured-input test will compare that formula with the actual
+native key bank, first requiring the existing formula to reproduce AFM's
+captured bank exactly. No serving switch is enabled by this new test.
+
+Evidence: `QwenOpeningQSANative20261024`, `QwenOpeningQSACaptureScores20261024`,
+`qwen-qsa-native-control-20261024.json`,
+`qwen-qsa-passive-comparison-20261024.json`. Earlier captures and binaries are
+preserved. The capture-only reference build had an import-name compile error;
+the corrected retry succeeded before any GPU capture ran.
+
+
+The captured-input pooled-key test passes both assertions: ordinary AFM
+pool/norm/rotate reproduces its captured 214 differences, and the exponential
+reference spectrum matches **all 212,096 native values exactly**. Twenty
+alternating complete pool/norm/rotate construction+evaluation samples yield
+medians 0.775125 ms current and 0.5394375 ms reference formula. These are one
+captured key bank, not a model throughput result; the candidate constructs its
+inverse spectrum inside each timed call while the ordinary model owns its
+existing inverse spectrum. No broad speed or statistical quality claim follows.
+
+Evidence: `QwenNativeQSAPooled20261024`, its hash-bound fixture and test-source
+snapshot; Release test passes in 3.55 seconds. A default-false provider test
+property now permits the formula for implicit text pooled-key positions.
+Explicit multimodal positions retain their previous path. The next test checks
+the entire ordinary prefix and saved QSA mask with a disabled control first.
+
+
+The pooled-spectrum disabled control preserves every earlier intermediate
+and score array. With the new text spectrum enabled, **all four captured
+stages at every position across layers 0--7 match native exactly**:
+543,129,600 layer-intermediate values, plus the saved PLE and QSA tensors.
+The entire 43,956,900-value attention mask matches. This removes the 20 block
+swaps and their downstream recurrent propagation in the captured layers.
+
+The five fixed-prefix winner overlaps are 61/57/58/61/60 of 64. Production-split
+improves from 58 to 61; mean raw-score RMS error across those 64 decisions falls
+from 0.609524 to 0.552031. It remains nonzero: uncaptured layers and the tail /
+decode policies are not yet proven equal. There is no new whole-task quality
+or model-speed result and no serving-default promotion. The enabled prefix
+test passes in 35.37 seconds after a disabled-control build of 185.25 seconds.
+
+Evidence: `QwenOpeningPooledControlScores20261024`,
+`QwenOpeningPooledSpectrumScores20261024`,
+`qwen-pooled-spectrum-full-comparison-20261024.json`. The next diagnostic
+extends the same passive comparison to the remaining layers; previous captures
+remain immutable and hash-bound.
