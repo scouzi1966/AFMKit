@@ -3587,8 +3587,9 @@ public final class MLXModelService:
                     }
                     if case .chunk(let text) = piece {
                         if let ts = thinkStart, text.contains(ts) { insideThink = true }
+                        let wasInsideThink = insideThink
                         let visiblePiece: String
-                        if let te = outputReasoning.end, let end = text.range(of: te) {
+                        if wasInsideThink, let te = outputReasoning.end, let end = text.range(of: te) {
                             insideThink = false
                             visibleBoundary.reasoningEnded()
                             visiblePiece = String(text[..<end.upperBound])
@@ -4104,8 +4105,9 @@ public final class MLXModelService:
                         }
                         // Track think boundaries — stop sequences only apply outside
                         if let ts = thinkStart, text.contains(ts) { insideThink = true }
+                        let wasInsideThink = insideThink
                         let visiblePiece: String
-                        if let te = outputReasoning.end, let end = text.range(of: te) {
+                        if wasInsideThink, let te = outputReasoning.end, let end = text.range(of: te) {
                             insideThink = false
                             visibleBoundary.reasoningEnded()
                             visiblePiece = String(text[..<end.upperBound])
@@ -5239,12 +5241,13 @@ public final class MLXModelService:
                                     if let ts = thinkStart, text.contains(ts) { insideThink = true }
                                     if let te = thinkEnd, text.contains(te) { insideThink = false }
 
-                                    if !activeStops.isEmpty && !insideThink {
+                                    if !insideThink {
                                         // If we just transitioned out of think, pass the reasoning tail +
                                         // end tag through (the controller needs the end tag to close the
                                         // think block — swallowing it left the stream inside reasoning
                                         // forever, #148); only the visible text after it is stop-scoped.
-                                        if wasInsideThink, let te = thinkEnd, let thinkEndRange = text.range(of: te) {
+                                        if let te = thinkEnd, let thinkEndRange = text.range(of: te),
+                                           wasInsideThink || (thinkStart.map { text.contains($0) } ?? false) {
                                             let throughEnd = String(text[..<thinkEndRange.upperBound])
                                             continuation.yield(StreamChunk(text: throughEnd, logprobs: resolved))
                                             resolved = nil
@@ -5252,7 +5255,31 @@ public final class MLXModelService:
                                             let afterThink = visibleBoundary.visibleText(
                                                 String(text[thinkEndRange.upperBound...]))
                                             if !afterThink.isEmpty {
-                                                let outcome = stopBuffer.consume(afterThink)
+                                                if activeStops.isEmpty {
+                                                    continuation.yield(StreamChunk(text: afterThink))
+                                                } else {
+                                                    let outcome = stopBuffer.consume(afterThink)
+                                                    if let visible = outcome.text {
+                                                        continuation.yield(StreamChunk(
+                                                            text: visible,
+                                                            logprobs: resolved,
+                                                            stoppedBySequence: outcome.stopped ? true : nil
+                                                        ))
+                                                    }
+                                                    if outcome.stopped {
+                                                        streamScratch.streamStatStoppedBySequence = true
+                                                        break
+                                                    }
+                                                }
+                                            }
+                                        } else {
+                                            let visibleText = visibleBoundary.visibleText(text)
+                                            if activeStops.isEmpty {
+                                                if !visibleText.isEmpty {
+                                                    continuation.yield(StreamChunk(text: visibleText, logprobs: resolved))
+                                                }
+                                            } else {
+                                                let outcome = stopBuffer.consume(visibleText)
                                                 if let visible = outcome.text {
                                                     continuation.yield(StreamChunk(
                                                         text: visible,
@@ -5265,22 +5292,9 @@ public final class MLXModelService:
                                                     break
                                                 }
                                             }
-                                        } else {
-                                            let outcome = stopBuffer.consume(visibleBoundary.visibleText(text))
-                                            if let visible = outcome.text {
-                                                continuation.yield(StreamChunk(
-                                                    text: visible,
-                                                    logprobs: resolved,
-                                                    stoppedBySequence: outcome.stopped ? true : nil
-                                                ))
-                                            }
-                                            if outcome.stopped {
-                                                streamScratch.streamStatStoppedBySequence = true
-                                                break
-                                            }
                                         }
                                     } else {
-                                        // Inside <think> or no stop sequences — pass through
+                                        // Reasoning remains outside visible stop matching.
                                         continuation.yield(StreamChunk(text: text, logprobs: resolved))
                                     }
                                     pendingLogprobs = nil

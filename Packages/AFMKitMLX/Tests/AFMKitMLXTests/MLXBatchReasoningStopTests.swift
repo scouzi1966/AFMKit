@@ -62,6 +62,23 @@ final class MLXBatchReasoningStopTests: XCTestCase {
         }
     }
 
+    func testReasoningSeparatorNewlinesAreRemovedWithoutStops() {
+        let output = "<think>private</think>\n\nAFM_LINE_ONE"
+        for offset in 0...output.count {
+            let split = output.index(output.startIndex, offsetBy: offset)
+            let result = filter([String(output[..<split]), String(output[split...])], stops: [])
+            XCTAssertEqual(result.text, "AFM_LINE_ONE", "split \(offset)")
+            XCTAssertEqual(result.reasoning, "private", "split \(offset)")
+            XCTAssertFalse(result.stopped, "split \(offset)")
+        }
+    }
+
+    func testLiteralReasoningEndMarkerInAnswerRemainsVisible() {
+        let result = filter(["Answer </think> literal next line\ncontinued"], stops: [])
+        XCTAssertEqual(result.text, "Answer </think> literal next line\ncontinued")
+        XCTAssertFalse(result.stopped)
+    }
+
     func testTemplateOpenedReasoningIgnoresStopsUntilTheVisibleAnswerAtEverySplit() {
         let output = "private <AFM_STOP> stays in reasoning</think>AFM_PREFIX<AFM_STOP>AFM_SUFFIX"
         for offset in 0...output.count {
