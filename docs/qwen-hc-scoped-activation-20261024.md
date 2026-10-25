@@ -893,3 +893,41 @@ Evidence: `QwenOpeningPLEScaleControlScores20261024`,
 `qwen-passive-ple-scale-comparison-20261024.json` under the preserved evaluation
 root. The enabled prefix diagnostic passed in 35.22 seconds; it verifies
 capture integrity, not a positive model-quality outcome.
+
+### First MoE: routing agrees; shared expert differs
+
+A qualified passive native capture now retains the first MoE intermediates.
+Frozen/off/on replies and usage agree, all 64 raw score arrays agree with the
+original capture, and every previously retained intermediate is unchanged.
+The retained MoE output equals the ordinary first-layer MLP output exactly.
+Native diagnostic binary SHA-256:
+`b38326f35cdfde40d5f3dbbb62edd41afc9d0f47c158f7f9751ae931e4c673c0`.
+
+The isolated AFM test reproduces both the ordinary AFM output and its stage
+trace on the identical native input. Results:
+
+| Stage | Differing values / total |
+|---|---:|
+| Router logits | 0 / 3,394,560 |
+| Expert indices | 0 / 66,300 |
+| Expert weights | 0 / 66,300 |
+| Routed expert output | 0 / 16,972,800 |
+| Shared gating logits | 0 / 6,630 |
+| Shared expert body | 649 / 16,972,800 |
+| Gated shared output | 608 / 16,972,800 |
+| Combined MoE output | 175 / 16,972,800 |
+
+The combined differences occupy 28 prompt positions. Replacing the routed
+expert's combined compiled activation with the separate SiLU helper changes
+none of these results. Replacing the shared SiLU helper with explicit
+`gate * MLX.sigmoid(gate) * up` also leaves the same 649/608/175 differences.
+Thus activation compilation alone does not explain this discrepancy. The
+next capture separates the shared gate/up projections, activation and down
+projection. No serving behavior has been changed for these diagnostics.
+
+Evidence: `QwenOpeningMoENative20261024`, `QwenNativeMoEForward20261024`,
+`QwenNativeSharedMoEForward20261024`, and
+`qwen-moe-native-stage-control-20261024.json`. The first test passed in 3.16
+seconds after a 184.33-second Release build; the expanded shared-expert test
+passed in 3.16 seconds after a 98.17-second incremental test build. Separate
+source snapshots preserve both test versions and their fixture hashes.

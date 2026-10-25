@@ -5479,6 +5479,14 @@ final class Qwen4ExpDecoderLayer: Module {
         return linearAttention!(input, cache: cache, verificationPolicy: nil)
     }
 
+    func moeForwardForTesting(_ input: MLXArray) -> MLXArray {
+        mlp(input, verificationPolicy: nil)
+    }
+
+    func moeStageTraceForTesting(_ input: MLXArray) -> [(String, MLXArray)] {
+        mlp.prefillStageTraceForTesting(input)
+    }
+
     // Passive diagnostic: retain existing prefill arrays without another
     // forward, HC flush, synchronization, or dispatch-policy change.
     // Never enabled by model configuration, environment, or serving options.
