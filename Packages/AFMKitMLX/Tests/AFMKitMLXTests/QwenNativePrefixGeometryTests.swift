@@ -131,6 +131,21 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
                 XCTAssertEqual(Array(fixture.histories[index - 1].tokens.prefix(restored[index])),
                                Array(fixture.histories[index].tokens.prefix(restored[index])))
             }
+        case "warm-r5-afm5-1664":
+            // Preserve the live fifth-run histories and extend beyond the late
+            // reasoning divergence. This fixture changes no serving policy.
+            XCTAssertEqual(fixture.histories.map(\.request), [1, 2, 3, 4, 5])
+            XCTAssertEqual(fixture.histories.map { $0.tokens.count }, [6661, 7255, 7707, 7883, 8623])
+            XCTAssertEqual(fixture.rows.count, 1664)
+            XCTAssertTrue(fixture.rows.allSatisfy { $0.status == "emitted" })
+            XCTAssertEqual(fixture.model_owned_arithmetic, true)
+            let restored = try XCTUnwrap(fixture.restored_prefixes)
+            XCTAssertEqual(restored, [0, 6630, 7224, 7676, 7852])
+            for index in 1..<fixture.histories.count {
+                XCTAssertEqual(restored[index], fixture.histories[index - 1].tokens.count - 31)
+                XCTAssertEqual(Array(fixture.histories[index - 1].tokens.prefix(restored[index])),
+                               Array(fixture.histories[index].tokens.prefix(restored[index])))
+            }
         default:
             XCTFail("Unqualified native prefix fixture")
             return

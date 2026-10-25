@@ -2757,3 +2757,39 @@ All binary/client/task pins and checkpoint-file metadata remained unchanged.
 The full native score investigation is pending; **parity is not established**.
 This checkpoint contains documentation and analysis only, with no additional
 serving-code changes, installs, merges or release.
+
+#### Late native-score comparison: mismatch begins at decision 1,565
+
+The focused diagnostic is now complete through 1,664 decisions. The frozen
+reference, rebuilt diagnostic with capture off, and diagnostic with capture on
+all reproduce all five HTTP responses exactly. Every decision is bound to the
+actual emitted token history and a complete 248,320-value BF16 score vector.
+AFM's Release XCTest was rebuilt from retained source through the required
+wrapper before use; no stale deferred-PLE test executable was reused.
+
+The first **1,565 full score vectors are exactly equal**. Zero-based decision
+1,565 is the first numerical mismatch (maximum absolute error 0.375, RMS
+0.07543), although its selected token still agrees. At decision 1,578, reference
+scores token 3052 (`(name`) and token 3598 (`(id`) equally at 23.75. AFM favors
+3598 by 0.25 over reference's chosen token. The live text divergence is
+therefore not merely a tie-breaking-policy difference: the scores already
+diverged 13 decisions earlier. Only 1 of 1,664 rows has disjoint winning-token
+sets, illustrating why winning-set overlap alone is an insufficient check of
+identical greedy output. Raw numerical equality and the actual chosen token
+must also be reported.
+
+A second AFM diagnostic retains existing intermediate arrays at decisions
+1,564 and 1,565. All 1,664 saved score-array payloads are byte-identical to the
+non-passive AFM control, proving this capture did not alter these scores.
+The archive container hashes differ because tensor serialization order differs;
+the comparison validates shape, dtype and payload hashes by tensor name.
+Reference intermediate capture and comparison are the next step. No serving
+fix or full-task parity is claimed yet. Test exit success means the controlled
+diagnostic completed; it does not mean its cross-engine score mismatches pass
+a parity gate.
+
+Evidence: `QwenAFM5LateNativeCapture20261025`,
+`QwenAFM5LatePrefixScores20261025`, and
+`QwenAFM5LatePassiveScores20261025/CAPTURE-CONTROL.json` under the external
+artifact root. Diagnostic build/source provenance is preserved separately in
+`QwenAFM5LateNativeDiagnostic20261025`.
