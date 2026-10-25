@@ -1988,3 +1988,27 @@ Evidence: `QwenPLEConvActivation20261025`,
 `QwenOpeningPLEConvGuard20261025`,
 `qwen-cold-r2-step16-ple-corrected-comparison-20261025.json`, and
 `qwen-prefix-assertion-lifecycle-20261025.json`.
+
+
+### Async failure guard and interior cache capture, 2026-10-25 03:03 EDT
+
+The diagnostic now saves the completed arm before checking expected counts,
+then throws a Swift error when the qualification target is missed. An
+intentional impossible expectation (production-split exact count -1) produces
+exit 1, records precisely one 57-decision arm, and never enters the next arm.
+There is no signal 11. This verifies the failure path; it is deliberately not
+a passing model result. The subsequent wrapper correctly refuses --skip-build
+after that failed run, so the cache test uses an ordinary wrapper build.
+
+The existing model interior-capture adapter processes the full final 31 tokens
+and independently captures all 48 layers at N-1 = 7,254. Its complete 57 score
+arrays remain bit-exact against the frozen native reference. Thus retaining
+the final snapshot does not require splitting the final projection into 30+1.
+The opening adapter guard also passes 64/64 (42.593 s); the cold holdout
+passes 57/57 (44.537 s). These test the model adapter. The application prefill orchestrator,
+restored growing conversations, throughput, and complete coding tasks remain
+to be qualified. Do not infer serving acceptance from this result.
+
+Evidence: `QwenPrefixIntentionalFailure20261025`,
+`qwen-prefix-intentional-failure-tests-20261025.log`,
+`QwenColdR2InteriorCaptureRetry20261025`, and their fixtures/launch manifests.

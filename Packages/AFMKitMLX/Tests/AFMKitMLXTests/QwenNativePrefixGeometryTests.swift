@@ -10,6 +10,9 @@ import XCTest
 /// No sampled AFM token feeds the model and no generated tool is executed.
 /// The alternate tail geometry exists only in this test, never in serving.
 final class QwenNativePrefixGeometryTests: XCTestCase {
+    private struct QualificationFailure: Error, CustomStringConvertible {
+        let description: String
+    }
     private struct History: Decodable { let request: Int; let tokens: [Int] }
     private struct Row: Decodable {
         let index: Int
@@ -51,6 +54,7 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
         let reference_down_reduction: Bool?
         let reference_routed_decode_activation: Bool?
         let reference_fused_rotation: Bool?
+        let capture_joined_tail_boundary: Bool?
         let expected_exact_scores: [String: Int]?
         let expected_winner_overlaps: [String: Int]?
         let model: String
@@ -239,9 +243,11 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
         var records = [[String: Any]]()
         var prefixStateHashes = [String]()
         var productionScoreBytes = [Data]()
+        var interiorCaptureRecords = [[String: Any]]()
         func writeReport() throws {
             let report: [String: Any] = [
                 "fixture_sha256": digest(data), "records": records,
+                "interior_capture_records": interiorCaptureRecords,
                 "checkpoint": fixture.model,
                 "blocked_recurrence_diagnostic_only": useBlocked,
                 "prefill_projection_diagnostic_only": projectionPolicy,
@@ -282,8 +288,12 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
             try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys])
                 .write(to: root.appendingPathComponent("report.json"), options: .atomic)
         }
-        for arm in ["production-split", "joined-final31", "joined-final31-bf16-state",
-                    "reconstructed-split", "reconstructed-split-bf16-state"] {
+        var arms = ["production-split", "joined-final31", "joined-final31-bf16-state",
+                    "reconstructed-split", "reconstructed-split-bf16-state"]
+        if fixture.capture_joined_tail_boundary == true {
+            arms.append("joined-final31-interior-bf16-state")
+        }
+        for arm in arms {
             for indexer in passiveIndexers {
                 indexer.passiveCaptureForTesting = fixture.passive_qsa == true && arm == passiveArm && passiveWidth != 1
                 indexer.passiveStagesForTesting = [:]
@@ -344,8 +354,30 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
                     let tail = Array(history.tokens[boundary...])
                     let chunks = splitTail ? [Array(tail.dropLast()), [try XCTUnwrap(tail.last)]] : [tail]
                     for chunk in chunks {
-                        let result = model(LMInput.Text(tokens: MLXArray(chunk)[.newAxis]), cache: cache,
-                                           state: nil, hostTokenIDs: model.consumesHostTokenIDs ? chunk : nil)
+                        let input = LMInput.Text(tokens: MLXArray(chunk)[.newAxis])
+                        let host = model.consumesHostTokenIDs ? chunk : nil
+                        let result: LMOutput
+                        if arm == "joined-final31-interior-bf16-state" {
+                            // Capture N-1 inside the joined final forward without
+                            // changing the 31-token projection geometry. This is
+                            // a diagnostic of the existing serving adapter.
+                            let captured = try XCTUnwrap(model.prefillCapturingBoundary(
+                                input, cache: cache, state: nil, restoredPrefix: boundary,
+                                boundary: chunk.count - 1, hostTokenIDs: host))
+                            XCTAssertEqual(captured.states.count, cache.count)
+                            XCTAssertEqual(captured.metadata.count, cache.count)
+                            eval(captured.states.flatMap { $0 })
+                            interiorCaptureRecords.append([
+                                "arm": arm, "boundary": history.tokens.count - 1,
+                                "states_per_layer": captured.states.map(\.count),
+                                "state_hashes": captured.states.flatMap { $0 }.map {
+                                    digest($0.asData(access: .copy).data)
+                                }, "metadata": captured.metadata,
+                            ])
+                            result = captured.output
+                        } else {
+                            result = model(input, cache: cache, state: nil, hostTokenIDs: host)
+                        }
                         XCTAssertNil(result.state)
                         next = result.logits[0, -1].asType(.float32)
                         eval(try XCTUnwrap(next), cache)
@@ -472,13 +504,23 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
             }
             try save(arrays: scores, url: root.appendingPathComponent(arm + ".safetensors"))
             let own = records.filter { $0["arm"] as? String == arm }
+            // Preserve the failed arm, then unwind this async task before XCTest
+            // tears down Metal. A non-continuing XCTest assertion can finish the
+            // test while the async task continues into the next GPU arm.
+            try writeReport()
             if let expected = fixture.expected_exact_scores?[arm] {
-                XCTAssertEqual(own.filter { $0["rms_error"] as? Float == 0 }.count, expected,
-                    "Qualified full vocabulary score equality regressed for \(arm)")
+                let actual = own.filter { $0["rms_error"] as? Float == 0 }.count
+                guard actual == expected else {
+                    throw QualificationFailure(description:
+                        "Qualified full vocabulary score equality regressed for \(arm): \(actual), expected \(expected)")
+                }
             }
             if let expected = fixture.expected_winner_overlaps?[arm] {
-                XCTAssertEqual(own.filter { $0["raw_winner_sets_overlap"] as? Bool == true }.count, expected,
-                    "Qualified winning-token overlap regressed for \(arm)")
+                let actual = own.filter { $0["raw_winner_sets_overlap"] as? Bool == true }.count
+                guard actual == expected else {
+                    throw QualificationFailure(description:
+                        "Qualified winning-token overlap regressed for \(arm): \(actual), expected \(expected)")
+                }
             }
             print("NATIVE_PREFIX arm=\(arm) raw_winner_overlap=\(own.filter { $0["raw_winner_sets_overlap"] as? Bool == true }.count)/\(own.count)")
             if projectionPolicy == "dense" {
