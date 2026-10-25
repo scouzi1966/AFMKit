@@ -800,6 +800,13 @@ final class Qwen4ExpMultimodalRoPE {
         ).reshaped(sequenceLength, dimensions)
     }
 
+    /// Diagnostic scalar text path used by the pinned native engine's long
+    /// prefill. Callers must exclude explicit multimodal position coordinates.
+    func applyScalarTextForTesting(_ tensor: MLXArray, offset: Int) -> MLXArray {
+        MLXFast.RoPE(tensor, dimensions: dimensions, traditional: false,
+            base: base, scale: 1, offset: offset)
+    }
+
     fileprivate func hasSameGeometry(as other: Qwen4ExpMultimodalRoPE) -> Bool {
         dimensions == other.dimensions && base == other.base && mropeSection == other.mropeSection
     }
@@ -2839,6 +2846,10 @@ final class Qwen4ExpQSAIndexer: Module {
 }
 
 private final class Qwen4ExpAttention: Module {
+    // Match the pinned native long-prefill path for isolated diagnosis only.
+    // The serving path remains unchanged; short-tail/decode fusion stays on.
+    var referenceScalarPrefillRoPEForTesting = false
+    var referencePrefillGateForTesting = false
     static let sharedRequestProjections =
         ProcessInfo.processInfo.environment["AFM_QWEN_BATCH_ATTENTION_PROJECTIONS"] == "1"
 
@@ -3202,7 +3213,13 @@ private final class Qwen4ExpAttention: Module {
             } else {
                 fusedQK = nil
             }
-            if let fusedQK {
+            if referenceScalarPrefillRoPEForTesting, l > 32,
+               b == 1, providedPositionIDs == nil {
+                q = rope.applyScalarTextForTesting(
+                    qNorm(qInput).transposed(0, 2, 1, 3), offset: offset)
+                k = rope.applyScalarTextForTesting(
+                    kNorm(kInput).transposed(0, 2, 1, 3), offset: offset)
+            } else if let fusedQK {
                 q = fusedQK.q
                 k = fusedQK.k
             } else {
@@ -3409,7 +3426,9 @@ private final class Qwen4ExpAttention: Module {
         } else {
             var output = outputHeads
                 .transposed(0, 2, 1, 3).reshaped(b, l, -1)
-            output = output * sigmoid(gate)
+            let gateValues = referencePrefillGateForTesting && l > 32
+                ? Qwen4ExpHCActivation.sigmoid(gate) : sigmoid(gate)
+            output = output * gateValues
             result = qwen4ExpVerificationLinear(
                 oProj, output, verificationPolicy: verificationPolicy,
                 role: .attention)
@@ -5495,6 +5514,16 @@ final class Qwen4ExpDecoderLayer: Module {
     var referenceSharedActivationForTesting: Bool {
         get { mlp.sharedExpert.referenceActivationForTesting }
         set { mlp.sharedExpert.referenceActivationForTesting = newValue }
+    }
+
+    var referenceScalarPrefillRoPEForTesting: Bool {
+        get { selfAttention?.referenceScalarPrefillRoPEForTesting ?? false }
+        set { selfAttention?.referenceScalarPrefillRoPEForTesting = newValue }
+    }
+
+    var referenceAttentionPrefillGateForTesting: Bool {
+        get { selfAttention?.referencePrefillGateForTesting ?? false }
+        set { selfAttention?.referencePrefillGateForTesting = newValue }
     }
 
     // Passive diagnostic: retain existing prefill arrays without another

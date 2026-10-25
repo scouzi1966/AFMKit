@@ -27,6 +27,8 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
         let reference_ple_scale: Bool?
         let reference_ple_all_widths: Bool?
         let reference_shared_activation: Bool?
+        let reference_scalar_prefill_rope: Bool?
+        let reference_attention_prefill_gate: Bool?
         let model: String
         let histories: [History]
         let rows: [Row]
@@ -98,6 +100,16 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
         let allDecoderLayers = model.namedModules().compactMap { $0.1 as? Qwen4ExpDecoderLayer }
         for layer in allDecoderLayers { layer.referenceSharedActivationForTesting = fixture.reference_shared_activation ?? false }
         defer { for layer in allDecoderLayers { layer.referenceSharedActivationForTesting = false } }
+        for layer in allDecoderLayers {
+            layer.referenceScalarPrefillRoPEForTesting = fixture.reference_scalar_prefill_rope ?? false
+            layer.referenceAttentionPrefillGateForTesting = fixture.reference_attention_prefill_gate ?? false
+        }
+        defer {
+            for layer in allDecoderLayers {
+                layer.referenceScalarPrefillRoPEForTesting = false
+                layer.referenceAttentionPrefillGateForTesting = false
+            }
+        }
         let passiveLayers = model.namedModules().compactMap { name, module -> (Int, Qwen4ExpDecoderLayer)? in
             guard let layer = module as? Qwen4ExpDecoderLayer,
                   let index = Int(name.split(separator: ".").last ?? ""), index < 8 else { return nil }
@@ -146,6 +158,8 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
                 "reference_ple_scale_diagnostic_only": fixture.reference_ple_scale ?? false,
                 "reference_ple_all_widths_diagnostic_only": fixture.reference_ple_all_widths ?? false,
                 "reference_shared_activation_diagnostic_only": fixture.reference_shared_activation ?? false,
+                "reference_scalar_prefill_rope_diagnostic_only": fixture.reference_scalar_prefill_rope ?? false,
+                "reference_attention_prefill_gate_diagnostic_only": fixture.reference_attention_prefill_gate ?? false,
                 "projection_engagement": projections.map { ["module": $0.0, "widths": $0.1.engagementReport] as [String: Any] },
                 "peak_active_memory_bytes": Memory.peakMemory,
                 "blocked_calls_per_layer": recurrentLayers.map(\.referenceBlockedCallsForTesting),

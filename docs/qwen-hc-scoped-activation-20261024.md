@@ -977,3 +977,37 @@ not proof that layer 3 is the sole remaining source. Evidence:
 `QwenOpeningSharedControlScores20261024`,
 `QwenOpeningSharedPreciseScores20261024`,
 `QwenOpeningSharedAllWidthsScores20261024` and their comparison JSON files.
+
+
+### Scalar text RoPE control and negative gate result
+
+The attention helper already limits fused QK normalization/RoPE to sequence
+width <=32. An initial proposed additional long-prefill exclusion was therefore
+redundant; its disabled control reproduced prior payloads, and it was removed
+without running or claiming an enabled result.
+
+The actual long-text distinction is manual BF16 cosine/sine arithmetic in AFM
+versus scalar MLXFast RoPE in the native text path. A default-false test switch
+selects scalar RoPE only for B=1, S>32, with no explicit multimodal position IDs.
+Its disabled control preserves all previous intermediate and 320 score arrays.
+The enabled run matches all four recorded layer-3 last-row stages exactly.
+However, five-arm winner overlaps become 58/58/58/58/57 out of 64, versus
+60/60/59/60/58 before this intervention. Local agreement did not translate to
+better final token agreement. The next observed mismatch is layer-4 attention
+output, 893/2560 values exact, relative RMS 0.00459395; its recorded input row
+is exact. Earlier rows are not yet fully compared.
+
+A separate default-false precise attention-gate test at S>32 changes neither
+these overlaps nor the recorded stage comparisons. Native's precise core gate
+begins above 16 rows; this arm does not yet match the 17--32 tail policy and
+must not be described as complete gate parity. The disabled control and both
+enabled tests pass their capture-integrity assertions in about 35 seconds.
+No serving defaults, installed binary, performance or coding-quality claim
+has changed. Next evidence should capture earlier full rows, because a
+recurrent layer depends on preceding positions, not only the last-row input.
+
+Evidence: `QwenOpeningQKControlScores20261024`,
+`QwenOpeningScalarControlScores20261024`, `QwenOpeningScalarRoPEScores20261024`,
+`QwenOpeningScalarGateScores20261024`, their fixture/source manifests and
+`qwen-passive-scalar-{rope,gate}-comparison-20261024.json` under the evaluation
+root. Both scalar interventions remain diagnostic-only.
