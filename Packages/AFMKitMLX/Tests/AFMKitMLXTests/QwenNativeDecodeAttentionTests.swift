@@ -13,6 +13,8 @@ final class QwenNativeDecodeAttentionTests: XCTestCase {
         let model: String?
         let layer: Int?
         let afm_stock_attention: Bool?
+        let afm_selected_rows_attention: Bool?
+        let expect_composed_native_blocks: Bool?
         let key_length: Int?
         let expect_native_mask: Bool?
         let native_capture: String
@@ -71,6 +73,17 @@ final class QwenNativeDecodeAttentionTests: XCTestCase {
         let scores = try XCTUnwrap(Qwen4ExpQSADecodeScores.call(
             queries: try XCTUnwrap(afm["qsa-queries"]),
             blockKeys: try XCTUnwrap(afm["qsa-pooled"])))
+        // Reproduce the reference's M3 score path independently of AFM's fused
+        // scorer: FP32 matmul, ReLU, then head reduction. This is diagnostic
+        // only; it does not select a different serving implementation.
+        let scoreQueries = try XCTUnwrap(afm["qsa-queries"]).asType(.float32)
+        let scoreKeys = try XCTUnwrap(afm["qsa-pooled"])
+            .expandedDimensions(axis: 1).transposed(0, 1, 3, 2).asType(.float32)
+        let composedHeadScores = matmul(scoreQueries, scoreKeys)
+        let composedScores = maximum(composedHeadScores, 0).sum(axis: 1)
+        let composedBlocks = try XCTUnwrap(Qwen4ExpQSAVerifyRadixSelection.call(
+            scores: composedScores,
+            visibleBlockCounts: [completeBlocks], topK: 512)).reshaped(1, 1, 512)
         let afmBlocks = try XCTUnwrap(Qwen4ExpQSAVerifyRadixSelection.call(
             scores: scores.expandedDimensions(axis: 0),
             visibleBlockCounts: [completeBlocks], topK: 512)).reshaped(1, 1, 512)
@@ -90,6 +103,19 @@ final class QwenNativeDecodeAttentionTests: XCTestCase {
         let stockNative = stock(mask), stockAFM = stock(afmMask)
         let stockRanked = stock(rankedMask)
         let directNative = try direct(nativeBlocks), directAFM = try direct(afmBlocks)
+        let gatheredNative: MLXArray?
+        let gatheredAFM: MLXArray?
+        if fixture.afm_selected_rows_attention == true {
+            gatheredNative = try XCTUnwrap(Qwen4ExpSelectedRowsDecodeAttention.call(
+                queries: q, keys: k, values: v, scale: 0.0625,
+                selectedBlocks: nativeBlocks, compressionRatio: 4))
+            gatheredAFM = try XCTUnwrap(Qwen4ExpSelectedRowsDecodeAttention.call(
+                queries: q, keys: k, values: v, scale: 0.0625,
+                selectedBlocks: afmBlocks, compressionRatio: 4))
+        } else {
+            gatheredNative = nil
+            gatheredAFM = nil
+        }
         var records = [[String: Any]]()
         func record(_ name: String, _ actual: MLXArray, _ reference: MLXArray) {
             XCTAssertEqual(actual.shape, reference.shape, name)
@@ -101,6 +127,8 @@ final class QwenNativeDecodeAttentionTests: XCTestCase {
             print("DECODE_ATTN stage=\(name) different=\(count)/\(actual.size) rms=\(rms)")
         }
         record("selected-blocks", afmBlocks, nativeBlocks)
+        record("composed-blocks-vs-native", composedBlocks, nativeBlocks)
+        record("composed-scores-vs-fused", composedScores.reshaped(scores.shape), scores)
         record("selected-mask", afmMask, mask)
         record("ranked-mask-vs-native", rankedMask, mask)
         record("stock-ranked-mask-vs-native", stockRanked, expected)
@@ -110,7 +138,13 @@ final class QwenNativeDecodeAttentionTests: XCTestCase {
         record("direct-native-blocks-vs-native", directNative, expected)
         record("direct-afm-blocks-vs-native", directAFM, expected)
         record("direct-afm-blocks-vs-captured-afm", directAFM, captured)
-        let reconstruction = fixture.afm_stock_attention == true ? stockRanked : directAFM
+        if let gatheredNative, let gatheredAFM {
+            record("gathered-native-blocks-vs-native", gatheredNative, expected)
+            record("gathered-afm-blocks-vs-native", gatheredAFM, expected)
+            record("gathered-afm-blocks-vs-captured-afm", gatheredAFM, captured)
+        }
+        let reconstruction = gatheredAFM
+            ?? (fixture.afm_stock_attention == true ? stockRanked : directAFM)
         let reconstructionTarget = fixture.expect_native_mask == true ? expected : captured
         let reconstructionMatches = reconstruction.asData(access: .copy).data == reconstructionTarget.asData(access: .copy).data
         let selectionMatches = rankedMask.asData(access: .copy).data == mask.asData(access: .copy).data
@@ -181,6 +215,8 @@ final class QwenNativeDecodeAttentionTests: XCTestCase {
             }
         }
         try save(arrays: ["stock-native": stockNative, "stock-afm": stockAFM,
+            "composed-head-scores": composedHeadScores,
+            "composed-scores": composedScores, "composed-blocks": composedBlocks,
             "direct-native": directNative, "direct-afm": directAFM,
             "native-blocks": nativeBlocks, "afm-blocks": afmBlocks, "scores": scores,
             "native-mask": mask, "afm-mask": afmMask, "ranked-mask": rankedMask,
@@ -192,6 +228,10 @@ final class QwenNativeDecodeAttentionTests: XCTestCase {
         XCTAssertTrue(reconstructionMatches,
                       "Reconstruction must reproduce the captured ordinary AFM attention")
         if fixture.expect_native_mask == true { XCTAssertTrue(selectionMatches) }
+        if fixture.expect_composed_native_blocks == true {
+            XCTAssertEqual(composedBlocks.asArray(Int32.self), selected,
+                           "Reference-shaped FP32 scoring must reproduce native block selection")
+        }
         #endif
     }
 }

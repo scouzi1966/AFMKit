@@ -2793,3 +2793,55 @@ Evidence: `QwenAFM5LateNativeCapture20261025`,
 `QwenAFM5LatePassiveScores20261025/CAPTURE-CONTROL.json` under the external
 artifact root. Diagnostic build/source provenance is preserved separately in
 `QwenAFM5LateNativeDiagnostic20261025`.
+
+#### First numerical mismatch localized to one QSA block selection
+
+Reference passive capture is now qualified against the frozen server. All five
+HTTP responses and all 1,664 raw score-vector payloads match the earlier
+non-passive reference control. The initial passive-export attempt failed a
+shape check; only the subsequent full-row export is used for this comparison.
+The AFM passive capture was independently checked against its non-passive
+control as above.
+
+At decision 1,564, all 405 matched intermediate arrays are numerically equal.
+At decision 1,565, the first difference is layer 27's attention-head output:
+800 of 6,144 values differ, with maximum absolute error 0.015625. Its input
+query, current and cached keys/values, QSA queries, and pooled block keys are
+exactly equal. This isolates the onset from the later propagating differences.
+
+A small Release XCTest reconstructs that layer using the existing production
+selected-row attention helper. Reference's selected blocks reproduce all 6,144
+reference output values exactly. AFM's selected blocks reproduce all 6,144 AFM
+output values exactly. The selected sets differ in **one four-token block**:
+AFM includes block 2,252; reference includes block 505. The 234 differing array
+positions in the sorted index list are shifted positions, not 234 different
+selected blocks. The corresponding visibility masks differ at eight tokens.
+
+AFM's fused FP32 scorer assigns block 2,252 a score of 94.4145278930664 and
+block 505 a score of 94.41452026367188, one FP32 representable step apart.
+The reference M3 path uses FP32 matrix multiplication, ReLU, and head reduction
+instead. This establishes the selection difference as the cause of this
+attention-output mismatch, but does not yet establish which numerical score
+calculation explains the different selection. A reference-shaped score
+calculation is being added to the diagnostic before changing serving code.
+
+Evidence under the external artifact root:
+`QwenAFM5LateLayerFullCapture20261025`,
+`QwenAFM5LateLayerDiagnostic20261025/comparison.json`, and
+`QwenAFM5Layer27Attention20261025/{report.json,BLOCK-DIFFERENCE.json}`.
+No serving code, default, frozen binary, or model checkpoint changed. The
+attention reconstruction test passed; end-to-end parity remains unestablished.
+
+The reference-shaped FP32 matmul/ReLU/head-reduction diagnostic subsequently
+passed: all 512 selected block IDs match native reference. It differs from the
+fused AFM scorer at 891 of 2,547 scores (RMS 4.49e-6). At block 2,252 its score
+is 94.41452026367188, tying block 505, so the existing raw-score selector picks
+the lower block index. No change to selection or tie-breaking is needed for
+this case. An independent CPU reconstruction matches **all 10,188 per-head
+dot products exactly** when accumulating the 128 BF16-derived products in
+column order. Parallel lane reductions do not. This gives a specific arithmetic
+order to test in a fused GPU implementation before considering a default change.
+
+Evidence: `QwenAFM5Layer27Composed20261025/{report.json,stages.safetensors,CPU-REDUCTION-SEARCH.json}`.
+The test executable was rebuilt (101.66s) and the fixture test passed (0.448s).
+These are diagnostic build/test durations, not inference-performance results.
