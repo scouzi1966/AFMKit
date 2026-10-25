@@ -1162,3 +1162,51 @@ no serving defaults changed. Evidence under the existing external root:
 `qwen-all-layers-full-comparison-20261024.json`,
 `QwenOpeningAllLayersScores20261024-control.json`. Native instrumented binary
 preserved in `QwenPassiveNativeAllLayersBinary20261024` with SHA manifest.
+
+### Routed expert activation isolation, 2026-10-24 22:50 EDT
+
+The shared-output-gate hypothesis was rejected. Its isolated ordinary forward
+reproduced all 10 saved differences; changing only that gate left the same
+10 differences. The proposed zero-difference assertion failed and the source,
+fixture and results are preserved (`QwenNativeMoETailGate20261024`). Both gate
+outputs were identical at every position; none of the three affected positions
+had the earlier activation-boundary input.
+
+A new native passive capture selected the 43rd occurrence of each ordinary
+MoE stage, requiring exactly 48 occurrences. Frozen/off/on controls and all
+64 raw scores remained unchanged; all prior layer, PLE and QSA captures remain
+unchanged. Layer 42 comparison then showed exact router logits, indices,
+weights and shared expert. Routed output differed in 13 values; adding the
+identical shared output left 10. Evidence: `QwenOpeningLayer42Native20261024`,
+`qwen-layer42-moe-stage-comparison-20261024.json`.
+
+Isolating the existing sorted projections and activation reproduced those
+13 differences. Separate SiLU also retained 13; the reference-matching precise
+SiLU removed all 13. Exactly three activation values differed, each with input
+-6.84375 (up values 4.1875, 4.96875, -2.609375). The existing precise helper
+already has exhaustive finite-BF16 oracle coverage; its routed use was absent.
+This is an activation-rounding discrepancy, not expert routing or the shared
+output gate. The reference's fused prefill reduction is a separate possible
+memory-traffic optimization; this experiment does not establish a reduction bug.
+
+A default-false model diagnostic now changes only ordinary routed prefill
+activation for widths >32, retaining ordinary sorting, projections and weighted
+sum. A package-only override in SwitchGLU is nil for existing callers. The
+captured-input regression asserts exact native output after this intervention.
+Ten alternating complete MoE samples per arm give median 41.1207085 ms current
+and 41.255229 ms candidate (+0.33%). This one-layer measurement is not a whole
+model throughput qualification. Disabled control preserves every captured
+intermediate and all 320 score arrays. Build 199.10 s; both tests pass (46.58 s).
+
+With the routed diagnostic enabled, all four captured stages in all 48 layers
+match native exactly: **3,258,777,600 values**, plus the retained PLE/QSA values.
+The enabled prefix test passes in 39.114 s. Five 64-prefix winner overlaps are
+61/58/58/61/62. Thus cold-chunk intermediate equality is established within
+this capture scope, while tail/decode scores and coding parity remain unproven.
+No serving default changed. Evidence: `QwenNativeMoERoutedAssert20261024`,
+`QwenOpeningRoutedControlScores20261024`,
+`QwenOpeningRoutedPreciseScores20261024`,
+`qwen-routed-precise-full-comparison-20261024.json`. The next diagnostics target
+plain-text QSA query rotation at short widths and the attention gate's native
+>16-row threshold; state precision and final-tail geometry remain separately
+tracked counterfactuals, not automatic production policy changes.

@@ -4168,6 +4168,7 @@ private final class Qwen4ExpMLP: Module, UnaryLayer {
 }
 
 private final class Qwen4ExpSparseMoE: Module, UnaryLayer {
+    var referenceRoutedPrefillActivationForTesting = false
     private static let fusedSharedExpert =
         ProcessInfo.processInfo.environment["AFM_QWEN_VERIFY_FUSED_SHARED_EXPERT"] == "1"
     private static let reportSharedExpertTrace =
@@ -4230,6 +4231,11 @@ private final class Qwen4ExpSparseMoE: Module, UnaryLayer {
         let routed: MLXArray
         if let fused = switchMLP.qwenAffineDecode(x, indices: indices, scores: scores) {
             routed = fused
+        } else if referenceRoutedPrefillActivationForTesting, x.dim(1) > 32 {
+            let experts = switchMLP.activationRowsForTesting(x, indices) {
+                Qwen4ExpHCActivation.silu($0) * $1
+            }
+            routed = (experts * scores[.ellipsis, .newAxis]).sum(axis: -2)
         } else {
             routed = (switchMLP(x, indices) * scores[.ellipsis, .newAxis]).sum(axis: -2)
         }
@@ -4340,6 +4346,12 @@ private final class Qwen4ExpSparseMoE: Module, UnaryLayer {
         let routed: MLXArray
         if let fusedRouted {
             routed = fusedRouted
+        } else if referenceRoutedPrefillActivationForTesting,
+                  verificationPolicy == nil, x.dim(1) > 32 {
+            let experts = switchMLP.activationRowsForTesting(x, indices) {
+                Qwen4ExpHCActivation.silu($0) * $1
+            }
+            routed = (experts * scores[.ellipsis, .newAxis]).sum(axis: -2)
         } else {
             let routedExperts = verificationPolicy == .strictSingletonEquivalent
                 ? switchMLP.targetVerifyPreservingSingletonRows(x, indices)
@@ -5551,6 +5563,11 @@ final class Qwen4ExpDecoderLayer: Module {
     var referenceSharedActivationForTesting: Bool {
         get { mlp.sharedExpert.referenceActivationForTesting }
         set { mlp.sharedExpert.referenceActivationForTesting = newValue }
+    }
+
+    var referenceRoutedPrefillActivationForTesting: Bool {
+        get { mlp.referenceRoutedPrefillActivationForTesting }
+        set { mlp.referenceRoutedPrefillActivationForTesting = newValue }
     }
 
     var referencePooledIndexerSpectrumForTesting: Bool {

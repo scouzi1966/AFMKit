@@ -30,6 +30,7 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
         let reference_ple_scale: Bool?
         let reference_ple_all_widths: Bool?
         let reference_shared_activation: Bool?
+        let reference_routed_prefill_activation: Bool?
         let reference_scalar_prefill_rope: Bool?
         let reference_scalar_indexer_queries: Bool?
         let reference_pooled_indexer_spectrum: Bool?
@@ -105,6 +106,10 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
         let allDecoderLayers = model.namedModules().compactMap { $0.1 as? Qwen4ExpDecoderLayer }
         for layer in allDecoderLayers { layer.referenceSharedActivationForTesting = fixture.reference_shared_activation ?? false }
         defer { for layer in allDecoderLayers { layer.referenceSharedActivationForTesting = false } }
+        for layer in allDecoderLayers {
+            layer.referenceRoutedPrefillActivationForTesting = fixture.reference_routed_prefill_activation ?? false
+        }
+        defer { for layer in allDecoderLayers { layer.referenceRoutedPrefillActivationForTesting = false } }
         for layer in allDecoderLayers {
             layer.referenceScalarPrefillRoPEForTesting = fixture.reference_scalar_prefill_rope ?? false
             layer.referenceScalarIndexerQueriesForTesting = fixture.reference_scalar_indexer_queries ?? false
@@ -182,6 +187,7 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
                 "reference_ple_scale_diagnostic_only": fixture.reference_ple_scale ?? false,
                 "reference_ple_all_widths_diagnostic_only": fixture.reference_ple_all_widths ?? false,
                 "reference_shared_activation_diagnostic_only": fixture.reference_shared_activation ?? false,
+                "reference_routed_prefill_activation_diagnostic_only": fixture.reference_routed_prefill_activation ?? false,
                 "reference_scalar_prefill_rope_diagnostic_only": fixture.reference_scalar_prefill_rope ?? false,
                 "reference_scalar_indexer_queries_diagnostic_only": fixture.reference_scalar_indexer_queries ?? false,
                 "reference_pooled_indexer_spectrum_diagnostic_only": fixture.reference_pooled_indexer_spectrum ?? false,
