@@ -2406,3 +2406,124 @@ This is a numerical qualification checkpoint, not full coding or speed parity.
 Next gate: clean consumer rebuild, frozen binary/resources/source provenance,
 and fresh identical five-request HTTP comparison against frozen reference and
 preserved AFM. Main, releases and local installed binaries remain untouched.
+
+
+### 2026-10-25: rebuilt HTTP and fresh coding qualification
+
+The clean release consumer rebuild completed in 136.77 seconds. Frozen artifact:
+`QwenMatchedRuntimeHTTPBinary20261025/afm`, SHA-256
+`bcee3078cbfc62ccfefcf1448d293c5b7005ce5c3c9dc8f7a783fef591871e6f`.
+Provider `aabb2eaf0bc5bd75e4cc33f12dc9644d88bfdd45`; consumer
+`6839b0566dbd166f11ad4203db9568165ac8ff49`. Resource hashes and full build
+provenance are retained beside the executable. This is a diagnostic release-mode
+artifact, not a published release. No installed binary or main branch changed.
+
+All arms used the same ddalcu four-bit qualification checkpoint, MTP off,
+thinking on, prefix caching on, temperature 0, top-p 1, top-k 0, and seed 123.
+There were no tuning environment overrides. Engine processes ran sequentially.
+The pinned reference executable and preserved AFM executable remained unchanged.
+
+Five fixed HTTP inputs, with generated tools never executed:
+
+| Request | Candidate seconds / tokens | Reference seconds / tokens | Preserved AFM seconds / tokens | Candidate raw decode tok/s | Preserved raw decode tok/s |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 1 | 6.473 / 72 | 6.302 / 72 | 6.324 / 73 | 58.8 | 62.6 |
+| 2 | 2.010 / 67 | 1.801 / 67 | 2.139 / 79 | 58.1 | 62.5 |
+| 3 | 2.277 / 84 | 2.053 / 84 | 3.574 / 171 | 57.6 | 62.5 |
+| 4 | 2.691 / 123 | 2.413 / 123 | 1.879 / 82 | 57.3 | 62.3 |
+| 5 | 27.463 / 1,603 | 28.816 / 1,824 | 242.228 / 14,963 | 61.6 | 62.0 |
+
+The first four candidate responses match the reference's reasoning and parsed
+calls exactly. The fifth shares 2,111 reasoning characters before differing;
+it is not output parity. Compared with `fc23ebfe`, fifth-request candidate
+elapsed fell from 48.421s to 27.463s and raw decode rose from 55.1 to 61.6 tok/s.
+The short-request raw decode deficit against preserved AFM remains visible.
+Reference raw decode timing is unavailable in this frozen serving profile.
+API elapsed is not raw decode, and AFM's cached prefill-rate display includes
+reused tokens; neither is substituted for an unmeasured throughput value.
+
+Fresh independent Orbital tasks, with the pinned Codex 0.162.1 client, frozen
+launcher/task/harness, new empty project path each time, and unchanged
+180k-output-token / 60-minute / 240-request task limits:
+
+| Arm | Task seconds | Output tokens | Requests | Original checks | Native decode tok/s | Client exit |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Candidate aabb2eaf | 815.743 | 44,274 | 50 | 9/11 | 60.149 | 0 |
+| Frozen reference | 808.060 | 49,041 | 48 | 4/11 | not logged | 0 |
+| Preserved 136d8e55 | 297.219 | 17,326 | 5 | 2/11 | 62.277 | 1 |
+
+Candidate elapsed is 0.95% greater than this reference run, but **no arm passed
+all checks** and a single triple does not establish parity or variance bounds.
+Candidate native times: 736.066s generation, 47.846s prefill; 1,098,441 of
+1,134,710 prompt tokens reused (96.8%). No HTTP/API errors occurred in any arm.
+
+Failure evidence is preserved without repairing generated projects:
+- Candidate: diagnostics return `boreal` where the test expects `Boreal`;
+  the mobile screenshot also hit the unchanged 2.5s evaluation timeout,
+  preventing the final mobile-overflow assertion. The scene rendered and the
+  other nine checks passed. Screenshot failure needs a separate untouched-output
+  recheck; it is not silently relabeled as a pass.
+- Reference: `new OrbitControls(renderer.domElement, renderer.domElement)`
+  supplies a canvas instead of the camera. The caught initialization error is
+  `Cannot read properties of undefined (reading 'clone')`, visible in the saved
+  screenshot; no scene or diagnostics initialize. This is a generated-code
+  defect, not an inference-server crash or an evaluation-only failure.
+- Preserved: request five consumed all 16,384 output tokens as reasoning, with
+  no forced reasoning transition. It returned `status=incomplete` /
+  `max_output_tokens`; Codex failed its turn. Its shorter task duration is an
+  early failure and must never count as a faster completed project.
+- Candidate and reference each had one forced reasoning transition. The
+  candidate also emitted two undeclared tools and encountered a shell-policy
+  rejection; the reference had no client tool-router errors.
+
+The first model-visible request is identical across today's candidate and
+reference (normalized SHA-256
+`20096f2fb9496f0f57888c96645f1d3a8c07b9082a7e3d75f6f5fa61ece77c5c`), and both
+return the same first response. Later inputs differ in tool-result chunk IDs
+before their trajectories diverge. Against the previous October 24 run, the
+opening prompt differs in Codex's injected current-date field. These are
+observed input differences, not proof that they alone explain timing variance.
+A follow-up comparison sends today's candidate inputs unchanged to both engines.
+
+Evidence under the existing external root:
+`QwenMatchedRuntimeHTTPFive20261025`, `QwenMatchedPreservedHTTPFive20261025`,
+`qwen-matched-runtime-http-five-comparison-20261025.json`,
+`QwenMatchedRuntimeOrbitalTriple20261025/{REPORT.md,analysis.json,pins.json}`,
+and the three `OrbitalMatchedRuntime{Candidate,Reference,Preserved}20261025`
+folders. Source, prompts, interactions, generated code, screenshots, evaluation
+failures and binary identity remain available for audit.
+
+
+#### Same inputs from the fresh candidate task
+
+`QwenMatchedRuntimeActualInputFive20261025/comparison.json` records both engines
+receiving the candidate task's exact first five request histories. All output
+counts match: 58, 65, 71, 209 and 8,277 tokens. Reasoning and parsed calls match
+for requests 1, 2, 3 and 5. Request 4 differs only in a tool argument, `head -40`
+versus `head -60`. The entire 8,277-token fifth response, including the forced
+reasoning transition and following tool call, matches. The reference therefore
+also reproduces this long planning episode when given the same input.
+
+| Request | AFM seconds | Reference seconds | AFM elapsed overhead |
+| --- | ---: | ---: | ---: |
+| 1 | 6.196 | 6.098 | +1.6% |
+| 2 | 2.016 | 1.758 | +14.6% |
+| 3 | 2.027 | 1.761 | +15.1% |
+| 4 | 4.267 | 3.696 | +15.5% |
+| 5 | 136.639 | 126.349 | +8.1% |
+
+These are API elapsed values, not native reference decode throughput. This
+isolates prompt sensitivity from some engine differences; it does not prove
+all subsequent task histories equivalent or turn one coding pair into a
+variance baseline. The known fifth-request difference on the older fixed
+history also remains documented above.
+
+A fresh browser-only recheck of the untouched candidate output reproduced both
+original failures under the same 2.5s screenshot timeout (9/11 again).
+`QwenMatchedRuntimeBrowserRecheck20261025` retains separate evidence; the
+original evaluation was not overwritten. The next bounded performance
+experiment replaces only the qualified serial profile's dense decode mask
+construction with the already-qualified exact radix block selection expanded
+to the same mask. It must preserve score vectors and serving output, and
+improve measured serving latency, before retention. Other quantizations and
+MTP/batched profiles remain outside that experiment.
