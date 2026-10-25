@@ -2905,6 +2905,7 @@ private final class Qwen4ExpAttention: Module {
     var referenceScalarPrefillRoPEForTesting = false
     var referencePrefillGateForTesting = false
     var referenceTailGateForTesting = false
+    var referenceDecodeGateForTesting = false
     var referenceFusedRotationForTesting = false
     static let sharedRequestProjections =
         ProcessInfo.processInfo.environment["AFM_QWEN_BATCH_ATTENTION_PROJECTIONS"] == "1"
@@ -3015,7 +3016,8 @@ private final class Qwen4ExpAttention: Module {
                 let output = outputHeads
                     .transposed(0, 2, 1, 3)
                     .reshaped(outputHeads.dim(0), outputHeads.dim(2), -1)
-                    * sigmoid(gate)
+                    * ((self.referenceDecodeGateForTesting && outputHeads.dim(2) == 1)
+                        ? Qwen4ExpHCActivation.sigmoid(gate) : sigmoid(gate))
                 return [qwen4ExpVerificationLinear(
                     self.oProj, output, verificationPolicy: nil,
                     role: .attention)]
@@ -3506,7 +3508,9 @@ private final class Qwen4ExpAttention: Module {
         }
         let result: MLXArray
         if deferOutputProjection {
-            result = outputHeads.transposed(0, 2, 1, 3).reshaped(b, l, -1) * sigmoid(gate)
+            let gateValues = referenceDecodeGateForTesting && l == 1
+                ? Qwen4ExpHCActivation.sigmoid(gate) : sigmoid(gate)
+            result = outputHeads.transposed(0, 2, 1, 3).reshaped(b, l, -1) * gateValues
         } else if Self.compileDecode,
            (verificationPolicy == nil && l == 1) || compiledBatchedProjection
         {
@@ -3515,7 +3519,8 @@ private final class Qwen4ExpAttention: Module {
             var output = outputHeads
                 .transposed(0, 2, 1, 3).reshaped(b, l, -1)
             let gateValues = ((referencePrefillGateForTesting && l > 32)
-                || (referenceTailGateForTesting && (17...32).contains(l)))
+                || (referenceTailGateForTesting && (17...32).contains(l))
+                || (referenceDecodeGateForTesting && l == 1))
                 ? Qwen4ExpHCActivation.sigmoid(gate) : sigmoid(gate)
             output = output * gateValues
             result = qwen4ExpVerificationLinear(
@@ -4220,6 +4225,7 @@ private final class Qwen4ExpMLP: Module, UnaryLayer {
 }
 
 private final class Qwen4ExpSparseMoE: Module, UnaryLayer {
+    var referenceDownReductionForTesting = false
     var referenceRoutedPrefillActivationForTesting = false
     private static let fusedSharedExpert =
         ProcessInfo.processInfo.environment["AFM_QWEN_VERIFY_FUSED_SHARED_EXPERT"] == "1"
@@ -4281,7 +4287,8 @@ private final class Qwen4ExpSparseMoE: Module, UnaryLayer {
             scores = stockScores
         }
         let routed: MLXArray
-        if let fused = switchMLP.qwenAffineDecode(x, indices: indices, scores: scores) {
+        if let fused = switchMLP.qwenAffineDecode(x, indices: indices, scores: scores,
+            referenceDownReductionForTesting: referenceDownReductionForTesting) {
             routed = fused
         } else if referenceRoutedPrefillActivationForTesting, x.dim(1) > 32 {
             let experts = switchMLP.activationRowsForTesting(x, indices) {
@@ -4388,7 +4395,8 @@ private final class Qwen4ExpSparseMoE: Module, UnaryLayer {
         }
         let fusedRouted: MLXArray?
         if verificationPolicy == nil {
-            fusedRouted = switchMLP.qwenAffineDecode(x, indices: indices, scores: scores)
+            fusedRouted = switchMLP.qwenAffineDecode(x, indices: indices, scores: scores,
+            referenceDownReductionForTesting: referenceDownReductionForTesting)
         } else if verificationPolicy == .batched && Self.group64FusedVerifyExperts {
             fusedRouted = switchMLP.qwenIndependentAffineRows(
                 x, indices: indices, scores: scores, allowGroup64: true)
@@ -5612,6 +5620,11 @@ final class Qwen4ExpDecoderLayer: Module {
         mlp.prefillStageTraceForTesting(input)
     }
 
+    var referenceDownReductionForTesting: Bool {
+        get { mlp.referenceDownReductionForTesting }
+        set { mlp.referenceDownReductionForTesting = newValue }
+    }
+
     var referenceSharedActivationForTesting: Bool {
         get { mlp.sharedExpert.referenceActivationForTesting }
         set { mlp.sharedExpert.referenceActivationForTesting = newValue }
@@ -5645,6 +5658,11 @@ final class Qwen4ExpDecoderLayer: Module {
     var referenceAttentionPrefillGateForTesting: Bool {
         get { selfAttention?.referencePrefillGateForTesting ?? false }
         set { selfAttention?.referencePrefillGateForTesting = newValue }
+    }
+
+    var referenceAttentionDecodeGateForTesting: Bool {
+        get { selfAttention?.referenceDecodeGateForTesting ?? false }
+        set { selfAttention?.referenceDecodeGateForTesting = newValue }
     }
 
     var referenceAttentionTailGateForTesting: Bool {
@@ -6498,6 +6516,12 @@ private final class Qwen4ExpModelInner: Module {
                 hidden = hyperConnectionMixer.combine(
                     hidden, verificationPolicy: verificationPolicy)
             }
+        }
+        // Passive retention after the ordinary final mixer; never re-forward,
+        // materialize pending writes early, or add outputs inside a trace.
+        if let finalLayer = layers.last, finalLayer.passivePrefillWidthForTesting == 1,
+           hidden.dim(1) == 1 {
+            finalLayer.passivePrefillStagesForTesting["final-hidden"] = hidden
         }
         profiler?.report()
         hostProfiler?.report()

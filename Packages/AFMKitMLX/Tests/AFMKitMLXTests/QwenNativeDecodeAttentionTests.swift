@@ -2,18 +2,23 @@ import CryptoKit
 import Foundation
 import MLX
 import MLXFast
+import MLXNN
+@testable import MLXLMCommon
 @testable import MLXLLM
 @testable import AFMKitMLX
 import XCTest
 
 final class QwenNativeDecodeAttentionTests: XCTestCase {
     private struct Fixture: Decodable {
+        let model: String?
+        let layer: Int?
+        let afm_stock_attention: Bool?
         let native_capture: String
         let afm_capture: String
         let files: [String: String]
     }
 
-    func testOptionalCapturedDecodeAttention() throws {
+    func testOptionalCapturedDecodeAttention() async throws {
         let env = ProcessInfo.processInfo.environment
         guard let path = env["AFM_QWEN_DECODE_ATTN_FIXTURE"],
               let output = env["AFM_QWEN_DECODE_ATTN_OUT"] else {
@@ -94,8 +99,44 @@ final class QwenNativeDecodeAttentionTests: XCTestCase {
         record("direct-native-blocks-vs-native", directNative, expected)
         record("direct-afm-blocks-vs-native", directAFM, expected)
         record("direct-afm-blocks-vs-captured-afm", directAFM, captured)
-        XCTAssertEqual(directAFM.asData(access: .copy).data, captured.asData(access: .copy).data,
+        XCTAssertEqual((fixture.afm_stock_attention == true ? stockAFM : directAFM).asData(access: .copy).data, captured.asData(access: .copy).data,
                        "Reconstruction must reproduce the captured ordinary AFM attention")
+        var tailArrays = [String: MLXArray]()
+        if let directory = fixture.model, let layer = fixture.layer {
+            let context = try await LLMModelFactory.shared.load(configuration:
+                ModelConfiguration(directory: URL(fileURLWithPath: directory)))
+            let model = try XCTUnwrap(context.model as? Qwen4ExpModel)
+            let projection = try XCTUnwrap(model.namedModules().first {
+                $0.0 == "model.layers.\(layer).self_attn.o_proj"
+            }?.1 as? Linear)
+            let gate = try XCTUnwrap(native["attention-gate"]).reshaped(1, 1, -1)
+            let flat = expected.transposed(0, 2, 1, 3).reshaped(1, 1, -1)
+            let ordinaryGate = sigmoid(gate)
+            let preciseGate = Qwen4ExpHCActivation.sigmoid(gate)
+            let ordinaryTail = compile(shapeless: false) { (arrays: [MLXArray]) -> [MLXArray] in
+                CompiledDecodeTrace.withActive {
+                    [qwen4ExpVerificationLinear(projection, arrays[0] * sigmoid(arrays[1]),
+                        verificationPolicy: nil, role: .attention)]
+                }
+            }
+            let preciseTail = compile(shapeless: false) { (arrays: [MLXArray]) -> [MLXArray] in
+                CompiledDecodeTrace.withActive {
+                    [qwen4ExpVerificationLinear(projection, arrays[0] * Qwen4ExpHCActivation.sigmoid(arrays[1]),
+                        verificationPolicy: nil, role: .attention)]
+                }
+            }
+            let ordinary = ordinaryTail([flat, gate])[0]
+            let precise = preciseTail([flat, gate])[0]
+            let key = String(format: "layer-%03d-attn-output", layer)
+            let nativeOutput = try XCTUnwrap(native[key])
+            let afmOutput = try XCTUnwrap(afm[key])
+            record("output-gate-ordinary-vs-precise", ordinaryGate, preciseGate)
+            record("output-tail-ordinary-vs-native", ordinary, nativeOutput)
+            record("output-tail-ordinary-vs-captured-afm", ordinary, afmOutput)
+            record("output-tail-precise-vs-native", precise, nativeOutput)
+            tailArrays = ["ordinary-gate": ordinaryGate, "precise-gate": preciseGate,
+                "ordinary-tail": ordinary, "precise-tail": precise]
+        }
         for _ in 0..<8 { eval(stock(mask)); eval(try direct(nativeBlocks)) }
         var timings = [[String: Any]]()
         for sample in 0..<30 {
@@ -109,9 +150,9 @@ final class QwenNativeDecodeAttentionTests: XCTestCase {
         try save(arrays: ["stock-native": stockNative, "stock-afm": stockAFM,
             "direct-native": directNative, "direct-afm": directAFM,
             "native-blocks": nativeBlocks, "afm-blocks": afmBlocks, "scores": scores,
-            "native-mask": mask, "afm-mask": afmMask], url: root.appendingPathComponent("stages.safetensors"))
+            "native-mask": mask, "afm-mask": afmMask].merging(tailArrays) { _, n in n }, url: root.appendingPathComponent("stages.safetensors"))
         let report: [String: Any] = ["records": records, "timings": timings,
-            "scope": "Identical first-decode layer-3 operands. Alternating component timings include graph construction and evaluation; not model throughput or coding quality."]
+            "scope": "Identical captured first-decode operands. Alternating component timings include graph construction and evaluation; not model throughput or coding quality."]
         try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys])
             .write(to: root.appendingPathComponent("report.json"), options: .withoutOverwriting)
         #endif

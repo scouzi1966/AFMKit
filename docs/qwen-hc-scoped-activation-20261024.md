@@ -18,6 +18,15 @@ candidate (`12a44c24`, binary `a597e213…`) also failed its exploratory task pa
 same-prefix arithmetic diagnosis; no new coding-parity result is claimed.
 Main and installed binaries are unchanged.
 
+As of 2026-10-25, the combined diagnostic matches every one of 305 captured
+first-decode intermediate arrays through the last layer. The existing fused final mixer also makes the first-decode vocabulary scores
+exact; later drift remains, with 10/64 full score arrays exact. The reference-matched joined-tail /
+BF16-state arm matches 63/64 raw winning-token sets; production split-tail /
+F32-state matches 59/64. These are fixed-prefix arithmetic diagnostics, not
+new completed coding runs. An eight-lane expert reduction resolves one cause,
+but its 30-sample component median is 2.74% slower and is not promoted.
+
+
 The sections below retain the history of each intervention, including failures.
 
 This branch is an experiment, not a replacement for the preserved performance
@@ -1584,3 +1593,140 @@ The lane-layout hypothesis is not yet validated; no default is changed.
 Evidence: `QwenOpeningFirstDecodeLayer4MoENative20261025`,
 `QwenNativeDecodeLayer4MoE20261025`, and
 `qwen-first-decode-layer4-moe-tests-20261025.log`.
+
+
+### Eight-lane routed reduction experiment, 2026-10-25
+
+A default-false instance policy selects a group-64, singleton-only port of
+native `gatherQmvDownReduceSource` (ddalcu/mlx-serve, MIT, revision 02bee553).
+The kernel uses eight lanes per output row, hoists packed words, and reduces
+with XOR shuffles before the unchanged BF16 route weighting. Group-32,
+independent-row batching, and the existing native-chain plans remain unchanged;
+the diagnostic uses separate ordinary dispatches when selected. No new user
+or environment option was added, and no serving default changed.
+
+On the captured native layer-4 input, both ordinary and compiled experimental
+outputs match all 2,560 native values. Restoring the default exactly reproduces
+the former one-value difference. Build: 198.38 s; focused test: 2.654 s.
+Thirty alternating whole-MoE component samples after warmup show median
+0.422479 ms default versus 0.434063 ms experimental (+2.74%); means are
+0.417082 and 0.422690 ms. This short measurement does not establish either a
+model throughput gain or a stable slowdown. It is not grounds for promotion.
+The disabled full-prefix control preserves all 320 prior score arrays exactly
+(test 35.450 s). The enabled full-prefix comparison is recorded separately.
+
+Evidence: `QwenNativeDecodeLayer4Lanes20261025`,
+`QwenOpeningEightLanesControlScores20261025`, and
+`QwenOpeningEightLanesControlScores20261025-control.json`.
+
+
+Enabled full-prefix experiment passes in 35.457 s:
+
+| Fixed-prefix arm | Control winners / 64 | Eight-lane winners / 64 | Control mean RMS | Eight-lane mean RMS |
+| --- | ---: | ---: | ---: | ---: |
+| Production 30+1 | 59 | 59 | 0.573638 | 0.616627 |
+| Joined 31, F32 state | 61 | 59 | 0.564778 | 0.623552 |
+| Joined 31, BF16 state values | 58 | 63 | 0.491325 | 0.137201 |
+| Reconstructed 30+1 | 59 | 59 | 0.573638 | 0.616627 |
+| Reconstructed 30+1, BF16 state values | 59 | 60 | 0.500456 | 0.489578 |
+
+The reference-matched geometry/state arm improves mean RMS by 72.1%, with
+one differing raw winner at decision 56. First-decode score RMS falls from
+0.288002 to 0.008032. Of 305 captured intermediate arrays, 303 are exact;
+all captured layer boundaries through layer 46 match. Remaining differences:
+layer 47 attention output 7/2,560 values (RMS 9.984095e-6), and layer 47 MLP
+residual stream 2/10,240 (RMS 1.364788e-5). This motivates capturing layer 47's
+attention operands; it does not establish coding parity. Production geometry
+has no winner improvement and worse score RMS, so this is not a deployable fix.
+The default regression selection passes 3 tests, with 1 optional checkpoint
+test skipped and zero failures (0.543 s).
+
+Evidence: `QwenOpeningEightLanesCorrectedScores20261025`,
+`qwen-eight-lanes-comparison-20261025.json`, and
+`qwen-eight-lanes-default-regression-tests-20261025.log`.
+
+
+### Last-layer decode attention gate, 2026-10-25 01:12 EDT
+
+The layer-47 native capture preserves frozen/off/on responses and all 64 score
+arrays. AFM's added layer-47 capture preserves all 320 prior arrays (35.606 s).
+Native capture binary SHA-256:
+`ac69b37bce14b16429078499c23a7266789fd4f4fbc063d15d624f639217d8e6`.
+All captured Q/K/V, full cache contents, QSA selection, heads and gate operands
+match exactly. The isolated output projection reproduces all seven captured
+AFM output differences on identical native operands. Using the existing precise
+BF16 sigmoid removes all seven differences and matches the native output.
+There is one differing sigmoid input: BF16 -6.84375, flattened gate index 1996.
+Native `stridedSigmoidGateMul` uses its ordinary MLX sigmoid lookup table;
+AFM's compiled output tail evaluates sigmoid inside the compiled expression.
+
+The first focused attempt failed due to a harness broadcast mistake: native
+records the gate as [1,1,24,256], whereas AFM's tail accepts [1,1,6144]. The
+retry reshapes the same tensor, with no arithmetic change, and passes in
+2.499 s. Both failed and successful artifacts are retained. A default-false
+model-instance decode-gate policy now tests the existing precise sigmoid in
+compiled, deferred and ordinary singleton output paths. Promotion is pending
+full-prefix, task and performance qualification.
+
+Evidence: `QwenOpeningFirstDecodeLayer47AttentionNative20261025`,
+`QwenOpeningLayer47AttentionScores20261025`,
+`QwenNativeDecodeLayer47AttentionRetry20261025`, and
+`qwen-first-decode-layer47-attention-retry-tests-20261025.log`.
+
+
+Combined decode-gate prefix test: disabled control preserves all 320 previous
+score arrays (build 186.79 s; test 35.600 s). Enabled run passes in 35.493 s.
+All 305 captured intermediate arrays now match native at the first decode,
+including both previously differing layer-47 arrays. Whole-score error remains
+RMS 0.007985 at this decision; the final mixer/output projection is not covered
+by these 305 arrays and is the next capture boundary.
+
+| Fixed-prefix arm | Control winners / 64 | Precise decode gate winners / 64 | Control mean RMS | Candidate mean RMS |
+| --- | ---: | ---: | ---: | ---: |
+| Production 30+1 | 59 | 59 | 0.616627 | 0.616519 |
+| Joined 31, F32 state | 59 | 59 | 0.623552 | 0.623632 |
+| Joined 31, BF16 state values | 63 | 63 | 0.137201 | 0.136938 |
+| Reconstructed 30+1 | 59 | 59 | 0.616627 | 0.616519 |
+| Reconstructed 30+1, BF16 state values | 60 | 60 | 0.489578 | 0.489500 |
+
+The gate intervention resolves a proven local discrepancy but does not change
+the 64-step winner counts. No release, coding-quality, or throughput acceptance
+is claimed. Evidence: `QwenOpeningDecodeGateCorrectedScores20261025`,
+`QwenOpeningDecodeGateControlScores20261025-control.json`, and
+`qwen-decode-gate-comparison-20261025.json`.
+
+
+### Final mixer isolation, 2026-10-25 01:25 EDT
+
+Passive final-hidden retention preserves AFM's 320 score arrays (build 58.86 s;
+test 35.730 s). Native frozen/off/on controls also preserve all 64 score arrays.
+Native capture binary SHA-256:
+`d0804ebdcf3086532602e5da2456d0a3ef97b9273382d7107388e46f94b94c2e`.
+A short-lived native instrumentation syntax error was corrected before capture;
+its failed build log is retained alongside the successful retry.
+
+The default final mixer differs from native in 1,257/2,560 hidden values even
+though every preceding captured layer boundary matches. Selecting the existing
+`AFM_QWEN_FUSED_FINAL_MIXER=1` diagnostic reproduces all 2,560 native hidden
+values and the full first-decode vocabulary scores exactly. This is an existing
+runtime experiment, not a newly enabled default. The reference uses its fused
+HC read here, while AFM's final fused mixer defaults off.
+
+| Fixed-prefix arm | Default final mixer winners / 64 | Fused final mixer winners / 64 | Default mean RMS | Fused mean RMS |
+| --- | ---: | ---: | ---: | ---: |
+| Production 30+1 | 59 | 59 | 0.616519 | 0.616343 |
+| Joined 31, F32 state | 59 | 58 | 0.623632 | 0.623297 |
+| Joined 31, BF16 state values | 63 | 63 | 0.136938 | 0.135386 |
+| Reconstructed 30+1 | 59 | 59 | 0.616519 | 0.616343 |
+| Reconstructed 30+1, BF16 state values | 60 | 60 | 0.489500 | 0.489292 |
+
+In the reference-matched arm, score arrays are now bit-exact at decisions
+0–5 and 7–10 (10/64). Decision 6 RMS is 0.000374; decision 11 is 0.001884;
+decision 12 jumps to 0.265082. The sole winning-token discrepancy remains at
+56. No whole-task, API-performance or release qualification is implied.
+Next capture targets the onset of later drift rather than rerunning a coding
+project before its numerical cause is understood. Evidence:
+`QwenOpeningFirstDecodeFinalHiddenNative20261025`,
+`QwenOpeningFinalHiddenScores20261025`,
+`QwenOpeningFusedFinalMixerScores20261025`, and
+`qwen-fused-final-mixer-comparison-20261025.json`.

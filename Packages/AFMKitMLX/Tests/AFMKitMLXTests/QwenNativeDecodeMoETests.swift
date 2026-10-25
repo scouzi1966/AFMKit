@@ -87,6 +87,32 @@ final class QwenNativeDecodeMoETests: XCTestCase {
         for (name, actual) in stages.sorted(by: { $0.key < $1.key }) {
             if let reference = native["moe-" + name] { record(name, actual, reference) }
         }
+        layer.referenceDownReductionForTesting = true
+        let referenceDown = layer.moeForwardForTesting(input)
+        eval(referenceDown)
+        let referenceCompiled = compile(shapeless: false) { (arrays: [MLXArray]) -> [MLXArray] in
+            CompiledDecodeTrace.withActive { [layer.moeForwardForTesting(arrays[0])] }
+        }
+        let referenceCompiledOutput = referenceCompiled([input])[0]
+        eval(referenceCompiledOutput)
+        record("reference-down-vs-native", referenceDown, expected)
+        record("reference-compiled-down-vs-native", referenceCompiledOutput, expected)
+        layer.referenceDownReductionForTesting = false
+        let restored = layer.moeForwardForTesting(input)
+        XCTAssertEqual(restored.asData(access: .copy).data, ordinary.asData(access: .copy).data,
+                       "Experimental reduction must not affect restored default")
+        // Both compiled closures have already traced their immutable policy.
+        for _ in 0..<8 { eval(compiled([input])); eval(referenceCompiled([input])) }
+        var timings = [[String: Any]]()
+        for sample in 0..<30 {
+            for candidate in sample.isMultiple(of: 2) ? [false, true] : [true, false] {
+                let start = DispatchTime.now().uptimeNanoseconds
+                eval(candidate ? referenceCompiled([input]) : compiled([input]))
+                let ms = Double(DispatchTime.now().uptimeNanoseconds - start) / 1e6
+                timings.append(["sample": sample, "implementation": candidate ? "eight-lanes" : "legacy",
+                                "milliseconds": ms])
+            }
+        }
         if layerIndex == 0 {
             // Reconstruct layer zero from its exact token embedding; it has no
             // preceding HC write or PLE. Reuse the already-qualified native GDN output.
@@ -162,9 +188,10 @@ final class QwenNativeDecodeMoETests: XCTestCase {
         record("compiled-gate-tail-vs-native", fusedTail, expected)
         record("compiled-gate-tail-vs-compiled-moe", fusedTail, compiledOutput)
         try save(arrays: stages.merging(["ordinary": ordinary, "compiled": compiledOutput,
+            "reference-down": referenceDown, "reference-compiled-down": referenceCompiledOutput,
             "compiled-gate-tail": fusedTail, "native": expected, "captured-afm": captured]) { _, n in n },
             url: root.appendingPathComponent("stages.safetensors"))
-        let report: [String: Any] = ["records": records, "layer": layerIndex,
+        let report: [String: Any] = ["records": records, "layer": layerIndex, "timings": timings,
             "scope": "Native first-decode layer-\(layerIndex) MLP input. Compare ordinary, compiled, and captured AFM output before attributing downstream differences. No whole-task or speed claim."]
         try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys])
             .write(to: root.appendingPathComponent("report.json"), options: .withoutOverwriting)

@@ -28,6 +28,7 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
         let passive_width: Int?
         let passive_arm: String?
         let passive_qsa: Bool?
+        let passive_qsa_layer: Int?
         let reference_ple_norm: Bool?
         let reference_ple_scale: Bool?
         let reference_ple_all_widths: Bool?
@@ -39,8 +40,10 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
         let reference_pooled_indexer_spectrum: Bool?
         let reference_attention_prefill_gate: Bool?
         let reference_attention_tail_gate: Bool?
+        let reference_attention_decode_gate: Bool?
         let reference_injection_gate: Bool?
         let reference_materialized_injection: Bool?
+        let reference_down_reduction: Bool?
         let reference_fused_rotation: Bool?
         let model: String
         let histories: [History]
@@ -116,8 +119,14 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
         for hc in hcModules { hc.referenceMaterializedInjectionForTesting = fixture.reference_materialized_injection ?? false }
         defer { for hc in hcModules { hc.referenceMaterializedInjectionForTesting = false } }
         let allDecoderLayers = model.namedModules().compactMap { $0.1 as? Qwen4ExpDecoderLayer }
-        for layer in allDecoderLayers { layer.referenceSharedActivationForTesting = fixture.reference_shared_activation ?? false }
-        defer { for layer in allDecoderLayers { layer.referenceSharedActivationForTesting = false } }
+        for layer in allDecoderLayers {
+            layer.referenceSharedActivationForTesting = fixture.reference_shared_activation ?? false
+            layer.referenceDownReductionForTesting = fixture.reference_down_reduction ?? false
+        }
+        defer { for layer in allDecoderLayers {
+            layer.referenceSharedActivationForTesting = false
+            layer.referenceDownReductionForTesting = false
+        } }
         for layer in allDecoderLayers {
             layer.referenceRoutedPrefillActivationForTesting = fixture.reference_routed_prefill_activation ?? false
         }
@@ -129,6 +138,7 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
             layer.referencePooledIndexerSpectrumForTesting = fixture.reference_pooled_indexer_spectrum ?? false
             layer.referenceAttentionPrefillGateForTesting = fixture.reference_attention_prefill_gate ?? false
             layer.referenceAttentionTailGateForTesting = fixture.reference_attention_tail_gate ?? false
+            layer.referenceAttentionDecodeGateForTesting = fixture.reference_attention_decode_gate ?? false
             layer.referenceFusedRotationForTesting = fixture.reference_fused_rotation ?? false
         }
         defer {
@@ -139,6 +149,7 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
                 layer.referencePooledIndexerSpectrumForTesting = false
                 layer.referenceAttentionPrefillGateForTesting = false
                 layer.referenceAttentionTailGateForTesting = false
+                layer.referenceAttentionDecodeGateForTesting = false
                 layer.referenceFusedRotationForTesting = false
             }
         }
@@ -172,7 +183,7 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
             }
         }
         let passiveIndexers = model.namedModules().compactMap { name, module -> Qwen4ExpQSAIndexer? in
-            guard name.hasPrefix("model.layers.3."), let indexer = module as? Qwen4ExpQSAIndexer else { return nil }
+            guard name.hasPrefix("model.layers.\(fixture.passive_qsa_layer ?? 3)."), let indexer = module as? Qwen4ExpQSAIndexer else { return nil }
             return indexer
         }
         if fixture.passive_qsa == true {
@@ -227,6 +238,8 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
                 "reference_attention_tail_gate_diagnostic_only": fixture.reference_attention_tail_gate ?? false,
                 "reference_injection_gate_diagnostic_only": fixture.reference_injection_gate ?? false,
                 "reference_materialized_injection_diagnostic_only": fixture.reference_materialized_injection ?? false,
+                "reference_down_reduction_diagnostic_only": fixture.reference_down_reduction ?? false,
+                "reference_attention_decode_gate_diagnostic_only": fixture.reference_attention_decode_gate ?? false,
                 "reference_fused_rotation_diagnostic_only": fixture.reference_fused_rotation ?? false,
                 "projection_engagement": projections.map { ["module": $0.0, "widths": $0.1.engagementReport] as [String: Any] },
                 "peak_active_memory_bytes": Memory.peakMemory,
