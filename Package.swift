@@ -182,6 +182,7 @@ let dwarfStarReleaseGraphProductPins: [Target.Dependency] = [
 
 var products: [Product] = [
     .library(name: "AFMKitCore", targets: ["AFMKitCore"]),
+    .library(name: "AFMKitSplash", targets: ["AFMKitSplash"]),
     .library(name: "AFMOpenAICompat", targets: ["AFMOpenAICompat"]),
     .library(name: "AFMKitInference", targets: ["AFMKitInference"]),
     .library(name: "AFMKitEmbeddings", targets: ["AFMKitEmbeddings"]),
@@ -293,6 +294,8 @@ var targets: [Target] = [
         swiftSettings: [.swiftLanguageMode(.v5)]
     ),
     .target(name: "AFMKitCore", dependencies: []),
+    .target(name: "AFMKitSplash", dependencies: ["AFMKitCore", .product(name: "Tokenizers", package: "swift-transformers")], resources: [.process("Resources")]),
+    .testTarget(name: "AFMKitSplashTests", dependencies: ["AFMKitSplash", "AFMKitCore"], exclude: ["test_staging.py"], resources: [.copy("Fixtures")]),
     .target(name: "AFMOpenAICompat", dependencies: []),
     .target(name: "AFMKitInference", dependencies: ["AFMKitCore", "AFMOpenAICompat"]),
     .target(name: "AFMKitEmbeddings", dependencies: [], linkerSettings: [.linkedFramework("NaturalLanguage")]),
