@@ -4807,6 +4807,16 @@ private final class Qwen4ExpPLEProfiler {
     }
 }
 
+/// PLE arithmetic diagnostic. The ordinary branch preserves its existing
+/// denominator rounding; the reference branch mirrors the pinned native
+/// activation-dtype reciprocal multiply (ddalcu/mlx-serve, MIT).
+func qwen4ExpScalePLEGate(_ dots: MLXArray, hiddenSize: Int, reference: Bool) -> MLXArray {
+    if reference {
+        return dots * MLXArray(1 / sqrt(Float(hiddenSize))).asType(dots.dtype)
+    }
+    return dots / sqrt(Float(hiddenSize))
+}
+
 private final class Qwen4ExpPLE: Module {
     /// Experimental request-owned PLE projection/convolution batching. Token
     /// histories and mapped n-gram lookups remain separate for every request.
@@ -4869,6 +4879,10 @@ private final class Qwen4ExpPLE: Module {
     func rowIDsForTesting(_ inputIDs: MLXArray) -> MLXArray {
         pleEmbedding.rowIDsForTesting(inputIDs)
     }
+
+    var passiveWidthForTesting: Int?
+    var passiveStagesForTesting: [String: MLXArray] = [:]
+    var referenceGateScaleForTesting = false
 
     private func shortConv(_ x: MLXArray, cache: ArraysCache?) -> MLXArray {
         let prior = cache?[2] ?? MLXArray.zeros(
@@ -4962,7 +4976,9 @@ private final class Qwen4ExpPLE: Module {
             .reshaped(shape + [hcCount, hiddenSize])
         let query = normQuery(hidden).reshaped(shape + [hcCount, hiddenSize])
         profiler?.lap([key, query], stage: .keyQueryNorm)
-        var gate = (key * query).sum(axis: -1, keepDims: true) / sqrt(Float(hiddenSize))
+        var gate = qwen4ExpScalePLEGate(
+            (key * query).sum(axis: -1, keepDims: true), hiddenSize: hiddenSize,
+            reference: referenceGateScaleForTesting)
         gate = sign(gate) * sqrt(maximum(abs(gate), 1e-6))
         let value = expandedDimensions(
             valueProjection,
@@ -5005,6 +5021,16 @@ private final class Qwen4ExpPLE: Module {
         let convolved = shortConv(convolutionInputs, cache: cache)
         profiler?.lap(convolved, stage: .shortConvolution)
         let output = gated + convolved
+        if let width = passiveWidthForTesting,
+           hidden.dim(1) == width, verificationPolicy == nil,
+           passiveStagesForTesting.isEmpty {
+            passiveStagesForTesting = [
+                "ple-stream": hidden, "ple-embedding": embedding,
+                "ple-key": key, "ple-query": query, "ple-value": valueProjection,
+                "ple-gated": gated, "ple-conv-input": convolutionInputs,
+                "ple-output": output,
+            ]
+        }
         profiler?.lap(output, stage: .residual)
         profiler?.report()
         return output
@@ -5458,6 +5484,19 @@ final class Qwen4ExpDecoderLayer: Module {
     // Never enabled by model configuration, environment, or serving options.
     var passivePrefillWidthForTesting: Int?
     var passivePrefillStagesForTesting: [String: MLXArray] = [:]
+
+    var passivePLEWidthForTesting: Int? {
+        get { ple?.passiveWidthForTesting }
+        set { ple?.passiveWidthForTesting = newValue }
+    }
+    var passivePLEStagesForTesting: [String: MLXArray] {
+        get { ple?.passiveStagesForTesting ?? [:] }
+        set { ple?.passiveStagesForTesting = newValue }
+    }
+    var referencePLEGateScaleForTesting: Bool {
+        get { ple?.referenceGateScaleForTesting ?? false }
+        set { ple?.referenceGateScaleForTesting = newValue }
+    }
 
     var referenceBlockedRecurrenceForTesting: Bool {
         get { linearAttention?.referenceBlockedRecurrenceForTesting ?? false }

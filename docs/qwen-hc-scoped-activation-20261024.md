@@ -831,3 +831,65 @@ The blocked/FP32 increase is 3.76% here. Evidence is
 `QwenNativeGDNForward20261024`; test duration 4.27 seconds. No serving switch
 has changed. The follow-up retains later stages with the blocked diagnostic
 enabled to locate the next divergence rather than assume this solves quality.
+
+### PLE transition: lookup agrees, normalization differs
+
+With blocked recurrence, first-layer attention output and subsequent MLP input
+match native across the entire chunk. MLP output differs in 175/16,972,800
+values, but its last 16 rows match exactly. The next layer is the model's PLE
+layer (configured as one-based layer 2). Its attention input still differs;
+this is not adequately explained by the already-corrected first GDN stage.
+
+An expanded passive capture records the last 16 PLE rows. Native frozen/off/on
+controls again preserve all replies, usage and 64 raw score tensors. Adding
+the AFM capture preserves every earlier stage and score payload. The incoming
+PLE stream is exact (163,840 values), as are the lookup embedding and value
+projection (40,960 each). Key/query normalization are the first differing PLE
+stages. Switching only the three PLE norms to reference-style staged BF16
+rounding makes all 163,840 key and 163,840 query values exact. Gated values and
+the convolution input/output still differ. Lookup identity is therefore not
+the source of this observed PLE discrepancy.
+
+These captures are `QwenOpeningPLENative20261024`,
+`QwenOpeningPLEControlScores20261024`, and `QwenOpeningPLENormScores20261024`.
+The comparison JSON files are `qwen-passive-ple-control-comparison-20261024.json`
+and `qwen-passive-ple-norm-comparison-20261024.json`. Native capture binary:
+`8d2c4c4eb63183f4c8c909eb1f3c9c82c4e588a1a1137747515f147e38f445e9`.
+The earlier native capture binary `3afa9724…` is preserved separately under
+`QwenPassiveNativeStageBinary20261024`.
+
+The PLE-normalization diagnostic improves opening winner overlap to
+59/64,60/64,62/64,59/64,59/64 across the five arms. It does not make the later
+layers or full response equivalent. The next controlled arithmetic comparison
+is gate scaling: AFM divides by a model-dtype rounded square root, while the
+pinned native path multiplies by a model-dtype rounded reciprocal.
+
+The gate-scale unit test now reproduces both captures exactly: the existing
+division reproduces all 163,840 AFM gated values, while reciprocal
+multiplication reproduces all 163,840 native values on identical inputs.
+The disabled diagnostic preserves every prior stage and all 320 score arrays.
+The Release build took 186.17 seconds; the gate and prefix controls passed
+in 35.38 seconds combined.
+
+With blocked recurrence, staged PLE normalization and reciprocal gate scaling
+enabled together, every captured PLE stage is byte-identical to native,
+including convolution input/output. The next layer's final-row attention
+input also matches. Nevertheless, the full opening-prefix winner overlaps
+are **54/64, 57/64, 57/64, 54/64, 57/64**, worse than the prior experiment.
+This is a negative whole-model result, not a quality fix. These switches
+remain test-only and default false; no serving default changed.
+
+The first-layer MLP still differs in 175 of 16,972,800 output values on
+identical input. That is the next localized comparison. Also, the staged PLE
+normalization diagnostic currently covers widths of at least 128 only;
+short-tail and singleton normalization have not been matched by that switch.
+Neither local stage equality nor winner overlap qualifies coding quality.
+The last full paired coding result remains 1,110.15 seconds and 8/11 checks
+for AFM versus 544.12 seconds and 11/11 for the reference.
+
+Evidence: `QwenOpeningPLEScaleControlScores20261024`,
+`QwenOpeningPLEScaleScores20261024`,
+`qwen-ple-scale-disabled-control-20261024.json`, and
+`qwen-passive-ple-scale-comparison-20261024.json` under the preserved evaluation
+root. The enabled prefix diagnostic passed in 35.22 seconds; it verifies
+capture integrity, not a positive model-quality outcome.

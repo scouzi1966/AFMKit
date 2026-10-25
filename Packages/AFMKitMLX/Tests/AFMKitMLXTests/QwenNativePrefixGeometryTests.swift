@@ -23,6 +23,8 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
         let blocked_recurrence: Bool?
         let prefill_projection: String?
         let passive_forward: Bool?
+        let reference_ple_norm: Bool?
+        let reference_ple_scale: Bool?
         let model: String
         let histories: [History]
         let rows: [Row]
@@ -82,20 +84,34 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
         let context = try await LLMModelFactory.shared.load(configuration:
             ModelConfiguration(directory: URL(fileURLWithPath: fixture.model)))
         let model = try XCTUnwrap(context.model as? Qwen4ExpModel)
+        let pleNorms = model.namedModules().compactMap { name, module -> Qwen4ExpZeroCenteredRMSNorm? in
+            guard name.contains(".ple.norm_") else { return nil }
+            return module as? Qwen4ExpZeroCenteredRMSNorm
+        }
+        XCTAssertEqual(pleNorms.count, 3)
+        for norm in pleNorms { norm.referenceGroupedPrefillRoundingForTesting = fixture.reference_ple_norm ?? false }
+        defer { for norm in pleNorms { norm.referenceGroupedPrefillRoundingForTesting = false } }
         let passiveLayers = model.namedModules().compactMap { name, module -> (Int, Qwen4ExpDecoderLayer)? in
             guard let layer = module as? Qwen4ExpDecoderLayer,
                   let index = Int(name.split(separator: ".").last ?? ""), index < 8 else { return nil }
             return (index, layer)
         }.sorted { $0.0 < $1.0 }
+        for (_, layer) in passiveLayers { layer.referencePLEGateScaleForTesting = fixture.reference_ple_scale ?? false }
         if fixture.passive_forward == true {
             XCTAssertEqual(fixture.case_id, "opening-r1-64")
             XCTAssertEqual(passiveLayers.map(\.0), Array(0..<8))
-            for (_, layer) in passiveLayers { layer.passivePrefillWidthForTesting = 6630 }
+            for (_, layer) in passiveLayers {
+                layer.passivePrefillWidthForTesting = 6630
+                layer.passivePLEWidthForTesting = 6630
+            }
         }
         defer {
             for (_, layer) in passiveLayers {
                 layer.passivePrefillWidthForTesting = nil
                 layer.passivePrefillStagesForTesting = [:]
+                layer.passivePLEWidthForTesting = nil
+                layer.passivePLEStagesForTesting = [:]
+                layer.referencePLEGateScaleForTesting = false
             }
         }
         let projectionPolicy = fixture.prefill_projection ?? "unchanged"
@@ -119,6 +135,8 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
                 "blocked_recurrence_diagnostic_only": useBlocked,
                 "prefill_projection_diagnostic_only": projectionPolicy,
                 "passive_forward_diagnostic_only": fixture.passive_forward ?? false,
+                "reference_ple_norm_diagnostic_only": fixture.reference_ple_norm ?? false,
+                "reference_ple_scale_diagnostic_only": fixture.reference_ple_scale ?? false,
                 "projection_engagement": projections.map { ["module": $0.0, "widths": $0.1.engagementReport] as [String: Any] },
                 "peak_active_memory_bytes": Memory.peakMemory,
                 "blocked_calls_per_layer": recurrentLayers.map(\.referenceBlockedCallsForTesting),
@@ -202,8 +220,17 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
                         stages[String(format: "layer-%03d-", index) + name] = index == 0
                             ? value : value[0..., (value.dim(1) - 1)..., 0...]
                     }
+                    if index == 1 {
+                        XCTAssertEqual(layer.passivePLEStagesForTesting.count, 8)
+                        for (name, value) in layer.passivePLEStagesForTesting {
+                            let flat = value.reshaped(1, 6630, -1)
+                            stages[name] = flat[0..., 6614..., 0...]
+                        }
+                    }
                     layer.passivePrefillWidthForTesting = nil
                     layer.passivePrefillStagesForTesting = [:]
+                    layer.passivePLEWidthForTesting = nil
+                    layer.passivePLEStagesForTesting = [:]
                 }
                 // Existing first-token eval above has already completed.
                 try save(arrays: stages, url: root.appendingPathComponent("passive-forward.safetensors"))
