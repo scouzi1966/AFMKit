@@ -1343,3 +1343,79 @@ Evidence: `QwenOpeningFirstDecodeNative20261024`,
 `QwenOpeningFirstDecodeScores20261024`, its `-control.json`, and
 `qwen-first-decode-comparison-20261024.json`. All remain under the evidence
 root above. Main and installed binaries remain unchanged.
+
+
+### First decode HC gate isolation, 2026-10-25 00:12 EDT
+
+A focused layer-0 test supplies the exact native MLP input to AFM's ordinary
+and compiled MoE. Both outputs match native exactly, as do all captured
+routing and shared-expert stages. Reconstructing the HC read from token 9764
+and the exact native attention output reproduces AFM's original mismatch.
+This separates the expert calculation from its input.
+
+Expanded native capture now retains the four HC injection gates. Frozen,
+capture-off and capture-on responses and all 64 raw score arrays still match.
+Native binary SHA-256:
+`81b42611b52be3e01e19eb64a81033a4df5a31934188238258f09495a9798871`.
+
+| First-decode layer-0 comparison | Different / values | RMS |
+| --- | ---: | ---: |
+| Attention input, reconstructed vs native | 0 / 2,560 | 0 |
+| HC injection gates | 2 / 4 | 0.00049208116 |
+| Next MLP input | 1,682 / 2,560 | 0.002306329 |
+| Reconstructed MLP output vs captured AFM | 0 / 2,560 | 0 |
+| MLP input with only native gates substituted | 0 / 2,560 | 0 |
+| MLP output with only native gates substituted | 0 / 2,560 | 0 |
+
+The native kernel computes sigmoid in FP32, rounds it to BF16, and then
+multiplies by two. AFM's fused gate instead performs low-precision exp,
+addition and division. The gate substitution confirms the local source of
+divergence; it does not establish that changing it repairs all later tokens
+or coding quality. An instance-level default-false diagnostic changes only
+this formula, preserving kernel launches and caching the policy in the
+prepared-chain key. It is set before compiled owners are traced.
+
+The earlier gamma-rounding hypothesis was ruled out: checkpoint layer-0
+normalization scales are identical under the tested expressions. Two failed
+harness attempts are retained: direct Module parameter assignment trapped;
+the attempted MLXArray update did not compile. Neither changed model files.
+Both mutations were removed before the successful gate isolation test
+(2.455 s, no failures). No serving defaults have changed.
+
+Evidence under the existing root: `QwenOpeningFirstDecodeMoENative20261024`,
+`QwenNativeDecodeMoE20261024`, `QwenOpeningFirstDecodeHCNative20261025`,
+`QwenNativeDecodeHCGates20261025`, and corresponding source/build/test logs.
+The formula change still requires enabled/control and full-prefix checks.
+
+
+The formula implementation passes the focused test (release build 188.48 s;
+test 2.685 s): all four gates, all MLP inputs and all MLP outputs match native
+exactly. Switching back to the old formula in the same process reproduces the
+old gates exactly. Disabled full-model control preserves all 320 prior score
+arrays (test 34.954 s).
+
+| Fixed-prefix arm | Control winners / 64 | Corrected gate winners / 64 | Control mean RMS | Corrected mean RMS |
+| --- | ---: | ---: | ---: | ---: |
+| Production 30+1 | 56 | 59 | 0.603458 | 0.558301 |
+| Joined 31, F32 state | 58 | 58 | 0.597363 | 0.609586 |
+| Joined 31, BF16 state values | 58 | 59 | 0.472641 | 0.504906 |
+| Reconstructed 30+1 | 56 | 59 | 0.603458 | 0.558301 |
+| Reconstructed 30+1, BF16 state values | 62 | 59 | 0.458862 | 0.539180 |
+
+The enabled full-model result is mixed, not a promotion gate. Layer 0's three
+captured boundaries now match exactly. The next first-decode mismatch is
+layer 1's attention input: 1,259/2,560 values, RMS 0.0013312501. Layer 1 is the
+PLE boundary; its incoming stream, lookup and normalization must be separated
+before attribution. In the matched joined-31/BF16 arm, initial scores remain
+exact but first-decode RMS only moves from 0.357259 to 0.339074. No end-to-end
+speed, quality or parity improvement is claimed. Default remains false.
+
+Evidence: `QwenNativeDecodeHCCorrected20261025`,
+`QwenOpeningHCGateControlScores20261025`,
+`QwenOpeningHCGateCorrectedScores20261025`,
+`qwen-first-decode-hc-gate-comparison-20261025.json`. Native expanded capture
+also preserves all 203 previous intermediate tensors exactly.
+
+The same focused assertions also pass with the separate native-chain diagnostic
+enabled (`QwenNativeDecodeHCChain20261025`). The formula policy is part of
+the chain cache key; the false/true/false sequence preserves the legacy result.

@@ -362,6 +362,9 @@ final class Qwen4ExpGatedResidual: Module {
     private static let fusedFinalMixerEnabled =
         ProcessInfo.processInfo.environment["AFM_QWEN_FUSED_FINAL_MIXER"] == "1"
 
+    // Diagnostic instance policy; set before any compiled owner is traced.
+    var referenceInjectionGateForTesting = false
+
     let hcCount: Int
     let hiddenSize: Int
     @ModuleInfo(key: "hc_norm") var hcNorm: Qwen4ExpZeroCenteredRMSNorm
@@ -565,6 +568,7 @@ final class Qwen4ExpGatedResidual: Module {
                hiddenSize: hiddenSize,
                epsilon: hcNorm.eps,
                allowExtendedRows: qwen4ExpUsesExtendedVerificationHC(input, policy: verificationPolicy),
+               referenceInjectionGateForTesting: referenceInjectionGateForTesting,
                verificationPolicy: verificationPolicy)
         {
             return (fused.mixed, input, fused.injection)
@@ -598,6 +602,7 @@ final class Qwen4ExpGatedResidual: Module {
                pendingWeights: weights,
                matchFusedInjection: matchFusedInjection,
                allowExtendedRows: qwen4ExpUsesExtendedVerificationHC(residual, policy: verificationPolicy),
+               referenceInjectionGateForTesting: referenceInjectionGateForTesting,
                verificationPolicy: verificationPolicy)
         {
             return (fused.mixed, fused.stream, fused.injection)
@@ -630,7 +635,8 @@ final class Qwen4ExpGatedResidual: Module {
                 down: inputMixWeightDown, up: inputMixWeightUp,
                 inject: blockInjectWeight, hcCount: hcCount,
                 hiddenSize: hiddenSize, epsilon: hcNorm.eps,
-                pendingOutput: output, pendingWeights: weights)
+                pendingOutput: output, pendingWeights: weights,
+                referenceInjectionGateForTesting: referenceInjectionGateForTesting)
         else { return nil }
         return (fused.mixed, fused.stream, fused.injection)
     }
@@ -654,6 +660,7 @@ final class Qwen4ExpGatedResidual: Module {
                hiddenSize: hiddenSize,
                epsilon: hcNorm.eps,
                allowExtendedRows: qwen4ExpUsesExtendedVerificationHC(input, policy: verificationPolicy),
+               referenceInjectionGateForTesting: referenceInjectionGateForTesting,
                verificationPolicy: verificationPolicy)
         {
             return fused.mixed
@@ -686,6 +693,7 @@ final class Qwen4ExpGatedResidual: Module {
                pendingOutput: output,
                pendingWeights: weights,
                allowExtendedRows: qwen4ExpUsesExtendedVerificationHC(residual, policy: verificationPolicy),
+               referenceInjectionGateForTesting: referenceInjectionGateForTesting,
                verificationPolicy: verificationPolicy)
         {
             return fused.mixed

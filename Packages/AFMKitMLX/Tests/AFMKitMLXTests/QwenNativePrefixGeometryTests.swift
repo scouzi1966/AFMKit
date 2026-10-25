@@ -39,6 +39,7 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
         let reference_pooled_indexer_spectrum: Bool?
         let reference_attention_prefill_gate: Bool?
         let reference_attention_tail_gate: Bool?
+        let reference_injection_gate: Bool?
         let reference_fused_rotation: Bool?
         let model: String
         let histories: [History]
@@ -108,6 +109,9 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
         defer { for norm in pleNorms { norm.referenceGroupedPrefillRoundingForTesting = false } }
         for norm in pleNorms { norm.referenceGroupedAllWidthsRoundingForTesting = fixture.reference_ple_all_widths ?? false }
         defer { for norm in pleNorms { norm.referenceGroupedAllWidthsRoundingForTesting = false } }
+        let hcModules = model.namedModules().compactMap { $0.1 as? Qwen4ExpGatedResidual }
+        for hc in hcModules { hc.referenceInjectionGateForTesting = fixture.reference_injection_gate ?? false }
+        defer { for hc in hcModules { hc.referenceInjectionGateForTesting = false } }
         let allDecoderLayers = model.namedModules().compactMap { $0.1 as? Qwen4ExpDecoderLayer }
         for layer in allDecoderLayers { layer.referenceSharedActivationForTesting = fixture.reference_shared_activation ?? false }
         defer { for layer in allDecoderLayers { layer.referenceSharedActivationForTesting = false } }
@@ -218,6 +222,7 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
                 "reference_pooled_indexer_spectrum_diagnostic_only": fixture.reference_pooled_indexer_spectrum ?? false,
                 "reference_attention_prefill_gate_diagnostic_only": fixture.reference_attention_prefill_gate ?? false,
                 "reference_attention_tail_gate_diagnostic_only": fixture.reference_attention_tail_gate ?? false,
+                "reference_injection_gate_diagnostic_only": fixture.reference_injection_gate ?? false,
                 "reference_fused_rotation_diagnostic_only": fixture.reference_fused_rotation ?? false,
                 "projection_engagement": projections.map { ["module": $0.0, "widths": $0.1.engagementReport] as [String: Any] },
                 "peak_active_memory_bytes": Memory.peakMemory,

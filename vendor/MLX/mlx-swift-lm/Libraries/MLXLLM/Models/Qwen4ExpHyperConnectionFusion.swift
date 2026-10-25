@@ -108,6 +108,7 @@ enum Qwen4ExpHyperConnectionFusion {
         let hasInject: Bool
         let hasPending: Bool
         let matchFusedInjection: Bool
+        let referenceInjectionGate: Bool
         let injectBits: Int
         let injectGroupSize: Int
     }
@@ -731,7 +732,14 @@ enum Qwen4ExpHyperConnectionFusion {
                     total += inject[stream * HC + column];
                 }
                 const T divided = T(float(T(total)) / float(HC));
-                gates[column] = T(2.0f) / (T(1.0f) + exp(-divided));
+                if (REFERENCE_INJECTION_GATE) {
+                    // Match HC_FUSED_D_SOURCE in ddalcu/mlx-serve (MIT),
+                    // revision 02bee553: FP32 sigmoid, then narrow before * 2.
+                    const T sigmoid_value = T(1.0f / (1.0f + exp(-float(divided))));
+                    gates[column] = sigmoid_value * T(2.0f);
+                } else {
+                    gates[column] = T(2.0f) / (T(1.0f) + exp(-divided));
+                }
             }
         """)
 
@@ -832,6 +840,7 @@ enum Qwen4ExpHyperConnectionFusion {
                     ("HIDDEN", key.hiddenSize), ("RANK", key.rank),
                     ("BITS", key.bits), ("GROUP_SIZE", key.groupSize),
                     ("HAS_INJECT", key.hasInject),
+                    ("REFERENCE_INJECTION_GATE", key.referenceInjectionGate),
                 ],
                 grid: (
                     256,
@@ -1013,6 +1022,7 @@ enum Qwen4ExpHyperConnectionFusion {
         matchFusedInjection: Bool = false,
         allowExtendedRows: Bool = false,
         allowQuantizedInjectionForTesting: Bool = false,
+        referenceInjectionGateForTesting: Bool = false,
         verificationPolicy: MTPVerificationPolicy? = .strictSingletonEquivalent
     ) -> Qwen4ExpHyperConnectionFusionOutput? {
         guard enabled,
@@ -1163,6 +1173,7 @@ enum Qwen4ExpHyperConnectionFusion {
                 hasInject: inject != nil,
                 hasPending: hasPending,
                 matchFusedInjection: matchFusedInjection,
+                referenceInjectionGate: referenceInjectionGateForTesting,
                 injectBits: injectBits,
                 injectGroupSize: injectGroupSize)
             let plan = chainPlan(for: key)
@@ -1242,6 +1253,7 @@ enum Qwen4ExpHyperConnectionFusion {
                 ("T", input.dtype), ("HC", hcCount), ("HIDDEN", hiddenSize),
                 ("RANK", rank), ("BITS", bits), ("GROUP_SIZE", groupSize),
                 ("HAS_INJECT", inject != nil),
+                ("REFERENCE_INJECTION_GATE", referenceInjectionGateForTesting),
             ],
             grid: (256, rank + (inject == nil ? 0 : hcCount), rows),
             threadGroup: (256, 1, 1),
