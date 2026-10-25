@@ -293,6 +293,7 @@ actor BatchScheduler {
         var stopBuffer = ""
         var reasoningBuffer = ""
         var insideThink = false
+        var visibleBoundary = MLXReasoningVisibleBoundary()
         var jsonStopFilter: MLXJSONStopFilter?
         var stoppedBySequence = false
         let speculativeSession: SpeculativeSession?
@@ -3322,7 +3323,8 @@ actor BatchScheduler {
             insideThink: &slot.insideThink,
             thinkStartTag: slot.thinkStartTag,
             thinkEndTag: slot.thinkEndTag,
-            stoppedBySequence: &slot.stoppedBySequence
+            stoppedBySequence: &slot.stoppedBySequence,
+            visibleBoundary: slot.visibleBoundary
         )
         for chunk in tail {
             slot.continuation.yield(chunk)
@@ -3656,7 +3658,8 @@ actor BatchScheduler {
             maxStopLength: slot.maxStopLength,
             insideThink: &slot.insideThink,
             thinkStartTag: slot.thinkStartTag,
-            thinkEndTag: slot.thinkEndTag
+            thinkEndTag: slot.thinkEndTag,
+            visibleBoundary: slot.visibleBoundary
         )
     }
 
@@ -3718,7 +3721,8 @@ actor BatchScheduler {
         insideThink: inout Bool,
         thinkStartTag: String?,
         thinkEndTag: String?,
-        stoppedBySequence: inout Bool
+        stoppedBySequence: inout Bool,
+        visibleBoundary: MLXReasoningVisibleBoundary = .init()
     ) -> [StreamChunk] {
         var chunks: [StreamChunk] = []
         if !pendingText.isEmpty, !stoppedBySequence {
@@ -3729,7 +3733,8 @@ actor BatchScheduler {
                 let result = stopChunksToEmit(from: pendingText, stopBuffer: &stopBuffer,
                     reasoningBuffer: &reasoningBuffer,
                     activeStops: activeStops, maxStopLength: maxStopLength,
-                    insideThink: &insideThink, thinkStartTag: thinkStartTag, thinkEndTag: thinkEndTag)
+                    insideThink: &insideThink, thinkStartTag: thinkStartTag, thinkEndTag: thinkEndTag,
+                    visibleBoundary: visibleBoundary)
                 chunks += result.chunks
                 stoppedBySequence = result.stopped
             }
@@ -3746,7 +3751,8 @@ actor BatchScheduler {
             let result = stopChunksToEmit(from: tail, stopBuffer: &stopBuffer,
                 reasoningBuffer: &reasoningBuffer,
                 activeStops: activeStops, maxStopLength: maxStopLength,
-                insideThink: &insideThink, thinkStartTag: nil, thinkEndTag: nil)
+                insideThink: &insideThink, thinkStartTag: nil, thinkEndTag: nil,
+                visibleBoundary: visibleBoundary)
             chunks += result.chunks
             stoppedBySequence = result.stopped
         }
@@ -3774,12 +3780,14 @@ actor BatchScheduler {
         maxStopLength: Int,
         insideThink: inout Bool,
         thinkStartTag: String?,
-        thinkEndTag: String?
+        thinkEndTag: String?,
+        visibleBoundary: MLXReasoningVisibleBoundary = .init()
     ) -> (chunks: [StreamChunk], stopped: Bool) {
+        // Preserve one emitted chunk per model chunk when stops are absent.
+        // Buffering delimiter prefixes here changes streaming token accounting.
         guard !activeStops.isEmpty else {
             return ([StreamChunk(text: text)], false)
         }
-
         var chunks = [StreamChunk]()
         // Framing and visible stops have separate bounded buffers. A possible
         // delimiter is not searched for stops, and held visible text can match
@@ -3802,7 +3810,7 @@ actor BatchScheduler {
             if insideThink {
                 if !segment.isEmpty { chunks.append(StreamChunk(text: segment)) }
             } else {
-                stopBuffer += segment
+                stopBuffer += visibleBoundary.visibleText(segment)
                 var earliest: Range<String.Index>?
                 for stop in activeStops where !stop.isEmpty {
                     if let match = stopBuffer.range(of: stop),
@@ -3827,6 +3835,7 @@ actor BatchScheduler {
                 // Both tags must reach the downstream reasoning translator.
                 chunks.append(StreamChunk(text: delimiter))
                 reasoningBuffer = String(reasoningBuffer[boundary.upperBound...])
+                if insideThink { visibleBoundary.reasoningEnded() }
                 insideThink.toggle()
                 continue
             }

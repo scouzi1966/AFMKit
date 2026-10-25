@@ -10,6 +10,7 @@ final class MLXBatchReasoningStopTests: XCTestCase {
         var buffer = ""
         var reasoningBuffer = ""
         var insideThink = templateOpenedThink
+        let visibleBoundary = MLXReasoningVisibleBoundary()
         var stopped = false
         var translator = MLXStreamEventTranslator(
             thinkStartTag: "<think>", thinkEndTag: "</think>", maximumResponseTokens: 1000)
@@ -21,7 +22,8 @@ final class MLXBatchReasoningStopTests: XCTestCase {
             let result = BatchScheduler.stopChunksToEmit(
                 from: piece, stopBuffer: &buffer, reasoningBuffer: &reasoningBuffer, activeStops: stops,
                 maxStopLength: stops.map(\.count).max() ?? 0,
-                insideThink: &insideThink, thinkStartTag: "<think>", thinkEndTag: "</think>")
+                insideThink: &insideThink, thinkStartTag: "<think>", thinkEndTag: "</think>",
+                visibleBoundary: visibleBoundary)
             for chunk in result.chunks { events += translator.consume(chunk) }
             if result.stopped { stopped = true; break }
         }
@@ -31,7 +33,7 @@ final class MLXBatchReasoningStopTests: XCTestCase {
             reasoningBuffer: &reasoningBuffer,
             activeStops: stops, maxStopLength: stops.map(\.count).max() ?? 0,
             insideThink: &insideThink, thinkStartTag: "<think>", thinkEndTag: "</think>",
-            stoppedBySequence: &stopped)
+            stoppedBySequence: &stopped, visibleBoundary: visibleBoundary)
         {
             events += translator.consume(chunk)
         }
@@ -47,6 +49,23 @@ final class MLXBatchReasoningStopTests: XCTestCase {
         XCTAssertEqual(result.text, "AFM_PREFIX")
         XCTAssertEqual(result.reasoning, "private")
         XCTAssertTrue(result.stopped)
+    }
+
+    func testReasoningSeparatorNewlinesDoNotTriggerVisibleNewlineStop() {
+        let output = "<think>private</think>\n\nAFM_LINE_ONE\nAFM_LINE_TWO"
+        for offset in 0...output.count {
+            let split = output.index(output.startIndex, offsetBy: offset)
+            let result = filter([String(output[..<split]), String(output[split...])], stops: ["\n"])
+            XCTAssertEqual(result.text, "AFM_LINE_ONE", "split \(offset)")
+            XCTAssertEqual(result.reasoning, "private", "split \(offset)")
+            XCTAssertTrue(result.stopped, "split \(offset)")
+        }
+    }
+
+    func testLiteralReasoningEndMarkerInAnswerRemainsVisible() {
+        let result = filter(["Answer </think> literal next line\ncontinued"], stops: [])
+        XCTAssertEqual(result.text, "Answer </think> literal next line\ncontinued")
+        XCTAssertFalse(result.stopped)
     }
 
     func testTemplateOpenedReasoningIgnoresStopsUntilTheVisibleAnswerAtEverySplit() {
@@ -100,6 +119,16 @@ final class MLXBatchReasoningStopTests: XCTestCase {
         XCTAssertEqual(result.chunks.map(\.text), ["ordinary text"])
         XCTAssertEqual(buffer, "")
         XCTAssertFalse(result.stopped)
+        let splitMarker = BatchScheduler.stopChunksToEmit(
+            from: "<", stopBuffer: &buffer, reasoningBuffer: &reasoningBuffer,
+            activeStops: [], maxStopLength: 0,
+            insideThink: &insideThink, thinkStartTag: "<think>", thinkEndTag: "</think>")
+        let nextChunk = BatchScheduler.stopChunksToEmit(
+            from: "hello", stopBuffer: &buffer, reasoningBuffer: &reasoningBuffer,
+            activeStops: [], maxStopLength: 0,
+            insideThink: &insideThink, thinkStartTag: "<think>", thinkEndTag: "</think>")
+        XCTAssertEqual(splitMarker.chunks.map(\.text), ["<"])
+        XCTAssertEqual(nextChunk.chunks.map(\.text), ["hello"])
     }
 
     func testAStopInsideASplitReasoningOpenerIsNotVisible() {

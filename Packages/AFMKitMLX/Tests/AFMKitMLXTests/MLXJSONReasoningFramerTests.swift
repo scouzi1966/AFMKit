@@ -50,7 +50,7 @@ final class MLXJSONReasoningFramerTests: XCTestCase {
                     XCTAssertTrue(filter.stopped)
                     XCTAssertEqual(events.compactMap { event -> String? in
                         if case .responseText(_, let text, _) = event { return text }; return nil
-                    }.joined(), "\n" + json)
+                    }.joined(), json)
                     XCTAssertEqual(events.compactMap { event -> String? in
                         if case .reasoningText(_, let text, _) = event { return text }; return nil
                     }.joined(), "private [STOP] {draft}")
@@ -85,5 +85,30 @@ final class MLXJSONReasoningFramerTests: XCTestCase {
         let chunks = filter.consume("private</thi") + filter.finish()
         XCTAssertEqual(chunks.map(\.text).joined(), "private</thi")
         XCTAssertFalse(filter.stopped)
+    }
+
+    func testReasoningSeparatorDoesNotTriggerJSONNewlineStopAtAnySplit() {
+        let output = "<think>private</think>\n\n{\"x\":1}\nignored"
+        let splits = (0...output.count).map { offset -> [String] in
+            let index = output.index(output.startIndex, offsetBy: offset)
+            return [String(output[..<index]), String(output[index...])]
+        } + [output.map(String.init)]
+        for pieces in splits {
+            var filter = MLXJSONStopFilter(startTag: "<think>", endTag: "</think>",
+                insideReasoning: false, stopSequences: ["\n"])
+            let chunks = pieces.flatMap { filter.consume($0) } + filter.finish()
+            XCTAssertEqual(chunks.map(\.text).joined(), "<think>private</think>{\"x\":1}")
+            XCTAssertTrue(filter.stopped)
+        }
+    }
+
+    func testSplitStructuredFrameChargesEachSourceChunkOnce() {
+        var filter = MLXJSONStopFilter(startTag: "<think>", endTag: "</think>",
+            insideReasoning: false, stopSequences: ["[STOP]"])
+        let firstChunks = filter.consume("<think>private</think>{\"x\":1}")
+        XCTAssertGreaterThan(firstChunks.filter { !$0.text.isEmpty }.count, 1)
+        XCTAssertEqual(firstChunks.reduce(0) { $0 + ($1.generatedTokenCountOverride ?? 1) }, 1)
+        let chunks = firstChunks + filter.consume("[STOP]discarded") + filter.finish()
+        XCTAssertEqual(chunks.map(\.text).joined(), "<think>private</think>{\"x\":1}")
     }
 }
