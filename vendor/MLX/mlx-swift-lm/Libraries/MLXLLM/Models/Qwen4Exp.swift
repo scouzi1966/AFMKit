@@ -1848,44 +1848,40 @@ enum Qwen4ExpQSADecodeScores {
         inputNames: ["queries", "block_keys"],
         outputNames: ["scores"],
         source: """
+            #pragma clang fp reassociate(off)
             constexpr int dimension = 128;
 
-            const int block = int(threadgroup_position_in_grid.x);
+            const int index = int(thread_position_in_grid.x);
+            const int block = index / 4;
+            const int head = index % 4;
             const int batch = int(threadgroup_position_in_grid.y);
-            const ushort lane = ushort(thread_index_in_simdgroup);
+            if (block >= block_keys_shape[1]) return;
 
-            float accum0 = 0.0f;
-            float accum1 = 0.0f;
-            float accum2 = 0.0f;
-            float accum3 = 0.0f;
-
-            for (int column = int(lane); column < dimension; column += 32) {
+            // Match the FP32 column-order accumulation used by mlx-serve's
+            // composed QSA scorer on M3 (transformer.zig, qsaScoreSheetComposed,
+            // source revision 02bee553f48cd3bc7d82aba0f8073820bd924738).
+            // A lane reduction changes near-tied block ranks; parallelize
+            // independent heads/blocks instead of the additions within a dot.
+            float value = 0.0f;
+            #pragma clang loop unroll(disable)
+            for (int column = 0; column < dimension; ++column) {
                 const float key = float(block_keys[
                     (long)batch * block_keys_strides[0]
                     + (long)block * block_keys_strides[1]
                     + (long)column * block_keys_strides[2]]);
                 const long queryBase = (long)batch * queries_strides[0]
+                    + (long)head * queries_strides[1]
                     + (long)column * queries_strides[3];
-                accum0 += float(queries[
-                    queryBase + 0L * queries_strides[1]]) * key;
-                accum1 += float(queries[
-                    queryBase + 1L * queries_strides[1]]) * key;
-                accum2 += float(queries[
-                    queryBase + 2L * queries_strides[1]]) * key;
-                accum3 += float(queries[
-                    queryBase + 3L * queries_strides[1]]) * key;
+                value = metal::fma(float(queries[queryBase]), key, value);
             }
 
-            accum0 = metal::simd_sum(accum0);
-            accum1 = metal::simd_sum(accum1);
-            accum2 = metal::simd_sum(accum2);
-            accum3 = metal::simd_sum(accum3);
-            if (lane == 0) {
+            value = metal::max(value, 0.0f);
+            const float head1 = metal::simd_shuffle_down(value, 1);
+            const float head2 = metal::simd_shuffle_down(value, 2);
+            const float head3 = metal::simd_shuffle_down(value, 3);
+            if (head == 0) {
                 scores[(long)batch * block_keys_shape[1] + (long)block]
-                    = metal::max(accum0, 0.0f)
-                    + metal::max(accum1, 0.0f)
-                    + metal::max(accum2, 0.0f)
-                    + metal::max(accum3, 0.0f);
+                    = ((value + head1) + head2) + head3;
             }
         """,
         ensureRowContiguous: false)
@@ -1913,8 +1909,8 @@ enum Qwen4ExpQSADecodeScores {
         return kernel(
             [queries, blockKeys],
             template: [("T", DType.bfloat16)],
-            grid: (blocks * 32, batch, 1),
-            threadGroup: (32, 1, 1),
+            grid: (blocks * 4, batch, 1),
+            threadGroup: (128, 1, 1),
             outputShapes: [[batch, blocks]],
             outputDTypes: [.float32],
             cacheConfiguration: true)[0]

@@ -2845,3 +2845,35 @@ order to test in a fused GPU implementation before considering a default change.
 Evidence: `QwenAFM5Layer27Composed20261025/{report.json,stages.safetensors,CPU-REDUCTION-SEARCH.json}`.
 The test executable was rebuilt (101.66s) and the fixture test passed (0.448s).
 These are diagnostic build/test durations, not inference-performance results.
+
+#### Ordered fused scorer candidate: all 1,664 late vectors now exact
+
+Two independent fused Metal prototypes preserve column-order accumulation by
+parallelizing independent blocks/heads instead of reducing each dot product
+across lanes. Both match all 2,547 composed scores exactly. The head-parallel
+prototype was selected for the isolated serving candidate. It retains FP32
+FMA accumulation and explicit left-to-right positive-head addition, with
+reassociation disabled. It does not change the selector, attention budget,
+sampler, thinking cap, or cache behavior, and requires no new tuning option.
+
+Alternating isolated-operation measurements (100 samples per implementation,
+including host graph construction and evaluation) have median durations of
+257.21 microseconds for the previous fused scorer, 269.21 for ordered heads,
+279.88 for ordered blocks, and 318.00 for composed scoring. These noisy host-
+inclusive component timings do not establish a model-speed impact. Actual
+serving throughput must be checked before accepting a tradeoff or promoting
+the candidate.
+
+The production candidate passes exact CPU-oracle checks across two batch sizes,
+five block counts around threadgroup boundaries, and noncontiguous inputs.
+After a fresh Release test build, the unchanged native token histories and
+score captures pass **1,664/1,664 exact full vocabulary score comparisons**
+(previously 1,565/1,664). Winning-token sets overlap at every decision. This
+removes the reproduced late score mismatch throughout the captured span;
+it does not yet establish free-generation or coding-project parity.
+
+Evidence: `QwenAFM5OrderedScore20261025` and
+`QwenAFM5OrderedPrefix20261025`. The strict prefix test ran in 44.439s. The next
+gate is a separately frozen HTTP candidate with the same five request histories
+and unchanged launch/sampling options, compared against the frozen reference
+and retained AFM control. No install, merge, or release has occurred.
