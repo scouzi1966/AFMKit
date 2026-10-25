@@ -3783,6 +3783,11 @@ actor BatchScheduler {
         thinkEndTag: String?,
         visibleBoundary: MLXReasoningVisibleBoundary = .init()
     ) -> (chunks: [StreamChunk], stopped: Bool) {
+        // Preserve one emitted chunk per model chunk when stops are absent.
+        // Buffering delimiter prefixes here changes streaming token accounting.
+        guard !activeStops.isEmpty else {
+            return ([StreamChunk(text: text)], false)
+        }
         var chunks = [StreamChunk]()
         // Framing and visible stops have separate bounded buffers. A possible
         // delimiter is not searched for stops, and held visible text can match
@@ -3805,30 +3810,25 @@ actor BatchScheduler {
             if insideThink {
                 if !segment.isEmpty { chunks.append(StreamChunk(text: segment)) }
             } else {
-                let visibleSegment = visibleBoundary.visibleText(segment)
-                if activeStops.isEmpty {
-                    if !visibleSegment.isEmpty { chunks.append(StreamChunk(text: visibleSegment)) }
-                } else {
-                    stopBuffer += visibleSegment
-                    var earliest: Range<String.Index>?
-                    for stop in activeStops where !stop.isEmpty {
-                        if let match = stopBuffer.range(of: stop),
-                           earliest == nil || match.lowerBound < earliest!.lowerBound {
-                            earliest = match
-                        }
+                stopBuffer += visibleBoundary.visibleText(segment)
+                var earliest: Range<String.Index>?
+                for stop in activeStops where !stop.isEmpty {
+                    if let match = stopBuffer.range(of: stop),
+                       earliest == nil || match.lowerBound < earliest!.lowerBound {
+                        earliest = match
                     }
-                    if let earliest {
-                        chunks.append(StreamChunk(
-                            text: String(stopBuffer[..<earliest.lowerBound]), stoppedBySequence: true))
-                        stopBuffer = ""
-                        reasoningBuffer = ""
-                        return (chunks, true)
-                    }
-                    if stopBuffer.count > maxStopLength {
-                        let flushEnd = stopBuffer.index(stopBuffer.endIndex, offsetBy: -maxStopLength)
-                        chunks.append(StreamChunk(text: String(stopBuffer[..<flushEnd])))
-                        stopBuffer = String(stopBuffer[flushEnd...])
-                    }
+                }
+                if let earliest {
+                    chunks.append(StreamChunk(
+                        text: String(stopBuffer[..<earliest.lowerBound]), stoppedBySequence: true))
+                    stopBuffer = ""
+                    reasoningBuffer = ""
+                    return (chunks, true)
+                }
+                if stopBuffer.count > maxStopLength {
+                    let flushEnd = stopBuffer.index(stopBuffer.endIndex, offsetBy: -maxStopLength)
+                    chunks.append(StreamChunk(text: String(stopBuffer[..<flushEnd])))
+                    stopBuffer = String(stopBuffer[flushEnd...])
                 }
             }
             if let boundary, let delimiter {

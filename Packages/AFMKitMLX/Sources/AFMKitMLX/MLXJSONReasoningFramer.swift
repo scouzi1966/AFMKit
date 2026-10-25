@@ -79,6 +79,8 @@ struct MLXJSONReasoningFramer {
 struct MLXJSONStopFilter {
     private var framer: MLXJSONReasoningFramer
     private var stops: MLXStreamingStopBuffer
+    private let reasoningEndTag: String?
+    private let visibleBoundary = MLXReasoningVisibleBoundary()
     private(set) var stopped = false
     private var inputBytes = 0
     private var emittedBytes = 0
@@ -87,6 +89,7 @@ struct MLXJSONStopFilter {
     init(startTag: String?, endTag: String?, insideReasoning: Bool, stopSequences: [String]) {
         framer = .init(startTag: startTag, endTag: endTag, insideReasoning: insideReasoning)
         stops = .init(stopSequences: stopSequences)
+        reasoningEndTag = endTag
     }
 
     mutating func consume(_ text: String, logprobs: [ResolvedLogprob]? = nil) -> [StreamChunk] {
@@ -95,22 +98,22 @@ struct MLXJSONStopFilter {
         if let logprobs, !logprobs.isEmpty {
             pendingLogprobs.append((inputBytes, logprobs))
         }
-        return annotate(filter(framer.consume(text)))
+        return filter(framer.consume(text))
     }
 
     mutating func finish() -> [StreamChunk] {
         guard !stopped else { return [] }
         var chunks = filter(framer.finish())
         let tail = stops.finish()
-        if !tail.isEmpty { chunks.append(.init(text: tail)) }
-        return annotate(chunks)
+        if !tail.isEmpty { chunks += annotate([.init(text: tail)]) }
+        pendingLogprobs.removeAll()
+        return chunks
     }
 
     private mutating func annotate(_ chunks: [StreamChunk]) -> [StreamChunk] {
-        // Output remains an exact prefix of input: reasoning delimiters are
-        // retained here, and only a stop and its suffix are removed. Release
-        // token metadata only once its complete originating text is visible.
-        // Tokens intersecting a removed stop are conservatively suppressed.
+        // Advance source-byte credit for skipped post-reasoning framing before
+        // annotating the next visible chunk. Tokens intersecting a stop are
+        // conservatively suppressed.
         let result = chunks.map { chunk in
             emittedBytes += chunk.text.utf8.count
             var visible: [ResolvedLogprob] = []
@@ -130,12 +133,20 @@ struct MLXJSONStopFilter {
         for segment in segments {
             if segment.isReasoning {
                 let visible = stops.finish()
-                if !visible.isEmpty { chunks.append(.init(text: visible)) }
-                chunks.append(.init(text: segment.text))
+                if !visible.isEmpty { chunks += annotate([.init(text: visible)]) }
+                chunks += annotate([.init(text: segment.text)])
+                if segment.isDelimiter, segment.text == reasoningEndTag {
+                    visibleBoundary.reasoningEnded()
+                }
             } else {
-                let result = stops.consume(segment.text)
+                let visibleText = visibleBoundary.visibleText(segment.text)
+                emittedBytes += segment.text.utf8.count - visibleText.utf8.count
+                while let first = pendingLogprobs.first, first.end <= emittedBytes {
+                    pendingLogprobs.removeFirst()
+                }
+                let result = stops.consume(visibleText)
                 if let text = result.text {
-                    chunks.append(.init(text: text, stoppedBySequence: result.stopped ? true : nil))
+                    chunks += annotate([.init(text: text, stoppedBySequence: result.stopped ? true : nil)])
                 }
                 if result.stopped {
                     stopped = true
