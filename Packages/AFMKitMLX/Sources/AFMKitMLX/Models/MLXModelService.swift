@@ -3567,6 +3567,7 @@ public final class MLXModelService:
 
             let activeStops = ((stop ?? []) + self.implicitStopSequences).filter { !$0.isEmpty }
             var insideThink = templateInjectedThink
+            var visibleBoundary = MLXReasoningVisibleBoundary()
             var visibleContentStart: String.Index? = nil
             var collectedToolCalls = [ToolCall]()
             var completionInfo: GenerateCompletionInfo? = nil
@@ -3586,8 +3587,16 @@ public final class MLXModelService:
                     }
                     if case .chunk(let text) = piece {
                         if let ts = thinkStart, text.contains(ts) { insideThink = true }
-                        if let te = outputReasoning.end, text.contains(te) { insideThink = false }
-                        generated += text
+                        let visiblePiece: String
+                        if let te = outputReasoning.end, let end = text.range(of: te) {
+                            insideThink = false
+                            visibleBoundary.reasoningEnded()
+                            visiblePiece = String(text[..<end.upperBound])
+                                + visibleBoundary.visibleText(String(text[end.upperBound...]))
+                        } else {
+                            visiblePiece = insideThink ? text : visibleBoundary.visibleText(text)
+                        }
+                        generated += visiblePiece
                         if !insideThink && visibleContentStart == nil {
                             if let te = outputReasoning.end, let thinkEnd = generated.range(of: te) {
                                 visibleContentStart = thinkEnd.upperBound
@@ -3986,6 +3995,7 @@ public final class MLXModelService:
 
             let activeStops = ((stop ?? []) + self.implicitStopSequences).filter { !$0.isEmpty }
             var insideThink = templateInjectedThink
+            var visibleBoundary = MLXReasoningVisibleBoundary()
             var visibleContentStart: String.Index? = nil  // Index where content after </think> begins
             let structuredJSON = responseFormat?.type == "json_object" || responseFormat?.type == "json_schema"
             var jsonStopFilter = structuredJSON && !activeStops.isEmpty
@@ -4094,8 +4104,16 @@ public final class MLXModelService:
                         }
                         // Track think boundaries — stop sequences only apply outside
                         if let ts = thinkStart, text.contains(ts) { insideThink = true }
-                        if let te = outputReasoning.end, text.contains(te) { insideThink = false }
-                        out += text
+                        let visiblePiece: String
+                        if let te = outputReasoning.end, let end = text.range(of: te) {
+                            insideThink = false
+                            visibleBoundary.reasoningEnded()
+                            visiblePiece = String(text[..<end.upperBound])
+                                + visibleBoundary.visibleText(String(text[end.upperBound...]))
+                        } else {
+                            visiblePiece = insideThink ? text : visibleBoundary.visibleText(text)
+                        }
+                        out += visiblePiece
                         // Record where visible content starts (after think end tag)
                         if !insideThink && visibleContentStart == nil {
                             if let te = outputReasoning.end, let thinkEnd = out.range(of: te) {
@@ -5063,6 +5081,7 @@ public final class MLXModelService:
                         // and stop strings like "3." or "\n" commonly appear in reasoning.
                         var stopBuffer = MLXStreamingStopBuffer(stopSequences: activeStops)
                         var insideThink = templateInjectedThink
+                        var visibleBoundary = MLXReasoningVisibleBoundary()
                         var jsonStopFilter = structuredJSON && !activeStops.isEmpty
                             ? MLXJSONStopFilter(startTag: thinkStart, endTag: thinkEnd,
                                 insideReasoning: templateInjectedThink, stopSequences: activeStops) : nil
@@ -5229,7 +5248,9 @@ public final class MLXModelService:
                                             let throughEnd = String(text[..<thinkEndRange.upperBound])
                                             continuation.yield(StreamChunk(text: throughEnd, logprobs: resolved))
                                             resolved = nil
-                                            let afterThink = String(text[thinkEndRange.upperBound...])
+                                            visibleBoundary.reasoningEnded()
+                                            let afterThink = visibleBoundary.visibleText(
+                                                String(text[thinkEndRange.upperBound...]))
                                             if !afterThink.isEmpty {
                                                 let outcome = stopBuffer.consume(afterThink)
                                                 if let visible = outcome.text {
@@ -5245,7 +5266,7 @@ public final class MLXModelService:
                                                 }
                                             }
                                         } else {
-                                            let outcome = stopBuffer.consume(text)
+                                            let outcome = stopBuffer.consume(visibleBoundary.visibleText(text))
                                             if let visible = outcome.text {
                                                 continuation.yield(StreamChunk(
                                                     text: visible,
