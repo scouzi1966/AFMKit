@@ -23,11 +23,13 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
         let blocked_recurrence: Bool?
         let prefill_projection: String?
         let passive_forward: Bool?
+        let passive_full_rows: Bool?
         let reference_ple_norm: Bool?
         let reference_ple_scale: Bool?
         let reference_ple_all_widths: Bool?
         let reference_shared_activation: Bool?
         let reference_scalar_prefill_rope: Bool?
+        let reference_scalar_indexer_queries: Bool?
         let reference_attention_prefill_gate: Bool?
         let model: String
         let histories: [History]
@@ -102,11 +104,13 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
         defer { for layer in allDecoderLayers { layer.referenceSharedActivationForTesting = false } }
         for layer in allDecoderLayers {
             layer.referenceScalarPrefillRoPEForTesting = fixture.reference_scalar_prefill_rope ?? false
+            layer.referenceScalarIndexerQueriesForTesting = fixture.reference_scalar_indexer_queries ?? false
             layer.referenceAttentionPrefillGateForTesting = fixture.reference_attention_prefill_gate ?? false
         }
         defer {
             for layer in allDecoderLayers {
                 layer.referenceScalarPrefillRoPEForTesting = false
+                layer.referenceScalarIndexerQueriesForTesting = false
                 layer.referenceAttentionPrefillGateForTesting = false
             }
         }
@@ -154,11 +158,13 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
                 "blocked_recurrence_diagnostic_only": useBlocked,
                 "prefill_projection_diagnostic_only": projectionPolicy,
                 "passive_forward_diagnostic_only": fixture.passive_forward ?? false,
+                "passive_full_rows_diagnostic_only": fixture.passive_full_rows ?? false,
                 "reference_ple_norm_diagnostic_only": fixture.reference_ple_norm ?? false,
                 "reference_ple_scale_diagnostic_only": fixture.reference_ple_scale ?? false,
                 "reference_ple_all_widths_diagnostic_only": fixture.reference_ple_all_widths ?? false,
                 "reference_shared_activation_diagnostic_only": fixture.reference_shared_activation ?? false,
                 "reference_scalar_prefill_rope_diagnostic_only": fixture.reference_scalar_prefill_rope ?? false,
+                "reference_scalar_indexer_queries_diagnostic_only": fixture.reference_scalar_indexer_queries ?? false,
                 "reference_attention_prefill_gate_diagnostic_only": fixture.reference_attention_prefill_gate ?? false,
                 "projection_engagement": projections.map { ["module": $0.0, "widths": $0.1.engagementReport] as [String: Any] },
                 "peak_active_memory_bytes": Memory.peakMemory,
@@ -240,7 +246,7 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
                     XCTAssertEqual(layer.passivePrefillStagesForTesting.count, 4)
                     for (name, value) in layer.passivePrefillStagesForTesting {
                         XCTAssertEqual(Array(value.shape.prefix(2)), [1, 6630])
-                        stages[String(format: "layer-%03d-", index) + name] = index == 0
+                        stages[String(format: "layer-%03d-", index) + name] = (index == 0 || fixture.passive_full_rows == true)
                             ? value : value[0..., (value.dim(1) - 1)..., 0...]
                     }
                     if index == 1 {

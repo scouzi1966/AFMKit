@@ -2117,6 +2117,10 @@ enum Qwen4ExpQSADecodeBlocks {
 }
 
 final class Qwen4ExpQSAIndexer: Module {
+    // Reference text queries use scalar MLX RoPE; pooled keys retain cos/sin.
+    // Diagnostic only: leave explicit multimodal positions and serving unchanged.
+    var referenceScalarTextQueriesForTesting = false
+
     private static let compileDecode =
         ProcessInfo.processInfo.environment[
             "AFM_QWEN_COMPILE_QSA_INDEXER"
@@ -2440,7 +2444,12 @@ final class Qwen4ExpQSAIndexer: Module {
         let sharedTables = providedPositionIDs == nil && positionTables?.matches(rope) == true
             ? positionTables : nil
         let queries: MLXArray
-        if let eagerQueries {
+        if referenceScalarTextQueriesForTesting, providedPositionIDs == nil,
+           batch == 1, length > 32 {
+            let normalized = qLayerNorm(queryRows.reshaped(batch, length, heads, headDim))
+                .transposed(0, 2, 1, 3)
+            queries = rope.applyScalarTextForTesting(normalized, offset: previousOffset)
+        } else if let eagerQueries {
             queries = eagerQueries
         } else if let sharedTables {
             queries = prepareQueries(queryRows, batch: batch, length: length,
@@ -5514,6 +5523,11 @@ final class Qwen4ExpDecoderLayer: Module {
     var referenceSharedActivationForTesting: Bool {
         get { mlp.sharedExpert.referenceActivationForTesting }
         set { mlp.sharedExpert.referenceActivationForTesting = newValue }
+    }
+
+    var referenceScalarIndexerQueriesForTesting: Bool {
+        get { selfAttention?.indexer.referenceScalarTextQueriesForTesting ?? false }
+        set { selfAttention?.indexer.referenceScalarTextQueriesForTesting = newValue }
     }
 
     var referenceScalarPrefillRoPEForTesting: Bool {

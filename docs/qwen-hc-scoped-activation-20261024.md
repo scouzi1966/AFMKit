@@ -1011,3 +1011,54 @@ Evidence: `QwenOpeningQKControlScores20261024`,
 `QwenOpeningScalarGateScores20261024`, their fixture/source manifests and
 `qwen-passive-scalar-{rope,gate}-comparison-20261024.json` under the evaluation
 root. Both scalar interventions remain diagnostic-only.
+
+
+### Full-row capture localizes the next boundary to QSA attention
+
+The expanded native capture saves every row of the first eight layers after
+ordinary evaluation. Frozen/off/on semantic and usage controls pass, all 64
+raw score payloads retain their original hashes, and all 51 older native
+intermediates are unchanged after projecting the enlarged captures to their
+previous rows. AFM's expanded capture likewise preserves every prior
+intermediate and all 320 raw score payloads. The AFM test passes in 35.48 s.
+
+| Captured stage, zero-based layer | Different values | Affected prompt positions |
+|---|---:|---:|
+| Layers 0--2, all four stages | 0 / 203,673,600 | 0 |
+| Layer 3 attention input | 0 / 16,972,800 | 0 |
+| Layer 3 attention output | 1,704,054 / 16,972,800 | 1,327 |
+| Layer 4 attention input | 1,613,193 / 16,972,800 | 1,327 |
+| Layer 4 attention output | 6,978,154 / 16,972,800 | 4,501 |
+
+The first differing output is at position 2,129, above the 2,048-token QSA
+selection budget. The layer-4 last-row discrepancy is therefore downstream
+of earlier differing attention rows; its matching final input row did not
+clear the incoming sequence. This is a concrete reason to capture all rows,
+not an inference that recurrent-state memory is corrupt.
+
+Source inspection identifies a second scalar-RoPE boundary: native QSA query
+vectors use `mlx_fast_rope` for plain text at all widths, while AFM prepares
+them with manual model-dtype cos/sin arithmetic. Both rotate 64 channels.
+Native pooled keys intentionally retain the cos/sin path. The next isolated
+test changes only plain-text, single-batch QSA query rotation at widths >32;
+it does not change pooled keys, selection, masks, or explicit vision positions.
+This proposed intervention remains disabled in serving and needs its own
+control and result. No coding-quality or throughput recovery is claimed.
+
+Evidence: `QwenOpeningFullRowsNative20261024`,
+`QwenOpeningFullRowsScores20261024`, `qwen-full-rows-native-control-20261024.json`,
+`qwen-full-rows-comparison-20261024.json`. Reference capture files are about
+1.26 GB, kept externally and untracked. Earlier binaries and captures remain
+preserved separately.
+
+
+The scalar QSA query test's disabled control reproduces all expanded captures
+and 320 scores. Enabled, layer-3 attention discrepancies fall from 1,704,054
+values across 1,327 positions to 27,575 values across 20 positions (first
+position 4,317). Layers 0--2 and the full layer-3 attention input remain exact.
+The five fixed-prefix winner overlaps are 58/57/60/58/60, so no overall token
+or coding-quality parity is claimed. The remaining 20 positions require
+inspection of QSA's prepared queries, pooled keys, and selected mask. Evidence:
+`QwenOpeningIndexerControlScores20261024`, `QwenOpeningIndexerScalarScores20261024`,
+`qwen-indexer-scalar-full-comparison-20261024.json`. Build 186.11 seconds;
+capture tests about 35 seconds each. The query intervention remains disabled.
