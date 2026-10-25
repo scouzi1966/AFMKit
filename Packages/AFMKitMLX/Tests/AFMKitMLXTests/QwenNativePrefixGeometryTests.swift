@@ -29,6 +29,7 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
         let passive_arm: String?
         let passive_qsa: Bool?
         let passive_qsa_layer: Int?
+        let passive_decode_indices: [Int]?
         let reference_ple_norm: Bool?
         let reference_ple_scale: Bool?
         let reference_ple_all_widths: Bool?
@@ -42,6 +43,7 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
         let reference_attention_tail_gate: Bool?
         let reference_attention_decode_gate: Bool?
         let reference_injection_gate: Bool?
+        let reference_decode_norm: Bool?
         let reference_materialized_injection: Bool?
         let reference_down_reduction: Bool?
         let reference_fused_rotation: Bool?
@@ -97,6 +99,9 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
             return
         }
         let probeRequest = fixture.histories[1].request
+        let passiveDecodeIndices = fixture.passive_decode_indices ?? [1]
+        XCTAssertEqual(Set(passiveDecodeIndices).count, passiveDecodeIndices.count)
+        XCTAssertTrue(passiveDecodeIndices.allSatisfy { $0 > 0 && $0 < fixture.rows.count })
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
         try data.write(to: root.appendingPathComponent("fixture.json"), options: .withoutOverwriting)
         try MLXMetalLibrary.ensureAvailable(verbose: false)
@@ -118,6 +123,8 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
         defer { for hc in hcModules { hc.referenceInjectionGateForTesting = false } }
         for hc in hcModules { hc.referenceMaterializedInjectionForTesting = fixture.reference_materialized_injection ?? false }
         defer { for hc in hcModules { hc.referenceMaterializedInjectionForTesting = false } }
+        for hc in hcModules { hc.referenceDecodeNormForTesting = fixture.reference_decode_norm ?? false }
+        defer { for hc in hcModules { hc.referenceDecodeNormForTesting = false } }
         let allDecoderLayers = model.namedModules().compactMap { $0.1 as? Qwen4ExpDecoderLayer }
         for layer in allDecoderLayers {
             layer.referenceSharedActivationForTesting = fixture.reference_shared_activation ?? false
@@ -225,6 +232,7 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
                 "passive_layer_count_diagnostic_only": passiveLayerCount,
                 "passive_width_diagnostic_only": passiveWidth,
                 "passive_arm_diagnostic_only": passiveArm,
+                "passive_decode_indices_diagnostic_only": passiveDecodeIndices,
                 "reference_ple_norm_diagnostic_only": fixture.reference_ple_norm ?? false,
                 "reference_ple_scale_diagnostic_only": fixture.reference_ple_scale ?? false,
                 "reference_ple_all_widths_diagnostic_only": fixture.reference_ple_all_widths ?? false,
@@ -237,6 +245,7 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
                 "reference_attention_prefill_gate_diagnostic_only": fixture.reference_attention_prefill_gate ?? false,
                 "reference_attention_tail_gate_diagnostic_only": fixture.reference_attention_tail_gate ?? false,
                 "reference_injection_gate_diagnostic_only": fixture.reference_injection_gate ?? false,
+                "reference_decode_norm_diagnostic_only": fixture.reference_decode_norm ?? false,
                 "reference_materialized_injection_diagnostic_only": fixture.reference_materialized_injection ?? false,
                 "reference_down_reduction_diagnostic_only": fixture.reference_down_reduction ?? false,
                 "reference_attention_decode_gate_diagnostic_only": fixture.reference_attention_decode_gate ?? false,
@@ -327,7 +336,7 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
                 // The counterfactual only begins at the captured request.
                 if history.request == probeRequest { try persistState() }
             }
-            func savePassiveForward() throws {
+            func savePassiveForward(decision: Int? = nil) throws {
                 var stages: [String: MLXArray] = [:]
                 for (index, layer) in passiveLayers {
                     if passiveWidth == 1 {
@@ -368,21 +377,12 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
                     }
                 }
                 // Save after the ordinary token evaluation; never re-forward or uncompile.
-                try save(arrays: stages, url: root.appendingPathComponent("passive-forward.safetensors"))
+                let filename = decision.map { String(format: "passive-forward-step-%03d.safetensors", $0) }
+                    ?? "passive-forward.safetensors"
+                try save(arrays: stages, url: root.appendingPathComponent(filename))
             }
             if fixture.passive_forward == true, arm == passiveArm, passiveWidth != 1 {
                 try savePassiveForward()
-            }
-            if fixture.passive_forward == true, arm == passiveArm, passiveWidth == 1 {
-                // Startup and prompt tails can also contain singleton calls.
-                // Enable only after the selected prompt has finished.
-                for (_, layer) in passiveLayers {
-                    layer.passivePrefillWidthForTesting = 1
-                    layer.passivePLEWidthForTesting = 1
-                }
-                for indexer in passiveIndexers {
-                    indexer.passiveCaptureForTesting = fixture.passive_qsa == true
-                }
             }
             var prefix = fixture.histories[1].tokens
             var scores = [String: MLXArray]()
@@ -421,14 +421,27 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
                     XCTAssertEqual(row.status, "emitted")
                     prefix.append(row.token_id)
                     let ids = [row.token_id]
+                    let captureDecision = fixture.passive_forward == true && arm == passiveArm
+                        && passiveWidth == 1 && passiveDecodeIndices.contains(index + 1)
+                    if captureDecision {
+                        // Capture only selected ordinary decode forwards, after startup/prefill.
+                        // Retention must not change the evaluated graph or token choices.
+                        for (_, layer) in passiveLayers {
+                            layer.passivePrefillWidthForTesting = 1
+                            layer.passivePLEWidthForTesting = 1
+                        }
+                        for indexer in passiveIndexers {
+                            indexer.passiveCaptureOffsetForTesting = prefix.count - 1
+                            indexer.passiveCaptureForTesting = fixture.passive_qsa == true
+                        }
+                    }
                     let result = model(LMInput.Text(tokens: MLXArray(ids)[.newAxis]), cache: cache,
                                        state: nil, hostTokenIDs: model.consumesHostTokenIDs ? ids : nil)
                     XCTAssertNil(result.state)
                     next = result.logits[0, -1].asType(.float32)
                     eval(try XCTUnwrap(next), cache)
-                    if index == 0, fixture.passive_forward == true,
-                       arm == passiveArm, passiveWidth == 1 {
-                        try savePassiveForward()
+                    if captureDecision {
+                        try savePassiveForward(decision: fixture.passive_decode_indices == nil ? nil : index + 1)
                     }
                     try persistState()
                 }

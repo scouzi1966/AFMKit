@@ -1730,3 +1730,98 @@ project before its numerical cause is understood. Evidence:
 `QwenOpeningFinalHiddenScores20261025`,
 `QwenOpeningFusedFinalMixerScores20261025`, and
 `qwen-fused-final-mixer-comparison-20261025.json`.
+
+
+### Later decode divergence, 2026-10-25 01:44 EDT
+
+Added fixture-selected passive decode indices. Captures at decisions 6, 11 and
+12 preserve all 320 prior AFM score arrays (build 104.15 s; test 35.617 s).
+Reference frozen/off/on controls preserve all 64 raw arrays and the original
+response/usage. Native multi-step binary SHA-256:
+`9d05f5bd313391ecd498e8765200de6ec362d7ff476376cbfd585b1896c9b0f2`.
+A first launch from the archive directory failed before loading the model
+because its original relative dylib paths require the source build layout.
+The retry uses the original executable location and verifies its hash against
+the preserved copy; it does not alter the binary or library identity.
+
+| Decision | Exact captured arrays | First observed divergence |
+| --- | ---: | --- |
+| 6 | 304 / 306 | Layer 47 MLP output: 2 / 2,560 values; final hidden: 1 |
+| 11 | 304 / 306 | Layer 47 MLP output: 3 / 2,560 values; final hidden: 7 |
+| 12 | 213 / 306 | Layer 33 MLP output: 1,880 / 2,560; subsequent layers amplify it |
+
+The compiled tail does not expose its internal MLP read. Exact earlier
+captured boundaries therefore do **not** establish that this input is exact.
+An isolated layer-33 test on the native MLP input produces the native output
+exactly with the eight-lane experiment; its full-forward capture differs.
+This directs the next test at the HC preparation boundary, rather than
+attributing the large drift to the expert multiplication prematurely.
+
+At decisions 6 and 11, isolated layer-47 forwards reproduce the captured AFM
+output, including the small mismatch. A second passive native build captures
+MoE stages at layers 47, 47, 33 for these decisions. SHA-256:
+`99898d3653ac1c3f3b44e157d196d8fc0ddfd959bd282fca94fe334abe69549b`.
+All 64 control scores remain unchanged. Router logits, selected experts, route
+scores and shared expert output match on native inputs. The legacy routed
+output differs in five values at each layer-47 input; the eight-lane path
+still leaves the final output mismatch there. Layer 33 differs in one legacy
+routed value, removed by the eight-lane path.
+
+A build-only XCTest attempt using `build --build-tests` failed because the
+Xcode package build did not enable testability for required modules. Its logs
+are retained. The ordinary reliable `test` wrapper is used for the corrected
+HC boundary test; no production binary was changed by these experiments.
+
+Evidence under the experiment root: `QwenOpeningLaterDecodeScores20261025`,
+`QwenOpeningLaterDecodeNativeRetry20261025`, `QwenOpeningLaterMoENative20261025`,
+`QwenNativeDecodeStep{06,11,12}MoE20261025`,
+`qwen-later-decode-comparison-20261025.json`, and
+`qwen-later-moe-stages-comparison-20261025.json`.
+
+
+### HC normalization cause and combined decode result, 2026-10-25 01:55 EDT
+
+The boundary test reconstructs attention/HC from native preceding-layer
+operands. Attention read and the 10,240-element written stream are exact;
+the layer-33 MLP read differs in 32/2,560 values. Feeding that reconstructed
+read into the isolated MoE reproduces all 1,880 captured output differences.
+Changing only `precise::rsqrt` to the reference's ordinary `metal::rsqrt` in
+the decode HC norm removes all 32 read differences and all 1,880 output
+differences. Restoring the original policy reproduces the control exactly.
+This is a numerical-path difference, not evidence of cache-state corruption
+or proof that one normalization is mathematically more accurate.
+
+The model-instance diagnostic defaults false and is included in the native
+chain plan key. It changes neither grouped prefill normalization nor other
+models. Source attribution remains in the two Metal kernels. Focused test:
+build 189.09 s; completed in 2.706 s. The earlier failed build-only attempt
+caused a 311.28 s dependency/test rebuild before the boundary test; normal
+wrapper `test` invocations are retained going forward.
+
+Disabled full-prefix control preserves all 320 previous score arrays.
+A malformed scratch-path in the first enabled launch was rejected by the
+wrapper before running any test. The corrected launch uses a small external
+runner with fixed paths, a fresh-output guard, an inference-process guard,
+recorded command/revision/diff hash, and only fixture-declared diagnostic
+options. No build or result was substituted after that rejection.
+
+| Fixed-prefix arm | Control winners / 64 | Native norm winners / 64 | Control mean RMS | Candidate mean RMS |
+| --- | ---: | ---: | ---: | ---: |
+| Production 30+1 | 59 | 59 | 0.616343 | 0.626392 |
+| Joined 31, F32 state | 58 | 61 | 0.623297 | 0.614931 |
+| Joined 31, BF16 state values | 63 | 64 | 0.135386 | 0.008942 |
+| Reconstructed 30+1 | 59 | 59 | 0.616343 | 0.626392 |
+| Reconstructed 30+1, BF16 state values | 60 | 60 | 0.489292 | 0.489292 |
+
+The matched arm is now exact at 27/64 full vocabulary score arrays, including
+decision 12 and the former winner mismatch at 56. At decision 12 all 306
+captured arrays match. Decisions 6/11 retain their small last-layer routed
+expert mismatch (304/306 exact arrays each). The 93.4% RMS reduction and all
+64 matching winners are diagnostic results only; production prompt geometry
+is still not qualified and no whole-task/performance acceptance is claimed.
+
+Evidence: `QwenNativeDecodeStep12HCBoundary20261025`,
+`QwenNativeDecodeStep12HCNorm20261025`,
+`QwenOpeningDecodeNorm{Control,Corrected}Scores20261025`,
+`qwen-decode-norm-scores-comparison-20261025.json`, and
+`qwen-decode-norm-intermediates-comparison-20261025.json`.

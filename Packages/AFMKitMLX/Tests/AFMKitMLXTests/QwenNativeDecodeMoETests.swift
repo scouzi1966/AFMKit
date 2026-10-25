@@ -113,6 +113,50 @@ final class QwenNativeDecodeMoETests: XCTestCase {
                                 "milliseconds": ms])
             }
         }
+        if layerIndex > 0 {
+            // Reconstruct the HC boundary from captured native operands, without
+            // adding outputs to the production compiled graph. This separates
+            // a changed MLP input from arithmetic inside the expert itself.
+            let modules = Dictionary(uniqueKeysWithValues: model.namedModules())
+            let attentionHC = try XCTUnwrap(modules["model.layers.\(layerIndex).attn_hyper_connection"] as? Qwen4ExpGatedResidual)
+            let mlpHC = try XCTUnwrap(modules["model.layers.\(layerIndex).mlp_hyper_connection"] as? Qwen4ExpGatedResidual)
+            attentionHC.referenceInjectionGateForTesting = true
+            mlpHC.referenceInjectionGateForTesting = true
+            defer {
+                attentionHC.referenceInjectionGateForTesting = false
+                mlpHC.referenceInjectionGateForTesting = false
+            }
+            let previous = String(format: "layer-%03d-", layerIndex - 1)
+            let attentionRead = attentionHC.mixAfterInjection(
+                output: try XCTUnwrap(native[previous + "mlp-output"]),
+                residual: try XCTUnwrap(native[previous + "mlp-stream"]),
+                weights: try XCTUnwrap(native[previous + "mlp-injection"]).reshaped(1, 1, 4))
+            record("reconstructed-attn-read", attentionRead.0, try XCTUnwrap(native[layerPrefix + "attn-read"]))
+            let attended = try XCTUnwrap(native[layerPrefix + "attn-output"])
+            let read = mlpHC.mixAfterInjection(output: attended,
+                residual: attentionRead.1, weights: attentionRead.2)
+            record("reconstructed-pending-mlp-read", read.0, input)
+            record("reconstructed-pending-stream", read.1, try XCTUnwrap(native[layerPrefix + "mlp-stream"]))
+            let materialized = mlpHC.mix(try XCTUnwrap(native[layerPrefix + "mlp-stream"]))
+            record("reconstructed-materialized-mlp-read", materialized.0, input)
+            record("reconstructed-tail-vs-native", referenceCompiled([read.0])[0], expected)
+            record("reconstructed-tail-vs-captured", referenceCompiled([read.0])[0], captured)
+            mlpHC.referenceDecodeNormForTesting = true
+            let nativeNormRead = mlpHC.mixAfterInjection(output: attended,
+                residual: attentionRead.1, weights: attentionRead.2)
+            record("reference-norm-mlp-read", nativeNormRead.0, input)
+            record("reference-norm-tail-vs-native", referenceCompiled([nativeNormRead.0])[0], expected)
+            mlpHC.referenceDecodeNormForTesting = false
+            let restoredNormRead = mlpHC.mixAfterInjection(output: attended,
+                residual: attentionRead.1, weights: attentionRead.2)
+            XCTAssertEqual(restoredNormRead.0.asData(access: .copy).data, read.0.asData(access: .copy).data,
+                           "Restored norm policy must reproduce control, including plan caches")
+            try save(arrays: ["native-norm-read": nativeNormRead.0,
+                "pending-read": read.0, "materialized-read": materialized.0,
+                "native-read": input, "pending-stream": read.1,
+                "attention-residual": attentionRead.1, "attention-injection": attentionRead.2],
+                url: root.appendingPathComponent("hc-boundary.safetensors"))
+        }
         if layerIndex == 0 {
             // Reconstruct layer zero from its exact token embedding; it has no
             // preceding HC write or PLE. Reuse the already-qualified native GDN output.

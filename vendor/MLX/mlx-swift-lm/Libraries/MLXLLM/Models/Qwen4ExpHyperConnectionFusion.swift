@@ -109,6 +109,7 @@ enum Qwen4ExpHyperConnectionFusion {
         let hasPending: Bool
         let matchFusedInjection: Bool
         let referenceInjectionGate: Bool
+        let referenceDecodeNorm: Bool
         let injectBits: Int
         let injectGroupSize: Int
     }
@@ -513,8 +514,12 @@ enum Qwen4ExpHyperConnectionFusion {
             threadgroup_barrier(mem_flags::mem_threadgroup);
             float total = 0.0f;
             for (int group = 0; group < 8; ++group) total += sums[group];
-            const float inverse_rms = precise::rsqrt(
-                total / float(HIDDEN) + epsilon);
+            // ddalcu/mlx-serve HC_FUSED_N_SOURCE (MIT, 02bee553) uses
+            // ordinary Metal rsqrt. Compare this single rounding decision
+            // without changing grouped prefill normalization or defaults.
+            const float norm_argument = total / float(HIDDEN) + epsilon;
+            const float inverse_rms = REFERENCE_DECODE_NORM
+                ? metal::rsqrt(norm_argument) : precise::rsqrt(norm_argument);
 
             float inject[HC];
             if (HAS_INJECT) {
@@ -613,8 +618,12 @@ enum Qwen4ExpHyperConnectionFusion {
             threadgroup_barrier(mem_flags::mem_threadgroup);
             float total = 0.0f;
             for (int group = 0; group < 8; ++group) total += sums[group];
-            const float inverse_rms = precise::rsqrt(
-                total / float(HIDDEN) + epsilon);
+            // ddalcu/mlx-serve HC_FUSED_N_SOURCE (MIT, 02bee553) uses
+            // ordinary Metal rsqrt. Compare this single rounding decision
+            // without changing grouped prefill normalization or defaults.
+            const float norm_argument = total / float(HIDDEN) + epsilon;
+            const float inverse_rms = REFERENCE_DECODE_NORM
+                ? metal::rsqrt(norm_argument) : precise::rsqrt(norm_argument);
 
             float inject[HC];
             if (HAS_INJECT) {
@@ -819,6 +828,7 @@ enum Qwen4ExpHyperConnectionFusion {
                     ("HAS_INJECT", key.hasInject),
                     ("MATCH_FUSED_INJECTION", key.matchFusedInjection),
                     ("QUANTIZED_INJECT", key.injectBits > 0),
+                    ("REFERENCE_DECODE_NORM", key.referenceDecodeNorm),
                     ("INJECT_BITS", max(1, key.injectBits)),
                     ("INJECT_GROUP_SIZE", max(1, key.injectGroupSize)),
                 ],
@@ -1026,6 +1036,7 @@ enum Qwen4ExpHyperConnectionFusion {
         allowExtendedRows: Bool = false,
         allowQuantizedInjectionForTesting: Bool = false,
         referenceInjectionGateForTesting: Bool = false,
+        referenceDecodeNormForTesting: Bool = false,
         verificationPolicy: MTPVerificationPolicy? = .strictSingletonEquivalent
     ) -> Qwen4ExpHyperConnectionFusionOutput? {
         guard enabled,
@@ -1177,6 +1188,7 @@ enum Qwen4ExpHyperConnectionFusion {
                 hasPending: hasPending,
                 matchFusedInjection: matchFusedInjection,
                 referenceInjectionGate: referenceInjectionGateForTesting,
+                referenceDecodeNorm: referenceDecodeNormForTesting,
                 injectBits: injectBits,
                 injectGroupSize: injectGroupSize)
             let plan = chainPlan(for: key)
@@ -1214,6 +1226,7 @@ enum Qwen4ExpHyperConnectionFusion {
                     ("HAS_INJECT", inject != nil),
                     ("MATCH_FUSED_INJECTION", matchFusedInjection),
                     ("QUANTIZED_INJECT", quantizedInject != nil),
+                    ("REFERENCE_DECODE_NORM", referenceDecodeNormForTesting),
                     ("INJECT_BITS", max(1, injectBits)),
                     ("INJECT_GROUP_SIZE", max(1, injectGroupSize)),
                 ],
@@ -1234,6 +1247,7 @@ enum Qwen4ExpHyperConnectionFusion {
                     ("T", input.dtype), ("HC", hcCount), ("HIDDEN", hiddenSize),
                     ("HAS_INJECT", inject != nil),
                     ("QUANTIZED_INJECT", quantizedInject != nil),
+                    ("REFERENCE_DECODE_NORM", referenceDecodeNormForTesting),
                     ("INJECT_BITS", max(1, injectBits)),
                     ("INJECT_GROUP_SIZE", max(1, injectGroupSize)),
                 ],
