@@ -4304,7 +4304,7 @@ private final class Qwen4ExpSparseMoE: Module, UnaryLayer {
             referenceDownReductionForTesting: referenceDownReductionForTesting,
             sigmoidTableOverrideForTesting: referenceDecodeTable) {
             routed = fused
-        } else if referenceRoutedPrefillActivationForTesting, x.dim(1) > 32 {
+        } else if referenceRoutedPrefillActivationForTesting, x.dim(1) > 1 {
             let experts = switchMLP.activationRowsForTesting(x, indices) {
                 Qwen4ExpHCActivation.silu($0) * $1
             }
@@ -4422,7 +4422,9 @@ private final class Qwen4ExpSparseMoE: Module, UnaryLayer {
         if let fusedRouted {
             routed = fusedRouted
         } else if referenceRoutedPrefillActivationForTesting,
-                  verificationPolicy == nil, x.dim(1) > 32 {
+                  verificationPolicy == nil, x.dim(1) > 1 {
+            // The short final prefill block needs the same activation rounding
+            // as a large block; singleton fused decode supplies its own table.
             let experts = switchMLP.activationRowsForTesting(x, indices) {
                 Qwen4ExpHCActivation.silu($0) * $1
             }

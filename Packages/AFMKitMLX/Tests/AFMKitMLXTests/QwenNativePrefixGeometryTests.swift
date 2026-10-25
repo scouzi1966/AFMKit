@@ -29,6 +29,7 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
         let passive_arm: String?
         let passive_qsa: Bool?
         let passive_qsa_layer: Int?
+        let passive_qsa_all_layers: Bool?
         let passive_decode_indices: [Int]?
         let reference_ple_norm: Bool?
         let reference_ple_scale: Bool?
@@ -195,12 +196,17 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
                 layer.passivePLEStagesForTesting = [:]
             }
         }
-        let passiveIndexers = model.namedModules().compactMap { name, module -> Qwen4ExpQSAIndexer? in
-            guard name.hasPrefix("model.layers.\(fixture.passive_qsa_layer ?? 3)."), let indexer = module as? Qwen4ExpQSAIndexer else { return nil }
-            return indexer
+        let allQSA = fixture.passive_qsa_all_layers ?? false
+        let passiveIndexerModules = model.namedModules().compactMap { name, module -> (Int, Qwen4ExpQSAIndexer)? in
+            guard name.hasPrefix("model.layers."),
+                  let layer = Int(name.split(separator: ".")[2]),
+                  allQSA || layer == (fixture.passive_qsa_layer ?? 3),
+                  let indexer = module as? Qwen4ExpQSAIndexer else { return nil }
+            return (layer, indexer)
         }
+        let passiveIndexers = passiveIndexerModules.map(\.1)
         if fixture.passive_qsa == true {
-            XCTAssertEqual(passiveIndexers.count, 1)
+            XCTAssertEqual(passiveIndexers.count, allQSA ? 12 : 1)
             for indexer in passiveIndexers {
                 indexer.passiveCaptureWidthForTesting = passiveWidth
                 indexer.passiveCaptureOffsetForTesting = passiveWidth == 1 ? fixture.histories[1].tokens.count : (passiveWidth == 31 ? prefillBoundary : 0)
@@ -239,6 +245,7 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
                 "passive_width_diagnostic_only": passiveWidth,
                 "passive_arm_diagnostic_only": passiveArm,
                 "passive_decode_indices_diagnostic_only": passiveDecodeIndices,
+                "passive_qsa_all_layers_diagnostic_only": allQSA,
                 "reference_ple_norm_diagnostic_only": fixture.reference_ple_norm ?? false,
                 "reference_ple_scale_diagnostic_only": fixture.reference_ple_scale ?? false,
                 "reference_ple_all_widths_diagnostic_only": fixture.reference_ple_all_widths ?? false,
@@ -370,7 +377,7 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
                     layer.passivePLEStagesForTesting = [:]
                 }
                 if fixture.passive_qsa == true {
-                    for indexer in passiveIndexers {
+                    for (layer, indexer) in passiveIndexerModules {
                         if passiveWidth == 1 {
                             XCTAssertTrue(Set(["attention-query", "attention-key", "attention-value",
                                 "attention-cached-key", "attention-cached-value", "attention-heads", "attention-gate"])
@@ -378,7 +385,10 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
                         } else {
                             XCTAssertEqual(indexer.passiveStagesForTesting.count, passiveWidth == 31 ? 11 : 4)
                         }
-                        for (name, value) in indexer.passiveStagesForTesting { stages[name] = value }
+                        for (name, value) in indexer.passiveStagesForTesting {
+                            let key = allQSA ? String(format: "layer-%03d-", layer) + name : name
+                            stages[key] = value
+                        }
                         indexer.passiveCaptureForTesting = false
                         indexer.passiveStagesForTesting = [:]
                     }

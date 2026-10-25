@@ -24,7 +24,8 @@ retained intermediate arrays at each of decisions 6, 11 and 12 also match.
 This requires the reference-matched joined-tail / BF16-state-value arm and
 the complete diagnostic recipe. It is not a production-default result.
 A second, 7,255-token cold request remains unresolved: 56/57 winning-token
-sets overlap, but none of its full score arrays match, starting at prefill.
+sets overlap. After the short-prefill activation correction, its first 16
+full score arrays match exactly; a later mismatch starts at decode step 16.
 There is no new coding or throughput acceptance. The eight-lane expert
 reduction's earlier component median was 2.74% slower and is not promoted.
 
@@ -1909,3 +1910,45 @@ Evidence: `QwenOpeningExactScoreGuard20261025`,
 `QwenColdR2PrefillNativeRetry20261025`,
 `qwen-cold-r2-prefill-comparison-20261025.json`, and
 `QwenNativeDecodeStep12NativeChain20261025`.
+
+
+### Short-tail activation fix and next boundary, 2026-10-25 02:43 EDT
+
+Full-row tail capture finds the first second-request difference at layer 45:
+its MLP input is exact, but 2/79,360 MLP output values differ. Later layers
+amplify those two differences. The routed activation diagnostic covered long
+prefill chunks and singleton decode, but omitted widths 2 through 32.
+Extending the existing false-by-default policy to those short prefill widths
+removes both differences. The isolated control reproduces the original
+capture, router/indices/scores/shared output remain identical, and restoring
+the policy restores the old output. This is a demonstrated causal intervention.
+
+Twenty alternating complete expert-layer samples give medians 1.3292505 ms
+(control) and 1.322146 ms (candidate): effectively unchanged, not evidence of
+a whole-model speedup. Focused Release test passed in 2.540 s after a 140.18 s
+build. The corrected full tail matches all 211 captured arrays; the first 16
+complete vocabulary score arrays are now exact. The opening request's
+qualified 64/64 score assertion still passes after the correction.
+
+The second-request 57-exact target check fails at 16 exact arrays, with a
+later winner mismatch at decision 30. XCTest then exits with signal 11 after
+that assertion failure; its cause is not yet established. The run is retained
+as a failure. A subsequent non-asserting capture run completes normally and
+preserves every one of the 171 score arrays already written by the three
+completed arms. It does not convert the failed target into a pass.
+
+The next passive capture retains all 48 experts and all attention layers at
+decision 16. Native frozen/off/on controls and all 57 historical score arrays
+remain exact. The first difference is PLE's final output (1/10,240 values);
+its stream, n-gram embedding, key/query/value, gated value and convolution
+input are exact. Layer 0 also matches throughout. This localizes the next
+experiment to the PLE convolution/activation boundary, not n-gram lookup.
+Native step-16 capture binary SHA-256:
+`e8495b7db7e88bb8c7d177bb611847173c4e330099edfaee952b729b2a8e93c4`.
+
+Evidence: `QwenColdR2TailActivation20261025`,
+`QwenColdR2TailCorrectedScores20261025`,
+`QwenOpeningTailCorrectedGuard20261025`,
+`QwenColdR2Step16CaptureScores20261025`, `QwenColdR2Step16Native20261025`,
+`qwen-cold-r2-tail-corrected-comparison-20261025.json`, and
+`qwen-cold-r2-step16-comparison-20261025.json`.
