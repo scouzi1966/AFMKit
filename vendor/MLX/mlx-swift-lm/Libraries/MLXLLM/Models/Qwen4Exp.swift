@@ -2156,6 +2156,7 @@ final class Qwen4ExpQSAIndexer: Module {
     var referenceScalarTextQueriesAllWidthsForTesting = false
     var referencePooledTextSpectrumForTesting = false
     var referenceMaskedDecodeForTesting = false
+    var referenceStrictPrefillGatherBoundaryForTesting = false
     var passiveCaptureForTesting = false
     var passiveCaptureWidthForTesting = 6630
     var passiveCaptureOffsetForTesting = 0
@@ -2627,12 +2628,14 @@ final class Qwen4ExpQSAIndexer: Module {
         {
             return .blocks(selectedBlocks)
         }
-        if Qwen4ExpQSAGather.shouldSelectBlocks(
+        if !(referenceStrictPrefillGatherBoundaryForTesting && totalLength == 8192),
+           Qwen4ExpQSAGather.shouldSelectBlocks(
             batch: batch,
             queryLength: length,
             keyLength: totalLength,
             dtype: hidden.dtype)
         {
+            retainPassive("qsa-selection", selectedBlocks, length: length, offset: previousOffset)
             return .blocks(selectedBlocks)
         }
         if verificationPolicy == .batched,
@@ -4980,6 +4983,15 @@ func qwen4ExpScalePLEGate(_ dots: MLXArray, hiddenSize: Int, reference: Bool) ->
     return dots / sqrt(Float(hiddenSize))
 }
 
+/// PLE's sigmoid must preserve the same BF16 operation rounding as the
+/// selected serial arithmetic profile. Other profiles keep their existing op.
+func qwen4ExpPLEGateSigmoid(_ gate: MLXArray, reference: Bool) -> MLXArray {
+    // Same activation-dtype sigmoid as mlx-serve's pleForward (MIT,
+    // transformer.zig, 02bee553). Share the already qualified precise BF16
+    // activation used by HC; generic MLX sigmoid differs at -6.84375.
+    reference ? Qwen4ExpHCActivation.sigmoid(gate) : sigmoid(gate)
+}
+
 private final class Qwen4ExpPLE: Module {
     /// Experimental request-owned PLE projection/convolution batching. Token
     /// histories and mapped n-gram lookups remain separate for every request.
@@ -5046,6 +5058,7 @@ private final class Qwen4ExpPLE: Module {
     var passiveWidthForTesting: Int?
     var passiveStagesForTesting: [String: MLXArray] = [:]
     var referenceGateScaleForTesting = false
+    var referenceGateActivationForTesting = false
     var referenceConvolutionActivationForTesting = false
     var passiveConvolutionForTesting = false {
         didSet { if !passiveConvolutionForTesting { capturedConvolution = nil } }
@@ -5159,7 +5172,9 @@ private final class Qwen4ExpPLE: Module {
         let value = expandedDimensions(
             valueProjection,
             axis: -2)
-        let gated = (sigmoid(gate) * value).reshaped(shape + [hcCount * hiddenSize])
+        let gated = (qwen4ExpPLEGateSigmoid(
+            gate, reference: referenceGateActivationForTesting) * value)
+            .reshaped(shape + [hcCount * hiddenSize])
         profiler?.lap(gated, stage: .gateAndValue)
         let convolutionInputs = normConv(gated)
         profiler?.lap(convolutionInputs, stage: .convolutionNorm)
@@ -5744,6 +5759,10 @@ final class Qwen4ExpDecoderLayer: Module {
     var referencePLEGateScaleForTesting: Bool {
         get { ple?.referenceGateScaleForTesting ?? false }
         set { ple?.referenceGateScaleForTesting = newValue }
+    }
+    var referencePLEGateActivationForTesting: Bool {
+        get { ple?.referenceGateActivationForTesting ?? false }
+        set { ple?.referenceGateActivationForTesting = newValue }
     }
     var referencePLEConvolutionActivationForTesting: Bool {
         get { ple?.referenceConvolutionActivationForTesting ?? false }
@@ -7179,6 +7198,7 @@ public final class Qwen4ExpModel: Module, LLMModel, KVCacheDimensionProvider, Re
         }
         for layer in model.layers {
             layer.referencePLEGateScaleForTesting = true
+            layer.referencePLEGateActivationForTesting = true
             layer.referencePLEConvolutionActivationForTesting = true
             layer.referenceSharedActivationForTesting = true
             layer.referenceDownReductionForTesting = true

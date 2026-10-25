@@ -2229,3 +2229,132 @@ A separate remaining difference is known past 8,192 KV tokens: the reference
 uses gathered ordinary SDPA, while this serial candidate still forces masked
 SDPA. It requires its own controlled comparison; the warm-request fix does
 not resolve or qualify that route.
+
+
+### Rebuilt API checkpoint fc23ebfe, 2026-10-25 04:39 EDT
+
+The consumer release build succeeds in 302.09 seconds. The frozen candidate is
+`QwenRawMaskHTTPCandidateBinary20261025/afm`, SHA-256
+`6f22e8de397334f3da58c8a92c8bc5a2cd3a1465a74b5ad72b2f9c2cd4333ca1`.
+It comes from AFMKit `fc23ebfecb482d4fdc0e266c44f605a2a13dc188` and unchanged
+consumer `6839b0566dbd166f11ad4203db9568165ac8ff49`; provenance records source
+binary modification time, copy time, resources and build-log hash.
+
+| Request | Reference tokens / seconds | AFM tokens / seconds | AFM raw decode tok/s | Reasoning and parsed calls equal |
+|---|---:|---:|---:|---|
+| 1 | 72 / 6.335 | 72 / 6.724 | 58.6 | yes |
+| 2 | 67 / 1.836 | 67 / 2.088 | 57.8 | yes |
+| 3 | 84 / 2.020 | 84 / 2.353 | 57.2 | yes |
+| 4 | 123 / 2.374 | 123 / 2.730 | 57.2 | yes |
+| 5 | 1,824 / 28.801 | 2,612 / 48.421 | 55.1 | no |
+
+The first four now match complete reasoning text and parsed tool arguments,
+not merely token counts. The fifth now writes `src/orbits.js` on both engines,
+but the generated programs and reasoning differ; no tools were executed.
+The candidate remains below the preserved binary's 62.5–62.7 tok/s on the first
+four. The fixed-input workload does not establish end-to-end coding parity.
+
+AFM's cached-token counts remain 6,630 / 7,225 / 7,755 / 7,927. Its STATS
+prefill rates divide by the full prompt despite processing only the suffix;
+those cached rates must not be quoted as actual suffix prefill throughput.
+The Responses usage object also reports zero reasoning tokens despite a
+nonempty reasoning item. The text and total token counts are preserved, but
+this accounting discrepancy remains unqualified and is not dismissed as model
+behavior. Reference raw decode timing is absent from this capture.
+
+Full HTTP artifacts: `QwenRawMaskHTTPFive20261025`; normalized comparison:
+`qwen-raw-mask-http-five-comparison-20261025.json`. The warm fifth-request raw
+score capture (`QwenWarmR5Native20261025`) matches frozen/off/on semantic
+controls. A five-request cache reconstruction (`QwenWarmR5RawMask20261025`)
+already differs at decision zero: 0/64 exact score arrays, 60/64 winning tokens.
+The first winner is AFM 9764 versus reference 7601. Therefore decoding-route
+alignment alone cannot resolve this case; the next capture targets both the
+740-token suffix prefill and the final 31-token forward before any sampling.
+
+
+### 2026-10-25: absolute 8K prefill boundary investigation
+
+The qualified native warm fifth request restores 7,927 tokens and forwards
+265 tokens to absolute position 8,192, then 475 to 8,667, then the final 31.
+The native `generate.zig:nextChunkEnd` aligns recurrent checkpoint strides in
+absolute token coordinates. AFM's existing suffix loop instead forwards 740
+then 31. Its QSA prefill gather crossover also uses `>= 8192`, while the
+reference uses `> 8192` on this M3 Ultra configuration.
+
+Two fixture-only counterfactuals were measured independently. These are raw
+score comparisons on fixed native prefixes, not completed coding tasks:
+
+| Warm request 5 diagnostic | First score-vector RMS error | First-token winner equal | Winner overlap, 64 decisions |
+| --- | ---: | --- | ---: |
+| Current `fc23ebfe` model profile | 0.791700 | no | 60/64 |
+| Absolute prefill alignment only | 0.793733 | yes | 61/64 |
+| Alignment plus strict gather crossover | 0.619836 | no | 59/64 |
+
+None restored raw score equality; neither is promoted as a serving fix. The
+alignment exists in the optional model diagnostic, and the crossover probe
+is an internal test property defaulting to false, not a new user setting.
+
+Passive comparison of the aligned strict case matched all 332 captured stages
+for the complete 265-token segment exactly. In the next 475-token segment,
+layer zero's four captured boundaries match exactly; the first observed
+layer-one attention-read differences affect 666 values on row 12 and one on
+row 15. Full PLE intermediate captures are required because the initial PLE
+capture retained only the last 16 rows and excluded these differing rows.
+
+Two diagnostic failures are retained and explicitly disqualified:
+- Native capture initially requested a 740-token forward that does not occur.
+  The ordinary five responses and 64 decision-score capture still qualified;
+  only its passive-stage capture failed.
+- AFM's first matching width-31 stage could belong to an earlier conversation
+  request. Capture selection now additionally gates on the requested history.
+  The old passive file is invalid for comparison; its measured raw decision
+  scores are unchanged. Fresh outputs use `AlignedStrictFull31Retry`.
+
+External evidence root: `/Volumes/edata/dev/CODEX/codex-local-coding-eval-20261007`.
+See `qwen-warm-r5-aligned-prefill-comparison-20261025.json`, the separate
+`QwenWarmR5Aligned*` folders, and frozen `QwenWarmR5Prefill*NativeBinary*`
+provenance manifests. Diagnostic compilation and inference timing is not a
+serving-performance measurement. No baseline binary or historical result was
+replaced.
+
+
+### 2026-10-25: PLE gate mismatch isolated and corrected
+
+Full-row passive captures show identical PLE stream, embedding, key, query,
+and value projections. The first difference is the sigmoid gate at segment
+row 12, HC group 1: input `-6.84375`. Generic AFM MLX sigmoid produces
+`0.001068115234375`; the pinned native library produces
+`0.00106048583984375`, altering all 2,560 gated values in that group. This is
+the same BF16 operation-rounding boundary already qualified for HC.
+
+`qwen4ExpPLEGateSigmoid` reuses `Qwen4ExpHCActivation.sigmoid` only in the
+qualified serial arithmetic profile; other profiles retain generic sigmoid.
+No shared MLX operation, checkpoint, user option, or main/release binary changes.
+The regression test failed before the fix and passed afterward. The captured
+475-row operation reconstructs both old AFM and native outputs exactly across
+4,864,000 values each. Focused tests: 9 passed, 3 optional diagnostics skipped,
+0 failed (`qwen-ple-gate-activation-{red,green}-20261025.log`).
+
+Full-model checks after this fix:
+- Opening: 64/64 exact score vectors and winners.
+- Cold second request: 57/57 exact vectors and winners.
+- Warm second request: 64/64 exact vectors and winners.
+- Aligned strict-boundary warm fifth request: first score vector now exactly
+  equal (previous RMS 0.619836); subsequent decode differs from decision 1,
+  with 61/64 overlapping winner sets overall. This is **not** parity.
+- Existing unaligned serving geometry still differs: 0/64 exact vectors,
+  60/64 winner overlaps. The activation fix alone does not align that geometry.
+
+The next source-confirmed distinction is native selected-row SDPA decode above
+8,192 keys (`qsaDecodeGatherAttn`) versus this diagnostic profile's forced
+masked decode. It needs independent qualification; custom sparse AFM attention
+is not assumed numerically identical to native gathered stock SDPA.
+
+The corrected warm final-31 capture now has matching layer-zero boundaries and
+PLE intermediates, removing the spurious early-history capture discrepancy.
+All 64 native score payloads and all five ordinary responses remain unchanged
+with either passive capture version. External reports:
+`qwen-warm-r5-full-prefill-comparison-20261025.json`,
+`qwen-warm-r5-native-passive-controls-20261025.json`,
+`qwen-ple-gate-native-fixture-20261025.json`, and `Qwen*PLEFixed20261025`.
+No new serving throughput or completed coding-task score is claimed here.

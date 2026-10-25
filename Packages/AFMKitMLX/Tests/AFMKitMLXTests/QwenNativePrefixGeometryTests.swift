@@ -27,6 +27,7 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
         let prefill_projection: String?
         let passive_forward: Bool?
         let passive_full_rows: Bool?
+        let passive_ple_full_rows: Bool?
         let passive_layer_count: Int?
         let passive_width: Int?
         let passive_arm: String?
@@ -58,6 +59,9 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
         let prepare_joined_tail_boundary: Bool?
         let model_owned_arithmetic: Bool?
         let restored_prefix: Int?
+        let restored_prefixes: [Int]?
+        let align_absolute_prefill: Bool?
+        let strict_prefill_gather_boundary: Bool?
         let expected_exact_scores: [String: Int]?
         let expected_winner_overlaps: [String: Int]?
         let model: String
@@ -115,11 +119,24 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
             XCTAssertEqual(fixture.model_owned_arithmetic, true)
             XCTAssertEqual(Array(fixture.histories[0].tokens.prefix(6630)),
                            Array(fixture.histories[1].tokens.prefix(6630)))
+        case "warm-r5-64":
+            XCTAssertEqual(fixture.histories.map(\.request), [1, 2, 3, 4, 5])
+            XCTAssertEqual(fixture.histories.map { $0.tokens.count }, [6661, 7256, 7786, 7958, 8698])
+            XCTAssertEqual(fixture.rows.count, 64)
+            XCTAssertEqual(fixture.model_owned_arithmetic, true)
+            let restored = try XCTUnwrap(fixture.restored_prefixes)
+            XCTAssertEqual(restored, [0, 6630, 7225, 7755, 7927])
+            for index in 1..<fixture.histories.count {
+                XCTAssertEqual(restored[index], fixture.histories[index - 1].tokens.count - 31)
+                XCTAssertEqual(Array(fixture.histories[index - 1].tokens.prefix(restored[index])),
+                               Array(fixture.histories[index].tokens.prefix(restored[index])))
+            }
         default:
             XCTFail("Unqualified native prefix fixture")
             return
         }
-        let probeRequest = fixture.histories[1].request
+        let probeHistory = try XCTUnwrap(fixture.histories.last)
+        let probeRequest = probeHistory.request
         let passiveDecodeIndices = fixture.passive_decode_indices ?? [1]
         XCTAssertEqual(Set(passiveDecodeIndices).count, passiveDecodeIndices.count)
         XCTAssertTrue(passiveDecodeIndices.allSatisfy { $0 > 0 && $0 < fixture.rows.count })
@@ -188,10 +205,15 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
             }
         }
         let passiveLayerCount = fixture.passive_layer_count ?? 8
-        let prefillBoundary = fixture.histories[1].tokens.count - 31
+        let prefillBoundary = probeHistory.tokens.count - 31
+        let probeRestoredPrefix = fixture.restored_prefixes?.last ?? fixture.restored_prefix ?? 0
+        let firstPrefillWidth = prefillBoundary - probeRestoredPrefix
+        let nextAbsoluteBoundary = ((probeRestoredPrefix / 8192) + 1) * 8192
+        let alignedWidths = fixture.align_absolute_prefill == true && nextAbsoluteBoundary < prefillBoundary
+            ? [nextAbsoluteBoundary - probeRestoredPrefix, prefillBoundary - nextAbsoluteBoundary] : []
         let passiveWidth = fixture.passive_width ?? prefillBoundary
         let passiveArm = fixture.passive_arm ?? "production-split"
-        XCTAssertTrue([1, 31, prefillBoundary].contains(passiveWidth))
+        XCTAssertTrue(([1, 31, prefillBoundary, firstPrefillWidth] + alignedWidths).contains(passiveWidth))
         XCTAssertTrue(["production-split", "joined-final31", "joined-final31-bf16-state",
                        "model-owned-prepared"].contains(passiveArm))
         XCTAssertTrue((1...48).contains(passiveLayerCount))
@@ -227,12 +249,20 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
             return (layer, indexer)
         }
         let passiveIndexers = passiveIndexerModules.map(\.1)
+        let allIndexers = model.namedModules().compactMap { $0.1 as? Qwen4ExpQSAIndexer }
+        for indexer in allIndexers {
+            indexer.referenceStrictPrefillGatherBoundaryForTesting = fixture.strict_prefill_gather_boundary ?? false
+        }
+        defer { for indexer in allIndexers { indexer.referenceStrictPrefillGatherBoundaryForTesting = false } }
         if fixture.passive_qsa == true {
             XCTAssertEqual(passiveIndexers.count, allQSA ? 12 : 1)
             for indexer in passiveIndexers {
                 indexer.passiveCaptureWidthForTesting = passiveWidth
-                indexer.passiveCaptureOffsetForTesting = passiveWidth == 1 ? fixture.histories[1].tokens.count : (passiveWidth == 31 ? prefillBoundary : 0)
-                indexer.passiveAttentionCaptureForTesting = passiveWidth == 31 || passiveWidth == 1
+                indexer.passiveCaptureOffsetForTesting = passiveWidth == 1
+                    ? probeHistory.tokens.count : (passiveWidth == 31 ? prefillBoundary
+                        : (alignedWidths.count == 2 && passiveWidth == alignedWidths[1]
+                           ? nextAbsoluteBoundary : probeRestoredPrefix))
+                indexer.passiveAttentionCaptureForTesting = true
             }
         }
         defer { for indexer in passiveIndexers {
@@ -267,12 +297,16 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
             let report: [String: Any] = [
                 "fixture_sha256": digest(data), "records": records,
                 "model_owned_arithmetic_diagnostic_only": modelOwnedArithmetic,
+                "align_absolute_prefill_diagnostic_only": fixture.align_absolute_prefill ?? false,
+                "strict_prefill_gather_boundary_diagnostic_only": fixture.strict_prefill_gather_boundary ?? false,
                 "interior_capture_records": interiorCaptureRecords,
                 "checkpoint": fixture.model,
                 "blocked_recurrence_diagnostic_only": useBlocked,
                 "prefill_projection_diagnostic_only": projectionPolicy,
                 "passive_forward_diagnostic_only": fixture.passive_forward ?? false,
                 "passive_full_rows_diagnostic_only": fixture.passive_full_rows ?? false,
+                "passive_ple_full_rows_diagnostic_only": fixture.passive_ple_full_rows ?? false,
+                "passive_request_diagnostic_only": probeRequest,
                 "passive_layer_count_diagnostic_only": passiveLayerCount,
                 "passive_width_diagnostic_only": passiveWidth,
                 "passive_arm_diagnostic_only": passiveArm,
@@ -346,10 +380,22 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
                 }
                 eval(cache)
             }
-            for history in fixture.histories {
+            for (historyIndex, history) in fixture.histories.enumerated() {
+                // Width alone is insufficient: each growing conversation has a
+                // final-31 forward. Retain only the requested history, never an
+                // earlier request with that same width.
+                if fixture.passive_forward == true, passiveWidth != 1 {
+                    let selected = arm == passiveArm && history.request == probeRequest
+                    for (_, layer) in passiveLayers {
+                        layer.passivePrefillWidthForTesting = selected ? passiveWidth : nil
+                        layer.passivePLEWidthForTesting = selected ? passiveWidth : nil
+                        layer.passivePrefillStagesForTesting = [:]
+                        layer.passivePLEStagesForTesting = [:]
+                    }
+                }
                 cache = model.newCache(parameters: nil)
-                let restoredPrefix = history.request == probeRequest
-                    ? fixture.restored_prefix ?? 0 : 0
+                let restoredPrefix = fixture.restored_prefixes?[historyIndex]
+                    ?? (history.request == probeRequest ? fixture.restored_prefix ?? 0 : 0)
                 if restoredPrefix > 0 {
                     let saved = try XCTUnwrap(warmSnapshot)
                     let copied = MLXPrefixReplayPolicy.restoredLayerStates(saved.states, cache: cache)
@@ -371,15 +417,31 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
                     let joinFinal = history.request == probeRequest
                         && arm == "prepared-final31-interior-bf16-state"
                     var stateFailure: Error?
+                    // Counterfactual of mlx-serve generate.zig:nextChunkEnd's absolute
+                    // recurrent snapshot alignment. Serving remains unchanged.
+                    var preparedPrefix = restoredPrefix
+                    if fixture.align_absolute_prefill == true {
+                        let limit = history.tokens.count - 31
+                        while ((preparedPrefix / 8192) + 1) * 8192 < limit {
+                            let end = ((preparedPrefix / 8192) + 1) * 8192
+                            let chunk = Array(history.tokens[preparedPrefix..<end])
+                            _ = model(LMInput.Text(tokens: MLXArray(chunk)[.newAxis]), cache: cache,
+                                      state: nil, hostTokenIDs: model.consumesHostTokenIDs ? chunk : nil)
+                            eval(cache)
+                            preparedPrefix = end
+                        }
+                    }
                     let prepared = try MLXReplayPrefill.prepareWithSnapshot(
                         model: model, cache: cache, inputTokens: history.tokens,
-                        restoredPrefix: restoredPrefix, prefillStepSize: 8192,
+                        restoredPrefix: preparedPrefix, prefillStepSize: 8192,
                         promptSnapshotBackoffTokens: 31, captureFinalCheckpoint: false,
                         captureFinalTokenInline: joinFinal,
                         checkpoint: { boundary, states, metadata in
                             boundaries.append(boundary)
                             eval(states.flatMap { $0 })
-                            if fixture.restored_prefix == boundary && history.request != probeRequest {
+                            if history.request != probeRequest &&
+                                (fixture.restored_prefix == boundary ||
+                                 (fixture.restored_prefixes != nil && boundary == history.tokens.count - 31)) {
                                 warmSnapshot = (states, metadata)
                             }
                             if history.request == probeRequest, !joinFinal {
@@ -462,7 +524,8 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
                         XCTAssertEqual(layer.passivePLEStagesForTesting.count, fixture.passive_ple_convolution == true ? 9 : 8)
                         for (name, value) in layer.passivePLEStagesForTesting {
                             let flat = value.reshaped(1, passiveWidth, -1)
-                            stages[name] = flat[0..., (max(0, passiveWidth - 16))..., 0...]
+                            stages[name] = fixture.passive_ple_full_rows == true
+                                ? flat : flat[0..., (max(0, passiveWidth - 16))..., 0...]
                         }
                     }
                     layer.passivePrefillWidthForTesting = nil
@@ -477,7 +540,7 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
                                 "attention-cached-key", "attention-cached-value", "attention-heads", "attention-gate"])
                                 .isSubset(of: Set(indexer.passiveStagesForTesting.keys)))
                         } else {
-                            XCTAssertEqual(indexer.passiveStagesForTesting.count, passiveWidth == 31 ? 11 : 4)
+                            XCTAssertEqual(indexer.passiveStagesForTesting.count, 11)
                         }
                         for (name, value) in indexer.passiveStagesForTesting {
                             let key = allQSA ? String(format: "layer-%03d-", layer) + name : name
@@ -495,7 +558,7 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
             if fixture.passive_forward == true, arm == passiveArm, passiveWidth != 1 {
                 try savePassiveForward()
             }
-            var prefix = fixture.histories[1].tokens
+            var prefix = probeHistory.tokens
             var scores = [String: MLXArray]()
             for (index, row) in fixture.rows.enumerated() {
                 XCTAssertEqual(row.index, index)
