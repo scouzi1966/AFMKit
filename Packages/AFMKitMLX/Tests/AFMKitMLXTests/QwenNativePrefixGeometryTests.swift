@@ -251,7 +251,9 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
         let passiveIndexers = passiveIndexerModules.map(\.1)
         let allIndexers = model.namedModules().compactMap { $0.1 as? Qwen4ExpQSAIndexer }
         for indexer in allIndexers {
-            indexer.referenceStrictPrefillGatherBoundaryForTesting = fixture.strict_prefill_gather_boundary ?? false
+            if let override = fixture.strict_prefill_gather_boundary {
+                indexer.referenceStrictPrefillGatherBoundaryForTesting = override
+            }
         }
         defer { for indexer in allIndexers { indexer.referenceStrictPrefillGatherBoundaryForTesting = false } }
         if fixture.passive_qsa == true {

@@ -2358,3 +2358,51 @@ with either passive capture version. External reports:
 `qwen-warm-r5-native-passive-controls-20261025.json`,
 `qwen-ple-gate-native-fixture-20261025.json`, and `Qwen*PLEFixed20261025`.
 No new serving throughput or completed coding-task score is claimed here.
+
+
+### 2026-10-25: gathered decode and runtime boundary integration
+
+`Qwen4ExpSelectedRowsDecodeAttention` mirrors the pinned reference's
+`qsaDecodeGatherAttn`: ascending selected dense KV rows, incomplete trailing
+block, additive BF16 validity mask, then stock MLX SDPA. It does not use the
+custom direct-index attention reduction. The qualified serial model profile
+uses this path above 8,192 keys and the existing masked path at/below 8,192.
+The selection still uses the exact raw-score radix selector. Cache append and
+ownership remain with the existing attention caller; the helper only reads.
+
+Two component tests cover all four possible tail lengths, sentinel masking,
+no-sparsity decline and unsupported dtype. The fixed-prefix warm fifth request
+then matches all 64 raw score vectors, including the previously differing decode
+steps. This confirms the decode execution-path distinction independently of
+sampling or generated tool execution.
+
+The existing interior-prefill protocol now exposes an optional absolute
+alignment stride (default nil). The qualified Qwen serial profile supplies
+8,192, and its VLM wrapper delegates this preference for eligible text use.
+The request-owned scheduler retains its memory limit, snapshots, cancellation
+checks and joined final-token segment. Alignment changes only non-final forward
+boundaries; it does not retain extra cache snapshots or alter admission/batching.
+The qualified QSA prefill crossover is strict `> 8192`.
+
+Validation without any test-side boundary override or tuning environment:
+
+| Fixed native prefix case | Exact score vectors | Overlapping native winner sets |
+| --- | ---: | ---: |
+| Opening | 64/64 | 64/64 |
+| Cold second request | 57/57 | 57/57 |
+| Warm second request | 64/64 | 64/64 |
+| Warm fifth request crossing 8K | 64/64 | 64/64 |
+| Total | **249/249** | **249/249** |
+
+The seven scheduler-boundary, VLM backoff and selected-row tests pass. Boundary
+tests cover restored coordinates, caller chunk caps, unchanged nil policy,
+joined final span across 8K, and integer-overflow limits. External artifacts:
+`Qwen*RuntimeAligned20261025`, `qwen-runtime-prefill-alignment-tests-20261025.log`,
+and `qwen-selected-rows-decode-retry-tests-20261025.log`.
+
+A first compile rejected an incorrect Swift range initializer; it was changed
+to MLX arange before the passing build. No failed build was used for inference.
+This is a numerical qualification checkpoint, not full coding or speed parity.
+Next gate: clean consumer rebuild, frozen binary/resources/source provenance,
+and fresh identical five-request HTTP comparison against frozen reference and
+preserved AFM. Main, releases and local installed binaries remain untouched.

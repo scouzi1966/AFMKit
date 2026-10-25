@@ -2155,7 +2155,7 @@ final class Qwen4ExpQSAIndexer: Module {
     var referenceScalarTextQueriesForTesting = false
     var referenceScalarTextQueriesAllWidthsForTesting = false
     var referencePooledTextSpectrumForTesting = false
-    var referenceMaskedDecodeForTesting = false
+    var referenceMatchedDecodeForTesting = false
     var referenceStrictPrefillGatherBoundaryForTesting = false
     var passiveCaptureForTesting = false
     var passiveCaptureWidthForTesting = 6630
@@ -2569,7 +2569,14 @@ final class Qwen4ExpQSAIndexer: Module {
                 previousOffset: previousOffset,
                 compressionRatio: compressRatio,
                 blockTopK: blockTopK)
-            if needsBlockSelection, !referenceMaskedDecodeForTesting,
+            if needsBlockSelection, referenceMatchedDecodeForTesting,
+               batch == 1, totalLength > 8192, hidden.dtype == .bfloat16 {
+                // Native qsaWantsBlocks uses stock gathered SDPA beyond 8K;
+                // below that crossover it retains the full masked arm.
+                return .blocks(selectDecodeBlocks(
+                    queries: queries, blockKeys: blockKeys, previousOffset: previousOffset))
+            }
+            if needsBlockSelection, !referenceMatchedDecodeForTesting,
                Qwen4ExpQSAFusedDecodeAttention.shouldSelectScores(
                 batch: batch,
                 keyLength: totalLength,
@@ -2581,7 +2588,7 @@ final class Qwen4ExpQSAIndexer: Module {
                     blockKeys: blockKeys,
                     previousOffset: previousOffset))
             }
-            if needsBlockSelection, !referenceMaskedDecodeForTesting,
+            if needsBlockSelection, !referenceMatchedDecodeForTesting,
                Qwen4ExpQSADecodeAttention.shouldSelectBlocks(
                 batch: batch,
                 keyLength: totalLength,
@@ -3450,7 +3457,12 @@ private final class Qwen4ExpAttention: Module {
                 indexer.retainPassive("attention-cached-key", cached.0, length: l, offset: offset)
                 indexer.retainPassive("attention-cached-value", cached.1, length: l, offset: offset)
             }
-            if let decoded = Qwen4ExpQSADecodeAttention.call(
+            if indexer.referenceMatchedDecodeForTesting,
+               let gathered = Qwen4ExpSelectedRowsDecodeAttention.call(
+                queries: q, keys: cached.0, values: cached.1, scale: scale,
+                selectedBlocks: selectedBlocks, compressionRatio: indexer.compressRatio) {
+                outputHeads = gathered
+            } else if let decoded = Qwen4ExpQSADecodeAttention.call(
                 queries: q,
                 keys: cached.0,
                 values: cached.1,
@@ -7156,6 +7168,9 @@ public final class Qwen4ExpModel: Module, LLMModel, KVCacheDimensionProvider, Re
     public private(set) var usesReferenceMatchedSerialArithmetic = false
 
     public var prefersJoinedFinalTokenPrefill: Bool { usesReferenceMatchedSerialArithmetic }
+    public var preferredPrefillAlignment: Int? {
+        usesReferenceMatchedSerialArithmetic ? 8192 : nil
+    }
 
     /// Complete serial-AR qualification policy. Set once, after loading and
     /// before any forward/compiled trace. The qualification serving candidate
@@ -7193,7 +7208,8 @@ public final class Qwen4ExpModel: Module, LLMModel, KVCacheDimensionProvider, Re
                 hc.referenceFusedFinalMixerForTesting = true
             }
             if let indexer = module as? Qwen4ExpQSAIndexer {
-                indexer.referenceMaskedDecodeForTesting = true
+                indexer.referenceMatchedDecodeForTesting = true
+                indexer.referenceStrictPrefillGatherBoundaryForTesting = true
             }
         }
         for layer in model.layers {

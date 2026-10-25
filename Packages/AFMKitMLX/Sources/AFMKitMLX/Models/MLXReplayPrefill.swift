@@ -71,6 +71,22 @@ enum MLXReplayPrefill {
         return result
     }
 
+    /// Source: mlx-serve generate.zig:nextChunkEnd (MIT, 02bee553).
+    /// Match absolute recurrent boundaries after a prefix restore, without
+    /// expanding the caller's chunk limit or dividing the joined final span.
+    static func nextChunkEnd(
+        consumed: Int, boundary: Int, prefillStepSize: Int,
+        alignmentStride: Int?, isFinalSegment: Bool
+    ) -> Int {
+        precondition(consumed >= 0 && boundary >= consumed)
+        let count = min(boundary - consumed, max(1, prefillStepSize))
+        if !isFinalSegment, let stride = alignmentStride, stride > 0 {
+            let distance = stride - consumed % stride
+            if distance < count { return consumed + distance }
+        }
+        return consumed + count
+    }
+
     static func snapshot(_ state: [MLXArray]) -> [MLXArray] {
         // contiguous() alone can alias in-place rotating buffers.
         state.map { $0 * 1 }
@@ -138,7 +154,10 @@ enum MLXReplayPrefill {
                 // Snapshot spacing must not override the caller's memory bound.
                 // In particular, long prompts must not grow each forward pass
                 // to promptLength / maximumCheckpoints.
-                var end = consumed + min(boundary - consumed, max(1, prefillStepSize))
+                var end = nextChunkEnd(
+                    consumed: consumed, boundary: boundary, prefillStepSize: prefillStepSize,
+                    alignmentStride: availableAdapter?.preferredPrefillAlignment,
+                    isFinalSegment: boundary == finalBoundary)
                 // Qualification path for a joined last forward. Capture the
                 // N-1 snapshot inside the model instead of changing the tail's
                 // projection geometry to (L-1)+1. Unsupported inputs return nil
