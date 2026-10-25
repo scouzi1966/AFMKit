@@ -1316,3 +1316,30 @@ Evidence: `QwenOpeningTailAttentionScores20261024`,
 The expanded native binary is preserved in
 `QwenPassiveNativeTailAttentionBinary20261024`, SHA-256
 `8521929e1694973cd5a400dc8f854fe62b634db0a008ca29c2cde46fedfc300a`.
+
+### First decode boundary capture, 2026-10-24 23:52 EDT
+
+The native first-decode capture selects sequence length 1 at offset 6661,
+retains existing layer-boundary arrays, and saves after the ordinary token
+has been evaluated. Frozen/off/on controls preserve response/usage and all
+64 raw score arrays. Native binary SHA-256:
+`bab21de9d28becd26a66f53e4d2fa31925605ecd537b5d697fc60e7b6746d412`.
+
+AFM captures only arrays already outside the compiled tail: attention input,
+attention output, and MLP output. It does not add compiled outputs, disable
+compilation, or re-forward layers. The capture is enabled only after prompt
+completion, avoiding startup and singleton prompt-tail calls. Release build
+141.21 s; test passes in 35.055 s. All 320 score payloads remain identical to
+`QwenOpeningTailRotationScores20261024`.
+
+On the matched joined-31/BF16-state arm, first-decode layer 0 attention input
+and output both match native exactly (2,560 values each). Its MLP output is
+the first retained mismatch: 2,028/2,560 values, RMS 0.0004024972, maximum
+0.00390625. Later layers already receive different inputs. This localizes
+the next investigation to the post-attention HC read and expert computation;
+it does not yet distinguish the two, nor establish a coding/performance win.
+
+Evidence: `QwenOpeningFirstDecodeNative20261024`,
+`QwenOpeningFirstDecodeScores20261024`, its `-control.json`, and
+`qwen-first-decode-comparison-20261024.json`. All remain under the evidence
+root above. Main and installed binaries remain unchanged.

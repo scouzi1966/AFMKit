@@ -6188,11 +6188,16 @@ final class Qwen4ExpDecoderLayer: Module {
         }
         if let width = passivePrefillWidthForTesting,
            input.dim(1) == width, verificationPolicy == nil,
-           compiledTail == nil, passivePrefillStagesForTesting.isEmpty {
+           passivePrefillStagesForTesting.isEmpty {
+            // Existing compiled results only: do not add compiled outputs or
+            // re-forward the tail to expose its otherwise-internal MLP read.
             passivePrefillStagesForTesting = [
                 "attn-read": attentionRead.0, "attn-output": attended,
-                "mlp-read": mlpRead.0, "mlp-output": mlpOutput,
+                "mlp-output": mlpOutput,
             ]
+            if compiledTail == nil {
+                passivePrefillStagesForTesting["mlp-read"] = mlpRead.0
+            }
         }
         hostProfiler?.lap(.hyperConnectionRead)
         hostProfiler?.lap(.mlp)

@@ -138,7 +138,7 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
         let passiveLayerCount = fixture.passive_layer_count ?? 8
         let passiveWidth = fixture.passive_width ?? 6630
         let passiveArm = fixture.passive_arm ?? "production-split"
-        XCTAssertTrue([31, 6630].contains(passiveWidth))
+        XCTAssertTrue([1, 31, 6630].contains(passiveWidth))
         XCTAssertTrue(["production-split", "joined-final31", "joined-final31-bf16-state"].contains(passiveArm))
         XCTAssertTrue((1...48).contains(passiveLayerCount))
         let passiveLayers = model.namedModules().compactMap { name, module -> (Int, Qwen4ExpDecoderLayer)? in
@@ -233,13 +233,13 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
         for arm in ["production-split", "joined-final31", "joined-final31-bf16-state",
                     "reconstructed-split", "reconstructed-split-bf16-state"] {
             for indexer in passiveIndexers {
-                indexer.passiveCaptureForTesting = fixture.passive_qsa == true && arm == passiveArm
+                indexer.passiveCaptureForTesting = fixture.passive_qsa == true && arm == passiveArm && passiveWidth != 1
                 indexer.passiveStagesForTesting = [:]
             }
             if fixture.passive_forward == true {
                 for (_, layer) in passiveLayers {
-                    layer.passivePrefillWidthForTesting = arm == passiveArm ? passiveWidth : nil
-                    layer.passivePLEWidthForTesting = arm == passiveArm ? passiveWidth : nil
+                    layer.passivePrefillWidthForTesting = arm == passiveArm && passiveWidth != 1 ? passiveWidth : nil
+                    layer.passivePLEWidthForTesting = arm == passiveArm && passiveWidth != 1 ? passiveWidth : nil
                     layer.passivePrefillStagesForTesting = [:]
                     layer.passivePLEStagesForTesting = [:]
                 }
@@ -305,20 +305,25 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
                 // The counterfactual only begins at the captured request.
                 if history.request == probeRequest { try persistState() }
             }
-            if fixture.passive_forward == true, arm == passiveArm {
+            func savePassiveForward() throws {
                 var stages: [String: MLXArray] = [:]
                 for (index, layer) in passiveLayers {
-                    XCTAssertEqual(layer.passivePrefillStagesForTesting.count, 4)
+                    if passiveWidth == 1 {
+                        XCTAssertTrue(Set(["attn-read", "attn-output", "mlp-output"])
+                            .isSubset(of: Set(layer.passivePrefillStagesForTesting.keys)))
+                    } else {
+                        XCTAssertEqual(layer.passivePrefillStagesForTesting.count, 4)
+                    }
                     for (name, value) in layer.passivePrefillStagesForTesting {
                         XCTAssertEqual(Array(value.shape.prefix(2)), [1, passiveWidth])
                         stages[String(format: "layer-%03d-", index) + name] = (index == 0 || fixture.passive_full_rows == true)
                             ? value : value[0..., (value.dim(1) - 1)..., 0...]
                     }
-                    if index == 1 {
+                    if index == 1 && passiveWidth != 1 {
                         XCTAssertEqual(layer.passivePLEStagesForTesting.count, 8)
                         for (name, value) in layer.passivePLEStagesForTesting {
                             let flat = value.reshaped(1, passiveWidth, -1)
-                            stages[name] = flat[0..., (passiveWidth - 16)..., 0...]
+                            stages[name] = flat[0..., (max(0, passiveWidth - 16))..., 0...]
                         }
                     }
                     layer.passivePrefillWidthForTesting = nil
@@ -334,8 +339,18 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
                         indexer.passiveStagesForTesting = [:]
                     }
                 }
-                // Existing first-token eval above has already completed.
+                // Save after the ordinary token evaluation; never re-forward or uncompile.
                 try save(arrays: stages, url: root.appendingPathComponent("passive-forward.safetensors"))
+            }
+            if fixture.passive_forward == true, arm == passiveArm, passiveWidth != 1 {
+                try savePassiveForward()
+            }
+            if fixture.passive_forward == true, arm == passiveArm, passiveWidth == 1 {
+                // Startup and prompt tails can also contain singleton calls.
+                // Enable only after the selected prompt has finished.
+                for (_, layer) in passiveLayers {
+                    layer.passivePrefillWidthForTesting = 1
+                }
             }
             var prefix = fixture.histories[1].tokens
             var scores = [String: MLXArray]()
@@ -379,6 +394,10 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
                     XCTAssertNil(result.state)
                     next = result.logits[0, -1].asType(.float32)
                     eval(try XCTUnwrap(next), cache)
+                    if index == 0, fixture.passive_forward == true,
+                       arm == passiveArm, passiveWidth == 1 {
+                        try savePassiveForward()
+                    }
                     try persistState()
                 }
             }
