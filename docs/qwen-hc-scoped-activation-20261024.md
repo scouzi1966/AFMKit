@@ -2043,3 +2043,34 @@ or serving-speed result, and no release/default change.
 Evidence: `QwenColdR2PreparedCapture20261025`,
 `QwenOpeningPreparedCapture20261025`,
 `qwen-prepared-cache-regression-tests-20261025.log` and associated fixtures.
+
+
+### Model-owned recipe without tuning environment, 2026-10-25 03:28 EDT
+
+The complete serial-AR arithmetic recipe is now consolidated inside the Qwen
+model. It owns BF16-valued recurrent persistence and requests a joined final
+prefill through the existing capture interface. The VLM wrapper delegates that
+preference to its text trunk. The prefill orchestrator retains bounds,
+cancellation and fallback. No serving caller enables the recipe at this stage.
+
+The first eligibility guard was incorrect: it assumed the four-bit MoE also
+had a four-bit output head. The actual saved `language_model.lm_head.weight`
+is U32 [248320, 640] for 2,560 input features, with BF16 scales [248320, 40]:
+an eight-bit output head. The failed 4.124 s attempt is retained. Eligibility
+now checks loaded four-bit/group-64 experts, the existing eight-bit head,
+affine four/eight-bit supporting modules and BF16 floating parameters.
+It does not infer precision from the repository name or default config bits.
+Fully eight-bit experts are excluded; no eight-bit serving path is changed.
+
+With the corrected guard, the model-owned arm passes 57/57 second-request and
+64/64 opening full-score equality. The fixtures supply no manual arithmetic
+switches and the launch manifests contain no AFM_QWEN tuning environment.
+Recurrent persistence comes from the model, with no harness rounding callback.
+Times: 9.776 s and 9.453 s for one diagnostic arm each, including loading and
+score capture. These are not comparable with earlier multi-arm elapsed times
+and are not serving/decode performance measurements. API/coding qualification,
+MTP, retained concurrent batching and vision remain outstanding.
+
+Evidence: `QwenColdR2ModelOwned20261025` (failed eligibility attempt),
+`QwenColdR2ModelOwnedMixedPrecision20261025`,
+`QwenOpeningModelOwnedMixedPrecision20261025` and their launch manifests.

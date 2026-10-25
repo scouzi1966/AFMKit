@@ -56,6 +56,7 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
         let reference_fused_rotation: Bool?
         let capture_joined_tail_boundary: Bool?
         let prepare_joined_tail_boundary: Bool?
+        let model_owned_arithmetic: Bool?
         let expected_exact_scores: [String: Int]?
         let expected_winner_overlaps: [String: Int]?
         let model: String
@@ -235,12 +236,18 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
         let projections = projectionPolicy == "unchanged" ? [] :
             QwenReferencePrefillProjection.install(in: model, enabled: projectionPolicy == "dense")
         if projectionPolicy != "unchanged" { XCTAssertFalse(projections.isEmpty) }
-        let useBlocked = fixture.blocked_recurrence ?? false
+        let modelOwnedArithmetic = fixture.model_owned_arithmetic ?? false
+        let useBlocked = (fixture.blocked_recurrence ?? false) || modelOwnedArithmetic
         let recurrentLayers = model.modules().compactMap { $0 as? Qwen4ExpDecoderLayer }
             .filter { $0.isLinear }
         XCTAssertEqual(recurrentLayers.count, 36)
         for layer in recurrentLayers { layer.referenceBlockedRecurrenceForTesting = useBlocked }
         defer { for layer in recurrentLayers { layer.referenceBlockedRecurrenceForTesting = false } }
+        if modelOwnedArithmetic {
+            guard model.configureNativeArithmeticForTesting() else {
+                throw QualificationFailure(description: "Checkpoint is outside the qualified arithmetic geometry")
+            }
+        }
         var records = [[String: Any]]()
         var prefixStateHashes = [String]()
         var productionScoreBytes = [Data]()
@@ -248,6 +255,7 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
         func writeReport() throws {
             let report: [String: Any] = [
                 "fixture_sha256": digest(data), "records": records,
+                "model_owned_arithmetic_diagnostic_only": modelOwnedArithmetic,
                 "interior_capture_records": interiorCaptureRecords,
                 "checkpoint": fixture.model,
                 "blocked_recurrence_diagnostic_only": useBlocked,
@@ -297,6 +305,7 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
         if fixture.prepare_joined_tail_boundary == true {
             arms.append("prepared-final31-interior-bf16-state")
         }
+        if modelOwnedArithmetic { arms = ["model-owned-prepared"] }
         for arm in arms {
             for indexer in passiveIndexers {
                 indexer.passiveCaptureForTesting = fixture.passive_qsa == true && arm == passiveArm && passiveWidth != 1
@@ -330,7 +339,7 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
                 cache = model.newCache(parameters: nil)
                 var boundaries = [Int]()
                 if arm == "production-split" || history.request == 0
-                    || arm == "prepared-final31-interior-bf16-state" {
+                    || arm == "prepared-final31-interior-bf16-state" || modelOwnedArithmetic {
                     let joinFinal = history.request == probeRequest
                         && arm == "prepared-final31-interior-bf16-state"
                     var stateFailure: Error?
@@ -353,7 +362,8 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
                         } : nil)
                     if let stateFailure { throw stateFailure }
                     XCTAssertEqual(boundaries, [history.tokens.count - 31])
-                    XCTAssertEqual(prepared.inlineCheckpointCount, joinFinal ? 1 : 0)
+                    XCTAssertEqual(prepared.inlineCheckpointCount,
+                        joinFinal || model.prefersJoinedFinalTokenPrefill ? 1 : 0)
                     next = prepared.output.logits[0, -1].asType(.float32)
                 } else {
                     let boundary = history.tokens.count - 31

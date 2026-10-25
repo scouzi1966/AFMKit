@@ -120,8 +120,10 @@ enum MLXReplayPrefill {
             ? boundaries(restoredPrefix: restoredPrefix, finalBoundary: finalBoundary,
                          promptSnapshotBackoffTokens: promptSnapshotBackoffTokens,
                          retainCoarseAnchor: retainCoarseAnchor) : []
-        let adapter = captureCoarseAnchorInline || captureFinalTokenInline
-            ? model as? any InteriorPrefillCaptureModel : nil
+        let availableAdapter = model as? any InteriorPrefillCaptureModel
+        let joinFinalToken = captureFinalTokenInline
+            || (availableAdapter?.prefersJoinedFinalTokenPrefill ?? false)
+        let adapter = captureCoarseAnchorInline || joinFinalToken ? availableAdapter : nil
         let inlineAnchor = captureCoarseAnchorInline && retainCoarseAnchor
             && checkpoints.count == 2 && adapter != nil ? checkpoints.first : nil
         let scheduledCheckpoints = inlineAnchor.map { anchor in checkpoints.filter { $0 != anchor } }
@@ -142,7 +144,7 @@ enum MLXReplayPrefill {
                 // projection geometry to (L-1)+1. Unsupported inputs return nil
                 // before mutation and retain the original split preparation.
                 // The caller's chunk memory bound includes the final token.
-                if captureFinalTokenInline, boundary == finalBoundary,
+                if joinFinalToken, boundary == finalBoundary,
                    end == finalBoundary,
                    inputTokens.count - consumed <= max(1, prefillStepSize),
                    inlineAnchor.map({ $0 <= consumed }) ?? true,

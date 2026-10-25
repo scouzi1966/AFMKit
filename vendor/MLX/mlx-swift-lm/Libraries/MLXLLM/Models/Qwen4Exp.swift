@@ -366,6 +366,7 @@ final class Qwen4ExpGatedResidual: Module {
     var referenceInjectionGateForTesting = false
     var referenceDecodeNormForTesting = false
     var referenceMaterializedInjectionForTesting = false
+    var referenceFusedFinalMixerForTesting = false
 
     let hcCount: Int
     let hiddenSize: Int
@@ -650,7 +651,7 @@ final class Qwen4ExpGatedResidual: Module {
         _ input: MLXArray,
         verificationPolicy: MTPVerificationPolicy? = nil
     ) -> MLXArray {
-        if (Self.fusedFinalMixerEnabled && verificationPolicy == nil)
+        if ((Self.fusedFinalMixerEnabled || referenceFusedFinalMixerForTesting) && verificationPolicy == nil)
             || qwen4ExpCanFuseVerificationHC(
                 input, policy: verificationPolicy, enabled: Self.fusedVerificationEnabled,
                 maximumBatchSize: Self.fusedVerificationMaximumBatchSize),
@@ -682,7 +683,7 @@ final class Qwen4ExpGatedResidual: Module {
         weights: MLXArray,
         verificationPolicy: MTPVerificationPolicy? = nil
     ) -> MLXArray {
-        if (Self.fusedFinalMixerEnabled && verificationPolicy == nil)
+        if ((Self.fusedFinalMixerEnabled || referenceFusedFinalMixerForTesting) && verificationPolicy == nil)
             || qwen4ExpCanFuseVerificationHC(
                 residual, policy: verificationPolicy, enabled: Self.fusedVerificationEnabled,
                 maximumBatchSize: Self.fusedVerificationMaximumBatchSize),
@@ -2151,6 +2152,7 @@ final class Qwen4ExpQSAIndexer: Module {
     var referenceScalarTextQueriesForTesting = false
     var referenceScalarTextQueriesAllWidthsForTesting = false
     var referencePooledTextSpectrumForTesting = false
+    var referenceMaskedDecodeForTesting = false
     var passiveCaptureForTesting = false
     var passiveCaptureWidthForTesting = 6630
     var passiveCaptureOffsetForTesting = 0
@@ -2563,7 +2565,7 @@ final class Qwen4ExpQSAIndexer: Module {
                 previousOffset: previousOffset,
                 compressionRatio: compressRatio,
                 blockTopK: blockTopK)
-            if needsBlockSelection,
+            if needsBlockSelection, !referenceMaskedDecodeForTesting,
                Qwen4ExpQSAFusedDecodeAttention.shouldSelectScores(
                 batch: batch,
                 keyLength: totalLength,
@@ -2575,7 +2577,7 @@ final class Qwen4ExpQSAIndexer: Module {
                     blockKeys: blockKeys,
                     previousOffset: previousOffset))
             }
-            if needsBlockSelection,
+            if needsBlockSelection, !referenceMaskedDecodeForTesting,
                Qwen4ExpQSADecodeAttention.shouldSelectBlocks(
                 batch: batch,
                 keyLength: totalLength,
@@ -7113,6 +7115,76 @@ public final class Qwen4ExpModel: Module, LLMModel, KVCacheDimensionProvider, Re
     let configuration: Qwen4ExpTextConfiguration
     private let ngramTableConfiguration: Qwen4ExpNGramTableConfiguration?
     private var usesMappedNGramTable = false
+    private(set) var nativeArithmeticForTesting = false
+
+    public var prefersJoinedFinalTokenPrefill: Bool { nativeArithmeticForTesting }
+
+    /// Complete serial-AR qualification policy. Set once, after loading and
+    /// before any forward/compiled trace. No serving caller enables it yet.
+    /// This consolidates the independently isolated reference arithmetic;
+    /// it does not qualify MTP, retained batching, vision or throughput.
+    @discardableResult
+    func configureNativeArithmeticForTesting() -> Bool {
+        let quantized = model.modules().compactMap { $0 as? any Quantized }
+        let experts = model.modules().compactMap { $0 as? QuantizedSwitchLinear }
+        guard configuration.hiddenSize == 2560, configuration.hiddenLayers == 48,
+              configuration.hcCount == 4, configuration.hcLowRank == 320,
+              configuration.vocabularySize == 248320,
+              let head = lmHead as? QuantizedLinear,
+              // The qualified four-bit MoE retains an eight-bit output head.
+              // Inspect loaded tensor metadata, never a repository name or the
+              // top-level default bit count. Fully eight-bit experts stay out.
+              head.bits == 8, head.mode == .affine, head.scales.dtype == .bfloat16,
+              !experts.isEmpty, experts.allSatisfy({ $0.bits == 4 && $0.groupSize == 64 }),
+              quantized.allSatisfy({ ($0.bits == 4 || $0.bits == 8) && $0.mode == .affine }),
+              model.parameters().flattened().allSatisfy({ _, value in
+                  !value.dtype.isFloatingPoint || value.dtype == .bfloat16
+              })
+        else { return false }
+        for (name, module) in model.namedModules() {
+            if name.contains(".ple.norm_"), let norm = module as? Qwen4ExpZeroCenteredRMSNorm {
+                norm.referenceGroupedPrefillRoundingForTesting = true
+                norm.referenceGroupedAllWidthsRoundingForTesting = true
+            }
+            if let hc = module as? Qwen4ExpGatedResidual {
+                hc.referenceInjectionGateForTesting = true
+                hc.referenceMaterializedInjectionForTesting = true
+                hc.referenceDecodeNormForTesting = true
+                hc.referenceFusedFinalMixerForTesting = true
+            }
+            if let indexer = module as? Qwen4ExpQSAIndexer {
+                indexer.referenceMaskedDecodeForTesting = true
+            }
+        }
+        for layer in model.layers {
+            layer.referencePLEGateScaleForTesting = true
+            layer.referencePLEConvolutionActivationForTesting = true
+            layer.referenceSharedActivationForTesting = true
+            layer.referenceDownReductionForTesting = true
+            layer.referenceRoutedDecodeActivationForTesting = true
+            layer.referenceRoutedPrefillActivationForTesting = true
+            layer.referenceScalarPrefillRoPEForTesting = true
+            layer.referenceScalarIndexerQueriesForTesting = true
+            layer.referenceScalarIndexerQueriesAllWidthsForTesting = true
+            layer.referencePooledIndexerSpectrumForTesting = true
+            layer.referenceAttentionPrefillGateForTesting = true
+            layer.referenceAttentionTailGateForTesting = true
+            layer.referenceAttentionDecodeGateForTesting = true
+            layer.referenceFusedRotationForTesting = true
+            if layer.isLinear { layer.referenceBlockedRecurrenceForTesting = true }
+        }
+        nativeArithmeticForTesting = true
+        return true
+    }
+
+    private func persistNativeRecurrentState(_ cache: [KVCache]?) {
+        guard nativeArithmeticForTesting, let cache else { return }
+        for case let layer as Qwen4ExpLayerCache in cache {
+            if let state = layer[1], state.dtype == .float32 {
+                layer[1] = state.asType(.bfloat16).asType(.float32)
+            }
+        }
+    }
 
     /// Captured once per model. Narrowing the final projection changes the
     /// GEMM/GEMV rounding path, so ordinary preparation remains opt-in.
@@ -7233,6 +7305,7 @@ public final class Qwen4ExpModel: Module, LLMModel, KVCacheDimensionProvider, Re
         // forwardStreamState would materialize/combine that stream differently.
         let hidden = model(remaining.tokens[.newAxis],
                            cache: cache.isEmpty ? nil : cache, hostTokenIDs: hostTokenIDs)
+        persistNativeRecurrentState(cache)
         let last = hidden[0..., (hidden.dim(1) - 1)..., 0...]
         return .logits(LMOutput(logits: projectLMHead(last)))
     }
@@ -7247,11 +7320,13 @@ public final class Qwen4ExpModel: Module, LLMModel, KVCacheDimensionProvider, Re
             input.tokens,
             cache: cache,
             hostTokenIDs: hostTokenIDs)
+        persistNativeRecurrentState(cache)
         return .init(logits: lmHead?(hidden) ?? model.embedTokens.asLinear(hidden))
     }
 
     public func callAsFunction(_ inputs: MLXArray, cache: [KVCache]?) -> MLXArray {
         let hidden = model(inputs, cache: cache)
+        persistNativeRecurrentState(cache)
         return lmHead?(hidden) ?? model.embedTokens.asLinear(hidden)
     }
 
@@ -7334,7 +7409,11 @@ public final class Qwen4ExpModel: Module, LLMModel, KVCacheDimensionProvider, Re
                       capture.arrays.prefix(expectedSlots).allSatisfy({ $0 != nil }),
                       capture.arrays.dropFirst(expectedSlots).allSatisfy({ $0 == nil })
                 else { throw InteriorCaptureError.incompleteLayer(index) }
-                states.append(capture.arrays.compactMap { $0.map { $0 * 1 } })
+                var arrays = capture.arrays.compactMap { $0.map { $0 * 1 } }
+                if nativeArithmeticForTesting {
+                    arrays[1] = arrays[1].asType(.bfloat16).asType(.float32)
+                }
+                states.append(arrays)
                 metadata.append(recurrent.metaState)
             } else if let attention = item as? Qwen4ExpAttentionCache {
                 let absoluteBoundary = restoredPrefix + boundary
@@ -7563,6 +7642,7 @@ public final class Qwen4ExpModel: Module, LLMModel, KVCacheDimensionProvider, Re
             inputIDs, inputEmbeddings: inputEmbeddings,
             positionIDs: positionIDs, cache: cache,
             hostTokenIDs: hostTokenIDs)
+        persistNativeRecurrentState(cache)
         return lmHead?(hidden) ?? model.embedTokens.asLinear(hidden)
     }
 
