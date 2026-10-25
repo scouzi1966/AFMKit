@@ -11,6 +11,15 @@ import MLXNN
 /// -6.84375 differently from the reference's precompiled MLX library. Keep T
 /// intermediates; promoting this expression to float changes many more values.
 enum Qwen4ExpHCActivation {
+    // Materialize when a diagnostic policy is set, before any compiled trace.
+    // The routed expert still performs its existing single table lookup.
+    nonisolated(unsafe) static let sigmoidTableBF16: MLXArray = {
+        let values = (0..<(1 << 16)).map { Float(bitPattern: UInt32($0) << 16) }
+        let table = sigmoid(MLXArray(values).asType(.bfloat16))
+        eval(table)
+        return table
+    }()
+
     private static let kernel = MLXFast.metalKernel(
         name: "qwen4_exp_hc_bf16_activation",
         inputNames: ["input"], outputNames: ["output"],

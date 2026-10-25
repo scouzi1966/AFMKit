@@ -46,6 +46,7 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
         let reference_decode_norm: Bool?
         let reference_materialized_injection: Bool?
         let reference_down_reduction: Bool?
+        let reference_routed_decode_activation: Bool?
         let reference_fused_rotation: Bool?
         let model: String
         let histories: [History]
@@ -129,10 +130,12 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
         for layer in allDecoderLayers {
             layer.referenceSharedActivationForTesting = fixture.reference_shared_activation ?? false
             layer.referenceDownReductionForTesting = fixture.reference_down_reduction ?? false
+            layer.referenceRoutedDecodeActivationForTesting = fixture.reference_routed_decode_activation ?? false
         }
         defer { for layer in allDecoderLayers {
             layer.referenceSharedActivationForTesting = false
             layer.referenceDownReductionForTesting = false
+            layer.referenceRoutedDecodeActivationForTesting = false
         } }
         for layer in allDecoderLayers {
             layer.referenceRoutedPrefillActivationForTesting = fixture.reference_routed_prefill_activation ?? false
@@ -248,6 +251,7 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
                 "reference_decode_norm_diagnostic_only": fixture.reference_decode_norm ?? false,
                 "reference_materialized_injection_diagnostic_only": fixture.reference_materialized_injection ?? false,
                 "reference_down_reduction_diagnostic_only": fixture.reference_down_reduction ?? false,
+                "reference_routed_decode_activation_diagnostic_only": fixture.reference_routed_decode_activation ?? false,
                 "reference_attention_decode_gate_diagnostic_only": fixture.reference_attention_decode_gate ?? false,
                 "reference_fused_rotation_diagnostic_only": fixture.reference_fused_rotation ?? false,
                 "projection_engagement": projections.map { ["module": $0.0, "widths": $0.1.engagementReport] as [String: Any] },

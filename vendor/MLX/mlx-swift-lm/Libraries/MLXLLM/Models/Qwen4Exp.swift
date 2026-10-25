@@ -4231,6 +4231,13 @@ private final class Qwen4ExpMLP: Module, UnaryLayer {
 }
 
 private final class Qwen4ExpSparseMoE: Module, UnaryLayer {
+    var referenceRoutedDecodeActivationForTesting = false {
+        didSet {
+            referenceDecodeTable = referenceRoutedDecodeActivationForTesting
+                ? Qwen4ExpHCActivation.sigmoidTableBF16 : nil
+        }
+    }
+    private var referenceDecodeTable: MLXArray?
     var referenceDownReductionForTesting = false
     var referenceRoutedPrefillActivationForTesting = false
     private static let fusedSharedExpert =
@@ -4294,7 +4301,8 @@ private final class Qwen4ExpSparseMoE: Module, UnaryLayer {
         }
         let routed: MLXArray
         if let fused = switchMLP.qwenAffineDecode(x, indices: indices, scores: scores,
-            referenceDownReductionForTesting: referenceDownReductionForTesting) {
+            referenceDownReductionForTesting: referenceDownReductionForTesting,
+            sigmoidTableOverrideForTesting: referenceDecodeTable) {
             routed = fused
         } else if referenceRoutedPrefillActivationForTesting, x.dim(1) > 32 {
             let experts = switchMLP.activationRowsForTesting(x, indices) {
@@ -4402,7 +4410,8 @@ private final class Qwen4ExpSparseMoE: Module, UnaryLayer {
         let fusedRouted: MLXArray?
         if verificationPolicy == nil {
             fusedRouted = switchMLP.qwenAffineDecode(x, indices: indices, scores: scores,
-            referenceDownReductionForTesting: referenceDownReductionForTesting)
+            referenceDownReductionForTesting: referenceDownReductionForTesting,
+            sigmoidTableOverrideForTesting: referenceDecodeTable)
         } else if verificationPolicy == .batched && Self.group64FusedVerifyExperts {
             fusedRouted = switchMLP.qwenIndependentAffineRows(
                 x, indices: indices, scores: scores, allowGroup64: true)
@@ -5624,6 +5633,11 @@ final class Qwen4ExpDecoderLayer: Module {
 
     func moeStageTraceForTesting(_ input: MLXArray) -> [(String, MLXArray)] {
         mlp.prefillStageTraceForTesting(input)
+    }
+
+    var referenceRoutedDecodeActivationForTesting: Bool {
+        get { mlp.referenceRoutedDecodeActivationForTesting }
+        set { mlp.referenceRoutedDecodeActivationForTesting = newValue }
     }
 
     var referenceDownReductionForTesting: Bool {

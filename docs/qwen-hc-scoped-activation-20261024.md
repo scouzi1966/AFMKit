@@ -18,13 +18,15 @@ candidate (`12a44c24`, binary `a597e213…`) also failed its exploratory task pa
 same-prefix arithmetic diagnosis; no new coding-parity result is claimed.
 Main and installed binaries are unchanged.
 
-As of 2026-10-25, the combined diagnostic matches every one of 305 captured
-first-decode intermediate arrays through the last layer. The existing fused final mixer also makes the first-decode vocabulary scores
-exact; later drift remains, with 10/64 full score arrays exact. The reference-matched joined-tail /
-BF16-state arm matches 63/64 raw winning-token sets; production split-tail /
-F32-state matches 59/64. These are fixed-prefix arithmetic diagnostics, not
-new completed coding runs. An eight-lane expert reduction resolves one cause,
-but its 30-sample component median is 2.74% slower and is not promoted.
+As of 2026-10-25 02:15 EDT, the combined diagnostic matches all **64/64
+full vocabulary score arrays bit for bit** on the opening request. All 306
+retained intermediate arrays at each of decisions 6, 11 and 12 also match.
+This requires the reference-matched joined-tail / BF16-state-value arm and
+the complete diagnostic recipe. It is not a production-default result.
+A second, 7,255-token cold request remains unresolved: 56/57 winning-token
+sets overlap, but none of its full score arrays match, starting at prefill.
+There is no new coding or throughput acceptance. The eight-lane expert
+reduction's earlier component median was 2.74% slower and is not promoted.
 
 
 The sections below retain the history of each intervention, including failures.
@@ -1825,3 +1827,47 @@ Evidence: `QwenNativeDecodeStep12HCBoundary20261025`,
 `QwenOpeningDecodeNorm{Control,Corrected}Scores20261025`,
 `qwen-decode-norm-scores-comparison-20261025.json`, and
 `qwen-decode-norm-intermediates-comparison-20261025.json`.
+
+
+### Routed decode activation cause and opening equality, 2026-10-25 02:15 EDT
+
+The remaining layer-47 expert differences at decisions 6/11 come from the
+BF16 sigmoid lookup table. AFM built the fused expert's table with generic
+MLX sigmoid; the reference library rounds an edge value differently. The
+already qualified, all-finite-BF16 helper now supplies an optional table to
+the same fused expert kernel. It is materialized before any compiled trace.
+This adds no per-token kernel dispatch; the table contents differ. The
+model-instance diagnostic defaults false, and the default table stays intact.
+
+The isolated step-6/11 expert mismatches drop from 2/3 output values to zero
+in ordinary and compiled forwards. Step 12 remains exact. Tests restore the
+original policy and require the control to reproduce. The disabled combined
+control preserves all 320 earlier score arrays. With the complete recipe,
+the opening request's joined-31 / BF16-state-value arm is bit-exact across
+all 64 complete vocabulary score arrays. At decisions 6, 11 and 12 each of
+306 captured intermediate arrays is also exact. Other geometry/state arms
+are not exact; a partial recipe can worsen their result.
+
+This proves arithmetic agreement for this fixed-input sequence, not a faster
+server or a completed coding task. The production geometry, radix snapshots,
+batching, MTP and end-to-end quality still need qualification before promotion.
+
+Regression coverage: 8 selected tests, 7 passed and 1 optional real-checkpoint
+fixture skipped. All 65,280 finite BF16 activation values agree with the saved
+native oracle. Irregular shapes, restored policies, HC write rounding and
+existing MoE group-size paths pass.
+
+Second-request holdout: `cold-r2-57`, 7,255 prompt tokens and 57 reference
+steps, retains a mismatch from its first prefill result (matched-arm RMS
+0.024707716 initially, mean 0.259641590; 56/57 winner sets overlap). The first
+holdout fixture omitted the passive layer-count field. Repeating with all
+48 layers selected yields identical records in all five arms, ruling out
+that diagnostic setting as the cause. The PLE correction only affects its
+actual PLE-bearing layer. The holdout is not presented as parity.
+
+Evidence: `QwenOpeningDecodeActivation{Control,Corrected}Scores20261025`,
+`qwen-decode-activation-{scores,intermediates}-comparison-20261025.json`,
+`QwenNativeDecodeStep{06,11,12}Activation20261025`,
+`qwen-decode-activation-regression-tests-20261025.log`,
+`QwenColdR2DecodeAllLayersScores20261025`, and
+`qwen-cold-r2-decode-all-layers-comparison-20261025.json`.

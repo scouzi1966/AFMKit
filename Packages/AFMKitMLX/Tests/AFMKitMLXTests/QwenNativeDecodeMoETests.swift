@@ -14,6 +14,8 @@ final class QwenNativeDecodeMoETests: XCTestCase {
         let model: String
         let token_id: Int?
         let layer: Int?
+        let expected_reference_activation_differences: Int?
+        let expected_reference_norm_differences: Int?
         let afm_capture: String
         let native_capture: String
         let files: [String: String]
@@ -97,6 +99,21 @@ final class QwenNativeDecodeMoETests: XCTestCase {
         eval(referenceCompiledOutput)
         record("reference-down-vs-native", referenceDown, expected)
         record("reference-compiled-down-vs-native", referenceCompiledOutput, expected)
+        layer.referenceRoutedDecodeActivationForTesting = true
+        let referenceActivation = layer.moeForwardForTesting(input)
+        eval(referenceActivation)
+        let referenceActivationCompiled = compile(shapeless: false) { (arrays: [MLXArray]) -> [MLXArray] in
+            CompiledDecodeTrace.withActive { [layer.moeForwardForTesting(arrays[0])] }
+        }
+        let referenceActivationCompiledOutput = referenceActivationCompiled([input])[0]
+        eval(referenceActivationCompiledOutput)
+        record("reference-activation-vs-native", referenceActivation, expected)
+        record("reference-compiled-activation-vs-native", referenceActivationCompiledOutput, expected)
+        if let expectedDifferences = fixture.expected_reference_activation_differences {
+            XCTAssertEqual((referenceActivation .!= expected).asType(.int32).sum().item(Int.self), expectedDifferences)
+            XCTAssertEqual((referenceActivationCompiledOutput .!= expected).asType(.int32).sum().item(Int.self), expectedDifferences)
+        }
+        layer.referenceRoutedDecodeActivationForTesting = false
         layer.referenceDownReductionForTesting = false
         let restored = layer.moeForwardForTesting(input)
         XCTAssertEqual(restored.asData(access: .copy).data, ordinary.asData(access: .copy).data,
@@ -145,6 +162,9 @@ final class QwenNativeDecodeMoETests: XCTestCase {
             let nativeNormRead = mlpHC.mixAfterInjection(output: attended,
                 residual: attentionRead.1, weights: attentionRead.2)
             record("reference-norm-mlp-read", nativeNormRead.0, input)
+            if let count = fixture.expected_reference_norm_differences {
+                XCTAssertEqual((nativeNormRead.0 .!= input).asType(.int32).sum().item(Int.self), count)
+            }
             record("reference-norm-tail-vs-native", referenceCompiled([nativeNormRead.0])[0], expected)
             mlpHC.referenceDecodeNormForTesting = false
             let restoredNormRead = mlpHC.mixAfterInjection(output: attended,
@@ -233,6 +253,7 @@ final class QwenNativeDecodeMoETests: XCTestCase {
         record("compiled-gate-tail-vs-compiled-moe", fusedTail, compiledOutput)
         try save(arrays: stages.merging(["ordinary": ordinary, "compiled": compiledOutput,
             "reference-down": referenceDown, "reference-compiled-down": referenceCompiledOutput,
+            "reference-activation": referenceActivation, "reference-compiled-activation": referenceActivationCompiledOutput,
             "compiled-gate-tail": fusedTail, "native": expected, "captured-afm": captured]) { _, n in n },
             url: root.appendingPathComponent("stages.safetensors"))
         let report: [String: Any] = ["records": records, "layer": layerIndex, "timings": timings,

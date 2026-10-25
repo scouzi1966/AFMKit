@@ -642,7 +642,8 @@ enum QwenAffineMoEKernels {
         allowGroup64Independent: Bool = false,
         sharedExpertDown: QwenSharedExpertDownInputs? = nil,
         sharedExpertGateUp: QwenSharedExpertGateUpInputs? = nil,
-        referenceDownReductionForTesting: Bool = false
+        referenceDownReductionForTesting: Bool = false,
+        sigmoidTableOverrideForTesting: MLXArray? = nil
     ) -> MLXArray? {
         guard enabled,
               Device.defaultDevice().deviceType == .gpu,
@@ -744,6 +745,9 @@ enum QwenAffineMoEKernels {
         let flatScores = scoreValues.size < 8
             ? concatenated([scoreValues, MLXArray.zeros([8 - scoreValues.size], dtype: input.dtype)])
             : scoreValues
+        if let table = sigmoidTableOverrideForTesting {
+            guard table.dtype == .bfloat16, table.shape == [1 << 16] else { return nil }
+        }
         let referenceDown = referenceDownReductionForTesting && !independentRows
             && down.groupSize == 64 && sharedExpertDown == nil && sharedExpertGateUp == nil
         if nativeChainEnabled && !independentRows && !referenceDown {
@@ -760,7 +764,7 @@ enum QwenAffineMoEKernels {
                 flatInput,
                 gate.weight, gate.scales, gateBiases,
                 up.weight, up.scales, upBiases,
-                flatIndices, sigmoidTableBF16,
+                flatIndices, sigmoidTableOverrideForTesting ?? sigmoidTableBF16,
                 down.weight, down.scales, downBiases,
                 flatScores,
             ])[0]
@@ -793,7 +797,7 @@ enum QwenAffineMoEKernels {
                 flatInput,
                 gate.weight, gate.scales, gateBiases,
                 up.weight, up.scales, upBiases,
-                flatIndices, sigmoidTableBF16,
+                flatIndices, sigmoidTableOverrideForTesting ?? sigmoidTableBF16,
             ]
         var activationShapes = [[tokenRows * topK, gate.outputDims]]
         if let shared = sharedExpertGateUp {
@@ -861,7 +865,8 @@ public extension SwitchGLU {
         _ input: MLXArray,
         indices: MLXArray,
         scores: MLXArray,
-        referenceDownReductionForTesting: Bool = false
+        referenceDownReductionForTesting: Bool = false,
+        sigmoidTableOverrideForTesting: MLXArray? = nil
     ) -> MLXArray? {
         guard let gate = gateProj as? QuantizedSwitchLinear,
               let up = upProj as? QuantizedSwitchLinear,
@@ -873,7 +878,8 @@ public extension SwitchGLU {
             scores: scores,
             gate: gate,
             up: up,
-            down: down, referenceDownReductionForTesting: referenceDownReductionForTesting)
+            down: down, referenceDownReductionForTesting: referenceDownReductionForTesting,
+            sigmoidTableOverrideForTesting: sigmoidTableOverrideForTesting)
     }
 }
 
