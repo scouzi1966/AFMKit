@@ -25,6 +25,8 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
         let passive_forward: Bool?
         let reference_ple_norm: Bool?
         let reference_ple_scale: Bool?
+        let reference_ple_all_widths: Bool?
+        let reference_shared_activation: Bool?
         let model: String
         let histories: [History]
         let rows: [Row]
@@ -91,6 +93,11 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
         XCTAssertEqual(pleNorms.count, 3)
         for norm in pleNorms { norm.referenceGroupedPrefillRoundingForTesting = fixture.reference_ple_norm ?? false }
         defer { for norm in pleNorms { norm.referenceGroupedPrefillRoundingForTesting = false } }
+        for norm in pleNorms { norm.referenceGroupedAllWidthsRoundingForTesting = fixture.reference_ple_all_widths ?? false }
+        defer { for norm in pleNorms { norm.referenceGroupedAllWidthsRoundingForTesting = false } }
+        let allDecoderLayers = model.namedModules().compactMap { $0.1 as? Qwen4ExpDecoderLayer }
+        for layer in allDecoderLayers { layer.referenceSharedActivationForTesting = fixture.reference_shared_activation ?? false }
+        defer { for layer in allDecoderLayers { layer.referenceSharedActivationForTesting = false } }
         let passiveLayers = model.namedModules().compactMap { name, module -> (Int, Qwen4ExpDecoderLayer)? in
             guard let layer = module as? Qwen4ExpDecoderLayer,
                   let index = Int(name.split(separator: ".").last ?? ""), index < 8 else { return nil }
@@ -137,6 +144,8 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
                 "passive_forward_diagnostic_only": fixture.passive_forward ?? false,
                 "reference_ple_norm_diagnostic_only": fixture.reference_ple_norm ?? false,
                 "reference_ple_scale_diagnostic_only": fixture.reference_ple_scale ?? false,
+                "reference_ple_all_widths_diagnostic_only": fixture.reference_ple_all_widths ?? false,
+                "reference_shared_activation_diagnostic_only": fixture.reference_shared_activation ?? false,
                 "projection_engagement": projections.map { ["module": $0.0, "widths": $0.1.engagementReport] as [String: Any] },
                 "peak_active_memory_bytes": Memory.peakMemory,
                 "blocked_calls_per_layer": recurrentLayers.map(\.referenceBlockedCallsForTesting),

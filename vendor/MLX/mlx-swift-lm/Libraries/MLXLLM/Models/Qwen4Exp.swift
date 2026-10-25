@@ -226,6 +226,7 @@ final class Qwen4ExpZeroCenteredRMSNorm: Module {
     /// option enables this. Tests restore it before releasing their model.
     /// Keep the production precision contract until whole-model qualification.
     var referenceGroupedPrefillRoundingForTesting = false
+    var referenceGroupedAllWidthsRoundingForTesting = false
 
     init(dimensions: Int, groupSize: Int? = nil, eps: Float,
          referenceHCPrefillNormalization: Bool = false) {
@@ -246,13 +247,14 @@ final class Qwen4ExpZeroCenteredRMSNorm: Module {
         }
         let grouped = x.reshaped(
             Array(originalShape.dropLast()) + [-1, groupSize])
-        if x.ndim == 3, x.dim(0) == 1, x.dim(1) >= 128,
-            referenceGroupedPrefillRoundingForTesting
+        if referenceGroupedAllWidthsRoundingForTesting ||
+            (x.ndim == 3 && x.dim(0) == 1 && x.dim(1) >= 128 &&
+                referenceGroupedPrefillRoundingForTesting)
         {
             // Diagnostic equation from ddalcu/mlx-serve (MIT), v26.9.2,
             // transformer.zig hcGroupNorm: round RMS output before gamma.
-            // Singleton decode, small verification blocks and batching stay
-            // on their existing path even in this test-only experiment.
+            // The separate all-width diagnostic also covers tail/decode rows.
+            // Both switches are false in serving.
             let normalized = MLXFast.rmsNorm(grouped,
                 weight: MLXArray.ones([groupSize], dtype: x.dtype), eps: eps)
             return (normalized * (weight + 1).reshaped(-1, groupSize))
@@ -4081,6 +4083,7 @@ private final class Qwen4ExpMLP: Module, UnaryLayer {
     @ModuleInfo(key: "gate_proj") var gateProj: Linear
     @ModuleInfo(key: "up_proj") var upProj: Linear
     @ModuleInfo(key: "down_proj") var downProj: Linear
+    var referenceActivationForTesting = false
 
     init(dimensions: Int, hiddenDimensions: Int) {
         _gateProj.wrappedValue = Linear(dimensions, hiddenDimensions, bias: false)
@@ -4100,8 +4103,10 @@ private final class Qwen4ExpMLP: Module, UnaryLayer {
             gateProj, x, verificationPolicy: verificationPolicy, role: .expert)
         let up = qwen4ExpVerificationLinear(
             upProj, x, verificationPolicy: verificationPolicy, role: .expert)
+        let activated = referenceActivationForTesting
+            ? Qwen4ExpHCActivation.silu(gate) * up : silu(gate) * up
         return qwen4ExpVerificationLinear(
-            downProj, silu(gate) * up,
+            downProj, activated,
             verificationPolicy: verificationPolicy, role: .expert)
     }
 }
@@ -5485,6 +5490,11 @@ final class Qwen4ExpDecoderLayer: Module {
 
     func moeStageTraceForTesting(_ input: MLXArray) -> [(String, MLXArray)] {
         mlp.prefillStageTraceForTesting(input)
+    }
+
+    var referenceSharedActivationForTesting: Bool {
+        get { mlp.sharedExpert.referenceActivationForTesting }
+        set { mlp.sharedExpert.referenceActivationForTesting = newValue }
     }
 
     // Passive diagnostic: retain existing prefill arrays without another

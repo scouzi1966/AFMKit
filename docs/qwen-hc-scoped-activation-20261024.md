@@ -931,3 +931,49 @@ Evidence: `QwenOpeningMoENative20261024`, `QwenNativeMoEForward20261024`,
 seconds after a 184.33-second Release build; the expanded shared-expert test
 passed in 3.16 seconds after a 98.17-second incremental test build. Separate
 source snapshots preserve both test versions and their fixture hashes.
+
+The expanded shared-expert capture confirms both 4,243,200-value input
+projections are identical. Exactly 28 activation values differ; every one
+has input gate value `-6.84375`, the sigmoid edge documented by the reference.
+All prior native intermediate payloads and 64 raw score tensors remain exact
+under the expanded capture. Source/binary manifests are preserved with it
+(`QwenOpeningSharedMoENative20261024`, binary SHA-256
+`976234c554b755a210112cbc8ec6807b26b1c16ae26c929d44b26fa80fc9d500`).
+
+Using the already qualified `Qwen4ExpHCActivation.silu` for this shared expert
+removes all 649 body differences and all 175 combined MoE differences:
+**16,972,800/16,972,800 values match** for each output. The explicit-MLX-op
+control did not help because its sigmoid still has the differing rounding;
+the issue is not merely the presence of an explicit compile call.
+
+Ten alternating complete shared-body timings (gate/up/down projections,
+activation, dispatch and evaluation) give medians of 3.150104 ms current and
+3.179250 ms precise, +0.93%. This is one layer at prompt width 6,630, not a
+decode or full-model speed claim. No statistically established slowdown or
+end-to-end improvement is claimed from these short measurements.
+Evidence: `QwenNativePreciseSharedMoEForward20261024`,
+`qwen-shared-moe-projection-comparison-20261024.json`.
+
+The follow-up enables the precise shared activation only through an internal
+test property, independently from an all-width PLE normalization diagnostic.
+Both default false. Full-prefix comparisons first require disabled controls
+to preserve the previous score arrays; component equality is not a release
+qualification or a claim that the coding gap has been resolved.
+
+The disabled full-prefix control preserves all previous intermediate and score
+payloads. Enabling precise shared activation improves winner overlap in the
+production-split diagnostic from 54/64 to 60/64. The other four arms give
+59/64, 59/64, 60/64 and 57/64. Adding all-width PLE normalization gives
+60/64, 60/64, 59/64, 60/64 and 58/64 across the five arms. These are fixed
+reference-prefix decisions, not fresh coding outcomes or response-quality
+scores. Both enabled runs complete in about 35.18 seconds.
+
+With precise shared activation, all four full first-layer captures match
+native exactly. The recorded last-row attention/MLP inputs and outputs in
+layers 1 and 2 also match. Layer 3's last-row attention input matches, but its
+attention output differs (relative RMS 0.00355). Earlier positions in layers
+1--3 have not yet been captured in full, so this is the next observed boundary,
+not proof that layer 3 is the sole remaining source. Evidence:
+`QwenOpeningSharedControlScores20261024`,
+`QwenOpeningSharedPreciseScores20261024`,
+`QwenOpeningSharedAllWidthsScores20261024` and their comparison JSON files.

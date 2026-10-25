@@ -109,8 +109,10 @@ final class QwenNativeMoEForwardTests: XCTestCase {
                 $0.0 == "model.layers.0.mlp.shared_expert." + name
             }?.1 as? Linear)
         }
-        let sharedGate = try sharedProjection("gate_proj")(input)
-        let sharedUp = try sharedProjection("up_proj")(input)
+        let sharedGateProjection = try sharedProjection("gate_proj")
+        let sharedUpProjection = try sharedProjection("up_proj")
+        let sharedGate = sharedGateProjection(input)
+        let sharedUp = sharedUpProjection(input)
         let sharedDown = try sharedProjection("down_proj")
         let existingShared = sharedDown(silu(sharedGate) * sharedUp)
         eval(existingShared)
@@ -136,7 +138,41 @@ final class QwenNativeMoEForwardTests: XCTestCase {
         try save(arrays: ["shared_gate": sharedGate, "shared_up": sharedUp,
             "staged_activation": stagedActivation, "staged_shared": stagedShared,
             "staged_output": stagedOutput], url: root.appendingPathComponent("staged-shared.safetensors"))
+        let preciseActivation = Qwen4ExpHCActivation.silu(sharedGate) * sharedUp
+        let preciseShared = sharedDown(preciseActivation)
+        let preciseOutput = try XCTUnwrap(stageMap["routed_output"])
+            + MLX.sigmoid(try XCTUnwrap(stageMap["shared_gate"])) * preciseShared
+        for (name, actual, expected) in [
+            ("precise_shared_body", preciseShared, try XCTUnwrap(native["moe-shared_body"])),
+            ("precise_moe_output", preciseOutput, try XCTUnwrap(native["moe-moe_output"])),
+        ] {
+            XCTAssertEqual(actual.asData(access: .copy).data, expected.asData(access: .copy).data,
+                "Precise shared activation must reproduce the native forward: \(name)")
+            let difference = actual.asType(.float32) - expected.asType(.float32)
+            let mismatches = (actual .!= expected).asType(.int32).sum().item(Int32.self)
+            let rms = sqrt(mean(square(difference))).item(Float.self)
+            records.append(["stage": name, "values": actual.size, "mismatches": mismatches,
+                "rms_error": rms, "max_absolute_error": abs(difference).max().item(Float.self)])
+            print("NATIVE_MOE stage=\(name) mismatches=\(mismatches)/\(actual.size) rms=\(rms)")
+        }
+        try save(arrays: ["activation": preciseActivation, "shared_body": preciseShared,
+            "output": preciseOutput], url: root.appendingPathComponent("precise-shared.safetensors"))
+        // Alternating complete shared-body measurements include all three
+        // projections and activation, not just a cheap elementwise primitive.
+        var sharedTimings = [[Double](), [Double]()]
+        for round in 0..<10 {
+            for arm in (round.isMultiple(of: 2) ? [0, 1] : [1, 0]) {
+                let start = DispatchTime.now().uptimeNanoseconds
+                let g = sharedGateProjection(input)
+                let u = sharedUpProjection(input)
+                let act = arm == 0 ? silu(g) * u : Qwen4ExpHCActivation.silu(g) * u
+                let result = sharedDown(act)
+                eval(result)
+                sharedTimings[arm].append(Double(DispatchTime.now().uptimeNanoseconds - start) / 1e6)
+            }
+        }
         let report: [String: Any] = ["records": records,
+            "shared_body_samples_ms_current_precise": sharedTimings,
             "scope": "Isolated first MoE on identical native input. Ordinary and traced AFM outputs must match the passive AFM capture. Stage equality is not a full-model quality or performance result."]
         try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys])
             .write(to: root.appendingPathComponent("report.json"), options: .withoutOverwriting)
