@@ -2092,3 +2092,140 @@ AFM binary. All use the same five captured requests, checkpoint, thinking-on /
 MTP-off / prefix-enabled setup and 16,384 output-token limit. Returned tool
 calls are saved but never executed. These trials cannot establish coding-task
 quality or replace the subsequent fresh-directory coding comparison.
+
+
+### Fresh HTTP and preserved-binary control, 2026-10-25 03:41 EDT
+
+The fresh fixed-input HTTP trial is not an acceptance result. Parsed tool calls
+match the frozen reference on requests 1, 3 and 4. Request 2 is a different
+read-only inspection command. Request 5 is materially different: reference
+writes `src/orbits.js`, whereas the candidate inspects `OrbitControls.js`.
+The generated calls were never executed. Fewer tokens are not proof of better
+coding quality or equal progress.
+
+| Request | Reference tokens / seconds | Candidate tokens / seconds | Preserved October 9 tokens / seconds |
+|---|---:|---:|---:|
+| 1 | 72 / 6.326 | 72 / 6.737 | 73 / 6.305 |
+| 2 | 67 / 1.783 | 76 / 2.248 | 79 / 2.136 |
+| 3 | 84 / 2.009 | 84 / 2.392 | 171 / 3.544 |
+| 4 | 123 / 2.351 | 123 / 2.808 | 82 / 1.881 |
+| 5 | 1,824 / 28.663 | 479 / 9.766 | 14,963 / 242.266 |
+
+All 15 requests complete with HTTP 200. Both AFM binaries report identical
+cached-token counts on requests 2–5: 6,630 / 7,225 / 7,755 / 7,927. The reference
+reports zero in the API usage object; this does not prove it did no reuse.
+
+The candidate's generation logs report 54.7–56.8 tok/s, while the preserved
+binary reports 62.0–62.7 tok/s. This is an unacceptable speed concern; no default
+promotion is justified. Different outputs prevent treating the elapsed totals
+as equal-work coding throughput. Reference raw decode timing is not present
+in this run. Matched tool calls on requests 3 and 4 have candidate HTTP times
+about 19% longer than reference.
+
+Candidate AFMKit: `41bb389ce81964ecd187b7d4a906731b6e9e82d4`;
+consumer: `6839b0566dbd166f11ad4203db9568165ac8ff49`;
+binary SHA-256: `ef343650a5412784dbdef23ab8877dad1a400d05c395ad5bd6e4f874907e61fc`.
+Preserved AFM binary: `0e8edd40a46341bab51da5ad7725a45e43ba622a7c4ef2eac1d6951646441156`.
+Reference: `46d017b5f6e49890e654dbefd2b750eda44b627a20f4ec7a01015a4d0d8ea1e0`.
+Every case uses the same ddalcu four-bit vision-overlay checkpoint, thinking on,
+MTP off, prefix caching on, and no tuning environment. Full launch records and
+raw responses are retained under `QwenModelOwnedHTTPFiveRetry20261025` and
+`QwenPreservedBestHTTPFive20261025`. The consolidated comparison is
+`QWEN-MODEL-OWNED-HTTP-FIVE-COMPARISON-20261025.md` beside its machine-readable JSON.
+
+
+### Recurrent-state store experiment, 2026-10-25
+
+The model-owned serial recipe persists BF16-valued state in FP32 buffers.
+Moving that rounding into the existing GDN kernel's final store avoids the
+separate FP32-to-BF16-to-FP32 graph. The current step's output still uses the
+unrounded accumulator; only state carried to the next step is rounded.
+The specialization requires one token, scalar gates, no mask, BF16 inputs and
+FP32 state. Other requested geometries use the original kernel and casts;
+callers that do not request this policy retain the original path.
+
+Release tests preserve output and state bytes across 16 dependent decode steps
+and widths 2/17 fallback. Alternating timings for 36 independent state updates
+show median 1.2285205 ms with casts versus 0.950291 ms with the fused store
+(22.65% less component time). This is **not** a whole-model speed claim.
+An earlier grouped post-update rounding experiment was rejected: 1.364438 ms
+versus 0.7684375 ms for its original cast control. Rejected source and results
+remain outside the repository under `qwen-rejected-grouped-state-rounding-*`.
+
+Full-model teacher-prefix checks after the fused-store change preserve all
+57/57 cold-second-request and 64/64 opening-request score tensors exactly.
+The warm second request matches 16/64 score tensors and 63/64 winning tokens.
+Its first score divergence is decision 16; its winner first differs at 37.
+Artifacts: `QwenColdR2FusedPersistence20261025`,
+`QwenOpeningFusedPersistence20261025`, `QwenWarmR2FusedPersistence20261025`,
+`qwen-fused-state-persistence-timing-retry-20261025.json`.
+
+### Warm request divergence: masked QSA selection, 2026-10-25 04:21 EDT
+
+Passive capture isolates the first differing operation to layer 15 (zero-based)
+at decision 16 of the 7,256-token second request. PLE and layers 0–14 match
+exactly. Layer 15's query, gate, pooled indexer keys and complete attention KV
+cache also match. Its attention output differs in 506/6,144 BF16 values.
+All 64 native and AFM raw score payloads are unchanged by passive capture.
+Frozen/off/on native controls produce exactly the same response semantics.
+
+The masked decode selector subtracts `block_index * 1e-7` before ranking.
+This does more than break ties: captured block 994 scores 114.6330795288086,
+while block 1727 scores 114.63313293457031. The bias reverses their ordering.
+The native reference's exact radix selector ranks the raw scores and uses the
+lower index only for exact ties. AFM's gather selector already follows that
+rule, but its masked decode selector did not.
+
+A GPU component reconstruction establishes causality:
+
+| Component | Differences from captured reference |
+|---|---:|
+| Exact raw-score block selection | 0/512 block IDs |
+| Exact selection expanded to mask | 0/7,272 mask values |
+| Existing biased masked selector | 8/7,272 mask values (two four-token blocks) |
+| Stock attention with exact mask | 0/6,144 output values |
+| Stock attention with biased mask | 506/6,144 output values |
+| Biased-mask reconstruction versus captured AFM | 0/6,144 output values |
+
+Thus this mismatch is a selection error, not an immediate cache-restore error
+or evidence of unavoidable stochastic sampling. It does not establish that
+all remaining divergences have the same cause. A regression test now covers
+unequal nearby scores, exact ties, complete/incomplete tails and capacity
+padding. The implementation fix and full-model rerun follow this red test.
+
+Artifacts: `QwenWarmR2Step16NativeRetry20261025`,
+`QwenWarmR2Step16Scores20261025`, `QwenWarmR2Step16Attention20261025`,
+`qwen-warm-r2-step16-comparison-20261025.json`, and
+`qwen-warm-r2-passive-capture-controls-20261025.json` under the external evidence
+root recorded above. The first frozen-copy attempt could not resolve its
+relative dylibs; the retry preserves the source library layout and verifies
+the loaded MLX library hashes. That startup failure did not execute inference.
+
+
+### Mask correction validated, 2026-10-25 04:29 EDT
+
+The regression test failed before the fix on all three unequal-score/tail
+cases and passed its exact-tie controls. Removing the numeric index bias from
+the existing rank kernel fixes those failures without adding a kernel or
+changing its dispatch geometry. Five selected release correctness tests pass;
+the optional timing test was skipped in this invocation.
+
+The captured layer-15 mask and attention output now match the reference
+exactly (0/7,272 and 0/6,144 differences). Full-model checks with explicit exact
+score assertions pass **185/185**: opening 64/64, cold second request 57/57,
+and cached second request 64/64. The cached case improves from 16/64 exact
+score arrays and 63/64 winning tokens to 64/64 for both. No sampled tools are
+executed in these checks. This is not a coding-task or throughput acceptance.
+
+Artifacts: `QwenWarmR2Step16AttentionFixed20261025`,
+`QwenWarmR2RawMask20261025`, `QwenOpeningRawMask20261025`,
+`QwenColdR2RawMask20261025`, and the paired
+`qwen-masked-score-regression-{red,green}-20261025.log` logs.
+The complete source checkpoint is next rebuilt through the consumer wrapper
+for fixed-input HTTP correctness and speed measurements before any further
+algorithm changes. Main and the installed binary remain untouched.
+
+A separate remaining difference is known past 8,192 KV tokens: the reference
+uses gathered ordinary SDPA, while this serial candidate still forces masked
+SDPA. It requires its own controlled comparison; the warm-request fix does
+not resolve or qualify that route.

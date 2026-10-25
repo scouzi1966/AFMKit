@@ -1925,6 +1925,9 @@ enum Qwen4ExpQSADecodeScores {
 /// from the decode score row. This preserves the reference's lower-index tie
 /// preference and incomplete-tail semantics while avoiding both MLX's generic
 /// arg-partition graph and the K-by-token equality tensor on every token.
+/// Match mlx-serve's qsaSelectTopBlocks ordering (src/transformer.zig): rank
+/// raw scores, using block index only for exact ties. An index-dependent score
+/// subtraction can reverse unequal scores and change the attended content.
 ///
 /// The rank kernel is intentionally limited to decode: each thread owns one
 /// compressed block, ranks that block against the score row, and writes its
@@ -1956,12 +1959,12 @@ enum Qwen4ExpQSADecodeMask {
                 const long score_base = (long)batch * scores_strides[0];
                 const float current = float(scores[
                     score_base + (long)block * scores_strides[1]
-                ]) - float(block) * 1.0e-7f;
+                ]);
                 int higher = 0;
                 for (int index = 0; index < visible_blocks; ++index) {
                     const float candidate = float(scores[
                         score_base + (long)index * scores_strides[1]
-                    ]) - float(index) * 1.0e-7f;
+                    ]);
                     higher += candidate > current
                         || (candidate == current && index < int(block));
                 }
@@ -3604,6 +3607,7 @@ private final class Qwen4ExpGatedDeltaNet: Module {
     var referencePrefillQKNormalizationForTesting = false
     // Per-model diagnostic only; no environment variable or serving option.
     var referenceBlockedRecurrenceForTesting = false
+    var referenceRoundedDecodePersistenceForTesting = false
     private(set) var referenceBlockedCallsForTesting = 0
     private static let compileDecode =
         ProcessInfo.processInfo.environment["AFM_QWEN_COMPILE_GDN_DECODE"] != "0"
@@ -3694,7 +3698,8 @@ private final class Qwen4ExpGatedDeltaNet: Module {
                     v: prepared.values,
                     g: prepared.gate,
                     beta: prepared.beta,
-                    state: recurrentState)
+                    state: recurrentState,
+                    persistStateAsBF16: self.referenceRoundedDecodePersistenceForTesting)
                 let z = qwen4ExpVerificationLinear(
                     self.inProjZ, x, verificationPolicy: nil,
                     role: .gatedDelta)
@@ -3987,6 +3992,9 @@ private final class Qwen4ExpGatedDeltaNet: Module {
         }
         let output: MLXArray
         let state: MLXArray
+        let roundDecodeState = referenceRoundedDecodePersistenceForTesting
+            && verificationPolicy == nil && l == 1
+        var stateAlreadyRounded = false
         if verificationPolicy == nil,
            let capture = (cache as? Qwen4ExpLayerCache)?.prefillCapture,
            fusedPrework != nil || useExplicitGating,
@@ -4050,13 +4058,15 @@ private final class Qwen4ExpGatedDeltaNet: Module {
                 q: q, k: k, v: v,
                 g: fusedPrework.gate,
                 beta: fusedPrework.beta,
-                state: recurrentState)
+                state: recurrentState, persistStateAsBF16: roundDecodeState)
+            stateAlreadyRounded = roundDecodeState
         } else if useExplicitGating {
             (output, state) = gatedDeltaKernel(
                 q: q, k: k, v: v,
                 g: computeGFloat32(aLog, a, dtBias),
                 beta: sigmoid(rawB),
-                state: recurrentState)
+                state: recurrentState, persistStateAsBF16: roundDecodeState)
+            stateAlreadyRounded = roundDecodeState
         } else {
             (output, state) = gatedDeltaUpdate(
                 q: q, k: k, v: v,
@@ -4064,7 +4074,8 @@ private final class Qwen4ExpGatedDeltaNet: Module {
                 ALog: aLog, dtBias: dtBias,
                 state: recurrentState, useKernel: true)
         }
-        cache?[1] = state
+        cache?[1] = roundDecodeState && !stateAlreadyRounded
+            ? state.asType(.bfloat16).asType(.float32) : state
         let z = qwen4ExpVerificationLinear(
             inProjZ, x, verificationPolicy: verificationPolicy,
             role: .gatedDelta)
@@ -5755,6 +5766,14 @@ final class Qwen4ExpDecoderLayer: Module {
         linearAttention?.referenceBlockedCallsForTesting ?? 0
     }
 
+    var referenceRoundedDecodePersistenceForTesting: Bool {
+        get { linearAttention?.referenceRoundedDecodePersistenceForTesting ?? false }
+        set {
+            precondition(isLinear)
+            linearAttention!.referenceRoundedDecodePersistenceForTesting = newValue
+        }
+    }
+
     var referenceGatedDeltaPrefillNormalizationForTesting: Bool {
         get { linearAttention?.referencePrefillQKNormalizationForTesting ?? false }
         set {
@@ -7173,14 +7192,19 @@ public final class Qwen4ExpModel: Module, LLMModel, KVCacheDimensionProvider, Re
             layer.referenceAttentionTailGateForTesting = true
             layer.referenceAttentionDecodeGateForTesting = true
             layer.referenceFusedRotationForTesting = true
-            if layer.isLinear { layer.referenceBlockedRecurrenceForTesting = true }
+            if layer.isLinear {
+                layer.referenceBlockedRecurrenceForTesting = true
+                layer.referenceRoundedDecodePersistenceForTesting = true
+            }
         }
         usesReferenceMatchedSerialArithmetic = true
         return true
     }
 
-    private func persistNativeRecurrentState(_ cache: [KVCache]?) {
-        guard usesReferenceMatchedSerialArithmetic, let cache else { return }
+    private func persistNativeRecurrentState(_ cache: [KVCache]?, width: Int) {
+        // Singleton GDN now rounds at its existing final state store, avoiding
+        // a second memory pass. Prefill retains the qualified materialized cast.
+        guard usesReferenceMatchedSerialArithmetic, width != 1, let cache else { return }
         for case let layer as Qwen4ExpLayerCache in cache {
             if let state = layer[1], state.dtype == .float32 {
                 layer[1] = state.asType(.bfloat16).asType(.float32)
@@ -7307,7 +7331,7 @@ public final class Qwen4ExpModel: Module, LLMModel, KVCacheDimensionProvider, Re
         // forwardStreamState would materialize/combine that stream differently.
         let hidden = model(remaining.tokens[.newAxis],
                            cache: cache.isEmpty ? nil : cache, hostTokenIDs: hostTokenIDs)
-        persistNativeRecurrentState(cache)
+        persistNativeRecurrentState(cache, width: hidden.dim(1))
         let last = hidden[0..., (hidden.dim(1) - 1)..., 0...]
         return .logits(LMOutput(logits: projectLMHead(last)))
     }
@@ -7322,13 +7346,13 @@ public final class Qwen4ExpModel: Module, LLMModel, KVCacheDimensionProvider, Re
             input.tokens,
             cache: cache,
             hostTokenIDs: hostTokenIDs)
-        persistNativeRecurrentState(cache)
+        persistNativeRecurrentState(cache, width: hidden.dim(1))
         return .init(logits: lmHead?(hidden) ?? model.embedTokens.asLinear(hidden))
     }
 
     public func callAsFunction(_ inputs: MLXArray, cache: [KVCache]?) -> MLXArray {
         let hidden = model(inputs, cache: cache)
-        persistNativeRecurrentState(cache)
+        persistNativeRecurrentState(cache, width: hidden.dim(1))
         return lmHead?(hidden) ?? model.embedTokens.asLinear(hidden)
     }
 
@@ -7644,7 +7668,7 @@ public final class Qwen4ExpModel: Module, LLMModel, KVCacheDimensionProvider, Re
             inputIDs, inputEmbeddings: inputEmbeddings,
             positionIDs: positionIDs, cache: cache,
             hostTokenIDs: hostTokenIDs)
-        persistNativeRecurrentState(cache)
+        persistNativeRecurrentState(cache, width: hidden.dim(1))
         return lmHead?(hidden) ?? model.embedTokens.asLinear(hidden)
     }
 

@@ -43,6 +43,39 @@ final class QwenQSARawScoreSelectionTests: XCTestCase {
         try assertIndexerSelection(exactTie: true)
     }
 
+    func testMaskedDecodePreservesUnequalScoresAndExactTies() throws {
+        try MLXMetalLibrary.ensureAvailable(verbose: false)
+        // A captured warm decode chose between these scores. An index bias
+        // reversed them, despite the later block having the higher raw score.
+        let blocks = 1_818, early = 994, late = 1_727
+        let low = Float(bitPattern: 0x42e54423)
+        let high = Float(bitPattern: 0x42e5442a)
+        for exactTie in [false, true] {
+            var scores = [Float](repeating: 0, count: blocks)
+            for block in 0..<(Self.topK - 1) { scores[block] = Self.strongerScore }
+            scores[early] = low
+            scores[late] = exactTie ? low : high
+            let selected = Set(QwenQSARawScoreOracle.select(
+                scores, blocks: blocks, bounds: [blocks], topK: Self.topK))
+            for tail in [0, 1, 3] {
+                let visible = blocks * Self.compressionRatio + tail
+                let capacity = visible + Self.compressionRatio
+                let mask = try XCTUnwrap(Qwen4ExpQSADecodeMask.call(
+                    scores: MLXArray(scores).reshaped(1, blocks),
+                    visibleCount: visible, keyLength: capacity,
+                    compressionRatio: Self.compressionRatio, blockTopK: Self.topK))
+                let actual = mask.asArray(Bool.self)
+                let expected = (0..<capacity).map { token in
+                    token < visible && (token >= blocks * Self.compressionRatio
+                        || selected.contains(Int32(token / Self.compressionRatio)))
+                }
+                XCTAssertEqual(actual.filter { $0 }.count,
+                               Self.topK * Self.compressionRatio + tail)
+                XCTAssertEqual(actual, expected, "exactTie=\(exactTie), tail=\(tail)")
+            }
+        }
+    }
+
     private func assertIndexerSelection(exactTie: Bool) throws {
         try MLXMetalLibrary.ensureAvailable(verbose: false)
         let values: [String: Any] = [

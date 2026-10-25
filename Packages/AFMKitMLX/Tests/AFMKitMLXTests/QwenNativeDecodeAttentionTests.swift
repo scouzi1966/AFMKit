@@ -13,6 +13,8 @@ final class QwenNativeDecodeAttentionTests: XCTestCase {
         let model: String?
         let layer: Int?
         let afm_stock_attention: Bool?
+        let key_length: Int?
+        let expect_native_mask: Bool?
         let native_capture: String
         let afm_capture: String
         let files: [String: String]
@@ -27,7 +29,7 @@ final class QwenNativeDecodeAttentionTests: XCTestCase {
         #if DEBUG
         throw XCTSkip("Release diagnostic only")
         #else
-        continueAfterFailure = false
+        continueAfterFailure = true
         let root = URL(fileURLWithPath: output).resolvingSymlinksInPath()
         XCTAssertTrue(root.path.hasPrefix("/Volumes/"))
         XCTAssertFalse(FileManager.default.fileExists(atPath: root.path))
@@ -51,27 +53,32 @@ final class QwenNativeDecodeAttentionTests: XCTestCase {
         let captured = try XCTUnwrap(afm["attention-heads"])
         let mask = try XCTUnwrap(native["qsa-selection"])
         XCTAssertEqual(q.shape, [1, 24, 1, 256])
-        XCTAssertEqual(k.shape, [1, 2, 6662, 256])
+        let keyLength = fixture.key_length ?? 6662
+        let completeBlocks = keyLength / 4
+        XCTAssertEqual(k.shape, [1, 2, keyLength, 256])
         XCTAssertEqual(v.shape, k.shape)
         let visible = mask.asArray(Bool.self)
-        XCTAssertEqual(visible.count, 6662)
+        XCTAssertEqual(visible.count, keyLength)
         var selected = [Int32]()
-        for block in 0..<1665 {
+        for block in 0..<completeBlocks {
             let group = Array(visible[(block * 4)..<(block * 4 + 4)])
             XCTAssertTrue(group.allSatisfy { $0 == group[0] })
             if group[0] { selected.append(Int32(block)) }
         }
         XCTAssertEqual(selected.count, 512)
-        XCTAssertTrue(visible.suffix(2).allSatisfy { $0 })
+        XCTAssertTrue(visible.suffix(keyLength % 4).allSatisfy { $0 })
         let nativeBlocks = MLXArray(selected).reshaped(1, 1, 512)
         let scores = try XCTUnwrap(Qwen4ExpQSADecodeScores.call(
             queries: try XCTUnwrap(afm["qsa-queries"]),
             blockKeys: try XCTUnwrap(afm["qsa-pooled"])))
         let afmBlocks = try XCTUnwrap(Qwen4ExpQSAVerifyRadixSelection.call(
             scores: scores.expandedDimensions(axis: 0),
-            visibleBlockCounts: [1665], topK: 512)).reshaped(1, 1, 512)
+            visibleBlockCounts: [completeBlocks], topK: 512)).reshaped(1, 1, 512)
         let afmMask = Qwen4ExpQSAGather.maskFromBlocks(
-            afmBlocks, keyLength: 6662, compressionRatio: 4)
+            afmBlocks, keyLength: keyLength, compressionRatio: 4)
+        let rankedMask = try XCTUnwrap(Qwen4ExpQSADecodeMask.call(
+            scores: scores, visibleCount: keyLength, keyLength: keyLength,
+            compressionRatio: 4, blockTopK: 512))
         func stock(_ selectedMask: MLXArray) -> MLXArray {
             MLXFast.scaledDotProductAttention(queries: q, keys: k, values: v,
                 scale: 0.0625, mask: .array(selectedMask))
@@ -81,6 +88,7 @@ final class QwenNativeDecodeAttentionTests: XCTestCase {
                 scale: 0.0625, selectedBlocks: blocks, compressionRatio: 4))
         }
         let stockNative = stock(mask), stockAFM = stock(afmMask)
+        let stockRanked = stock(rankedMask)
         let directNative = try direct(nativeBlocks), directAFM = try direct(afmBlocks)
         var records = [[String: Any]]()
         func record(_ name: String, _ actual: MLXArray, _ reference: MLXArray) {
@@ -94,13 +102,18 @@ final class QwenNativeDecodeAttentionTests: XCTestCase {
         }
         record("selected-blocks", afmBlocks, nativeBlocks)
         record("selected-mask", afmMask, mask)
+        record("ranked-mask-vs-native", rankedMask, mask)
+        record("stock-ranked-mask-vs-native", stockRanked, expected)
+        record("stock-ranked-mask-vs-captured-afm", stockRanked, captured)
         record("stock-native-mask-vs-native", stockNative, expected)
         record("stock-afm-mask-vs-native", stockAFM, expected)
         record("direct-native-blocks-vs-native", directNative, expected)
         record("direct-afm-blocks-vs-native", directAFM, expected)
         record("direct-afm-blocks-vs-captured-afm", directAFM, captured)
-        XCTAssertEqual((fixture.afm_stock_attention == true ? stockAFM : directAFM).asData(access: .copy).data, captured.asData(access: .copy).data,
-                       "Reconstruction must reproduce the captured ordinary AFM attention")
+        let reconstruction = fixture.afm_stock_attention == true ? stockRanked : directAFM
+        let reconstructionTarget = fixture.expect_native_mask == true ? expected : captured
+        let reconstructionMatches = reconstruction.asData(access: .copy).data == reconstructionTarget.asData(access: .copy).data
+        let selectionMatches = rankedMask.asData(access: .copy).data == mask.asData(access: .copy).data
         var tailArrays = [String: MLXArray]()
         if let directory = fixture.model, let layer = fixture.layer {
             let context = try await LLMModelFactory.shared.load(configuration:
@@ -147,14 +160,38 @@ final class QwenNativeDecodeAttentionTests: XCTestCase {
                 timings.append(["sample": sample, "implementation": name, "milliseconds": ms])
             }
         }
+        for sample in 0..<34 {
+            for name in sample.isMultiple(of: 2) ? ["rank-mask", "radix-mask"] : ["radix-mask", "rank-mask"] {
+                let start = DispatchTime.now().uptimeNanoseconds
+                if name == "rank-mask" {
+                    eval(try XCTUnwrap(Qwen4ExpQSADecodeMask.call(
+                        scores: scores, visibleCount: keyLength, keyLength: keyLength,
+                        compressionRatio: 4, blockTopK: 512)))
+                } else {
+                    let blocks = try XCTUnwrap(Qwen4ExpQSAVerifyRadixSelection.call(
+                        scores: scores.expandedDimensions(axis: 0),
+                        visibleBlockCounts: [completeBlocks], topK: 512))
+                    eval(Qwen4ExpQSAGather.maskFromBlocks(
+                        blocks, keyLength: keyLength, compressionRatio: 4))
+                }
+                let ms = Double(DispatchTime.now().uptimeNanoseconds - start) / 1e6
+                if sample >= 4 {
+                    timings.append(["sample": sample, "implementation": name, "milliseconds": ms])
+                }
+            }
+        }
         try save(arrays: ["stock-native": stockNative, "stock-afm": stockAFM,
             "direct-native": directNative, "direct-afm": directAFM,
             "native-blocks": nativeBlocks, "afm-blocks": afmBlocks, "scores": scores,
-            "native-mask": mask, "afm-mask": afmMask].merging(tailArrays) { _, n in n }, url: root.appendingPathComponent("stages.safetensors"))
+            "native-mask": mask, "afm-mask": afmMask, "ranked-mask": rankedMask,
+            "stock-ranked": stockRanked].merging(tailArrays) { _, n in n }, url: root.appendingPathComponent("stages.safetensors"))
         let report: [String: Any] = ["records": records, "timings": timings,
             "scope": "Identical captured first-decode operands. Alternating component timings include graph construction and evaluation; not model throughput or coding quality."]
         try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys])
             .write(to: root.appendingPathComponent("report.json"), options: .withoutOverwriting)
+        XCTAssertTrue(reconstructionMatches,
+                      "Reconstruction must reproduce the captured ordinary AFM attention")
+        if fixture.expect_native_mask == true { XCTAssertTrue(selectionMatches) }
         #endif
     }
 }

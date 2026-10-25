@@ -57,6 +57,7 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
         let capture_joined_tail_boundary: Bool?
         let prepare_joined_tail_boundary: Bool?
         let model_owned_arithmetic: Bool?
+        let restored_prefix: Int?
         let expected_exact_scores: [String: Int]?
         let expected_winner_overlaps: [String: Int]?
         let model: String
@@ -106,6 +107,14 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
             XCTAssertEqual(fixture.histories.map { $0.tokens.count }, [54, 6661])
             XCTAssertEqual(fixture.rows.count, 64)
             XCTAssertTrue(fixture.rows.allSatisfy { $0.status == "emitted" })
+        case "warm-r2-64":
+            XCTAssertEqual(fixture.histories.map(\.request), [1, 2])
+            XCTAssertEqual(fixture.histories.map { $0.tokens.count }, [6661, 7256])
+            XCTAssertEqual(fixture.rows.count, 64)
+            XCTAssertEqual(fixture.restored_prefix, 6630)
+            XCTAssertEqual(fixture.model_owned_arithmetic, true)
+            XCTAssertEqual(Array(fixture.histories[0].tokens.prefix(6630)),
+                           Array(fixture.histories[1].tokens.prefix(6630)))
         default:
             XCTFail("Unqualified native prefix fixture")
             return
@@ -183,7 +192,8 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
         let passiveWidth = fixture.passive_width ?? prefillBoundary
         let passiveArm = fixture.passive_arm ?? "production-split"
         XCTAssertTrue([1, 31, prefillBoundary].contains(passiveWidth))
-        XCTAssertTrue(["production-split", "joined-final31", "joined-final31-bf16-state"].contains(passiveArm))
+        XCTAssertTrue(["production-split", "joined-final31", "joined-final31-bf16-state",
+                       "model-owned-prepared"].contains(passiveArm))
         XCTAssertTrue((1...48).contains(passiveLayerCount))
         let passiveLayers = model.namedModules().compactMap { name, module -> (Int, Qwen4ExpDecoderLayer)? in
             guard let layer = module as? Qwen4ExpDecoderLayer,
@@ -252,6 +262,7 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
         var prefixStateHashes = [String]()
         var productionScoreBytes = [Data]()
         var interiorCaptureRecords = [[String: Any]]()
+        var warmSnapshot: (states: [[MLXArray]], metadata: [[String]])?
         func writeReport() throws {
             let report: [String: Any] = [
                 "fixture_sha256": digest(data), "records": records,
@@ -337,6 +348,23 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
             }
             for history in fixture.histories {
                 cache = model.newCache(parameters: nil)
+                let restoredPrefix = history.request == probeRequest
+                    ? fixture.restored_prefix ?? 0 : 0
+                if restoredPrefix > 0 {
+                    let saved = try XCTUnwrap(warmSnapshot)
+                    let copied = MLXPrefixReplayPolicy.restoredLayerStates(saved.states, cache: cache)
+                    for index in cache.indices {
+                        MLXPrefixReplayPolicy.installLayerState(copied[index], into: &cache[index],
+                            sourceBoundary: restoredPrefix)
+                        cache[index].metaState = saved.metadata[index]
+                        let excess = cache[index].offset - restoredPrefix
+                        if excess > 0 { cache[index].trim(excess) }
+                        if cache[index].isTrimmable && cache[index].offset > 0
+                            && !(cache[index] is RotatingKVCache) {
+                            cache[index].truncateToOffset()
+                        }
+                    }
+                }
                 var boundaries = [Int]()
                 if arm == "production-split" || history.request == 0
                     || arm == "prepared-final31-interior-bf16-state" || modelOwnedArithmetic {
@@ -345,12 +373,15 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
                     var stateFailure: Error?
                     let prepared = try MLXReplayPrefill.prepareWithSnapshot(
                         model: model, cache: cache, inputTokens: history.tokens,
-                        restoredPrefix: 0, prefillStepSize: 8192,
+                        restoredPrefix: restoredPrefix, prefillStepSize: 8192,
                         promptSnapshotBackoffTokens: 31, captureFinalCheckpoint: false,
                         captureFinalTokenInline: joinFinal,
-                        checkpoint: { boundary, states, _ in
+                        checkpoint: { boundary, states, metadata in
                             boundaries.append(boundary)
                             eval(states.flatMap { $0 })
+                            if fixture.restored_prefix == boundary && history.request != probeRequest {
+                                warmSnapshot = (states, metadata)
+                            }
                             if history.request == probeRequest, !joinFinal {
                                 prefixStateHashes = states.flatMap { $0 }.map {
                                     self.digest($0.asData(access: .copy).data)
