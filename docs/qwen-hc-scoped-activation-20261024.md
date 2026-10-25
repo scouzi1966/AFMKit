@@ -2074,3 +2074,21 @@ MTP, retained concurrent batching and vision remain outstanding.
 Evidence: `QwenColdR2ModelOwned20261025` (failed eligibility attempt),
 `QwenColdR2ModelOwnedMixedPrecision20261025`,
 `QwenOpeningModelOwnedMixedPrecision20261025` and their launch manifests.
+
+
+### Serial HTTP candidate wiring, 2026-10-25 03:34 EDT
+
+The isolated branch now configures the qualified model-owned arithmetic once
+at model load for serial, MTP-off serving. Text and VLM wrappers delegate to
+the same language model. The loaded-weight guard excludes fully eight-bit
+experts and other architectures. No CLI or tuning environment enables the
+candidate. MTP/concurrent startup retains the prior behavior; runtime mode
+changes, vision, MTP and retained batching are not qualified by this experiment.
+Main, installed binaries and the preserved best binaries are untouched.
+
+Release compilation succeeds. The next gate is three fresh-process fixed-input
+HTTP trials: frozen reference, this candidate, and the preserved October 9 best
+AFM binary. All use the same five captured requests, checkpoint, thinking-on /
+MTP-off / prefix-enabled setup and 16,384 output-token limit. Returned tool
+calls are saved but never executed. These trials cannot establish coding-task
+quality or replace the subsequent fresh-directory coding comparison.

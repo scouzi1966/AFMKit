@@ -244,7 +244,7 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
         for layer in recurrentLayers { layer.referenceBlockedRecurrenceForTesting = useBlocked }
         defer { for layer in recurrentLayers { layer.referenceBlockedRecurrenceForTesting = false } }
         if modelOwnedArithmetic {
-            guard model.configureNativeArithmeticForTesting() else {
+            guard model.configureReferenceMatchedSerialArithmetic() else {
                 throw QualificationFailure(description: "Checkpoint is outside the qualified arithmetic geometry")
             }
         }

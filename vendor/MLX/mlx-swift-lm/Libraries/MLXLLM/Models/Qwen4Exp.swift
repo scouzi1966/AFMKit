@@ -7115,16 +7115,18 @@ public final class Qwen4ExpModel: Module, LLMModel, KVCacheDimensionProvider, Re
     let configuration: Qwen4ExpTextConfiguration
     private let ngramTableConfiguration: Qwen4ExpNGramTableConfiguration?
     private var usesMappedNGramTable = false
-    private(set) var nativeArithmeticForTesting = false
+    public private(set) var usesReferenceMatchedSerialArithmetic = false
 
-    public var prefersJoinedFinalTokenPrefill: Bool { nativeArithmeticForTesting }
+    public var prefersJoinedFinalTokenPrefill: Bool { usesReferenceMatchedSerialArithmetic }
 
     /// Complete serial-AR qualification policy. Set once, after loading and
-    /// before any forward/compiled trace. No serving caller enables it yet.
+    /// before any forward/compiled trace. The qualification serving candidate
+    /// enables this only for a serial, MTP-off runtime.
     /// This consolidates the independently isolated reference arithmetic;
     /// it does not qualify MTP, retained batching, vision or throughput.
     @discardableResult
-    func configureNativeArithmeticForTesting() -> Bool {
+    public func configureReferenceMatchedSerialArithmetic() -> Bool {
+        if usesReferenceMatchedSerialArithmetic { return true }
         let quantized = model.modules().compactMap { $0 as? any Quantized }
         let experts = model.modules().compactMap { $0 as? QuantizedSwitchLinear }
         guard configuration.hiddenSize == 2560, configuration.hiddenLayers == 48,
@@ -7173,12 +7175,12 @@ public final class Qwen4ExpModel: Module, LLMModel, KVCacheDimensionProvider, Re
             layer.referenceFusedRotationForTesting = true
             if layer.isLinear { layer.referenceBlockedRecurrenceForTesting = true }
         }
-        nativeArithmeticForTesting = true
+        usesReferenceMatchedSerialArithmetic = true
         return true
     }
 
     private func persistNativeRecurrentState(_ cache: [KVCache]?) {
-        guard nativeArithmeticForTesting, let cache else { return }
+        guard usesReferenceMatchedSerialArithmetic, let cache else { return }
         for case let layer as Qwen4ExpLayerCache in cache {
             if let state = layer[1], state.dtype == .float32 {
                 layer[1] = state.asType(.bfloat16).asType(.float32)
@@ -7410,7 +7412,7 @@ public final class Qwen4ExpModel: Module, LLMModel, KVCacheDimensionProvider, Re
                       capture.arrays.dropFirst(expectedSlots).allSatisfy({ $0 == nil })
                 else { throw InteriorCaptureError.incompleteLayer(index) }
                 var arrays = capture.arrays.compactMap { $0.map { $0 * 1 } }
-                if nativeArithmeticForTesting {
+                if usesReferenceMatchedSerialArithmetic {
                     arrays[1] = arrays[1].asType(.bfloat16).asType(.float32)
                 }
                 states.append(arrays)

@@ -60,6 +60,11 @@ public final class Qwen4ExpVL: Module, VLMModel, KVCacheDimensionProvider,
     public var consumesHostTokenIDs: Bool { languageModel.consumesHostTokenIDs }
     public var prefersJoinedFinalTokenPrefill: Bool { languageModel.prefersJoinedFinalTokenPrefill }
 
+    @discardableResult
+    public func configureReferenceMatchedSerialArithmetic() -> Bool {
+        languageModel.configureReferenceMatchedSerialArithmetic()
+    }
+
     public func configureMappedNGramTable(url: URL) throws {
         try languageModel.configureMappedNGramTable(url: url)
     }

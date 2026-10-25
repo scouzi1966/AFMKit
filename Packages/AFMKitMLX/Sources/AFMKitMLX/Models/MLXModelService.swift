@@ -2405,6 +2405,24 @@ public final class MLXModelService:
             if actualFactory != selectedFactory {
                 print("[\(ts())] [ModelArchitecture] actualFactory=VLM (LLM fallback)")
             }
+            // Isolated serial-AR qualification candidate. The model verifies
+            // loaded quantization/geometry before changing arithmetic. Keep MTP
+            // and concurrent runtimes on their prior path until independently
+            // qualified; no environment or user-facing switch selects this.
+            if !mtpEnabled && maxConcurrent < 2 {
+                let referenceMatched = await loaded.perform { context in
+                    if let qwen = context.model as? Qwen4ExpModel {
+                        return qwen.configureReferenceMatchedSerialArithmetic()
+                    }
+                    if let qwen = context.model as? Qwen4ExpVL {
+                        return qwen.configureReferenceMatchedSerialArithmetic()
+                    }
+                    return false
+                }
+                if referenceMatched {
+                    print("[\(ts())] [QwenArithmetic] Reference-matched serial qualification candidate enabled")
+                }
+            }
             // Load speculative resources only after the base model has loaded.
             // Qwen Next and GLM load native predictors from their main
             // checkpoint. Earlier Qwen generations continue using sidecars.
