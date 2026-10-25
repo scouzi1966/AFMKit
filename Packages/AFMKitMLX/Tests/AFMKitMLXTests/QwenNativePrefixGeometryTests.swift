@@ -58,7 +58,6 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
         let capture_joined_tail_boundary: Bool?
         let prepare_joined_tail_boundary: Bool?
         let model_owned_arithmetic: Bool?
-        let expected_deferred_serial_ple: Bool?
         let restored_prefix: Int?
         let restored_prefixes: [Int]?
         let align_absolute_prefill: Bool?
@@ -291,10 +290,6 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
                 throw QualificationFailure(description: "Checkpoint is outside the qualified arithmetic geometry")
             }
         }
-        if let expected = fixture.expected_deferred_serial_ple {
-            XCTAssertEqual(model.defersMappedSerialPLEForTesting, expected,
-                           "The experiment must exercise its intended serial scheduling policy")
-        }
         var records = [[String: Any]]()
         var prefixStateHashes = [String]()
         var productionScoreBytes = [Data]()
@@ -304,7 +299,6 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
             let report: [String: Any] = [
                 "fixture_sha256": digest(data), "records": records,
                 "model_owned_arithmetic_diagnostic_only": modelOwnedArithmetic,
-                "model_defers_serial_ple": model.defersMappedSerialPLEForTesting,
                 "align_absolute_prefill_diagnostic_only": fixture.align_absolute_prefill ?? false,
                 "strict_prefill_gather_boundary_diagnostic_only": fixture.strict_prefill_gather_boundary ?? false,
                 "interior_capture_records": interiorCaptureRecords,

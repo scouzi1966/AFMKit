@@ -2600,23 +2600,27 @@ the qualified serial mapped-table path, fills all leaves before dispatch, and
 checks exact score/output equivalence before any performance conclusion.
 
 
-#### Deferred serial PLE experiment: correctness gate
+#### Reject serial deferred PLE; preserve the verified mask improvement
 
-The qualified mapped-table serial profile now builds its decode graph using
-request-local deferred PLE leaves and fills them before returning the graph to
-the token generator. Its intra-token submission ladder is disabled while those
-leaves are unfilled; verification retains its existing flush-before-submission
-barrier. Synchronizing diagnostic profilers retain eager PLE. Other profiles and
-prefill retain the prior schedule. No new environment variable is introduced.
+Experimental commit `d7630e42ac680afda8d089a1ef7133fc912d8ec7` and frozen
+binary SHA-256 `6a2f4f26466e959e23222302443413b1e4515949b6c468c1278ffb50c8956b4a`
+passed 16 unit tests (3 optional skips) and all 249 exact-score comparisons with
+its active policy asserted. All five serving responses also remained unchanged.
+However, it reduced short decode to roughly 56–57 tok/s and increased the
+identical 8,277-token response to 147.071s versus reference 126.151s (+16.6%).
+The preceding radix-mask binary took 137.434s on that same fixed input.
 
-Release unit qualification: 16 passed, 3 optional diagnostics skipped, zero
-failures, including single-token compiled-leaf lifetime/history and existing
-request-isolation/abandonment checks. All 249 fixed native score vectors and
-winner sets remain exact. The four full-model fixtures also assert that the new
-serial policy is active; no result can silently come from the old schedule.
-Evidence: `qwen-serial-deferred-ple-qualification-20261025.log` and
-`Qwen{Opening,ColdR2,WarmR2,WarmR5}SerialDeferredPLE20261025`.
+The serial deferral change is therefore **reverted**, including its policy and
+diagnostic additions. Source/test files are verified identical to `a98ae995`
+(the retained `37758bf2` mask implementation plus documentation). No installed
+binary, main branch, 8-bit path or release was changed. The rejected source,
+binary and raw results remain preserved for analysis; they must not be selected
+as the current performance candidate. Evidence:
+`QwenSerialDeferredPLEActualInputFive20261025/comparison.json` and
+`QwenSerialDeferredPLEHTTPBinary20261025/PROVENANCE.json`.
 
-This checkpoint remains an experiment pending unchanged serving responses and
-measured speed. The previous radix-mask binary and all prior artifacts remain
-immutable and available as controls.
+The retained candidate is `QwenRadixMaskHTTPBinary20261025/afm`, source
+`37758bf2a9088490f94fd90e77e2ef9f9b4a56b8`, SHA-256
+`9d2d55c066dfcef10377586a7ebbc60f0baee44a1156d0ce15b85cddfc6d7e96`.
+The reference's deferred ordering alone does not reproduce its speed in this
+Swift path. Further attribution is required before any replacement schedule.

@@ -2748,45 +2748,6 @@ final class QwenNextMTPPipelineTests: XCTestCase {
         XCTAssertNil(lifetime)
     }
 
-    func testDeferredSingleTokenLeavesPreserveHistoryAndPriorCompiledOutput() {
-        let cache = Qwen4ExpLayerCache()
-        cache.hostNGramHistory = [2, 3]
-        var loads = 0
-        func prepare(_ token: Int64, scope: Qwen4ExpDeferredPLE) -> MLXArray {
-            scope.embedding(shape: [1, 1, 32]) {
-                loads += 1
-                let history = cache.hostNGramHistory!
-                cache.hostNGramHistory = [history[1], token]
-                return MLXArray(Array(repeating: Float(history[0] + token), count: 32))
-                    .reshaped(1, 1, 32).asType(.bfloat16)
-            }
-        }
-        let projection = compile { (x: MLXArray) in
-            square(x.asType(.float32)).sum(axis: -1)
-        }
-        let first = Qwen4ExpDeferredPLE()
-        let firstGraph = projection(prepare(5, scope: first))
-        XCTAssertEqual(loads, 0)
-        XCTAssertEqual(cache.hostNGramHistory, [2, 3])
-        first.flush()
-        XCTAssertEqual(firstGraph.asArray(Float.self), [1_568])
-        XCTAssertEqual(cache.hostNGramHistory, [3, 5])
-
-        let second = Qwen4ExpDeferredPLE()
-        let secondGraph = projection(prepare(11, scope: second))
-        XCTAssertEqual(loads, 1)
-        XCTAssertEqual(cache.hostNGramHistory, [3, 5])
-        second.flush()
-        XCTAssertEqual(secondGraph.asArray(Float.self), [6_272])
-        XCTAssertEqual(firstGraph.asArray(Float.self), [1_568],
-                       "A later token must not overwrite an earlier graph's private leaf")
-        XCTAssertEqual(cache.hostNGramHistory, [5, 11])
-        first.flush()
-        second.flush()
-        XCTAssertEqual(loads, 2)
-        XCTAssertEqual(cache.hostNGramHistory, [5, 11])
-    }
-
 
     func testMTPHonorsLengthAndCancellationAcrossRequests() async throws {
         let model = try await makeModel()
