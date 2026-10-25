@@ -5453,6 +5453,12 @@ final class Qwen4ExpDecoderLayer: Module {
         return linearAttention!(input, cache: cache, verificationPolicy: nil)
     }
 
+    // Passive diagnostic: retain existing prefill arrays without another
+    // forward, HC flush, synchronization, or dispatch-policy change.
+    // Never enabled by model configuration, environment, or serving options.
+    var passivePrefillWidthForTesting: Int?
+    var passivePrefillStagesForTesting: [String: MLXArray] = [:]
+
     var referenceBlockedRecurrenceForTesting: Bool {
         get { linearAttention?.referenceBlockedRecurrenceForTesting ?? false }
         set {
@@ -5976,6 +5982,14 @@ final class Qwen4ExpDecoderLayer: Module {
                 weights: attentionRead.2,
                 verificationPolicy: nil)
             mlpOutput = mlp(mlpRead.0, verificationPolicy: verificationPolicy)
+        }
+        if let width = passivePrefillWidthForTesting,
+           input.dim(1) == width, verificationPolicy == nil,
+           compiledTail == nil, passivePrefillStagesForTesting.isEmpty {
+            passivePrefillStagesForTesting = [
+                "attn-read": attentionRead.0, "attn-output": attended,
+                "mlp-read": mlpRead.0, "mlp-output": mlpOutput,
+            ]
         }
         hostProfiler?.lap(.hyperConnectionRead)
         hostProfiler?.lap(.mlp)

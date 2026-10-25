@@ -757,7 +757,77 @@ capture controls are retained under `QwenWarmNativeStrideScores20261024` and
 are `qwen-blocked-kernel-timing-20261024.json` and
 `qwen-blocked-disabled-control-20261024.json`.
 
-Next source discrepancy to isolate: native `prefillDqGemm` uses transient
-BF16 dequantization plus dense GEMM at 2,048+ rows; AFM's ordinary quantized
-linear keeps quantizedMM. Matching recurrence on already-projected inputs did
-not test this projection choice. No quality or speed benefit is established yet.
+### Long-prefill projection policy: no observed numerical change
+
+Native `prefillDqGemm` uses transient BF16 dequantization plus dense GEMM at
+2,048+ rows. A test-only `QuantizedLinear` subclass applies this policy using
+the exact packed checkpoint arrays. Its disabled control preserves all 320
+saved opening score arrays. The enabled policy records engagement at 6,630
+rows, but **also preserves all 320 score arrays byte-for-byte**. The five
+winner-overlap counts remain 58,59,59,58,61 out of 64. This does not explain
+the divergence. The two saved safetensors containers can differ in header
+ordering; the comparison checks individual tensor payloads, not file hashes.
+
+The enabled test passes in 35.13 seconds. Peak active allocation is
+73,582,902,754 bytes; this is a diagnostic allocation measurement, not a
+production memory benchmark. No speed claim or default change follows.
+Evidence: `QwenOpeningDQControlScores20261024`,
+`QwenOpeningDQScores20261024`, and
+`qwen-dq-payload-comparison-20261024.json` under the external evidence root.
+
+The next diagnostic retains ordinary-forward HC/attention/MLP intermediates
+without re-forwarding or flushing a pending HC write. Native capture runs in
+its own checkout; both engines must preserve their uncaptured score controls
+before the retained values can support a numerical-divergence claim.
+
+### Passive ordinary-forward capture locates the first difference
+
+The native diagnostic binary is built in a separate checkout from pinned
+reference source. Frozen/capture-off/capture-on replies and usage match.
+All 64 captured raw score tensors match the prior qualified native capture
+byte-for-byte. AFM's passive capture also preserves all 320 prior score arrays.
+Its test passes in 34.88 seconds after a 186.86-second Release build. Neither
+capture changes the pending-HC schedule or recomputes an observed stage.
+
+On the ordinary first 6,630-token chunk, the full first-layer attention input
+matches exactly: 16,972,800/16,972,800 values. The first observed difference is
+the GDN output: 23,534 values differ (0.1387%), with RMS 0.00000738 and relative
+RMS 0.00007634. The next HC/MLP input differs in 105,707 values; this is after
+the differing GDN output, so it is not an independent HC bug diagnosis.
+At layer seven, final-row MLP output relative RMS is 0.02188. This demonstrates
+accumulated numerical divergence, not that the first small difference alone
+causes the full coding-quality gap.
+
+Evidence: `QwenOpeningPassiveNative20261024`,
+`QwenOpeningPassiveScores20261024`, `qwen-passive-afm-control-20261024.json`,
+and `qwen-passive-forward-comparison-20261024.json`. Native binary SHA-256:
+`3afa9724564391ceeb633930a81955992c39698bb90a9b3ac2bc270843e7b064`.
+The source manifest/patch and added diagnostic source files are retained beside
+those reports. The next isolated test feeds this identical first-layer input
+into the current and source-matched GDN implementations, with both state
+precisions, and requires the ordinary control to reproduce the captured AFM
+output before comparing counterfactuals.
+
+The isolated first-GDN test now passes: ordinary FP32 state reproduces the
+captured AFM output exactly. Current recurrence with either FP32 or BF16
+initial zero state differs from native in the same 23,534 output values.
+The blocked recurrence with either state type reproduces **all 16,972,800
+native output values exactly**. Thus arithmetic order in the recurrence,
+rather than initial state precision, accounts for this first cold-chunk
+difference. This does not establish the cause of every later divergence.
+
+Eight alternating measurements of the complete isolated first GDN layer:
+
+| Recurrence / initial state | Median ms | Differing native output values |
+|---|---:|---:|
+| Current / FP32 | 38.7662 | 23,534 |
+| Current / BF16 | 45.1738 | 23,534 |
+| Blocked / FP32 | 40.2229 | 0 |
+| Blocked / BF16 | 40.2724 | 0 |
+
+This includes projections, prework, recurrence, output gate/projection, dispatch
+and evaluation. It is a first-layer microbenchmark, not a full-model speed claim.
+The blocked/FP32 increase is 3.76% here. Evidence is
+`QwenNativeGDNForward20261024`; test duration 4.27 seconds. No serving switch
+has changed. The follow-up retains later stages with the blocked diagnostic
+enabled to locate the next divergence rather than assume this solves quality.

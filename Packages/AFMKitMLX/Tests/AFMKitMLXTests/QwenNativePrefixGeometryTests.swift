@@ -21,6 +21,8 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
     private struct Fixture: Decodable {
         let case_id: String?
         let blocked_recurrence: Bool?
+        let prefill_projection: String?
+        let passive_forward: Bool?
         let model: String
         let histories: [History]
         let rows: [Row]
@@ -80,6 +82,27 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
         let context = try await LLMModelFactory.shared.load(configuration:
             ModelConfiguration(directory: URL(fileURLWithPath: fixture.model)))
         let model = try XCTUnwrap(context.model as? Qwen4ExpModel)
+        let passiveLayers = model.namedModules().compactMap { name, module -> (Int, Qwen4ExpDecoderLayer)? in
+            guard let layer = module as? Qwen4ExpDecoderLayer,
+                  let index = Int(name.split(separator: ".").last ?? ""), index < 8 else { return nil }
+            return (index, layer)
+        }.sorted { $0.0 < $1.0 }
+        if fixture.passive_forward == true {
+            XCTAssertEqual(fixture.case_id, "opening-r1-64")
+            XCTAssertEqual(passiveLayers.map(\.0), Array(0..<8))
+            for (_, layer) in passiveLayers { layer.passivePrefillWidthForTesting = 6630 }
+        }
+        defer {
+            for (_, layer) in passiveLayers {
+                layer.passivePrefillWidthForTesting = nil
+                layer.passivePrefillStagesForTesting = [:]
+            }
+        }
+        let projectionPolicy = fixture.prefill_projection ?? "unchanged"
+        XCTAssertTrue(["unchanged", "control", "dense"].contains(projectionPolicy))
+        let projections = projectionPolicy == "unchanged" ? [] :
+            QwenReferencePrefillProjection.install(in: model, enabled: projectionPolicy == "dense")
+        if projectionPolicy != "unchanged" { XCTAssertFalse(projections.isEmpty) }
         let useBlocked = fixture.blocked_recurrence ?? false
         let recurrentLayers = model.modules().compactMap { $0 as? Qwen4ExpDecoderLayer }
             .filter { $0.isLinear }
@@ -94,6 +117,10 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
                 "fixture_sha256": digest(data), "records": records,
                 "checkpoint": fixture.model,
                 "blocked_recurrence_diagnostic_only": useBlocked,
+                "prefill_projection_diagnostic_only": projectionPolicy,
+                "passive_forward_diagnostic_only": fixture.passive_forward ?? false,
+                "projection_engagement": projections.map { ["module": $0.0, "widths": $0.1.engagementReport] as [String: Any] },
+                "peak_active_memory_bytes": Memory.peakMemory,
                 "blocked_calls_per_layer": recurrentLayers.map(\.referenceBlockedCallsForTesting),
                 "scope": "Diagnostic raw logits on reference teacher prefixes. Production split30+1, joined final31, and BF16 state-value counterfactuals. A reconstructed split must exactly reproduce production before its state intervention is interpreted. FP32 buffers and AFM dispatch are retained. No generated tools, sampling, task quality or performance claim.",
                 "reference_state_limit": "Reference captures use its own default state policy; changing tail geometry does not align every numerical policy.",
@@ -166,6 +193,21 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
                 // The counterfactual only begins at the captured request.
                 if history.request == probeRequest { try persistState() }
             }
+            if fixture.passive_forward == true, arm == "production-split" {
+                var stages: [String: MLXArray] = [:]
+                for (index, layer) in passiveLayers {
+                    XCTAssertEqual(layer.passivePrefillStagesForTesting.count, 4)
+                    for (name, value) in layer.passivePrefillStagesForTesting {
+                        XCTAssertEqual(Array(value.shape.prefix(2)), [1, 6630])
+                        stages[String(format: "layer-%03d-", index) + name] = index == 0
+                            ? value : value[0..., (value.dim(1) - 1)..., 0...]
+                    }
+                    layer.passivePrefillWidthForTesting = nil
+                    layer.passivePrefillStagesForTesting = [:]
+                }
+                // Existing first-token eval above has already completed.
+                try save(arrays: stages, url: root.appendingPathComponent("passive-forward.safetensors"))
+            }
             var prefix = fixture.histories[1].tokens
             var scores = [String: MLXArray]()
             for (index, row) in fixture.rows.enumerated() {
@@ -214,6 +256,12 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
             try save(arrays: scores, url: root.appendingPathComponent(arm + ".safetensors"))
             let own = records.filter { $0["arm"] as? String == arm }
             print("NATIVE_PREFIX arm=\(arm) raw_winner_overlap=\(own.filter { $0["raw_winner_sets_overlap"] as? Bool == true }.count)/\(own.count)")
+            if projectionPolicy == "dense" {
+                XCTAssertTrue(projections.contains { !$0.1.engagedWidths.isEmpty },
+                              "Dense projection counterfactual must engage")
+            } else {
+                XCTAssertTrue(projections.allSatisfy { $0.1.engagedWidths.isEmpty })
+            }
             if useBlocked {
                 XCTAssertTrue(recurrentLayers.allSatisfy { $0.referenceBlockedCallsForTesting > 0 },
                               "The counterfactual must actually execute the blocked kernel in every recurrent layer")
