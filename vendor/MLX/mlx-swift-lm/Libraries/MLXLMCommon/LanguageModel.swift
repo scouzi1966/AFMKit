@@ -220,10 +220,23 @@ public struct InteriorPrefillCapture {
 /// Successful snapshots must be independent of subsequent live-cache mutations.
 /// Only ordinary text with no additional continuation state is eligible.
 public protocol InteriorPrefillCaptureModel: LanguageModel {
+    /// A model numerical policy may require the final token to share the
+    /// last prefill forward. The scheduler still owns memory bounds, fallback,
+    /// cancellation and snapshot publication. Defaults preserve split prefill.
+    var prefersJoinedFinalTokenPrefill: Bool { get }
+    /// Optional absolute-coordinate alignment for non-final prefill chunks.
+    /// The scheduler must still honor its memory limit and preserve a joined
+    /// final-token segment. Nil leaves every existing chunk boundary unchanged.
+    var preferredPrefillAlignment: Int? { get }
     func prefillCapturingBoundary(
         _ input: LMInput.Text, cache: [KVCache], state: LMOutput.State?,
         restoredPrefix: Int, boundary: Int, hostTokenIDs: [Int]?
     ) throws -> InteriorPrefillCapture?
+}
+
+extension InteriorPrefillCaptureModel {
+    public var prefersJoinedFinalTokenPrefill: Bool { false }
+    public var preferredPrefillAlignment: Int? { nil }
 }
 
 /// Optional one-token batch adapter for independently positioned requests.

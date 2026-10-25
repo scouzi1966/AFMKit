@@ -2408,6 +2408,24 @@ public final class MLXModelService:
             if actualFactory != selectedFactory {
                 print("[\(ts())] [ModelArchitecture] actualFactory=VLM (LLM fallback)")
             }
+            // Isolated serial-AR qualification candidate. The model verifies
+            // loaded quantization/geometry before changing arithmetic. Keep MTP
+            // and concurrent runtimes on their prior path until independently
+            // qualified; no environment or user-facing switch selects this.
+            if !mtpEnabled && maxConcurrent < 2 {
+                let referenceMatched = await loaded.perform { context in
+                    if let qwen = context.model as? Qwen4ExpModel {
+                        return qwen.configureReferenceMatchedSerialArithmetic()
+                    }
+                    if let qwen = context.model as? Qwen4ExpVL {
+                        return qwen.configureReferenceMatchedSerialArithmetic()
+                    }
+                    return false
+                }
+                if referenceMatched {
+                    print("[\(ts())] [QwenArithmetic] Reference-matched serial qualification candidate enabled")
+                }
+            }
             // Load speculative resources only after the base model has loaded.
             // Qwen Next and GLM load native predictors from their main
             // checkpoint. Earlier Qwen generations continue using sidecars.
@@ -4056,14 +4074,27 @@ public final class MLXModelService:
                         }).output
                 }
             }
+            let wantsReasoningBudget = templateInjectedThink
+                && (context.model is Qwen4ExpModel || context.model is Qwen4ExpVL)
+                && QwenReasoningBudgetPolicy.tokenLimit(context: scratch.userInput.additionalContext) != nil
+                && QwenReasoningBudgetPolicy.supports(parameters: params)
+            let budgetInput = wantsReasoningBudget ? QwenReasoningBudgetPolicy.iteratorInput(
+                generateInput, hasPreparedPrefill: preparedPrefill != nil) : nil
+            let reasoningBudget = try QwenReasoningBudgetPolicy.make(
+                context: scratch.userInput.additionalContext,
+                isQwenNext: budgetInput != nil && (context.model is Qwen4ExpModel || context.model is Qwen4ExpVL),
+                templateOpenedThink: templateInjectedThink, parameters: params,
+                terminalTokenIDs: context.configuration.resolvedEOSTokenIds(tokenizer: context.tokenizer),
+                encode: { context.tokenizer.encode(text: $0) })
             let generationIterator = try TokenIterator(
-                input: generateInput,
+                input: reasoningBudget == nil ? generateInput : budgetInput!,
                 model: context.model,
                 cache: generationCache,
                 parameters: params,
                 processorPrompt: cachedTokenCount > 0 ? MLXArray(inputTokens) : nil,
                 preparedPrefill: preparedPrefill,
-                promptBoundaryObserver: promptBoundaryObserver
+                promptBoundaryObserver: promptBoundaryObserver,
+                reasoningBudget: reasoningBudget
             )
             let (generationStream, generationTask) = MLXLMCommon.generateTask(
                 promptTokenCount: generateInput.text.tokens.size,
@@ -5138,15 +5169,28 @@ public final class MLXModelService:
                                     }).output
                             }
                         }
+                        let wantsReasoningBudget = templateInjectedThink
+                            && (context.model is Qwen4ExpModel || context.model is Qwen4ExpVL)
+                            && QwenReasoningBudgetPolicy.tokenLimit(context: streamScratch.userInput.additionalContext) != nil
+                            && QwenReasoningBudgetPolicy.supports(parameters: params)
+                        let budgetInput = wantsReasoningBudget ? QwenReasoningBudgetPolicy.iteratorInput(
+                            generateInput, hasPreparedPrefill: preparedPrefill != nil) : nil
+                        let reasoningBudget = try QwenReasoningBudgetPolicy.make(
+                            context: streamScratch.userInput.additionalContext,
+                            isQwenNext: budgetInput != nil && (context.model is Qwen4ExpModel || context.model is Qwen4ExpVL),
+                            templateOpenedThink: templateInjectedThink, parameters: params,
+                            terminalTokenIDs: context.configuration.resolvedEOSTokenIds(tokenizer: context.tokenizer),
+                            encode: { context.tokenizer.encode(text: $0) })
                         do {
                             generationIterator = try TokenIterator(
-                                input: generateInput,
+                                input: reasoningBudget == nil ? generateInput : budgetInput!,
                                 model: context.model,
                                 cache: generationCache,
                                 parameters: params,
                                 processorPrompt: streamCachedTokens > 0 ? MLXArray(inputTokens) : nil,
                                 preparedPrefill: preparedPrefill,
-                                promptBoundaryObserver: promptBoundaryObserver
+                                promptBoundaryObserver: promptBoundaryObserver,
+                                reasoningBudget: reasoningBudget
                             )
                         } catch {
                             if debugLogging {

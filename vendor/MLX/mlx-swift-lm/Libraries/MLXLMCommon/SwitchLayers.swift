@@ -1281,9 +1281,20 @@ public class SwitchGLU: Module, SwitchGLULayer {
         callAsFunction(input, indices, preDownScores: nil, forceSort: true)
     }
 
+    /// Captured-input diagnostic: retain ordinary projection/reordering while
+    /// allowing the owning model to isolate its activation arithmetic.
+    package func activationRowsForTesting(
+        _ input: MLXArray, _ indices: MLXArray,
+        activation: @escaping (MLXArray, MLXArray) -> MLXArray
+    ) -> MLXArray {
+        callAsFunction(input, indices, preDownScores: nil, forceSort: false,
+                       activationOverride: activation)
+    }
+
     private func callAsFunction(
         _ input: MLXArray, _ indices: MLXArray,
-        preDownScores: MLXArray?, forceSort: Bool
+        preDownScores: MLXArray?, forceSort: Bool,
+        activationOverride: ((MLXArray, MLXArray) -> MLXArray)? = nil
     ) -> MLXArray {
         if !forceSort { ensureFusedGateUp() }
 
@@ -1334,6 +1345,7 @@ public class SwitchGLU: Module, SwitchGLULayer {
         }
 
         func activate(_ gate: MLXArray, _ up: MLXArray) -> MLXArray {
+            if let activationOverride { return activationOverride(gate, up) }
             if let scores = alignedScores, let scoredGlue {
                 return scoredGlue(gate, up, scores)
             }

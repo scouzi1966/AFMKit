@@ -218,19 +218,25 @@ final class Qwen4ExpZeroCenteredRMSNorm: Module {
     @ParameterInfo(key: "weight") var weight: MLXArray
     let groupSize: Int
     let eps: Float
+    // Only an HC owner opts into its prefill rounding contract. Generic
+    // grouped norms (including PLE) retain their existing arithmetic.
+    let referenceHCPrefillNormalization: Bool
 
     /// Request-isolated checkpoint diagnosis only; no public API or environment
     /// option enables this. Tests restore it before releasing their model.
     /// Keep the production precision contract until whole-model qualification.
     var referenceGroupedPrefillRoundingForTesting = false
+    var referenceGroupedAllWidthsRoundingForTesting = false
 
-    init(dimensions: Int, groupSize: Int? = nil, eps: Float) {
+    init(dimensions: Int, groupSize: Int? = nil, eps: Float,
+         referenceHCPrefillNormalization: Bool = false) {
         self.groupSize = groupSize ?? dimensions
         self.eps = eps
+        self.referenceHCPrefillNormalization = referenceHCPrefillNormalization
         _weight.wrappedValue = MLXArray.zeros([dimensions])
     }
 
-    func callAsFunction(_ x: MLXArray) -> MLXArray {
+    func callAsFunction(_ x: MLXArray, allowShortHCPrefill: Bool = false) -> MLXArray {
         let originalShape = x.shape
         if originalShape.last == groupSize {
             // Use the canonical optimized RMS kernel for a full-width group.
@@ -241,13 +247,14 @@ final class Qwen4ExpZeroCenteredRMSNorm: Module {
         }
         let grouped = x.reshaped(
             Array(originalShape.dropLast()) + [-1, groupSize])
-        if x.ndim == 3, x.dim(0) == 1, x.dim(1) >= 128,
-            referenceGroupedPrefillRoundingForTesting
+        if referenceGroupedAllWidthsRoundingForTesting ||
+            (x.ndim == 3 && x.dim(0) == 1 && x.dim(1) >= 128 &&
+                referenceGroupedPrefillRoundingForTesting)
         {
             // Diagnostic equation from ddalcu/mlx-serve (MIT), v26.9.2,
             // transformer.zig hcGroupNorm: round RMS output before gamma.
-            // Singleton decode, small verification blocks and batching stay
-            // on their existing path even in this test-only experiment.
+            // The separate all-width diagnostic also covers tail/decode rows.
+            // Both switches are false in serving.
             let normalized = MLXFast.rmsNorm(grouped,
                 weight: MLXArray.ones([groupSize], dtype: x.dtype), eps: eps)
             return (normalized * (weight + 1).reshaped(-1, groupSize))
@@ -257,7 +264,9 @@ final class Qwen4ExpZeroCenteredRMSNorm: Module {
             input: x,
             normWeight: weight,
             groupSize: groupSize,
-            epsilon: eps)
+            epsilon: eps,
+            referenceHCRounding: referenceHCPrefillNormalization,
+            allowShortHCPrefill: allowShortHCPrefill)
         {
             return fused
         }
@@ -352,6 +361,12 @@ final class Qwen4ExpGatedResidual: Module {
         fusedVerificationMode == "auto" ? 2 : nil
     private static let fusedFinalMixerEnabled =
         ProcessInfo.processInfo.environment["AFM_QWEN_FUSED_FINAL_MIXER"] == "1"
+
+    // Diagnostic instance policy; set before any compiled owner is traced.
+    var referenceInjectionGateForTesting = false
+    var referenceDecodeNormForTesting = false
+    var referenceMaterializedInjectionForTesting = false
+    var referenceFusedFinalMixerForTesting = false
 
     let hcCount: Int
     let hiddenSize: Int
@@ -455,20 +470,20 @@ final class Qwen4ExpGatedResidual: Module {
                 verificationPolicy: nil, role: .hyperConnection)
         }
         let down = projectedDown[0..., ..<normalized.dim(1)]
-        let activated = silu(down / Float(hcCount))
+        let activated = Qwen4ExpHCActivation.silu(down / Float(hcCount))
         let up = qwen4ExpVerificationLinear(inputMixWeightUp, activated,
             verificationPolicy: nil, role: .hyperConnection)
         let mixed = Qwen4ExpHyperConnectionFusion.mixGroupedPrefill(
             up: up, normalized: normalized, groupSize: hiddenSize)
             ?? {
                 let shape = Array(normalized.shape.dropLast())
-                return (sigmoid(up).reshaped(shape + [hcCount, hiddenSize])
+                return (Qwen4ExpHCActivation.sigmoid(up).reshaped(shape + [hcCount, hiddenSize])
                     * normalized.reshaped(shape + [hcCount, hiddenSize])).mean(axis: -2)
             }()
         let injectionProjection = qwen4ExpVerificationLinear(
             blockInjectWeight!, normalized, verificationPolicy: nil,
             role: .hyperConnection)
-        let injection = 2 * sigmoid(injectionProjection / Float(hcCount))
+        let injection = 2 * Qwen4ExpHCActivation.sigmoid(injectionProjection / Float(hcCount))
         return [("hc_normalized", normalized), ("hc_down", down),
             ("hc_activated", activated), ("hc_up", up),
             ("hc_mixed", mixed), ("hc_injection", injection)]
@@ -479,7 +494,8 @@ final class Qwen4ExpGatedResidual: Module {
         hiddenSize = config.hiddenSize
         let width = hcCount * hiddenSize
         _hcNorm.wrappedValue = Qwen4ExpZeroCenteredRMSNorm(
-            dimensions: width, groupSize: hiddenSize, eps: config.rmsNormEps)
+            dimensions: width, groupSize: hiddenSize, eps: config.rmsNormEps,
+            referenceHCPrefillNormalization: true)
         _inputMixWeightDown.wrappedValue = Linear(width, config.hcLowRank, bias: false)
         _inputMixWeightUp.wrappedValue = Linear(config.hcLowRank, width, bias: false)
         if useCombine {
@@ -496,17 +512,17 @@ final class Qwen4ExpGatedResidual: Module {
             inputMixWeightDown, normalized, verificationPolicy: verificationPolicy,
             role: .hyperConnection)
         let up = qwen4ExpVerificationLinear(
-            inputMixWeightUp, silu(down / Float(hcCount)),
+            inputMixWeightUp, Qwen4ExpHCActivation.silu(down / Float(hcCount)),
             verificationPolicy: verificationPolicy,
             role: .hyperConnection)
         let mixed = Qwen4ExpHyperConnectionFusion.mixGroupedPrefill(
             up: up, normalized: normalized, groupSize: hiddenSize)
             ?? {
                 let shape = Array(normalized.shape.dropLast())
-                return (sigmoid(up).reshaped(shape + [hcCount, hiddenSize])
+                return (Qwen4ExpHCActivation.sigmoid(up).reshaped(shape + [hcCount, hiddenSize])
                     * normalized.reshaped(shape + [hcCount, hiddenSize])).mean(axis: -2)
             }()
-        let injection = 2 * sigmoid(qwen4ExpVerificationLinear(
+        let injection = 2 * Qwen4ExpHCActivation.sigmoid(qwen4ExpVerificationLinear(
             blockInjectWeight!, normalized, verificationPolicy: verificationPolicy,
             role: .hyperConnection) / Float(hcCount))
         return (mixed, residual, injection)
@@ -520,7 +536,7 @@ final class Qwen4ExpGatedResidual: Module {
             inputMixWeightDown, normalized, verificationPolicy: verificationPolicy,
             role: .hyperConnection)
         let up = qwen4ExpVerificationLinear(
-            inputMixWeightUp, silu(down / Float(hcCount)),
+            inputMixWeightUp, Qwen4ExpHCActivation.silu(down / Float(hcCount)),
             verificationPolicy: verificationPolicy,
             role: .hyperConnection)
         if let fused = Qwen4ExpHyperConnectionFusion.mixGroupedPrefill(
@@ -529,7 +545,7 @@ final class Qwen4ExpGatedResidual: Module {
             return fused
         }
         let shape = Array(normalized.shape.dropLast())
-        return (sigmoid(up).reshaped(shape + [hcCount, hiddenSize])
+        return (Qwen4ExpHCActivation.sigmoid(up).reshaped(shape + [hcCount, hiddenSize])
             * normalized.reshaped(shape + [hcCount, hiddenSize])).mean(axis: -2)
     }
 
@@ -555,12 +571,15 @@ final class Qwen4ExpGatedResidual: Module {
                hiddenSize: hiddenSize,
                epsilon: hcNorm.eps,
                allowExtendedRows: qwen4ExpUsesExtendedVerificationHC(input, policy: verificationPolicy),
+               referenceInjectionGateForTesting: referenceInjectionGateForTesting,
+               referenceDecodeNormForTesting: referenceDecodeNormForTesting,
                verificationPolicy: verificationPolicy)
         {
             return (fused.mixed, input, fused.injection)
         }
         return mixNormalized(
-            hcNorm(input), residual: input, verificationPolicy: verificationPolicy)
+            hcNorm(input, allowShortHCPrefill: verificationPolicy == nil),
+            residual: input, verificationPolicy: verificationPolicy)
     }
 
     func mixAfterInjection(
@@ -587,6 +606,8 @@ final class Qwen4ExpGatedResidual: Module {
                pendingWeights: weights,
                matchFusedInjection: matchFusedInjection,
                allowExtendedRows: qwen4ExpUsesExtendedVerificationHC(residual, policy: verificationPolicy),
+               referenceInjectionGateForTesting: referenceInjectionGateForTesting,
+               referenceDecodeNormForTesting: referenceDecodeNormForTesting,
                verificationPolicy: verificationPolicy)
         {
             return (fused.mixed, fused.stream, fused.injection)
@@ -619,7 +640,9 @@ final class Qwen4ExpGatedResidual: Module {
                 down: inputMixWeightDown, up: inputMixWeightUp,
                 inject: blockInjectWeight, hcCount: hcCount,
                 hiddenSize: hiddenSize, epsilon: hcNorm.eps,
-                pendingOutput: output, pendingWeights: weights)
+                pendingOutput: output, pendingWeights: weights,
+                referenceInjectionGateForTesting: referenceInjectionGateForTesting,
+                referenceDecodeNormForTesting: referenceDecodeNormForTesting)
         else { return nil }
         return (fused.mixed, fused.stream, fused.injection)
     }
@@ -628,7 +651,7 @@ final class Qwen4ExpGatedResidual: Module {
         _ input: MLXArray,
         verificationPolicy: MTPVerificationPolicy? = nil
     ) -> MLXArray {
-        if (Self.fusedFinalMixerEnabled && verificationPolicy == nil)
+        if ((Self.fusedFinalMixerEnabled || referenceFusedFinalMixerForTesting) && verificationPolicy == nil)
             || qwen4ExpCanFuseVerificationHC(
                 input, policy: verificationPolicy, enabled: Self.fusedVerificationEnabled,
                 maximumBatchSize: Self.fusedVerificationMaximumBatchSize),
@@ -643,11 +666,15 @@ final class Qwen4ExpGatedResidual: Module {
                hiddenSize: hiddenSize,
                epsilon: hcNorm.eps,
                allowExtendedRows: qwen4ExpUsesExtendedVerificationHC(input, policy: verificationPolicy),
+               referenceInjectionGateForTesting: referenceInjectionGateForTesting,
+               referenceDecodeNormForTesting: referenceDecodeNormForTesting,
                verificationPolicy: verificationPolicy)
         {
             return fused.mixed
         }
-        return combineNormalized(hcNorm(input), verificationPolicy: verificationPolicy)
+        return combineNormalized(
+            hcNorm(input, allowShortHCPrefill: verificationPolicy == nil),
+            verificationPolicy: verificationPolicy)
     }
 
     func combineAfterInjection(
@@ -656,7 +683,7 @@ final class Qwen4ExpGatedResidual: Module {
         weights: MLXArray,
         verificationPolicy: MTPVerificationPolicy? = nil
     ) -> MLXArray {
-        if (Self.fusedFinalMixerEnabled && verificationPolicy == nil)
+        if ((Self.fusedFinalMixerEnabled || referenceFusedFinalMixerForTesting) && verificationPolicy == nil)
             || qwen4ExpCanFuseVerificationHC(
                 residual, policy: verificationPolicy, enabled: Self.fusedVerificationEnabled,
                 maximumBatchSize: Self.fusedVerificationMaximumBatchSize),
@@ -673,6 +700,8 @@ final class Qwen4ExpGatedResidual: Module {
                pendingOutput: output,
                pendingWeights: weights,
                allowExtendedRows: qwen4ExpUsesExtendedVerificationHC(residual, policy: verificationPolicy),
+               referenceInjectionGateForTesting: referenceInjectionGateForTesting,
+               referenceDecodeNormForTesting: referenceDecodeNormForTesting,
                verificationPolicy: verificationPolicy)
         {
             return fused.mixed
@@ -703,7 +732,8 @@ final class Qwen4ExpGatedResidual: Module {
             weights: weights,
             hcCount: hcCount,
             hiddenSize: hiddenSize,
-            allowExtendedRows: qwen4ExpUsesExtendedVerificationHC(residual, policy: verificationPolicy))
+            allowExtendedRows: qwen4ExpUsesExtendedVerificationHC(residual, policy: verificationPolicy),
+            referenceProductRoundingForTesting: referenceMaterializedInjectionForTesting)
         {
             return fused
         }
@@ -785,6 +815,26 @@ final class Qwen4ExpMultimodalRoPE {
             scale: 1,
             offset: offset
         ).reshaped(sequenceLength, dimensions)
+    }
+
+    /// Diagnostic scalar text path used by the pinned native engine's long
+    /// prefill. Callers must exclude explicit multimodal position coordinates.
+    func applyScalarTextForTesting(_ tensor: MLXArray, offset: Int) -> MLXArray {
+        MLXFast.RoPE(tensor, dimensions: dimensions, traditional: false,
+            base: base, scale: 1, offset: offset)
+    }
+
+    /// Native plain-text pooled-key spectrum. Deliberately isolated from
+    /// multimodal tables until independently qualified for those coordinates.
+    func referenceTextFrequenciesForTesting(positionIDs: MLXArray, dtype: DType)
+        -> (MLXArray, MLXArray)
+    {
+        precondition(positionIDs.ndim == 2)
+        let coefficient: Float = -2 * log(base) / Float(dimensions)
+        let inverse = exp(MLXArray(0..<(dimensions / 2)).asType(.float32) * coefficient)
+        let angles = positionIDs.asType(.float32)[0..., 0..., .newAxis] * inverse
+        let embedded = concatenated([angles, angles], axis: -1)
+        return (cos(embedded).asType(dtype), sin(embedded).asType(dtype))
     }
 
     fileprivate func hasSameGeometry(as other: Qwen4ExpMultimodalRoPE) -> Bool {
@@ -1811,44 +1861,40 @@ enum Qwen4ExpQSADecodeScores {
         inputNames: ["queries", "block_keys"],
         outputNames: ["scores"],
         source: """
+            #pragma clang fp reassociate(off)
             constexpr int dimension = 128;
 
-            const int block = int(threadgroup_position_in_grid.x);
+            const int index = int(thread_position_in_grid.x);
+            const int block = index / 4;
+            const int head = index % 4;
             const int batch = int(threadgroup_position_in_grid.y);
-            const ushort lane = ushort(thread_index_in_simdgroup);
+            if (block >= block_keys_shape[1]) return;
 
-            float accum0 = 0.0f;
-            float accum1 = 0.0f;
-            float accum2 = 0.0f;
-            float accum3 = 0.0f;
-
-            for (int column = int(lane); column < dimension; column += 32) {
+            // Match the FP32 column-order accumulation used by mlx-serve's
+            // composed QSA scorer on M3 (transformer.zig, qsaScoreSheetComposed,
+            // source revision 02bee553f48cd3bc7d82aba0f8073820bd924738).
+            // A lane reduction changes near-tied block ranks; parallelize
+            // independent heads/blocks instead of the additions within a dot.
+            float value = 0.0f;
+            #pragma clang loop unroll(disable)
+            for (int column = 0; column < dimension; ++column) {
                 const float key = float(block_keys[
                     (long)batch * block_keys_strides[0]
                     + (long)block * block_keys_strides[1]
                     + (long)column * block_keys_strides[2]]);
                 const long queryBase = (long)batch * queries_strides[0]
+                    + (long)head * queries_strides[1]
                     + (long)column * queries_strides[3];
-                accum0 += float(queries[
-                    queryBase + 0L * queries_strides[1]]) * key;
-                accum1 += float(queries[
-                    queryBase + 1L * queries_strides[1]]) * key;
-                accum2 += float(queries[
-                    queryBase + 2L * queries_strides[1]]) * key;
-                accum3 += float(queries[
-                    queryBase + 3L * queries_strides[1]]) * key;
+                value = metal::fma(float(queries[queryBase]), key, value);
             }
 
-            accum0 = metal::simd_sum(accum0);
-            accum1 = metal::simd_sum(accum1);
-            accum2 = metal::simd_sum(accum2);
-            accum3 = metal::simd_sum(accum3);
-            if (lane == 0) {
+            value = metal::max(value, 0.0f);
+            const float head1 = metal::simd_shuffle_down(value, 1);
+            const float head2 = metal::simd_shuffle_down(value, 2);
+            const float head3 = metal::simd_shuffle_down(value, 3);
+            if (head == 0) {
                 scores[(long)batch * block_keys_shape[1] + (long)block]
-                    = metal::max(accum0, 0.0f)
-                    + metal::max(accum1, 0.0f)
-                    + metal::max(accum2, 0.0f)
-                    + metal::max(accum3, 0.0f);
+                    = ((value + head1) + head2) + head3;
             }
         """,
         ensureRowContiguous: false)
@@ -1876,8 +1922,8 @@ enum Qwen4ExpQSADecodeScores {
         return kernel(
             [queries, blockKeys],
             template: [("T", DType.bfloat16)],
-            grid: (blocks * 32, batch, 1),
-            threadGroup: (32, 1, 1),
+            grid: (blocks * 4, batch, 1),
+            threadGroup: (128, 1, 1),
             outputShapes: [[batch, blocks]],
             outputDTypes: [.float32],
             cacheConfiguration: true)[0]
@@ -1888,6 +1934,9 @@ enum Qwen4ExpQSADecodeScores {
 /// from the decode score row. This preserves the reference's lower-index tie
 /// preference and incomplete-tail semantics while avoiding both MLX's generic
 /// arg-partition graph and the K-by-token equality tensor on every token.
+/// Match mlx-serve's qsaSelectTopBlocks ordering (src/transformer.zig): rank
+/// raw scores, using block index only for exact ties. An index-dependent score
+/// subtraction can reverse unequal scores and change the attended content.
 ///
 /// The rank kernel is intentionally limited to decode: each thread owns one
 /// compressed block, ranks that block against the score row, and writes its
@@ -1898,6 +1947,33 @@ enum Qwen4ExpQSADecodeMask {
         ProcessInfo.processInfo.environment[
             "AFM_QWEN_QSA_DECODE_MASK_FUSION"
         ] != "0"
+
+    /// Reuse the exact radix selector for a serial decode's fully visible key
+    /// span. This replaces quadratic score ranking, but leaves the boolean
+    /// mask and stock masked attention unchanged. Wider cache capacities and
+    /// batching retain the rank-mask fallback below.
+    static func callUsingRadix(
+        scores: MLXArray,
+        visibleCount: Int,
+        keyLength: Int,
+        compressionRatio: Int,
+        blockTopK: Int
+    ) -> MLXArray? {
+        guard enabled,
+              scores.ndim == 2, scores.dtype == .float32,
+              scores.dim(0) == 1,
+              visibleCount > 0, visibleCount == keyLength,
+              compressionRatio > 0, blockTopK > 0,
+              scores.dim(1) == visibleCount / compressionRatio,
+              scores.dim(1) > blockTopK,
+              let selected = Qwen4ExpQSAVerifyRadixSelection.call(
+                scores: scores.expandedDimensions(axis: 1),
+                visibleBlockCounts: [scores.dim(1)], topK: blockTopK)
+        else { return nil }
+
+        return Qwen4ExpQSAGather.maskFromBlocks(
+            selected, keyLength: keyLength, compressionRatio: compressionRatio)
+    }
 
     private static let kernel = MLXFast.metalKernel(
         name: "qwen4_exp_qsa_decode_mask",
@@ -1919,12 +1995,12 @@ enum Qwen4ExpQSADecodeMask {
                 const long score_base = (long)batch * scores_strides[0];
                 const float current = float(scores[
                     score_base + (long)block * scores_strides[1]
-                ]) - float(block) * 1.0e-7f;
+                ]);
                 int higher = 0;
                 for (int index = 0; index < visible_blocks; ++index) {
                     const float candidate = float(scores[
                         score_base + (long)index * scores_strides[1]
-                    ]) - float(index) * 1.0e-7f;
+                    ]);
                     higher += candidate > current
                         || (candidate == current && index < int(block));
                 }
@@ -2110,6 +2186,26 @@ enum Qwen4ExpQSADecodeBlocks {
 }
 
 final class Qwen4ExpQSAIndexer: Module {
+    // Reference text queries use scalar MLX RoPE; pooled keys retain cos/sin.
+    // Diagnostic only: leave explicit multimodal positions and serving unchanged.
+    var referenceScalarTextQueriesForTesting = false
+    var referenceScalarTextQueriesAllWidthsForTesting = false
+    var referencePooledTextSpectrumForTesting = false
+    var referenceMatchedDecodeForTesting = false
+    var referenceStrictPrefillGatherBoundaryForTesting = false
+    var passiveCaptureForTesting = false
+    var passiveCaptureWidthForTesting = 6630
+    var passiveCaptureOffsetForTesting = 0
+    var passiveAttentionCaptureForTesting = false
+    var passiveStagesForTesting: [String: MLXArray] = [:]
+    fileprivate func retainPassive(_ key: String, _ value: MLXArray, length: Int, offset: Int) {
+        if key.hasPrefix("attention-"), !passiveAttentionCaptureForTesting { return }
+        if passiveCaptureForTesting, length == passiveCaptureWidthForTesting,
+           offset == passiveCaptureOffsetForTesting,
+           passiveStagesForTesting[key] == nil { passiveStagesForTesting[key] = value }
+    }
+
+
     private static let compileDecode =
         ProcessInfo.processInfo.environment[
             "AFM_QWEN_COMPILE_QSA_INDEXER"
@@ -2236,11 +2332,11 @@ final class Qwen4ExpQSAIndexer: Module {
                 bank = a[2]
             }
             let scores = maximum(matmul(query.asType(.float32), bank), MLXArray(0)).sum(axis: 1)
-            let blockIDs = MLX.arange(capacity, dtype: .int32)
-            let biased = scores - blockIDs.asType(.float32) * Self.tieBreakScale
             // Shapes and eligibility are checked before entering this graph.
+            // The radix selector resolves exact ties itself. An index bias
+            // would also change the order of unequal, closely spaced scores.
             let selected = Qwen4ExpQSAVerifyRadixSelection.callWithRuntimeBounds(
-                scores: biased, visibleBlockCounts: a[6], topK: self.blockTopK)!
+                scores: scores, visibleBlockCounts: a[6], topK: self.blockTopK)!
             let valid = selected .< capacity
             let safe = MLX.where(valid, selected, MLXArray(Int32(capacity)))
             var blockMask = MLXArray.zeros([1, width, capacity + 1], dtype: .bool)
@@ -2302,7 +2398,7 @@ final class Qwen4ExpQSAIndexer: Module {
     private func prepareBlockKeys(
         _ rawKeys: MLXArray, positionIDs: MLXArray,
         sharedTables: Qwen4ExpQSAPositionTables? = nil,
-        offset: Int = 0
+        offset: Int = 0, referenceTextSpectrum: Bool = false
     ) -> MLXArray {
         let pooled = rawKeys
             .reshaped(rawKeys.dim(0), rawKeys.dim(1) / compressRatio, compressRatio, headDim)
@@ -2310,8 +2406,10 @@ final class Qwen4ExpQSAIndexer: Module {
         let normalized = expandedDimensions(kLayerNorm(pooled), axis: 1)
         return rope.apply(
             normalized, positionIDs: positionIDs,
-            sharedFrequencies: sharedTables?.frequencies(offset: offset, count: pooled.dim(1),
-                stride: compressRatio, batch: rawKeys.dim(0), dtype: normalized.dtype)
+            sharedFrequencies: referenceTextSpectrum
+                ? rope.referenceTextFrequenciesForTesting(positionIDs: positionIDs, dtype: normalized.dtype)
+                : sharedTables?.frequencies(offset: offset, count: pooled.dim(1),
+                    stride: compressRatio, batch: rawKeys.dim(0), dtype: normalized.dtype)
         ).squeezed(axis: 1)
     }
 
@@ -2378,6 +2476,7 @@ final class Qwen4ExpQSAIndexer: Module {
             let qk = projectedQK ?? qwen4ExpVerificationLinear(
                 indexQKProj, hidden, verificationPolicy: verificationPolicy,
                 role: .indexer)
+            retainPassive("qsa-qk", qk, length: length, offset: previousOffset)
             let splitPoint = heads * headDim
             let parts = MLX.split(qk, indices: [splitPoint], axis: -1)
             queryRows = parts[0]
@@ -2433,7 +2532,13 @@ final class Qwen4ExpQSAIndexer: Module {
         let sharedTables = providedPositionIDs == nil && positionTables?.matches(rope) == true
             ? positionTables : nil
         let queries: MLXArray
-        if let eagerQueries {
+        if (referenceScalarTextQueriesForTesting && length > 32)
+            || referenceScalarTextQueriesAllWidthsForTesting,
+           providedPositionIDs == nil, batch == 1 {
+            let normalized = qLayerNorm(queryRows.reshaped(batch, length, heads, headDim))
+                .transposed(0, 2, 1, 3)
+            queries = rope.applyScalarTextForTesting(normalized, offset: previousOffset)
+        } else if let eagerQueries {
             queries = eagerQueries
         } else if let sharedTables {
             queries = prepareQueries(queryRows, batch: batch, length: length,
@@ -2473,7 +2578,9 @@ final class Qwen4ExpQSAIndexer: Module {
             // The first sparse call can initialize the full historical bank.
             // Compile only bounded newly completed blocks, never that history.
             let sharedBlockTables = cache?.hasOnlyImplicitIndexPositions == true ? sharedTables : nil
-            let newBlockKeys = sharedBlockTables != nil
+            let newBlockKeys = referencePooledTextSpectrumForTesting && providedPositionIDs == nil
+                ? prepareBlockKeys(rawKeys, positionIDs: blockPositionIDs, referenceTextSpectrum: true)
+                : sharedBlockTables != nil
                 ? prepareBlockKeys(rawKeys, positionIDs: blockPositionIDs,
                     sharedTables: sharedBlockTables, offset: rawStart)
                 : compiledStrictPreparation
@@ -2487,6 +2594,8 @@ final class Qwen4ExpQSAIndexer: Module {
         } else {
             blockKeys = cachedBlockKeys!
         }
+        retainPassive("qsa-queries", queries, length: length, offset: previousOffset)
+        retainPassive("qsa-pooled", blockKeys, length: length, offset: previousOffset)
         // A one-token decode does not benefit from the row-batched selector;
         // its score-sheet setup is measurable on every generated token. Keep
         // the original single-row graph for decode and reserve vectorization
@@ -2496,7 +2605,14 @@ final class Qwen4ExpQSAIndexer: Module {
                 previousOffset: previousOffset,
                 compressionRatio: compressRatio,
                 blockTopK: blockTopK)
-            if needsBlockSelection,
+            if needsBlockSelection, referenceMatchedDecodeForTesting,
+               batch == 1, totalLength > 8192, hidden.dtype == .bfloat16 {
+                // Native qsaWantsBlocks uses stock gathered SDPA beyond 8K;
+                // below that crossover it retains the full masked arm.
+                return .blocks(selectDecodeBlocks(
+                    queries: queries, blockKeys: blockKeys, previousOffset: previousOffset))
+            }
+            if needsBlockSelection, !referenceMatchedDecodeForTesting,
                Qwen4ExpQSAFusedDecodeAttention.shouldSelectScores(
                 batch: batch,
                 keyLength: totalLength,
@@ -2508,7 +2624,7 @@ final class Qwen4ExpQSAIndexer: Module {
                     blockKeys: blockKeys,
                     previousOffset: previousOffset))
             }
-            if needsBlockSelection,
+            if needsBlockSelection, !referenceMatchedDecodeForTesting,
                Qwen4ExpQSADecodeAttention.shouldSelectBlocks(
                 batch: batch,
                 keyLength: totalLength,
@@ -2555,12 +2671,14 @@ final class Qwen4ExpQSAIndexer: Module {
         {
             return .blocks(selectedBlocks)
         }
-        if Qwen4ExpQSAGather.shouldSelectBlocks(
+        if !(referenceStrictPrefillGatherBoundaryForTesting && totalLength == 8192),
+           Qwen4ExpQSAGather.shouldSelectBlocks(
             batch: batch,
             queryLength: length,
             keyLength: totalLength,
             dtype: hidden.dtype)
         {
+            retainPassive("qsa-selection", selectedBlocks, length: length, offset: previousOffset)
             return .blocks(selectedBlocks)
         }
         if verificationPolicy == .batched,
@@ -2570,10 +2688,10 @@ final class Qwen4ExpQSAIndexer: Module {
         {
             return .mask(mask)
         }
-        return .mask(Qwen4ExpQSAGather.maskFromBlocks(
-            selectedBlocks,
-            keyLength: totalLength,
-            compressionRatio: compressRatio))
+        let selectedMask = Qwen4ExpQSAGather.maskFromBlocks(
+            selectedBlocks, keyLength: totalLength, compressionRatio: compressRatio)
+        retainPassive("qsa-selection", selectedMask, length: length, offset: previousOffset)
+        return .mask(selectedMask)
     }
 
     private func combinedSparsePipeline(
@@ -2636,6 +2754,16 @@ final class Qwen4ExpQSAIndexer: Module {
             queries: queries,
             blockKeys: blockKeys,
             previousOffset: previousOffset)
+        if referenceMatchedDecodeForTesting,
+           let radixMask = Qwen4ExpQSADecodeMask.callUsingRadix(
+            scores: scores,
+            visibleCount: visibleCount,
+            keyLength: totalLength,
+            compressionRatio: compressRatio,
+            blockTopK: blockTopK)
+        {
+            return radixMask
+        }
         if let fusedMask = Qwen4ExpQSADecodeMask.call(
             scores: scores,
             visibleCount: visibleCount,
@@ -2670,22 +2798,23 @@ final class Qwen4ExpQSAIndexer: Module {
             queries: queries,
             blockKeys: blockKeys,
             previousOffset: previousOffset)
-        let blockIDs = MLX.arange(visibleBlocks, dtype: .int32)
-        let biasedScores = scores
-            - blockIDs.asType(.float32) * Self.tieBreakScale
         // Reuse the exact radix selector qualified for bounded MTP
         // verification. A decode request is the same selection problem with
         // one row: scores are runtime-width data, ties prefer the lower block
-        // index, and the result is emitted in cache order.
+        // index, and the result is emitted in cache order. Pass raw scores:
+        // subtracting an index bias can reverse unequal scores at long context.
         if let fused = Qwen4ExpQSAVerifyRadixSelection.call(
-            scores: biasedScores.expandedDimensions(axis: 0),
+            scores: scores.expandedDimensions(axis: 0),
             visibleBlockCounts: Array(
                 repeating: visibleBlocks,
-                count: biasedScores.dim(0)),
+                count: scores.dim(0)),
             topK: blockTopK)
         {
-            return fused.reshaped(biasedScores.dim(0), 1, blockTopK)
+            return fused.reshaped(scores.dim(0), 1, blockTopK)
         }
+        let blockIDs = MLX.arange(visibleBlocks, dtype: .int32)
+        let biasedScores = scores
+            - blockIDs.asType(.float32) * Self.tieBreakScale
         let selected = MLX.argPartition(
             -biasedScores, kth: blockTopK - 1, axis: -1
         )[0..., ..<blockTopK].asType(.int32)
@@ -2769,7 +2898,6 @@ final class Qwen4ExpQSAIndexer: Module {
         }
         let blockIDs = MLX.arange(completeBlocks, dtype: .int32)[
             .newAxis, .newAxis, 0...]
-        let tieBreak = blockIDs.asType(.float32) * Self.tieBreakScale
         var chunks = [MLXArray]()
         chunks.reserveCapacity((length + rowsPerChunk - 1) / rowsPerChunk)
 
@@ -2790,9 +2918,8 @@ final class Qwen4ExpQSAIndexer: Module {
             } else {
                 let queryChunk = queries[0..., 0..., start ..< end, 0...]
                 let rawScores = composedScoreSheet(queryChunk)
-                let biasedScores = rawScores - tieBreak
                 if let fused = Qwen4ExpQSAVerifyRadixSelection.call(
-                    scores: biasedScores,
+                    scores: rawScores,
                     visibleBlockCounts: (start..<end).map {
                         min(completeBlocks, (previousOffset + $0 + 1) / compressRatio)
                     },
@@ -2801,6 +2928,8 @@ final class Qwen4ExpQSAIndexer: Module {
                     chunks.append(fused)
                     continue
                 }
+                let biasedScores = rawScores
+                    - blockIDs.asType(.float32) * Self.tieBreakScale
                 let maskedScores = MLX.where(
                     visible,
                     biasedScores,
@@ -2838,6 +2967,13 @@ final class Qwen4ExpQSAIndexer: Module {
 }
 
 private final class Qwen4ExpAttention: Module {
+    // Match the pinned native long-prefill path for isolated diagnosis only.
+    // The serving path remains unchanged; short-tail/decode fusion stays on.
+    var referenceScalarPrefillRoPEForTesting = false
+    var referencePrefillGateForTesting = false
+    var referenceTailGateForTesting = false
+    var referenceDecodeGateForTesting = false
+    var referenceFusedRotationForTesting = false
     static let sharedRequestProjections =
         ProcessInfo.processInfo.environment["AFM_QWEN_BATCH_ATTENTION_PROJECTIONS"] == "1"
 
@@ -2923,7 +3059,8 @@ private final class Qwen4ExpAttention: Module {
             epsilon: self.qNorm.eps,
             qHeads: self.heads,
             kvHeads: self.kvHeads,
-            rotaryDimensions: self.rope.dimensions)
+            rotaryDimensions: self.rope.dimensions,
+            referenceRotationForTesting: referenceFusedRotationForTesting)
         precondition(
             fusedQK != nil,
             "compiled Qwen attention decode requires fused QK norm/RoPE")
@@ -2946,7 +3083,8 @@ private final class Qwen4ExpAttention: Module {
                 let output = outputHeads
                     .transposed(0, 2, 1, 3)
                     .reshaped(outputHeads.dim(0), outputHeads.dim(2), -1)
-                    * sigmoid(gate)
+                    * ((self.referenceDecodeGateForTesting && outputHeads.dim(2) == 1)
+                        ? Qwen4ExpHCActivation.sigmoid(gate) : sigmoid(gate))
                 return [qwen4ExpVerificationLinear(
                     self.oProj, output, verificationPolicy: nil,
                     role: .attention)]
@@ -3197,11 +3335,19 @@ private final class Qwen4ExpAttention: Module {
                     epsilon: qNorm.eps,
                     qHeads: heads,
                     kvHeads: kvHeads,
-                    rotaryDimensions: rope.dimensions)
+                    rotaryDimensions: rope.dimensions,
+                    referenceRotationForTesting: referenceFusedRotationForTesting
+                        && providedPositionIDs == nil && sharedFusedQKAngles != nil)
             } else {
                 fusedQK = nil
             }
-            if let fusedQK {
+            if referenceScalarPrefillRoPEForTesting, l > 32,
+               b == 1, providedPositionIDs == nil {
+                q = rope.applyScalarTextForTesting(
+                    qNorm(qInput).transposed(0, 2, 1, 3), offset: offset)
+                k = rope.applyScalarTextForTesting(
+                    kNorm(kInput).transposed(0, 2, 1, 3), offset: offset)
+            } else if let fusedQK {
                 q = fusedQK.q
                 k = fusedQK.k
             } else {
@@ -3215,6 +3361,11 @@ private final class Qwen4ExpAttention: Module {
         }
         attentionHostProfiler?.projections()
         attentionProfiler?.lap([q, k, v], stage: "qk-rope")
+        if indexer.passiveAttentionCaptureForTesting {
+            indexer.retainPassive("attention-query", q, length: l, offset: offset)
+            indexer.retainPassive("attention-key", k, length: l, offset: offset)
+            indexer.retainPassive("attention-value", v, length: l, offset: offset)
+        }
         let effectiveMask: MLXFast.ScaledDotProductAttentionMaskMode
         if case let .some(.mask(qsaMask)) = qsaSelection {
             effectiveMask = .array(qsaMask)
@@ -3235,6 +3386,10 @@ private final class Qwen4ExpAttention: Module {
             batch: b, queryLength: l, keyLength: (cache?.offset ?? 0) + l, dtype: q.dtype)
         {
             let cached = cache?.update(keys: k, values: v) ?? (k, v)
+            if indexer.passiveAttentionCaptureForTesting {
+                indexer.retainPassive("attention-cached-key", cached.0, length: l, offset: offset)
+                indexer.retainPassive("attention-cached-value", cached.1, length: l, offset: offset)
+            }
             if let sparse = Qwen4ExpQSAVerificationSparseAttention.call(
                 queries: q, keys: cached.0, values: cached.1, scale: scale,
                 selectedBlocks: selectedBlocks, compressionRatio: indexer.compressRatio)
@@ -3282,6 +3437,10 @@ private final class Qwen4ExpAttention: Module {
                 contiguousFeatures: cache is Qwen4ExpAttentionCache)
         } else if case let .some(.mask(qsaMask)) = qsaSelection {
             let cached = cache?.update(keys: k, values: v) ?? (k, v)
+            if indexer.passiveAttentionCaptureForTesting {
+                indexer.retainPassive("attention-cached-key", cached.0, length: l, offset: offset)
+                indexer.retainPassive("attention-cached-value", cached.1, length: l, offset: offset)
+            }
             if let fused = Qwen4ExpQSAMaskedAttention.call(
                 queries: q,
                 keys: cached.0,
@@ -3300,6 +3459,10 @@ private final class Qwen4ExpAttention: Module {
             }
         } else if case let .some(.decodeScores(scores)) = qsaSelection {
             let cached = cache?.update(keys: k, values: v) ?? (k, v)
+            if indexer.passiveAttentionCaptureForTesting {
+                indexer.retainPassive("attention-cached-key", cached.0, length: l, offset: offset)
+                indexer.retainPassive("attention-cached-value", cached.1, length: l, offset: offset)
+            }
             if let decoded = Qwen4ExpQSAFusedDecodeAttention.call(
                 queries: q,
                 keys: cached.0,
@@ -3336,7 +3499,16 @@ private final class Qwen4ExpAttention: Module {
             }
         } else if case let .some(.blocks(selectedBlocks)) = qsaSelection {
             let cached = cache?.update(keys: k, values: v) ?? (k, v)
-            if let decoded = Qwen4ExpQSADecodeAttention.call(
+            if indexer.passiveAttentionCaptureForTesting {
+                indexer.retainPassive("attention-cached-key", cached.0, length: l, offset: offset)
+                indexer.retainPassive("attention-cached-value", cached.1, length: l, offset: offset)
+            }
+            if indexer.referenceMatchedDecodeForTesting,
+               let gathered = Qwen4ExpSelectedRowsDecodeAttention.call(
+                queries: q, keys: cached.0, values: cached.1, scale: scale,
+                selectedBlocks: selectedBlocks, compressionRatio: indexer.compressRatio) {
+                outputHeads = gathered
+            } else if let decoded = Qwen4ExpQSADecodeAttention.call(
                 queries: q,
                 keys: cached.0,
                 values: cached.1,
@@ -3368,6 +3540,10 @@ private final class Qwen4ExpAttention: Module {
             }
         } else {
             let cached = cache?.update(keys: k, values: v) ?? (k, v)
+            if indexer.passiveAttentionCaptureForTesting {
+                indexer.retainPassive("attention-cached-key", cached.0, length: l, offset: offset)
+                indexer.retainPassive("attention-cached-value", cached.1, length: l, offset: offset)
+            }
             let usesCausalMask: Bool
             if case .causal = effectiveMask {
                 usesCausalMask = true
@@ -3398,9 +3574,15 @@ private final class Qwen4ExpAttention: Module {
         }
         attentionHostProfiler?.attention()
         attentionProfiler?.lap([outputHeads], stage: "cache-sdpa")
+        if indexer.passiveAttentionCaptureForTesting {
+            indexer.retainPassive("attention-heads", outputHeads, length: l, offset: offset)
+            indexer.retainPassive("attention-gate", gate, length: l, offset: offset)
+        }
         let result: MLXArray
         if deferOutputProjection {
-            result = outputHeads.transposed(0, 2, 1, 3).reshaped(b, l, -1) * sigmoid(gate)
+            let gateValues = referenceDecodeGateForTesting && l == 1
+                ? Qwen4ExpHCActivation.sigmoid(gate) : sigmoid(gate)
+            result = outputHeads.transposed(0, 2, 1, 3).reshaped(b, l, -1) * gateValues
         } else if Self.compileDecode,
            (verificationPolicy == nil && l == 1) || compiledBatchedProjection
         {
@@ -3408,7 +3590,11 @@ private final class Qwen4ExpAttention: Module {
         } else {
             var output = outputHeads
                 .transposed(0, 2, 1, 3).reshaped(b, l, -1)
-            output = output * sigmoid(gate)
+            let gateValues = ((referencePrefillGateForTesting && l > 32)
+                || (referenceTailGateForTesting && (17...32).contains(l))
+                || (referenceDecodeGateForTesting && l == 1))
+                ? Qwen4ExpHCActivation.sigmoid(gate) : sigmoid(gate)
+            output = output * gateValues
             result = qwen4ExpVerificationLinear(
                 oProj, output, verificationPolicy: verificationPolicy,
                 role: .attention)
@@ -3478,9 +3664,12 @@ func qwen4ExpSupportsCompiledGDNPrework(
 
 private final class Qwen4ExpGatedDeltaNet: Module {
     let captureRecurrentStates: Bool
-    // Match MLX RMSNorm's FP32 prefill reduction and BF16 scaling boundaries.
-    // Decode and verifier widths retain their existing arithmetic.
-    var useReferencePrefillQKNormalization = true
+    // Checkpoint diagnostic only; never set by runtime configuration.
+    var referencePrefillQKNormalizationForTesting = false
+    // Per-model diagnostic only; no environment variable or serving option.
+    var referenceBlockedRecurrenceForTesting = false
+    var referenceRoundedDecodePersistenceForTesting = false
+    private(set) var referenceBlockedCallsForTesting = 0
     private static let compileDecode =
         ProcessInfo.processInfo.environment["AFM_QWEN_COMPILE_GDN_DECODE"] != "0"
             && HardwareInfo.isModelOwnedCompiledDecodeSupported
@@ -3553,7 +3742,13 @@ private final class Qwen4ExpGatedDeltaNet: Module {
                     valueHeads: self.valueHeads,
                     keyHeadDimension: self.keyHeadDim,
                     valueHeadDimension: self.valueHeadDim,
-                    convolutionKernel: self.convKernel)
+                    convolutionKernel: self.convKernel,
+                    // Match the ordinary prefill/verifier path. Leaving this
+                    // at the helper's legacy default changes Q/K arithmetic
+                    // when the same sequence enters compiled decode.
+                    referenceArithmetic: Qwen4ExpGatedDeltaPrework.usesReferenceArithmetic(
+                        dtype: x.dtype, keyHeadDimension: self.keyHeadDim,
+                        valueHeadDimension: self.valueHeadDim))
                 precondition(
                     prework != nil,
                     "compiled Qwen GDN decode requires the fused one-token prework")
@@ -3564,7 +3759,8 @@ private final class Qwen4ExpGatedDeltaNet: Module {
                     v: prepared.values,
                     g: prepared.gate,
                     beta: prepared.beta,
-                    state: recurrentState)
+                    state: recurrentState,
+                    persistStateAsBF16: self.referenceRoundedDecodePersistenceForTesting)
                 let z = qwen4ExpVerificationLinear(
                     self.inProjZ, x, verificationPolicy: nil,
                     role: .gatedDelta)
@@ -3761,10 +3957,12 @@ private final class Qwen4ExpGatedDeltaNet: Module {
                 keyHeadDimension: keyHeadDim,
                 valueHeadDimension: valueHeadDim,
                 convolutionKernel: convKernel,
-                referencePrefillQKNormalization: Qwen4ExpGatedDeltaPrework.shouldUseReferencePrefillNormalization(
-                    enabled: useReferencePrefillQKNormalization, batchSize: b,
-                    sequenceLength: l, keyHeadDimension: keyHeadDim,
-                    valueHeadDimension: valueHeadDim, hasVerificationPolicy: verificationPolicy != nil))
+                referencePrefillQKNormalization: referencePrefillQKNormalizationForTesting
+                    && b == 1
+                    && l >= Qwen4ExpGatedDeltaPrework.minimumReferencePrefillSequenceLength,
+                referenceArithmetic: Qwen4ExpGatedDeltaPrework.usesReferenceArithmetic(
+                    dtype: x.dtype, keyHeadDimension: keyHeadDim,
+                    valueHeadDimension: valueHeadDim))
             : nil
 
         let q: MLXArray
@@ -3855,6 +4053,9 @@ private final class Qwen4ExpGatedDeltaNet: Module {
         }
         let output: MLXArray
         let state: MLXArray
+        let roundDecodeState = referenceRoundedDecodePersistenceForTesting
+            && verificationPolicy == nil && l == 1
+        var stateAlreadyRounded = false
         if verificationPolicy == nil,
            let capture = (cache as? Qwen4ExpLayerCache)?.prefillCapture,
            fusedPrework != nil || useExplicitGating,
@@ -3905,18 +4106,28 @@ private final class Qwen4ExpGatedDeltaNet: Module {
             output = captured.output
             state = captured.state
             layerCache.gatedDeltaRollback?.recurrentHistory = captured.history
+        } else if referenceBlockedRecurrenceForTesting, verificationPolicy == nil,
+                  let fusedPrework,
+                  let blocked = qwen4ExpBlockedGatedDeltaKernel(
+                    q: q, k: k, v: v, g: fusedPrework.gate,
+                    beta: fusedPrework.beta, state: recurrentState)
+        {
+            referenceBlockedCallsForTesting += 1
+            (output, state) = blocked
         } else if let fusedPrework {
             (output, state) = gatedDeltaKernel(
                 q: q, k: k, v: v,
                 g: fusedPrework.gate,
                 beta: fusedPrework.beta,
-                state: recurrentState)
+                state: recurrentState, persistStateAsBF16: roundDecodeState)
+            stateAlreadyRounded = roundDecodeState
         } else if useExplicitGating {
             (output, state) = gatedDeltaKernel(
                 q: q, k: k, v: v,
                 g: computeGFloat32(aLog, a, dtBias),
                 beta: sigmoid(rawB),
-                state: recurrentState)
+                state: recurrentState, persistStateAsBF16: roundDecodeState)
+            stateAlreadyRounded = roundDecodeState
         } else {
             (output, state) = gatedDeltaUpdate(
                 q: q, k: k, v: v,
@@ -3924,7 +4135,8 @@ private final class Qwen4ExpGatedDeltaNet: Module {
                 ALog: aLog, dtBias: dtBias,
                 state: recurrentState, useKernel: true)
         }
-        cache?[1] = state
+        cache?[1] = roundDecodeState && !stateAlreadyRounded
+            ? state.asType(.bfloat16).asType(.float32) : state
         let z = qwen4ExpVerificationLinear(
             inProjZ, x, verificationPolicy: verificationPolicy,
             role: .gatedDelta)
@@ -4063,6 +4275,7 @@ private final class Qwen4ExpMLP: Module, UnaryLayer {
     @ModuleInfo(key: "gate_proj") var gateProj: Linear
     @ModuleInfo(key: "up_proj") var upProj: Linear
     @ModuleInfo(key: "down_proj") var downProj: Linear
+    var referenceActivationForTesting = false
 
     init(dimensions: Int, hiddenDimensions: Int) {
         _gateProj.wrappedValue = Linear(dimensions, hiddenDimensions, bias: false)
@@ -4082,13 +4295,24 @@ private final class Qwen4ExpMLP: Module, UnaryLayer {
             gateProj, x, verificationPolicy: verificationPolicy, role: .expert)
         let up = qwen4ExpVerificationLinear(
             upProj, x, verificationPolicy: verificationPolicy, role: .expert)
+        let activated = referenceActivationForTesting
+            ? Qwen4ExpHCActivation.silu(gate) * up : silu(gate) * up
         return qwen4ExpVerificationLinear(
-            downProj, silu(gate) * up,
+            downProj, activated,
             verificationPolicy: verificationPolicy, role: .expert)
     }
 }
 
 private final class Qwen4ExpSparseMoE: Module, UnaryLayer {
+    var referenceRoutedDecodeActivationForTesting = false {
+        didSet {
+            referenceDecodeTable = referenceRoutedDecodeActivationForTesting
+                ? Qwen4ExpHCActivation.sigmoidTableBF16 : nil
+        }
+    }
+    private var referenceDecodeTable: MLXArray?
+    var referenceDownReductionForTesting = false
+    var referenceRoutedPrefillActivationForTesting = false
     private static let fusedSharedExpert =
         ProcessInfo.processInfo.environment["AFM_QWEN_VERIFY_FUSED_SHARED_EXPERT"] == "1"
     private static let reportSharedExpertTrace =
@@ -4149,8 +4373,15 @@ private final class Qwen4ExpSparseMoE: Module, UnaryLayer {
             scores = stockScores
         }
         let routed: MLXArray
-        if let fused = switchMLP.qwenAffineDecode(x, indices: indices, scores: scores) {
+        if let fused = switchMLP.qwenAffineDecode(x, indices: indices, scores: scores,
+            referenceDownReductionForTesting: referenceDownReductionForTesting,
+            sigmoidTableOverrideForTesting: referenceDecodeTable) {
             routed = fused
+        } else if referenceRoutedPrefillActivationForTesting, x.dim(1) > 1 {
+            let experts = switchMLP.activationRowsForTesting(x, indices) {
+                Qwen4ExpHCActivation.silu($0) * $1
+            }
+            routed = (experts * scores[.ellipsis, .newAxis]).sum(axis: -2)
         } else {
             routed = (switchMLP(x, indices) * scores[.ellipsis, .newAxis]).sum(axis: -2)
         }
@@ -4251,7 +4482,9 @@ private final class Qwen4ExpSparseMoE: Module, UnaryLayer {
         }
         let fusedRouted: MLXArray?
         if verificationPolicy == nil {
-            fusedRouted = switchMLP.qwenAffineDecode(x, indices: indices, scores: scores)
+            fusedRouted = switchMLP.qwenAffineDecode(x, indices: indices, scores: scores,
+            referenceDownReductionForTesting: referenceDownReductionForTesting,
+            sigmoidTableOverrideForTesting: referenceDecodeTable)
         } else if verificationPolicy == .batched && Self.group64FusedVerifyExperts {
             fusedRouted = switchMLP.qwenIndependentAffineRows(
                 x, indices: indices, scores: scores, allowGroup64: true)
@@ -4261,6 +4494,14 @@ private final class Qwen4ExpSparseMoE: Module, UnaryLayer {
         let routed: MLXArray
         if let fusedRouted {
             routed = fusedRouted
+        } else if referenceRoutedPrefillActivationForTesting,
+                  verificationPolicy == nil, x.dim(1) > 1 {
+            // The short final prefill block needs the same activation rounding
+            // as a large block; singleton fused decode supplies its own table.
+            let experts = switchMLP.activationRowsForTesting(x, indices) {
+                Qwen4ExpHCActivation.silu($0) * $1
+            }
+            routed = (experts * scores[.ellipsis, .newAxis]).sum(axis: -2)
         } else {
             let routedExperts = verificationPolicy == .strictSingletonEquivalent
                 ? switchMLP.targetVerifyPreservingSingletonRows(x, indices)
@@ -4789,6 +5030,25 @@ private final class Qwen4ExpPLEProfiler {
     }
 }
 
+/// PLE arithmetic diagnostic. The ordinary branch preserves its existing
+/// denominator rounding; the reference branch mirrors the pinned native
+/// activation-dtype reciprocal multiply (ddalcu/mlx-serve, MIT).
+func qwen4ExpScalePLEGate(_ dots: MLXArray, hiddenSize: Int, reference: Bool) -> MLXArray {
+    if reference {
+        return dots * MLXArray(1 / sqrt(Float(hiddenSize))).asType(dots.dtype)
+    }
+    return dots / sqrt(Float(hiddenSize))
+}
+
+/// PLE's sigmoid must preserve the same BF16 operation rounding as the
+/// selected serial arithmetic profile. Other profiles keep their existing op.
+func qwen4ExpPLEGateSigmoid(_ gate: MLXArray, reference: Bool) -> MLXArray {
+    // Same activation-dtype sigmoid as mlx-serve's pleForward (MIT,
+    // transformer.zig, 02bee553). Share the already qualified precise BF16
+    // activation used by HC; generic MLX sigmoid differs at -6.84375.
+    reference ? Qwen4ExpHCActivation.sigmoid(gate) : sigmoid(gate)
+}
+
 private final class Qwen4ExpPLE: Module {
     /// Experimental request-owned PLE projection/convolution batching. Token
     /// histories and mapped n-gram lookups remain separate for every request.
@@ -4852,12 +5112,28 @@ private final class Qwen4ExpPLE: Module {
         pleEmbedding.rowIDsForTesting(inputIDs)
     }
 
+    var passiveWidthForTesting: Int?
+    var passiveStagesForTesting: [String: MLXArray] = [:]
+    var referenceGateScaleForTesting = false
+    var referenceGateActivationForTesting = false
+    var referenceConvolutionActivationForTesting = false
+    var passiveConvolutionForTesting = false {
+        didSet { if !passiveConvolutionForTesting { capturedConvolution = nil } }
+    }
+    private var capturedConvolution: MLXArray?
+
     private func shortConv(_ x: MLXArray, cache: ArraysCache?) -> MLXArray {
         let prior = cache?[2] ?? MLXArray.zeros(
             [x.dim(0), shortStateLength, x.dim(2)], dtype: x.dtype)
         let input = concatenated([prior, x], axis: 1)
         cache?[2] = input[0..., (input.dim(1) - shortStateLength)...]
-        return silu(conv1d(input))
+        let convolution = conv1d(input)
+        if passiveConvolutionForTesting, passiveWidthForTesting == x.dim(1),
+           passiveStagesForTesting.isEmpty {
+            capturedConvolution = convolution
+        }
+        return referenceConvolutionActivationForTesting
+            ? Qwen4ExpHCActivation.silu(convolution) : silu(convolution)
     }
 
     /// Share fixed-size PLE math without sharing the request's n-gram history.
@@ -4911,7 +5187,9 @@ private final class Qwen4ExpPLE: Module {
         let nextState = convolutionHistory[
             0..., (convolutionHistory.dim(1) - shortStateLength)..., 0...]
         for row in rows.indices { rows[row][2] = nextState[row..<(row + 1)] }
-        return gated + silu(conv1d(convolutionHistory))
+        let convolution = conv1d(convolutionHistory)
+        return gated + (referenceConvolutionActivationForTesting
+            ? Qwen4ExpHCActivation.silu(convolution) : silu(convolution))
     }
 
     func callAsFunction(
@@ -4944,12 +5222,16 @@ private final class Qwen4ExpPLE: Module {
             .reshaped(shape + [hcCount, hiddenSize])
         let query = normQuery(hidden).reshaped(shape + [hcCount, hiddenSize])
         profiler?.lap([key, query], stage: .keyQueryNorm)
-        var gate = (key * query).sum(axis: -1, keepDims: true) / sqrt(Float(hiddenSize))
+        var gate = qwen4ExpScalePLEGate(
+            (key * query).sum(axis: -1, keepDims: true), hiddenSize: hiddenSize,
+            reference: referenceGateScaleForTesting)
         gate = sign(gate) * sqrt(maximum(abs(gate), 1e-6))
         let value = expandedDimensions(
             valueProjection,
             axis: -2)
-        let gated = (sigmoid(gate) * value).reshaped(shape + [hcCount * hiddenSize])
+        let gated = (qwen4ExpPLEGateSigmoid(
+            gate, reference: referenceGateActivationForTesting) * value)
+            .reshaped(shape + [hcCount * hiddenSize])
         profiler?.lap(gated, stage: .gateAndValue)
         let convolutionInputs = normConv(gated)
         profiler?.lap(convolutionInputs, stage: .convolutionNorm)
@@ -4987,6 +5269,20 @@ private final class Qwen4ExpPLE: Module {
         let convolved = shortConv(convolutionInputs, cache: cache)
         profiler?.lap(convolved, stage: .shortConvolution)
         let output = gated + convolved
+        if let width = passiveWidthForTesting,
+           hidden.dim(1) == width, verificationPolicy == nil,
+           passiveStagesForTesting.isEmpty {
+            passiveStagesForTesting = [
+                "ple-stream": hidden, "ple-embedding": embedding,
+                "ple-key": key, "ple-query": query, "ple-value": valueProjection,
+                "ple-gated": gated, "ple-conv-input": convolutionInputs,
+                "ple-output": output,
+            ]
+            if passiveConvolutionForTesting, let capturedConvolution {
+                passiveStagesForTesting["ple-convolution"] = capturedConvolution
+                self.capturedConvolution = nil
+            }
+        }
         profiler?.lap(output, stage: .residual)
         profiler?.report()
         return output
@@ -5435,11 +5731,130 @@ final class Qwen4ExpDecoderLayer: Module {
         return linearAttention!(input, cache: cache, verificationPolicy: nil)
     }
 
-    var referenceGatedDeltaPrefillNormalizationForTesting: Bool {
-        get { linearAttention?.useReferencePrefillQKNormalization ?? false }
+    func moeForwardForTesting(_ input: MLXArray) -> MLXArray {
+        mlp(input, verificationPolicy: nil)
+    }
+
+    func moeStageTraceForTesting(_ input: MLXArray) -> [(String, MLXArray)] {
+        mlp.prefillStageTraceForTesting(input)
+    }
+
+    var referenceRoutedDecodeActivationForTesting: Bool {
+        get { mlp.referenceRoutedDecodeActivationForTesting }
+        set { mlp.referenceRoutedDecodeActivationForTesting = newValue }
+    }
+
+    var referenceDownReductionForTesting: Bool {
+        get { mlp.referenceDownReductionForTesting }
+        set { mlp.referenceDownReductionForTesting = newValue }
+    }
+
+    var referenceSharedActivationForTesting: Bool {
+        get { mlp.sharedExpert.referenceActivationForTesting }
+        set { mlp.sharedExpert.referenceActivationForTesting = newValue }
+    }
+
+    var referenceRoutedPrefillActivationForTesting: Bool {
+        get { mlp.referenceRoutedPrefillActivationForTesting }
+        set { mlp.referenceRoutedPrefillActivationForTesting = newValue }
+    }
+
+    var referencePooledIndexerSpectrumForTesting: Bool {
+        get { selfAttention?.indexer.referencePooledTextSpectrumForTesting ?? false }
+        set { selfAttention?.indexer.referencePooledTextSpectrumForTesting = newValue }
+    }
+
+    var referenceScalarIndexerQueriesForTesting: Bool {
+        get { selfAttention?.indexer.referenceScalarTextQueriesForTesting ?? false }
+        set { selfAttention?.indexer.referenceScalarTextQueriesForTesting = newValue }
+    }
+
+    var referenceScalarIndexerQueriesAllWidthsForTesting: Bool {
+        get { selfAttention?.indexer.referenceScalarTextQueriesAllWidthsForTesting ?? false }
+        set { selfAttention?.indexer.referenceScalarTextQueriesAllWidthsForTesting = newValue }
+    }
+
+    var referenceScalarPrefillRoPEForTesting: Bool {
+        get { selfAttention?.referenceScalarPrefillRoPEForTesting ?? false }
+        set { selfAttention?.referenceScalarPrefillRoPEForTesting = newValue }
+    }
+
+    var referenceAttentionPrefillGateForTesting: Bool {
+        get { selfAttention?.referencePrefillGateForTesting ?? false }
+        set { selfAttention?.referencePrefillGateForTesting = newValue }
+    }
+
+    var referenceAttentionDecodeGateForTesting: Bool {
+        get { selfAttention?.referenceDecodeGateForTesting ?? false }
+        set { selfAttention?.referenceDecodeGateForTesting = newValue }
+    }
+
+    var referenceAttentionTailGateForTesting: Bool {
+        get { selfAttention?.referenceTailGateForTesting ?? false }
+        set { selfAttention?.referenceTailGateForTesting = newValue }
+    }
+
+    var referenceFusedRotationForTesting: Bool {
+        get { selfAttention?.referenceFusedRotationForTesting ?? false }
+        set { selfAttention?.referenceFusedRotationForTesting = newValue }
+    }
+
+    // Passive diagnostic: retain existing prefill arrays without another
+    // forward, HC flush, synchronization, or dispatch-policy change.
+    // Never enabled by model configuration, environment, or serving options.
+    var passivePrefillWidthForTesting: Int?
+    var passivePrefillStagesForTesting: [String: MLXArray] = [:]
+
+    var passivePLEWidthForTesting: Int? {
+        get { ple?.passiveWidthForTesting }
+        set { ple?.passiveWidthForTesting = newValue }
+    }
+    var passivePLEStagesForTesting: [String: MLXArray] {
+        get { ple?.passiveStagesForTesting ?? [:] }
+        set { ple?.passiveStagesForTesting = newValue }
+    }
+    var referencePLEGateScaleForTesting: Bool {
+        get { ple?.referenceGateScaleForTesting ?? false }
+        set { ple?.referenceGateScaleForTesting = newValue }
+    }
+    var referencePLEGateActivationForTesting: Bool {
+        get { ple?.referenceGateActivationForTesting ?? false }
+        set { ple?.referenceGateActivationForTesting = newValue }
+    }
+    var referencePLEConvolutionActivationForTesting: Bool {
+        get { ple?.referenceConvolutionActivationForTesting ?? false }
+        set { ple?.referenceConvolutionActivationForTesting = newValue }
+    }
+    var passivePLEConvolutionForTesting: Bool {
+        get { ple?.passiveConvolutionForTesting ?? false }
+        set { ple?.passiveConvolutionForTesting = newValue }
+    }
+
+    var referenceBlockedRecurrenceForTesting: Bool {
+        get { linearAttention?.referenceBlockedRecurrenceForTesting ?? false }
         set {
             precondition(isLinear)
-            linearAttention!.useReferencePrefillQKNormalization = newValue
+            linearAttention!.referenceBlockedRecurrenceForTesting = newValue
+        }
+    }
+
+    var referenceBlockedCallsForTesting: Int {
+        linearAttention?.referenceBlockedCallsForTesting ?? 0
+    }
+
+    var referenceRoundedDecodePersistenceForTesting: Bool {
+        get { linearAttention?.referenceRoundedDecodePersistenceForTesting ?? false }
+        set {
+            precondition(isLinear)
+            linearAttention!.referenceRoundedDecodePersistenceForTesting = newValue
+        }
+    }
+
+    var referenceGatedDeltaPrefillNormalizationForTesting: Bool {
+        get { linearAttention?.referencePrefillQKNormalizationForTesting ?? false }
+        set {
+            precondition(isLinear)
+            linearAttention!.referencePrefillQKNormalizationForTesting = newValue
         }
     }
 
@@ -5628,7 +6043,9 @@ final class Qwen4ExpDecoderLayer: Module {
             attended: attended,
             residual: residual,
             injection: injection,
-            verificationPolicy: verificationPolicy)
+            verificationPolicy: verificationPolicy,
+            passiveAttentionRead: passivePrefillWidthForTesting == input.dim(1)
+                && verificationPolicy == nil ? mixed : nil)
     }
 
     /// Reuse the AR tail's model-owned graph and its exact M=1 kernel choices
@@ -5777,7 +6194,8 @@ final class Qwen4ExpDecoderLayer: Module {
         attended: MLXArray,
         residual initialResidual: MLXArray,
         injection initialInjection: MLXArray,
-        verificationPolicy: MTPVerificationPolicy?
+        verificationPolicy: MTPVerificationPolicy?,
+        passiveAttentionRead: MLXArray? = nil
     ) -> MLXArray {
         var mixed: MLXArray
         var residual = initialResidual
@@ -5787,8 +6205,17 @@ final class Qwen4ExpDecoderLayer: Module {
             residual: residual,
             weights: injection,
             verificationPolicy: verificationPolicy)
+        let mlpOutput = mlp(mixed, verificationPolicy: verificationPolicy)
+        if let passiveAttentionRead, passivePrefillStagesForTesting.isEmpty {
+            // Retain the ordinary short-prefill graph without evaluating or
+            // rebuilding it. Long prefill is captured in the deferred path.
+            passivePrefillStagesForTesting = [
+                "attn-read": passiveAttentionRead, "attn-output": attended,
+                "mlp-read": mixed, "mlp-output": mlpOutput,
+            ]
+        }
         return mlpHyperConnection.inject(
-            mlp(mixed, verificationPolicy: verificationPolicy),
+            mlpOutput,
             residual: residual,
             weights: injection,
             verificationPolicy: verificationPolicy)
@@ -5946,6 +6373,26 @@ final class Qwen4ExpDecoderLayer: Module {
                 weights: attentionRead.2,
                 verificationPolicy: nil)
             mlpOutput = mlp(mlpRead.0, verificationPolicy: verificationPolicy)
+        }
+        if let width = passivePrefillWidthForTesting,
+           input.dim(1) == width, verificationPolicy == nil,
+           passivePrefillStagesForTesting.isEmpty {
+            // Existing compiled results only: do not add compiled outputs or
+            // re-forward the tail to expose its otherwise-internal MLP read.
+            passivePrefillStagesForTesting = [
+                "attn-read": attentionRead.0, "attn-output": attended,
+                "mlp-output": mlpOutput,
+            ]
+            if compiledTail == nil {
+                passivePrefillStagesForTesting["mlp-read"] = mlpRead.0
+            }
+            if width == 1 {
+                // These are existing deferred-tail outputs, not added outputs
+                // of the compiled graph. Retain them without evaluating.
+                passivePrefillStagesForTesting["attn-injection"] = attentionRead.2
+                passivePrefillStagesForTesting["mlp-injection"] = mlpRead.2
+                passivePrefillStagesForTesting["mlp-stream"] = mlpRead.1
+            }
         }
         hostProfiler?.lap(.hyperConnectionRead)
         hostProfiler?.lap(.mlp)
@@ -6213,6 +6660,12 @@ private final class Qwen4ExpModelInner: Module {
                 hidden = hyperConnectionMixer.combine(
                     hidden, verificationPolicy: verificationPolicy)
             }
+        }
+        // Passive retention after the ordinary final mixer; never re-forward,
+        // materialize pending writes early, or add outputs inside a trace.
+        if let finalLayer = layers.last, finalLayer.passivePrefillWidthForTesting == 1,
+           hidden.dim(1) == 1 {
+            finalLayer.passivePrefillStagesForTesting["final-hidden"] = hidden
         }
         profiler?.report()
         hostProfiler?.report()
@@ -6757,6 +7210,88 @@ public final class Qwen4ExpModel: Module, LLMModel, KVCacheDimensionProvider, Re
     let configuration: Qwen4ExpTextConfiguration
     private let ngramTableConfiguration: Qwen4ExpNGramTableConfiguration?
     private var usesMappedNGramTable = false
+    public private(set) var usesReferenceMatchedSerialArithmetic = false
+
+    public var prefersJoinedFinalTokenPrefill: Bool { usesReferenceMatchedSerialArithmetic }
+    public var preferredPrefillAlignment: Int? {
+        usesReferenceMatchedSerialArithmetic ? 8192 : nil
+    }
+
+    /// Complete serial-AR qualification policy. Set once, after loading and
+    /// before any forward/compiled trace. The qualification serving candidate
+    /// enables this only for a serial, MTP-off runtime.
+    /// This consolidates the independently isolated reference arithmetic;
+    /// it does not qualify MTP, retained batching, vision or throughput.
+    @discardableResult
+    public func configureReferenceMatchedSerialArithmetic() -> Bool {
+        if usesReferenceMatchedSerialArithmetic { return true }
+        let quantized = model.modules().compactMap { $0 as? any Quantized }
+        let experts = model.modules().compactMap { $0 as? QuantizedSwitchLinear }
+        guard configuration.hiddenSize == 2560, configuration.hiddenLayers == 48,
+              configuration.hcCount == 4, configuration.hcLowRank == 320,
+              configuration.vocabularySize == 248320,
+              let head = lmHead as? QuantizedLinear,
+              // The qualified four-bit MoE retains an eight-bit output head.
+              // Inspect loaded tensor metadata, never a repository name or the
+              // top-level default bit count. Fully eight-bit experts stay out.
+              head.bits == 8, head.mode == .affine, head.scales.dtype == .bfloat16,
+              !experts.isEmpty, experts.allSatisfy({ $0.bits == 4 && $0.groupSize == 64 }),
+              quantized.allSatisfy({ ($0.bits == 4 || $0.bits == 8) && $0.mode == .affine }),
+              model.parameters().flattened().allSatisfy({ _, value in
+                  !value.dtype.isFloatingPoint || value.dtype == .bfloat16
+              })
+        else { return false }
+        for (name, module) in model.namedModules() {
+            if name.contains(".ple.norm_"), let norm = module as? Qwen4ExpZeroCenteredRMSNorm {
+                norm.referenceGroupedPrefillRoundingForTesting = true
+                norm.referenceGroupedAllWidthsRoundingForTesting = true
+            }
+            if let hc = module as? Qwen4ExpGatedResidual {
+                hc.referenceInjectionGateForTesting = true
+                hc.referenceMaterializedInjectionForTesting = true
+                hc.referenceDecodeNormForTesting = true
+                hc.referenceFusedFinalMixerForTesting = true
+            }
+            if let indexer = module as? Qwen4ExpQSAIndexer {
+                indexer.referenceMatchedDecodeForTesting = true
+                indexer.referenceStrictPrefillGatherBoundaryForTesting = true
+            }
+        }
+        for layer in model.layers {
+            layer.referencePLEGateScaleForTesting = true
+            layer.referencePLEGateActivationForTesting = true
+            layer.referencePLEConvolutionActivationForTesting = true
+            layer.referenceSharedActivationForTesting = true
+            layer.referenceDownReductionForTesting = true
+            layer.referenceRoutedDecodeActivationForTesting = true
+            layer.referenceRoutedPrefillActivationForTesting = true
+            layer.referenceScalarPrefillRoPEForTesting = true
+            layer.referenceScalarIndexerQueriesForTesting = true
+            layer.referenceScalarIndexerQueriesAllWidthsForTesting = true
+            layer.referencePooledIndexerSpectrumForTesting = true
+            layer.referenceAttentionPrefillGateForTesting = true
+            layer.referenceAttentionTailGateForTesting = true
+            layer.referenceAttentionDecodeGateForTesting = true
+            layer.referenceFusedRotationForTesting = true
+            if layer.isLinear {
+                layer.referenceBlockedRecurrenceForTesting = true
+                layer.referenceRoundedDecodePersistenceForTesting = true
+            }
+        }
+        usesReferenceMatchedSerialArithmetic = true
+        return true
+    }
+
+    private func persistNativeRecurrentState(_ cache: [KVCache]?, width: Int) {
+        // Singleton GDN now rounds at its existing final state store, avoiding
+        // a second memory pass. Prefill retains the qualified materialized cast.
+        guard usesReferenceMatchedSerialArithmetic, width != 1, let cache else { return }
+        for case let layer as Qwen4ExpLayerCache in cache {
+            if let state = layer[1], state.dtype == .float32 {
+                layer[1] = state.asType(.bfloat16).asType(.float32)
+            }
+        }
+    }
 
     /// Captured once per model. Narrowing the final projection changes the
     /// GEMM/GEMV rounding path, so ordinary preparation remains opt-in.
@@ -6877,6 +7412,7 @@ public final class Qwen4ExpModel: Module, LLMModel, KVCacheDimensionProvider, Re
         // forwardStreamState would materialize/combine that stream differently.
         let hidden = model(remaining.tokens[.newAxis],
                            cache: cache.isEmpty ? nil : cache, hostTokenIDs: hostTokenIDs)
+        persistNativeRecurrentState(cache, width: hidden.dim(1))
         let last = hidden[0..., (hidden.dim(1) - 1)..., 0...]
         return .logits(LMOutput(logits: projectLMHead(last)))
     }
@@ -6891,11 +7427,13 @@ public final class Qwen4ExpModel: Module, LLMModel, KVCacheDimensionProvider, Re
             input.tokens,
             cache: cache,
             hostTokenIDs: hostTokenIDs)
+        persistNativeRecurrentState(cache, width: hidden.dim(1))
         return .init(logits: lmHead?(hidden) ?? model.embedTokens.asLinear(hidden))
     }
 
     public func callAsFunction(_ inputs: MLXArray, cache: [KVCache]?) -> MLXArray {
         let hidden = model(inputs, cache: cache)
+        persistNativeRecurrentState(cache, width: hidden.dim(1))
         return lmHead?(hidden) ?? model.embedTokens.asLinear(hidden)
     }
 
@@ -6978,7 +7516,11 @@ public final class Qwen4ExpModel: Module, LLMModel, KVCacheDimensionProvider, Re
                       capture.arrays.prefix(expectedSlots).allSatisfy({ $0 != nil }),
                       capture.arrays.dropFirst(expectedSlots).allSatisfy({ $0 == nil })
                 else { throw InteriorCaptureError.incompleteLayer(index) }
-                states.append(capture.arrays.compactMap { $0.map { $0 * 1 } })
+                var arrays = capture.arrays.compactMap { $0.map { $0 * 1 } }
+                if usesReferenceMatchedSerialArithmetic {
+                    arrays[1] = arrays[1].asType(.bfloat16).asType(.float32)
+                }
+                states.append(arrays)
                 metadata.append(recurrent.metaState)
             } else if let attention = item as? Qwen4ExpAttentionCache {
                 let absoluteBoundary = restoredPrefix + boundary
@@ -7207,6 +7749,7 @@ public final class Qwen4ExpModel: Module, LLMModel, KVCacheDimensionProvider, Re
             inputIDs, inputEmbeddings: inputEmbeddings,
             positionIDs: positionIDs, cache: cache,
             hostTokenIDs: hostTokenIDs)
+        persistNativeRecurrentState(cache, width: hidden.dim(1))
         return lmHead?(hidden) ?? model.embedTokens.asLinear(hidden)
     }
 

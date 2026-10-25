@@ -243,6 +243,16 @@ enum QwenAffineMoEKernels {
         outputNames: ["reduced"],
         source: downReduceSource)
 
+    // Diagnostic port of ddalcu/mlx-serve (MIT), 02bee553,
+    // transformer.zig gatherQmvDownReduceSource / DOWNRED_LPR = 8.
+    // Keep this instance-selected path off until numerical and live throughput
+    // qualification; it does not change group-32, batched, or native-chain plans.
+    private static let referenceDownReduceKernel = MLXFast.metalKernel(
+        name: "qwen_affine_moe_reference_down_reduce",
+        inputNames: ["activated", "down_weight", "down_scales", "down_biases",
+                     "indices", "scores"], outputNames: ["reduced"],
+        source: downReduceSource, header: "#define AFM_REFERENCE_DOWN_LANES 1\n")
+
     private static let independentDownReduceKernel = MLXFast.metalKernel(
         name: "qwen_affine_moe_independent_down_reduce",
         inputNames: ["activated", "down_weight", "down_scales", "down_biases",
@@ -317,7 +327,43 @@ enum QwenAffineMoEKernels {
             threadgroup T slot_values[TOP_K * ROWS];
             #endif
 
-            #ifdef AFM_DOWN_OUTPUT_REUSE_GROUP64
+            #ifdef AFM_REFERENCE_DOWN_LANES
+            constexpr int lanes_per_row = 8;
+            const uint row = lane / lanes_per_row;
+            const uint sublane = lane % lanes_per_row;
+            const size_t weight_base = size_t(expert) * size_t(OUTPUT * packed_input)
+                + size_t(tile * ROWS + row) * size_t(packed_input);
+            const size_t group_base = size_t(expert) * size_t(OUTPUT * groups_per_row)
+                + size_t(tile * ROWS + row) * size_t(groups_per_row);
+            constexpr int iterations = (packed_input + lanes_per_row - 1) / lanes_per_row;
+            uint words[iterations];
+            for (int i = 0; i < iterations; ++i) {
+                const int pack = int(sublane) + lanes_per_row * i;
+                words[i] = pack < packed_input ? weight_data[weight_base + size_t(pack)] : 0u;
+            }
+            float a0 = 0.0f, a1 = 0.0f, a2 = 0.0f, a3 = 0.0f;
+            for (int i = 0; i < iterations; ++i) {
+                const int pack = int(sublane) + lanes_per_row * i;
+                if (pack >= packed_input) break;
+                const int position = pack * values_per_word;
+                const size_t group = group_base + size_t(position / GROUP_SIZE);
+                const float scale = float(scale_data[group]);
+                const float bias = float(bias_data[group]);
+                for (int offset = 0; offset < values_per_word; offset += 4) {
+                    const uint packed = words[i] >> (offset * BITS);
+                    const size_t xi = input_base_for_slot + size_t(position + offset);
+                    a0 += float(activation_data[xi]) * (float((packed >> (0 * BITS)) & mask) * scale + bias);
+                    a1 += float(activation_data[xi + 1]) * (float((packed >> (1 * BITS)) & mask) * scale + bias);
+                    a2 += float(activation_data[xi + 2]) * (float((packed >> (2 * BITS)) & mask) * scale + bias);
+                    a3 += float(activation_data[xi + 3]) * (float((packed >> (3 * BITS)) & mask) * scale + bias);
+                }
+            }
+            float value = (a0 + a1) + (a2 + a3);
+            for (uint distance = lanes_per_row / 2; distance >= 1; distance >>= 1) {
+                value += simd_shuffle_xor(value, ushort(distance));
+            }
+            if (sublane == 0) slot_values[slot * ROWS + row] = T(value);
+            #elif defined(AFM_DOWN_OUTPUT_REUSE_GROUP64)
             // Reuse the input vector across four output channels without
             // changing each channel's original per-component reduction order.
             const size_t weight_base = size_t(expert) * size_t(OUTPUT * packed_input)
@@ -595,7 +641,9 @@ enum QwenAffineMoEKernels {
         independentRows: Bool = false,
         allowGroup64Independent: Bool = false,
         sharedExpertDown: QwenSharedExpertDownInputs? = nil,
-        sharedExpertGateUp: QwenSharedExpertGateUpInputs? = nil
+        sharedExpertGateUp: QwenSharedExpertGateUpInputs? = nil,
+        referenceDownReductionForTesting: Bool = false,
+        sigmoidTableOverrideForTesting: MLXArray? = nil
     ) -> MLXArray? {
         guard enabled,
               Device.defaultDevice().deviceType == .gpu,
@@ -697,7 +745,12 @@ enum QwenAffineMoEKernels {
         let flatScores = scoreValues.size < 8
             ? concatenated([scoreValues, MLXArray.zeros([8 - scoreValues.size], dtype: input.dtype)])
             : scoreValues
-        if nativeChainEnabled && !independentRows {
+        if let table = sigmoidTableOverrideForTesting {
+            guard table.dtype == .bfloat16, table.shape == [1 << 16] else { return nil }
+        }
+        let referenceDown = referenceDownReductionForTesting && !independentRows
+            && down.groupSize == 64 && sharedExpertDown == nil && sharedExpertGateUp == nil
+        if nativeChainEnabled && !independentRows && !referenceDown {
             let key = ChainKey(
                 inputDimensions: gate.inputDims,
                 intermediateDimensions: gate.outputDims,
@@ -711,7 +764,7 @@ enum QwenAffineMoEKernels {
                 flatInput,
                 gate.weight, gate.scales, gateBiases,
                 up.weight, up.scales, upBiases,
-                flatIndices, sigmoidTableBF16,
+                flatIndices, sigmoidTableOverrideForTesting ?? sigmoidTableBF16,
                 down.weight, down.scales, downBiases,
                 flatScores,
             ])[0]
@@ -720,13 +773,14 @@ enum QwenAffineMoEKernels {
 
         let activationKernel = sharedExpertGateUp != nil ? independentSharedGateUpKernel
             : (independentRows ? independentGateUpKernel : gateUpKernel)
-        let reductionKernel = sharedExpertDown != nil ? independentSharedDownKernel
+        let reductionKernel = referenceDown ? referenceDownReduceKernel
+            : (sharedExpertDown != nil ? independentSharedDownKernel
             : (independentRows
                 ? (down.groupSize == 64 && downGroup64OutputReuseEnabled
                     ? independentGroup64DownReuseKernel
                     : (down.groupSize == 32 && downOutputReuseEnabled
                         ? independentDownReuseKernel : independentDownReduceKernel))
-                : downReduceKernel)
+                : downReduceKernel))
         var activationTemplate: [(String, any KernelTemplateArg)] = [
             ("T", input.dtype), ("INPUT", gate.inputDims), ("OUTPUT", gate.outputDims),
             ("GROUP_SIZE", gate.groupSize), ("BITS", gate.bits),
@@ -743,7 +797,7 @@ enum QwenAffineMoEKernels {
                 flatInput,
                 gate.weight, gate.scales, gateBiases,
                 up.weight, up.scales, upBiases,
-                flatIndices, sigmoidTableBF16,
+                flatIndices, sigmoidTableOverrideForTesting ?? sigmoidTableBF16,
             ]
         var activationShapes = [[tokenRows * topK, gate.outputDims]]
         if let shared = sharedExpertGateUp {
@@ -810,7 +864,9 @@ public extension SwitchGLU {
     func qwenAffineDecode(
         _ input: MLXArray,
         indices: MLXArray,
-        scores: MLXArray
+        scores: MLXArray,
+        referenceDownReductionForTesting: Bool = false,
+        sigmoidTableOverrideForTesting: MLXArray? = nil
     ) -> MLXArray? {
         guard let gate = gateProj as? QuantizedSwitchLinear,
               let up = upProj as? QuantizedSwitchLinear,
@@ -822,7 +878,8 @@ public extension SwitchGLU {
             scores: scores,
             gate: gate,
             up: up,
-            down: down)
+            down: down, referenceDownReductionForTesting: referenceDownReductionForTesting,
+            sigmoidTableOverrideForTesting: sigmoidTableOverrideForTesting)
     }
 }
 

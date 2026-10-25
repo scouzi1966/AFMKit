@@ -3,6 +3,28 @@
 // Decode-width hyper-connection kernels adapted from the Qwen Next equations
 // and launch geometry in https://github.com/ddalcu/mlx-serve (MIT licensed).
 // The kernels retain the stock graph as a fail-closed fallback.
+//
+// The BF16 grouped-prefill reduction and staged rounding below are adapted
+// from ddalcu/mlx-serve's hc_prefill_norm.metal.
+// Copyright (c) 2026 David Dalcu
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in all
+// copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
 
 import Foundation
 import MLX
@@ -86,6 +108,8 @@ enum Qwen4ExpHyperConnectionFusion {
         let hasInject: Bool
         let hasPending: Bool
         let matchFusedInjection: Bool
+        let referenceInjectionGate: Bool
+        let referenceDecodeNorm: Bool
         let injectBits: Int
         let injectGroupSize: Int
     }
@@ -115,17 +139,25 @@ enum Qwen4ExpHyperConnectionFusion {
             const size_t stream_offset = size_t(row) * size_t(HC * HIDDEN) + element;
             const size_t output_offset = size_t(row) * size_t(HIDDEN) + hidden_index;
             const size_t weight_offset = size_t(row) * size_t(HC) + stream_index;
-            next_stream[stream_offset] = T(
-                float(stream[stream_offset])
-                    + float(output[output_offset]) * float(weights[weight_offset]));
+            const float product = float(output[output_offset]) * float(weights[weight_offset]);
+            // ddalcu/mlx-serve hcWriteCallback (MIT, 02bee553) retains
+            // activation-dtype rounding between multiply and add.
+            next_stream[stream_offset] = REFERENCE_PRODUCT_ROUNDING
+                ? T(float(stream[stream_offset]) + float(T(product)))
+                : T(float(stream[stream_offset]) + product);
         """)
 
     /// Long-prefill grouped zero-centered RMSNorm. This is intentionally a
     /// normalization-only kernel: the downstream quantized projections remain
     /// on MLX's tiled matrix-multiply path. The decode compound kernels below
     /// are optimized for a handful of rows and are not suitable for prefill.
-    /// Launch geometry follows ddalcu/mlx-serve's grouped HC normalization
-    /// implementation (MIT licensed).
+    /// BF16's default four-values-per-thread path follows ddalcu/mlx-serve
+    /// v26.10.1, commit 02bee553f48cd3bc7d82aba0f8073820bd924738,
+    /// src/kernels/hc_prefill_norm.metal (MIT): contiguous reads, two SIMD
+    /// reductions, and BF16 normalization before the folded gamma multiply.
+    /// AFM stores gamma-1, so reconstruct gamma in BF16 inside this same
+    /// dispatch. FP16 and the existing forced-256-thread diagnostic fallback
+    /// retain their prior arithmetic. No projection or decode path changes.
     private static let prefillNormalizeKernel = MLXFast.metalKernel(
         name: "qwen4_exp_hc_prefill_normalize",
         inputNames: ["x_in", "norm_weight", "epsilon"],
@@ -136,7 +168,8 @@ enum Qwen4ExpHyperConnectionFusion {
             const uint simd_group = simdgroup_index_in_threadgroup;
             const uint stream = threadgroup_position_in_grid.x;
             const uint row = threadgroup_position_in_grid.y;
-            threadgroup float sums[THREADS / 32];
+            threadgroup float sums[REFERENCE_BF16 ? 32 : THREADS / 32];
+            threadgroup float shared_inverse_rms;
             constexpr int elements_per_thread = HIDDEN / THREADS;
             const int stream_base = int(stream) * HIDDEN;
             const device T* input = x_in + size_t(row) * size_t(HC * HIDDEN);
@@ -145,23 +178,44 @@ enum Qwen4ExpHyperConnectionFusion {
             float values[elements_per_thread];
             float sum = 0.0f;
             for (int element = 0; element < elements_per_thread; ++element) {
-                const int index = stream_base + int(tid) + THREADS * element;
+                const int index = stream_base + (REFERENCE_BF16
+                    ? int(tid) * 4 + element : int(tid) + THREADS * element);
                 const float value = float(input[index]);
                 values[element] = value;
                 sum += value * value;
             }
             sum = simd_sum(sum);
-            if (lane == 0) sums[simd_group] = sum;
-            threadgroup_barrier(mem_flags::mem_threadgroup);
-            float total = 0.0f;
-            for (int group = 0; group < THREADS / 32; ++group) total += sums[group];
-            const float inverse_rms = precise::rsqrt(
-                total / float(HIDDEN) + epsilon);
+            float inverse_rms;
+            if (REFERENCE_BF16) {
+                if (simd_group == 0) sums[lane] = 0.0f;
+                threadgroup_barrier(mem_flags::mem_threadgroup);
+                if (lane == 0) sums[simd_group] = sum;
+                threadgroup_barrier(mem_flags::mem_threadgroup);
+                if (simd_group == 0) {
+                    sum = simd_sum(sums[lane]);
+                    if (lane == 0) shared_inverse_rms = precise::rsqrt(
+                        sum / float(HIDDEN) + epsilon);
+                }
+                threadgroup_barrier(mem_flags::mem_threadgroup);
+                inverse_rms = shared_inverse_rms;
+            } else {
+                if (lane == 0) sums[simd_group] = sum;
+                threadgroup_barrier(mem_flags::mem_threadgroup);
+                float total = 0.0f;
+                for (int group = 0; group < THREADS / 32; ++group) total += sums[group];
+                inverse_rms = precise::rsqrt(total / float(HIDDEN) + epsilon);
+            }
 
             for (int element = 0; element < elements_per_thread; ++element) {
-                const int index = stream_base + int(tid) + THREADS * element;
-                output[index] = T(values[element] * inverse_rms
-                    * (float(norm_weight[index]) + 1.0f));
+                const int index = stream_base + (REFERENCE_BF16
+                    ? int(tid) * 4 + element : int(tid) + THREADS * element);
+                if (REFERENCE_BF16) {
+                    const T gamma = T(float(norm_weight[index]) + 1.0f);
+                    output[index] = T(float(T(values[element] * inverse_rms)) * float(gamma));
+                } else {
+                    output[index] = T(values[element] * inverse_rms
+                        * (float(norm_weight[index]) + 1.0f));
+                }
             }
         """)
 
@@ -171,8 +225,9 @@ enum Qwen4ExpHyperConnectionFusion {
     /// of the HC stream without changing the projection or MoE graphs.
     ///
     /// The scheduling idea and two-rounding pending-write contract follow
-    /// ddalcu/mlx-serve's `hc_prefill_norm.metal` (MIT licensed). The norm
-    /// itself deliberately preserves AFM's qualified single final rounding.
+    /// the same pinned ddalcu/mlx-serve `hc_prefill_norm.metal` (MIT) above.
+    /// BF16's default geometry also preserves its staged normalization/gamma
+    /// rounding; the pending stream remains two-rounded before normalization.
     private static let prefillNormalizePendingKernel = MLXFast.metalKernel(
         name: "qwen4_exp_hc_prefill_normalize_pending",
         inputNames: [
@@ -185,7 +240,8 @@ enum Qwen4ExpHyperConnectionFusion {
             const uint simd_group = simdgroup_index_in_threadgroup;
             const uint stream = threadgroup_position_in_grid.x;
             const uint row = threadgroup_position_in_grid.y;
-            threadgroup float sums[THREADS / 32];
+            threadgroup float sums[REFERENCE_BF16 ? 32 : THREADS / 32];
+            threadgroup float shared_inverse_rms;
             constexpr int elements_per_thread = HIDDEN / THREADS;
             const int stream_base = int(stream) * HIDDEN;
             const device T* input = x_in + size_t(row) * size_t(HC * HIDDEN);
@@ -198,7 +254,8 @@ enum Qwen4ExpHyperConnectionFusion {
             float values[elements_per_thread];
             float sum = 0.0f;
             for (int element = 0; element < elements_per_thread; ++element) {
-                const int index = stream_base + int(tid) + THREADS * element;
+                const int index = stream_base + (REFERENCE_BF16
+                    ? int(tid) * 4 + element : int(tid) + THREADS * element);
                 const T delta = T(float(pending[index - stream_base]) * gate);
                 const T value = T(float(input[index]) + float(delta));
                 written[index] = value;
@@ -206,17 +263,37 @@ enum Qwen4ExpHyperConnectionFusion {
                 sum += float(value) * float(value);
             }
             sum = simd_sum(sum);
-            if (lane == 0) sums[simd_group] = sum;
-            threadgroup_barrier(mem_flags::mem_threadgroup);
-            float total = 0.0f;
-            for (int group = 0; group < THREADS / 32; ++group) total += sums[group];
-            const float inverse_rms = precise::rsqrt(
-                total / float(HIDDEN) + epsilon);
+            float inverse_rms;
+            if (REFERENCE_BF16) {
+                if (simd_group == 0) sums[lane] = 0.0f;
+                threadgroup_barrier(mem_flags::mem_threadgroup);
+                if (lane == 0) sums[simd_group] = sum;
+                threadgroup_barrier(mem_flags::mem_threadgroup);
+                if (simd_group == 0) {
+                    sum = simd_sum(sums[lane]);
+                    if (lane == 0) shared_inverse_rms = precise::rsqrt(
+                        sum / float(HIDDEN) + epsilon);
+                }
+                threadgroup_barrier(mem_flags::mem_threadgroup);
+                inverse_rms = shared_inverse_rms;
+            } else {
+                if (lane == 0) sums[simd_group] = sum;
+                threadgroup_barrier(mem_flags::mem_threadgroup);
+                float total = 0.0f;
+                for (int group = 0; group < THREADS / 32; ++group) total += sums[group];
+                inverse_rms = precise::rsqrt(total / float(HIDDEN) + epsilon);
+            }
 
             for (int element = 0; element < elements_per_thread; ++element) {
-                const int index = stream_base + int(tid) + THREADS * element;
-                output[index] = T(values[element] * inverse_rms
-                    * (float(norm_weight[index]) + 1.0f));
+                const int index = stream_base + (REFERENCE_BF16
+                    ? int(tid) * 4 + element : int(tid) + THREADS * element);
+                if (REFERENCE_BF16) {
+                    const T gamma = T(float(norm_weight[index]) + 1.0f);
+                    output[index] = T(float(T(values[element] * inverse_rms)) * float(gamma));
+                } else {
+                    output[index] = T(values[element] * inverse_rms
+                        * (float(norm_weight[index]) + 1.0f));
+                }
             }
         """)
 
@@ -248,12 +325,13 @@ enum Qwen4ExpHyperConnectionFusion {
         """)
 
     // Materialized once on first use. Every UInt16 bit pattern is represented
-    // by the corresponding BF16 value before MLX computes the lookup result.
+    // by the corresponding BF16 value before the qualified HC sigmoid computes
+    // the lookup result, preserving the reference library's math mode.
     nonisolated(unsafe) private static let sigmoidTableBF16: MLXArray = {
         let values = (0 ..< (1 << 16)).map { index in
             Float(bitPattern: UInt32(index) << 16)
         }
-        let table = MLX.sigmoid(MLXArray(values).asType(.bfloat16))
+        let table = Qwen4ExpHCActivation.sigmoid(MLXArray(values).asType(.bfloat16))
         MLX.eval(table)
         return table
     }()
@@ -262,7 +340,9 @@ enum Qwen4ExpHyperConnectionFusion {
         input: MLXArray,
         normWeight: MLXArray,
         groupSize: Int,
-        epsilon: Float
+        epsilon: Float,
+        referenceHCRounding: Bool = false,
+        allowShortHCPrefill: Bool = false
     ) -> MLXArray? {
         guard prefillNormalizationEnabled,
               Device.defaultDevice().deviceType == .gpu,
@@ -278,7 +358,14 @@ enum Qwen4ExpHyperConnectionFusion {
         let rows = input.size / input.dim(-1)
         let threadCount = prefillReferenceNormGeometryEnabled
             ? groupSize / 4 : 256
-        guard rows >= 128,
+        // The reference HC prefill kernel also covers cached prompt tails
+        // above the singleton/verification envelope (hc_prefill.zig: S > 16).
+        // Require an HC owner, ordinary prefill, BF16, and one sequence; do not
+        // change generic/PLE norms, speculative verification, or batch rows.
+        let shortHCPrefill = allowShortHCPrefill && referenceHCRounding
+            && prefillReferenceNormGeometryEnabled && input.dtype == .bfloat16
+            && input.ndim == 3 && input.dim(0) == 1 && rows > maximumRows
+        guard rows >= 128 || shortHCPrefill,
               hcCount > 1, hcCount <= 8,
               threadCount >= 32, threadCount <= 1_024,
               threadCount.isMultiple(of: 32),
@@ -292,6 +379,8 @@ enum Qwen4ExpHyperConnectionFusion {
             template: [
                 ("T", input.dtype), ("HC", hcCount), ("HIDDEN", groupSize),
                 ("THREADS", threadCount),
+                ("REFERENCE_BF16", referenceHCRounding
+                    && input.dtype == .bfloat16 && prefillReferenceNormGeometryEnabled),
             ],
             grid: (threadCount * hcCount, rows, 1),
             threadGroup: (threadCount, 1, 1),
@@ -342,6 +431,7 @@ enum Qwen4ExpHyperConnectionFusion {
             template: [
                 ("T", input.dtype), ("HC", hcCount), ("HIDDEN", groupSize),
                 ("THREADS", threadCount),
+                ("REFERENCE_BF16", input.dtype == .bfloat16 && prefillReferenceNormGeometryEnabled),
             ],
             grid: (threadCount * hcCount, rows, 1),
             threadGroup: (threadCount, 1, 1),
@@ -424,8 +514,12 @@ enum Qwen4ExpHyperConnectionFusion {
             threadgroup_barrier(mem_flags::mem_threadgroup);
             float total = 0.0f;
             for (int group = 0; group < 8; ++group) total += sums[group];
-            const float inverse_rms = precise::rsqrt(
-                total / float(HIDDEN) + epsilon);
+            // ddalcu/mlx-serve HC_FUSED_N_SOURCE (MIT, 02bee553) uses
+            // ordinary Metal rsqrt. Compare this single rounding decision
+            // without changing grouped prefill normalization or defaults.
+            const float norm_argument = total / float(HIDDEN) + epsilon;
+            const float inverse_rms = REFERENCE_DECODE_NORM
+                ? metal::rsqrt(norm_argument) : precise::rsqrt(norm_argument);
 
             float inject[HC];
             if (HAS_INJECT) {
@@ -524,8 +618,12 @@ enum Qwen4ExpHyperConnectionFusion {
             threadgroup_barrier(mem_flags::mem_threadgroup);
             float total = 0.0f;
             for (int group = 0; group < 8; ++group) total += sums[group];
-            const float inverse_rms = precise::rsqrt(
-                total / float(HIDDEN) + epsilon);
+            // ddalcu/mlx-serve HC_FUSED_N_SOURCE (MIT, 02bee553) uses
+            // ordinary Metal rsqrt. Compare this single rounding decision
+            // without changing grouped prefill normalization or defaults.
+            const float norm_argument = total / float(HIDDEN) + epsilon;
+            const float inverse_rms = REFERENCE_DECODE_NORM
+                ? metal::rsqrt(norm_argument) : precise::rsqrt(norm_argument);
 
             float inject[HC];
             if (HAS_INJECT) {
@@ -646,7 +744,14 @@ enum Qwen4ExpHyperConnectionFusion {
                     total += inject[stream * HC + column];
                 }
                 const T divided = T(float(T(total)) / float(HC));
-                gates[column] = T(2.0f) / (T(1.0f) + exp(-divided));
+                if (REFERENCE_INJECTION_GATE) {
+                    // Match HC_FUSED_D_SOURCE in ddalcu/mlx-serve (MIT),
+                    // revision 02bee553: FP32 sigmoid, then narrow before * 2.
+                    const T sigmoid_value = T(1.0f / (1.0f + exp(-float(divided))));
+                    gates[column] = sigmoid_value * T(2.0f);
+                } else {
+                    gates[column] = T(2.0f) / (T(1.0f) + exp(-divided));
+                }
             }
         """)
 
@@ -723,6 +828,7 @@ enum Qwen4ExpHyperConnectionFusion {
                     ("HAS_INJECT", key.hasInject),
                     ("MATCH_FUSED_INJECTION", key.matchFusedInjection),
                     ("QUANTIZED_INJECT", key.injectBits > 0),
+                    ("REFERENCE_DECODE_NORM", key.referenceDecodeNorm),
                     ("INJECT_BITS", max(1, key.injectBits)),
                     ("INJECT_GROUP_SIZE", max(1, key.injectGroupSize)),
                 ],
@@ -747,6 +853,7 @@ enum Qwen4ExpHyperConnectionFusion {
                     ("HIDDEN", key.hiddenSize), ("RANK", key.rank),
                     ("BITS", key.bits), ("GROUP_SIZE", key.groupSize),
                     ("HAS_INJECT", key.hasInject),
+                    ("REFERENCE_INJECTION_GATE", key.referenceInjectionGate),
                 ],
                 grid: (
                     256,
@@ -928,6 +1035,8 @@ enum Qwen4ExpHyperConnectionFusion {
         matchFusedInjection: Bool = false,
         allowExtendedRows: Bool = false,
         allowQuantizedInjectionForTesting: Bool = false,
+        referenceInjectionGateForTesting: Bool = false,
+        referenceDecodeNormForTesting: Bool = false,
         verificationPolicy: MTPVerificationPolicy? = .strictSingletonEquivalent
     ) -> Qwen4ExpHyperConnectionFusionOutput? {
         guard enabled,
@@ -1043,7 +1152,7 @@ enum Qwen4ExpHyperConnectionFusion {
                     verificationPolicy: verificationPolicy, role: .hyperConnection)
             }
             let projectedDown = projection(quantizedDown, normalized)
-            let projectedUp = projection(quantizedUp, silu(projectedDown / Float(hcCount)))
+            let projectedUp = projection(quantizedUp, Qwen4ExpHCActivation.silu(projectedDown / Float(hcCount)))
             let mixed: MLXArray
             if input.dtype == .bfloat16 {
                 mixed = prefillMixKernel(
@@ -1057,7 +1166,7 @@ enum Qwen4ExpHyperConnectionFusion {
                 mixed = (sigmoid(projectedUp).reshaped(rows, hcCount, hiddenSize)
                     * normalized.reshaped(rows, hcCount, hiddenSize)).mean(axis: -2)
             }
-            let injection = 2 * sigmoid(projection(quantizedInject, normalized) / Float(hcCount))
+            let injection = 2 * Qwen4ExpHCActivation.sigmoid(projection(quantizedInject, normalized) / Float(hcCount))
             let leading = Array(input.shape.dropLast())
             return Qwen4ExpHyperConnectionFusionOutput(
                 mixed: mixed.reshaped(leading + [hiddenSize]),
@@ -1078,6 +1187,8 @@ enum Qwen4ExpHyperConnectionFusion {
                 hasInject: inject != nil,
                 hasPending: hasPending,
                 matchFusedInjection: matchFusedInjection,
+                referenceInjectionGate: referenceInjectionGateForTesting,
+                referenceDecodeNorm: referenceDecodeNormForTesting,
                 injectBits: injectBits,
                 injectGroupSize: injectGroupSize)
             let plan = chainPlan(for: key)
@@ -1115,6 +1226,7 @@ enum Qwen4ExpHyperConnectionFusion {
                     ("HAS_INJECT", inject != nil),
                     ("MATCH_FUSED_INJECTION", matchFusedInjection),
                     ("QUANTIZED_INJECT", quantizedInject != nil),
+                    ("REFERENCE_DECODE_NORM", referenceDecodeNormForTesting),
                     ("INJECT_BITS", max(1, injectBits)),
                     ("INJECT_GROUP_SIZE", max(1, injectGroupSize)),
                 ],
@@ -1135,6 +1247,7 @@ enum Qwen4ExpHyperConnectionFusion {
                     ("T", input.dtype), ("HC", hcCount), ("HIDDEN", hiddenSize),
                     ("HAS_INJECT", inject != nil),
                     ("QUANTIZED_INJECT", quantizedInject != nil),
+                    ("REFERENCE_DECODE_NORM", referenceDecodeNormForTesting),
                     ("INJECT_BITS", max(1, injectBits)),
                     ("INJECT_GROUP_SIZE", max(1, injectGroupSize)),
                 ],
@@ -1157,6 +1270,7 @@ enum Qwen4ExpHyperConnectionFusion {
                 ("T", input.dtype), ("HC", hcCount), ("HIDDEN", hiddenSize),
                 ("RANK", rank), ("BITS", bits), ("GROUP_SIZE", groupSize),
                 ("HAS_INJECT", inject != nil),
+                ("REFERENCE_INJECTION_GATE", referenceInjectionGateForTesting),
             ],
             grid: (256, rank + (inject == nil ? 0 : hcCount), rows),
             threadGroup: (256, 1, 1),
@@ -1193,7 +1307,8 @@ enum Qwen4ExpHyperConnectionFusion {
         weights: MLXArray,
         hcCount: Int,
         hiddenSize: Int,
-        allowExtendedRows: Bool = false
+        allowExtendedRows: Bool = false,
+        referenceProductRoundingForTesting: Bool = false
     ) -> MLXArray? {
         guard enabled,
               Device.defaultDevice().deviceType == .gpu,
@@ -1214,6 +1329,7 @@ enum Qwen4ExpHyperConnectionFusion {
             [residual, output, weights],
             template: [
                 ("T", residual.dtype), ("HC", hcCount), ("HIDDEN", hiddenSize),
+                ("REFERENCE_PRODUCT_ROUNDING", referenceProductRoundingForTesting),
             ],
             grid: (hcCount * hiddenSize, rows, 1),
             threadGroup: (256, 1, 1),
