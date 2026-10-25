@@ -2598,3 +2598,25 @@ loads PLE eagerly; its existing private-leaf barrier is currently limited to
 multi-token verification. The next isolated experiment reuses that barrier for
 the qualified serial mapped-table path, fills all leaves before dispatch, and
 checks exact score/output equivalence before any performance conclusion.
+
+
+#### Deferred serial PLE experiment: correctness gate
+
+The qualified mapped-table serial profile now builds its decode graph using
+request-local deferred PLE leaves and fills them before returning the graph to
+the token generator. Its intra-token submission ladder is disabled while those
+leaves are unfilled; verification retains its existing flush-before-submission
+barrier. Synchronizing diagnostic profilers retain eager PLE. Other profiles and
+prefill retain the prior schedule. No new environment variable is introduced.
+
+Release unit qualification: 16 passed, 3 optional diagnostics skipped, zero
+failures, including single-token compiled-leaf lifetime/history and existing
+request-isolation/abandonment checks. All 249 fixed native score vectors and
+winner sets remain exact. The four full-model fixtures also assert that the new
+serial policy is active; no result can silently come from the old schedule.
+Evidence: `qwen-serial-deferred-ple-qualification-20261025.log` and
+`Qwen{Opening,ColdR2,WarmR2,WarmR5}SerialDeferredPLE20261025`.
+
+This checkpoint remains an experiment pending unchanged serving responses and
+measured speed. The previous radix-mask binary and all prior artifacts remain
+immutable and available as controls.

@@ -4516,7 +4516,7 @@ private final class Qwen4ExpSparseMoE: Module, UnaryLayer {
 /// MIT-licensed mlx-serve `flushDeferredPle` (1ec580a8, transformer.zig).
 /// A leaf is privately allocated, then filled exactly once BEFORE any graph
 /// consuming it is dispatched. It is never shared across forwards or requests.
-/// This lets CPU graph construction overlap the already-dispatched MTP drafts.
+/// This lets CPU graph construction overlap already-dispatched token work.
 final class Qwen4ExpDeferredPLE {
     private var fills: [() -> Void] = []
 
@@ -6452,6 +6452,9 @@ private final class Qwen4ExpModelInner: Module {
     @ModuleInfo var layers: [Qwen4ExpDecoderLayer]
     @ModuleInfo(key: "hyper_connection_mixer") var hyperConnectionMixer: Qwen4ExpGatedResidual
     private let fusedQKRoPE: Qwen4ExpMultimodalRoPE
+    // Set only by the qualified serial mapped-table policy after loading.
+    // Other architectures, quantizations, batches and MTP keep their schedule.
+    var referenceMatchedSerialDeferredPLE = false
 
     init(_ config: Qwen4ExpTextConfiguration) {
         fusedQKRoPE = Qwen4ExpMultimodalRoPE(
@@ -6557,22 +6560,31 @@ private final class Qwen4ExpModelInner: Module {
             || qwen4ExpCanFuseVerificationHC(
                 hidden, policy: verificationPolicy, enabled: Self.deferVerificationHC)
         let decodeAsyncLadderStride = Self.decodeAsyncLadderStride
+        let profiler = Qwen4ExpForwardProfiler.make(sequenceLength: hidden.dim(1))
+        let hostProfiler = Qwen4ExpHostProfiler.make(sequenceLength: hidden.dim(1))
+        let canDeferPLE = profiler == nil
+            && ProcessInfo.processInfo.environment["VMLX_DSV4_STAGE_PROFILE"] != "1"
+        // mlx-serve's lazyForward (generate.zig, 02bee553, MIT) builds the
+        // next graph before resolving its sampled token for CPU PLE lookup.
+        // Reuse our request-owned leaves, but do not submit any part of this
+        // serial graph until every leaf has been filled below.
+        let deferSerialPLE = referenceMatchedSerialDeferredPLE
+            && verificationPolicy == nil && hidden.dim(0) == 1
+            && hidden.dim(1) == 1 && canDeferPLE
         let useDecodeAsyncLadder = decodeAsyncLadderStride > 0
             && verificationPolicy == nil
             && hidden.dim(1) == 1
+            && !deferSerialPLE
         let verifyStride = qwen4ExpVerificationDispatchStride(
             batchSize: hidden.dim(0), width: hidden.dim(1), policy: verificationPolicy,
             singletonStride: verificationLadderOverride ?? Self.verificationAsyncLadderStride,
             sharedStride: verificationLadderOverride ?? Self.sharedVerificationAsyncLadderStride)
         let useVerifyAsyncLadder = verifyStride > 0
-        let profiler = Qwen4ExpForwardProfiler.make(sequenceLength: hidden.dim(1))
-        let hostProfiler = Qwen4ExpHostProfiler.make(sequenceLength: hidden.dim(1))
         // Verification has a separate, off-by-default dispatch experiment.
         // Every boundary MUST flush private PLE leaves before evaluating any
         // graph that can read them. Synchronizing profilers retain eager PLE.
-        let deferredPLE = verificationPolicy != nil && hidden.dim(1) > 1
-            && profiler == nil
-            && ProcessInfo.processInfo.environment["VMLX_DSV4_STAGE_PROFILE"] != "1"
+        let deferredPLE = (deferSerialPLE || (verificationPolicy != nil && hidden.dim(1) > 1))
+            && canDeferPLE
             ? Qwen4ExpDeferredPLE() : nil
         let qsaPositionTables = Self.shareVerificationQSAPositions
             && verificationPolicy == .strictSingletonEquivalent && positionIDs == nil
@@ -6660,10 +6672,11 @@ private final class Qwen4ExpModelInner: Module {
             finalLayer.passivePrefillStagesForTesting["final-hidden"] = hidden
         }
         profiler?.report()
-        hostProfiler?.report()
         // Complete host history and leaf contents before returning any lazy
         // graph to callers that may evaluate it or perform cache rollback.
         deferredPLE?.flush()
+        hostProfiler?.lap(.pleFill)
+        hostProfiler?.report()
         return hidden
     }
 
@@ -7203,6 +7216,7 @@ public final class Qwen4ExpModel: Module, LLMModel, KVCacheDimensionProvider, Re
     private let ngramTableConfiguration: Qwen4ExpNGramTableConfiguration?
     private var usesMappedNGramTable = false
     public private(set) var usesReferenceMatchedSerialArithmetic = false
+    var defersMappedSerialPLEForTesting: Bool { model.referenceMatchedSerialDeferredPLE }
 
     public var prefersJoinedFinalTokenPrefill: Bool { usesReferenceMatchedSerialArithmetic }
     public var preferredPrefillAlignment: Int? {
@@ -7270,6 +7284,8 @@ public final class Qwen4ExpModel: Module, LLMModel, KVCacheDimensionProvider, Re
                 layer.referenceRoundedDecodePersistenceForTesting = true
             }
         }
+        model.referenceMatchedSerialDeferredPLE = usesMappedNGramTable
+            && Self.resolveMappedNGramTokenAtPLE
         usesReferenceMatchedSerialArithmetic = true
         return true
     }
