@@ -364,6 +364,7 @@ final class Qwen4ExpGatedResidual: Module {
 
     // Diagnostic instance policy; set before any compiled owner is traced.
     var referenceInjectionGateForTesting = false
+    var referenceMaterializedInjectionForTesting = false
 
     let hcCount: Int
     let hiddenSize: Int
@@ -724,7 +725,8 @@ final class Qwen4ExpGatedResidual: Module {
             weights: weights,
             hcCount: hcCount,
             hiddenSize: hiddenSize,
-            allowExtendedRows: qwen4ExpUsesExtendedVerificationHC(residual, policy: verificationPolicy))
+            allowExtendedRows: qwen4ExpUsesExtendedVerificationHC(residual, policy: verificationPolicy),
+            referenceProductRoundingForTesting: referenceMaterializedInjectionForTesting)
         {
             return fused
         }
@@ -6205,6 +6207,13 @@ final class Qwen4ExpDecoderLayer: Module {
             ]
             if compiledTail == nil {
                 passivePrefillStagesForTesting["mlp-read"] = mlpRead.0
+            }
+            if width == 1 {
+                // These are existing deferred-tail outputs, not added outputs
+                // of the compiled graph. Retain them without evaluating.
+                passivePrefillStagesForTesting["attn-injection"] = attentionRead.2
+                passivePrefillStagesForTesting["mlp-injection"] = mlpRead.2
+                passivePrefillStagesForTesting["mlp-stream"] = mlpRead.1
             }
         }
         hostProfiler?.lap(.hyperConnectionRead)

@@ -138,9 +138,12 @@ enum Qwen4ExpHyperConnectionFusion {
             const size_t stream_offset = size_t(row) * size_t(HC * HIDDEN) + element;
             const size_t output_offset = size_t(row) * size_t(HIDDEN) + hidden_index;
             const size_t weight_offset = size_t(row) * size_t(HC) + stream_index;
-            next_stream[stream_offset] = T(
-                float(stream[stream_offset])
-                    + float(output[output_offset]) * float(weights[weight_offset]));
+            const float product = float(output[output_offset]) * float(weights[weight_offset]);
+            // ddalcu/mlx-serve hcWriteCallback (MIT, 02bee553) retains
+            // activation-dtype rounding between multiply and add.
+            next_stream[stream_offset] = REFERENCE_PRODUCT_ROUNDING
+                ? T(float(stream[stream_offset]) + float(T(product)))
+                : T(float(stream[stream_offset]) + product);
         """)
 
     /// Long-prefill grouped zero-centered RMSNorm. This is intentionally a
@@ -1290,7 +1293,8 @@ enum Qwen4ExpHyperConnectionFusion {
         weights: MLXArray,
         hcCount: Int,
         hiddenSize: Int,
-        allowExtendedRows: Bool = false
+        allowExtendedRows: Bool = false,
+        referenceProductRoundingForTesting: Bool = false
     ) -> MLXArray? {
         guard enabled,
               Device.defaultDevice().deviceType == .gpu,
@@ -1311,6 +1315,7 @@ enum Qwen4ExpHyperConnectionFusion {
             [residual, output, weights],
             template: [
                 ("T", residual.dtype), ("HC", hcCount), ("HIDDEN", hiddenSize),
+                ("REFERENCE_PRODUCT_ROUNDING", referenceProductRoundingForTesting),
             ],
             grid: (hcCount * hiddenSize, rows, 1),
             threadGroup: (256, 1, 1),

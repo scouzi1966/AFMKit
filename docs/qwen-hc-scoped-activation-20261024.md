@@ -1419,3 +1419,68 @@ also preserves all 203 previous intermediate tensors exactly.
 The same focused assertions also pass with the separate native-chain diagnostic
 enabled (`QwenNativeDecodeHCChain20261025`). The formula policy is part of
 the chain cache key; the false/true/false sequence preserves the legacy result.
+
+
+### Materialized stream write isolation, 2026-10-25 00:26 EDT
+
+Expanded captures retain the existing deferred-tail residual and injection
+outputs and the existing PLE intermediates. No compiled outputs, flushes or
+extra forwards are added. Native frozen/off/on controls preserve all 64 score
+arrays; AFM preserves all 320 gate-candidate score arrays. All previously
+captured intermediates also remain identical. Build-only Swift qualification
+completed in 146.00 s (fixture deliberately absent; test skipped), followed
+by the actual fixture-driven release test.
+
+Layer 0 attention read/output, both sets of four injection gates, the MLP
+output and the 10,240-value MLP residual all match native exactly. The next
+mismatch is the materialized write just before layer 1 PLE: 1,396/10,240
+values, RMS 3.9189748e-5. PLE lookup embedding, normalized keys and projected
+values match exactly; its query inherits the stream difference. This rules
+out lookup content as the first difference at this boundary.
+
+On those exact native operands, a CPU BF16 round-to-nearest-even calculation
+reproduces native's PLE input exactly when it rounds the product before the
+residual addition. The single-round expression differs in the same 1,396
+positions. This agrees with native `hcWriteCallback` (multiply then add) and
+AFM's `injectKernel` (FP32 product plus residual, narrow once). The pending
+write path already rounds the product; the materialized write is distinct.
+
+A second instance-level default-false diagnostic tests product rounding in
+the existing injection kernel, with no new dispatch or intermediate buffer.
+It still needs focused and full-prefix validation. It does not change serving
+precision policy or claim recovered coding performance.
+
+Evidence: `QwenOpeningFirstDecodePLENative20261025`,
+`QwenOpeningFirstDecodePLEScores20261025`,
+`qwen-first-decode-ple-comparison-20261025.json`. Preserved native binary:
+`QwenPassiveNativeFirstDecodePLEBinary20261025/mlx-serve`, SHA-256
+`19c603622d0640d2d16fd78e6ebe3bc051a64840f8a626b86b210db24bd06930`.
+
+
+The materialized-write implementation passes the focused release test
+(build 187.74 s; test 2.588 s). Its corrected output matches all 10,240 native
+values; the default and restored-default outputs reproduce the captured AFM
+stream. Disabled full-prefix control preserves all 320 previous score arrays.
+
+| Fixed-prefix arm | Gate-only winners / 64 | Gate + write winners / 64 | Gate-only mean RMS | Gate + write mean RMS |
+| --- | ---: | ---: | ---: | ---: |
+| Production 30+1 | 59 | 60 | 0.558301 | 0.580782 |
+| Joined 31, F32 state | 58 | 59 | 0.609586 | 0.599941 |
+| Joined 31, BF16 state values | 59 | 60 | 0.504906 | 0.463317 |
+| Reconstructed 30+1 | 59 | 60 | 0.558301 | 0.580782 |
+| Reconstructed 30+1, BF16 state values | 59 | 58 | 0.539180 | 0.525417 |
+
+The matched first-decode capture now has exact PLE intermediates and exact
+layer-2 boundaries. Layer 1's MLP output differs in only one value (maximum
+6.103515625e-5); that difference does not survive to layer 2's captured
+boundaries. Layer 3's attention input matches, but its output differs in
+1,931/2,560 values (RMS 0.0004821501). This is the next independent boundary
+to isolate. First-decode whole-score RMS falls from 0.339074 to 0.284543 in
+the joined-31/BF16-state arm. Aggregate results remain mixed; neither change
+is promoted and there is no new coding-quality or throughput result.
+
+Evidence: `QwenNativeDecodeHCWrite20261025`,
+`QwenOpeningHCWriteControlScores20261025`,
+`QwenOpeningHCWriteCorrectedScores20261025`,
+`qwen-first-decode-hc-write-comparison-20261025.json`, and
+`qwen-hc-write-rounding-scalar-cases-20261025.json`.

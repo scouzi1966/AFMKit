@@ -128,6 +128,25 @@ final class QwenNativeDecodeMoETests: XCTestCase {
             hcArrays["corrected-injection"] = corrected.2
 
         }
+        if let nativeStream = native["layer-000-mlp-stream"],
+           let pleStream = native["ple-stream"],
+           let nativeGate = native["layer-000-mlp-injection"] {
+            let gates = nativeGate.reshaped(1, 1, 4)
+            let legacyWrite = mlpHC.inject(expected, residual: nativeStream, weights: gates)
+            record("legacy-materialized-write", legacyWrite, pleStream)
+            let capturedStream = try XCTUnwrap(afm["ple-stream"])
+            XCTAssertEqual(legacyWrite.asData(access: .copy).data, capturedStream.asData(access: .copy).data)
+            mlpHC.referenceMaterializedInjectionForTesting = true
+            let correctedWrite = mlpHC.inject(expected, residual: nativeStream, weights: gates)
+            record("corrected-materialized-write", correctedWrite, pleStream)
+            XCTAssertEqual(correctedWrite.asData(access: .copy).data, pleStream.asData(access: .copy).data)
+            mlpHC.referenceMaterializedInjectionForTesting = false
+            let repeatedWrite = mlpHC.inject(expected, residual: nativeStream, weights: gates)
+            XCTAssertEqual(repeatedWrite.asData(access: .copy).data, legacyWrite.asData(access: .copy).data)
+            hcArrays["legacy-write"] = legacyWrite
+            hcArrays["corrected-write"] = correctedWrite
+            hcArrays["native-write"] = pleStream
+        }
         try save(arrays: hcArrays, url: root.appendingPathComponent("hc.safetensors"))
         let compiledTail = compile(shapeless: false) { (a: [MLXArray]) -> [MLXArray] in
             [a[0] + sigmoid(a[1]) * a[2]]

@@ -40,6 +40,7 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
         let reference_attention_prefill_gate: Bool?
         let reference_attention_tail_gate: Bool?
         let reference_injection_gate: Bool?
+        let reference_materialized_injection: Bool?
         let reference_fused_rotation: Bool?
         let model: String
         let histories: [History]
@@ -112,6 +113,8 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
         let hcModules = model.namedModules().compactMap { $0.1 as? Qwen4ExpGatedResidual }
         for hc in hcModules { hc.referenceInjectionGateForTesting = fixture.reference_injection_gate ?? false }
         defer { for hc in hcModules { hc.referenceInjectionGateForTesting = false } }
+        for hc in hcModules { hc.referenceMaterializedInjectionForTesting = fixture.reference_materialized_injection ?? false }
+        defer { for hc in hcModules { hc.referenceMaterializedInjectionForTesting = false } }
         let allDecoderLayers = model.namedModules().compactMap { $0.1 as? Qwen4ExpDecoderLayer }
         for layer in allDecoderLayers { layer.referenceSharedActivationForTesting = fixture.reference_shared_activation ?? false }
         defer { for layer in allDecoderLayers { layer.referenceSharedActivationForTesting = false } }
@@ -223,6 +226,7 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
                 "reference_attention_prefill_gate_diagnostic_only": fixture.reference_attention_prefill_gate ?? false,
                 "reference_attention_tail_gate_diagnostic_only": fixture.reference_attention_tail_gate ?? false,
                 "reference_injection_gate_diagnostic_only": fixture.reference_injection_gate ?? false,
+                "reference_materialized_injection_diagnostic_only": fixture.reference_materialized_injection ?? false,
                 "reference_fused_rotation_diagnostic_only": fixture.reference_fused_rotation ?? false,
                 "projection_engagement": projections.map { ["module": $0.0, "widths": $0.1.engagementReport] as [String: Any] },
                 "peak_active_memory_bytes": Memory.peakMemory,
@@ -324,7 +328,7 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
                         stages[String(format: "layer-%03d-", index) + name] = (index == 0 || fixture.passive_full_rows == true)
                             ? value : value[0..., (value.dim(1) - 1)..., 0...]
                     }
-                    if index == 1 && passiveWidth != 1 {
+                    if index == 1 {
                         XCTAssertEqual(layer.passivePLEStagesForTesting.count, 8)
                         for (name, value) in layer.passivePLEStagesForTesting {
                             let flat = value.reshaped(1, passiveWidth, -1)
@@ -355,6 +359,7 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
                 // Enable only after the selected prompt has finished.
                 for (_, layer) in passiveLayers {
                     layer.passivePrefillWidthForTesting = 1
+                    layer.passivePLEWidthForTesting = 1
                 }
             }
             var prefix = fixture.histories[1].tokens
