@@ -2672,3 +2672,88 @@ read-only screenshot/source inspection. `REVIEW-LOOP-DIAGNOSTIC-INPUTS.json`
 and `AFM3-EARLY-REASONING-CASE.json` preserve candidate inputs for subsequent
 identical-input reference controls. Those controls have not run at this midpoint;
 no additional GPU workload is admitted during the live batch.
+
+#### Completed five-run comparison and identical-input divergence, October 25
+
+The preceding midpoint is superseded by the completed batch below. The same
+frozen binaries and settings were retained for all ten tasks. There were no
+HTTP errors, timeouts or harness-budget rejections; every client exited zero.
+That does **not** mean every generated project was complete or correct.
+
+| Run | AFM seconds | Reference seconds | AFM output tokens | Reference output tokens | AFM checks | Reference checks |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 1160.924 | 529.095 | 65848 | 31770 | 10/11 | 8/11 |
+| 2 | 424.390 | 915.901 | 23571 | 56010 | 11/11 | 10/11 |
+| 3 | 845.485 | 716.522 | 48189 | 43029 | 10/11 | 11/11 |
+| 4 | 1174.733 | 2929.838 | 64942 | 176434 | 9/11 | 7/11 |
+| 5 | 1334.787 | 278.584 | 74792 | 17535 | 9/11 | 2/11 |
+
+AFM's mean/median task time is 988.06/1160.92s; reference's is
+1073.99/716.52s. Sample standard deviations are 361.59s and 1063.78s,
+respectively. AFM's mean is about 8% lower but its median about 62% higher.
+Neither statistic establishes task-quality or performance parity. Reference
+run 5 is an incomplete project, not a successful fastest-time result. AFM's
+native decode rate remains 60.25–60.67 tok/s across all five runs; the task-time
+variation chiefly follows the amount of generated work, not a corresponding
+raw decode-rate fluctuation. Reference native decode timing was not logged.
+
+Independent screenshot/source inspection revealed limits of the automated
+checks. AFM run 2 passes 11/11 but its CSS overrides the error panel's `hidden`
+attribute, leaving a "WebGL unavailable" overlay over the rendered scene.
+Reference run 3 passes 11/11 but raycast selection does not synchronize the
+dropdown. Original automated scores are preserved. AFM run 4 uses a canvas
+where the task requests a containing viewport element, and does not update
+camera aspect on resize. AFM run 5's mobile screenshot timeout recurs under the
+same unchanged 2.5s harness deadline; that cause is not yet established.
+
+Reference run 4 spends 176,434 tokens and 148 requests, including a long
+generated-code build investigation, and ends when its server detects a
+repetition loop after 5,525 tokens in the final response. The final assistant
+message is empty despite a completed response/client exit zero. Its scene
+still throws on a negative animation delta. Reference run 5 logs
+`dropping undeclared tool call: write_file`; filtering that call leaves a
+promise to implement the project, and the client stops without the core files.
+AFM run 3 also generated an unsupported `write_file` call, but the client
+received the error and continued. These are observed outcomes, not yet a
+matched-input attribution of that policy difference.
+
+Two kinds of variation must now be kept separate:
+
+1. **Live task input variation is demonstrated.** The initial model-visible
+   request and first response match across all ten runs. Later shell results
+   contain different chunk IDs and elapsed times. Two fresh-process controls
+   fed each engine the same first two captured requests, once from AFM run 1
+   and once from reference run 1. Both engines returned exactly the same
+   reasoning and tool arguments for each input variant: 64 tokens for one,
+   82 for the other. Fixed greedy sampling does not make changing tool-result
+   inputs identical.
+2. **A remaining identical-input divergence is reproduced.** Fresh processes
+   received the exact first five captured request histories from AFM run 5.
+   Responses 1–4 match across engines. Request 5 contains 8,623 prompt tokens
+   and AFM restores a 7,852-token prefix. Its reasoning matches reference for
+   6,297 characters, then AFM chooses `selectPlanet(id)` where reference chooses
+   `selectPlanet(name)`. AFM exactly reproduces its original response: 8,273
+   output tokens in 136.188s, versus reference's 2,437 tokens in 38.156s. AFM
+   reaches the 8,192-token reasoning cap. No generated tool is executed during
+   this control. The late difference is not explained by live tool-result
+   variation, and its numerical or execution-path cause is still unresolved.
+
+The existing 249 exact native score comparisons cover the first 57–64 decode
+decisions of their fixtures. They do not establish equivalence at the newly
+isolated late divergence. The next diagnostic is to compare raw scores under
+the same forced token history around that decision, preserving the frozen
+servers and checking that diagnostic capture itself leaves outputs unchanged.
+No serving-default, sampler or reasoning-budget change is justified yet.
+
+Completed evidence under the existing external artifact root:
+
+- `QwenRadixMaskOrbitalFiveEach20261025/{REPORT.md,analysis.json,status.json,QUALITY-TRIAGE.json}`
+- `QwenRadixMaskEarlyVarianceAFMInput20261025` and
+  `QwenRadixMaskEarlyVarianceReferenceInput20261025`
+- `QwenRadixMaskOrbitalFiveEach20261025/AFM5-BROWSER-RECHECK`
+- `QwenRadixMaskAFM5ThinkingControl20261025/{comparison.json,results.json}`
+
+All binary/client/task pins and checkpoint-file metadata remained unchanged.
+The full native score investigation is pending; **parity is not established**.
+This checkpoint contains documentation and analysis only, with no additional
+serving-code changes, installs, merges or release.
