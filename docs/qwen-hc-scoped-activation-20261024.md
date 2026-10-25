@@ -1133,3 +1133,32 @@ Evidence: `QwenOpeningPooledControlScores20261024`,
 `qwen-pooled-spectrum-full-comparison-20261024.json`. The next diagnostic
 extends the same passive comparison to the remaining layers; previous captures
 remain immutable and hash-bound.
+
+### Full 48-layer localization, 2026-10-24 22:30 EDT
+
+The passive comparison now covers four ordinary-forward stages at all 6,630
+positions in all 48 layers (3,258,777,600 layer-intermediate values). Native
+frozen / capture-off / capture-on replies and usage match, and all 64 raw score
+arrays remain identical to the earlier reference capture. AFM's five sets of
+64 score arrays remain identical to its eight-layer capture. Prior captured
+intermediates remain identical as subsets of the expanded files. The original
+strict file-control helper correctly rejected the expanded passive key set;
+a separate score-only comparison and subset payload controls establish the
+intended invariant instead. No result was accepted from that failed assertion.
+
+Layers 0--41 match fully. Layer 42's attention input/output and MLP input also
+match. Its MLP output first differs by 10 of 16,972,800 BF16 values, at prompt
+positions 5403, 5815 and 6078. Differences subsequently propagate through
+layers 43--47. This is the first divergent operation in the captured cold
+chunk; it does not establish the cause of every subsequent token decision or
+the coding time gap. The next captured-input experiment isolates its shared
+expert output gate, requiring ordinary AFM computation to reproduce its saved
+output before interpreting the changed gate.
+
+Release test build 97.95 s; prefix test 37.288 s, zero failures. Five winner
+agreements remain 61/57/58/61/60 of 64. No new coding or throughput measurement,
+no serving defaults changed. Evidence under the existing external root:
+`QwenOpeningAllLayersNative20261024`, `QwenOpeningAllLayersScores20261024`,
+`qwen-all-layers-full-comparison-20261024.json`,
+`QwenOpeningAllLayersScores20261024-control.json`. Native instrumented binary
+preserved in `QwenPassiveNativeAllLayersBinary20261024` with SHA manifest.

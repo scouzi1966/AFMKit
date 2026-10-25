@@ -24,6 +24,7 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
         let prefill_projection: String?
         let passive_forward: Bool?
         let passive_full_rows: Bool?
+        let passive_layer_count: Int?
         let passive_qsa: Bool?
         let reference_ple_norm: Bool?
         let reference_ple_scale: Bool?
@@ -118,15 +119,17 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
                 layer.referenceAttentionPrefillGateForTesting = false
             }
         }
+        let passiveLayerCount = fixture.passive_layer_count ?? 8
+        XCTAssertTrue((1...48).contains(passiveLayerCount))
         let passiveLayers = model.namedModules().compactMap { name, module -> (Int, Qwen4ExpDecoderLayer)? in
             guard let layer = module as? Qwen4ExpDecoderLayer,
-                  let index = Int(name.split(separator: ".").last ?? ""), index < 8 else { return nil }
+                  let index = Int(name.split(separator: ".").last ?? ""), index < passiveLayerCount else { return nil }
             return (index, layer)
         }.sorted { $0.0 < $1.0 }
         for (_, layer) in passiveLayers { layer.referencePLEGateScaleForTesting = fixture.reference_ple_scale ?? false }
         if fixture.passive_forward == true {
             XCTAssertEqual(fixture.case_id, "opening-r1-64")
-            XCTAssertEqual(passiveLayers.map(\.0), Array(0..<8))
+            XCTAssertEqual(passiveLayers.map(\.0), Array(0..<passiveLayerCount))
             for (_, layer) in passiveLayers {
                 layer.passivePrefillWidthForTesting = 6630
                 layer.passivePLEWidthForTesting = 6630
@@ -174,6 +177,7 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
                 "prefill_projection_diagnostic_only": projectionPolicy,
                 "passive_forward_diagnostic_only": fixture.passive_forward ?? false,
                 "passive_full_rows_diagnostic_only": fixture.passive_full_rows ?? false,
+                "passive_layer_count_diagnostic_only": passiveLayerCount,
                 "reference_ple_norm_diagnostic_only": fixture.reference_ple_norm ?? false,
                 "reference_ple_scale_diagnostic_only": fixture.reference_ple_scale ?? false,
                 "reference_ple_all_widths_diagnostic_only": fixture.reference_ple_all_widths ?? false,
