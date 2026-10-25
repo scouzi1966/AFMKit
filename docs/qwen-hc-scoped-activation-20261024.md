@@ -1210,3 +1210,109 @@ No serving default changed. Evidence: `QwenNativeMoERoutedAssert20261024`,
 plain-text QSA query rotation at short widths and the attention gate's native
 >16-row threshold; state precision and final-tail geometry remain separately
 tracked counterfactuals, not automatic production policy changes.
+
+### Short-query and attention-gate controls, 2026-10-24 23:10 EDT
+
+Extending scalar text-query rotation to short widths did not improve the
+64-decision diagnostic. Adding the reference's >16-row attention-gate
+threshold also did not improve the winner counts. These are internal,
+default-false experiments, not selected serving policies.
+
+| Arm | Prior diagnostic | Short scalar queries | Queries + tail gate |
+| --- | ---: | ---: | ---: |
+| Production 30+1 tail | 61/64 | 60/64 | 60/64 |
+| Joined 31 tail | 58/64 | 58/64 | 58/64 |
+| Joined 31, BF16 state values | 58/64 | 59/64 | 59/64 |
+| Reconstructed 30+1 | 61/64 | 60/64 | 60/64 |
+| Reconstructed 30+1, BF16 state values | 62/64 | 60/64 | 60/64 |
+
+Production raw-score RMS changed from 0.552837 to 0.557651 with scalar
+queries. Joined-31/BF16 RMS changed from 0.503345 to 0.526038. None of this
+establishes a coding-quality benefit. Removing passive capture preserved all
+320 score arrays (`QwenOpeningTailControlScores20261024-control.json`).
+The three fixtures/output sets are `QwenOpeningTailControl`,
+`QwenOpeningTailQueries`, and `QwenOpeningTailQueriesGate` with the existing
+`Fixture20261024.json` and `Scores20261024` suffixes.
+
+The next capture targets the actual final 31-token prompt chunk at offset
+6630. The native frozen/off/on controls reproduced the saved response and
+all 64 raw score arrays. Its binary and source are preserved under
+`QwenPassiveNativeTailBinary20261024` and the `qwen-passive-tail-native-*`
+artifacts; binary SHA-256:
+`adeccc077c776d5d7d245637340130f3f1e8ec129175dcafe94e271b82ae7edb`.
+
+The first AFM tail-capture attempt failed its four-stage assertion: passive
+hooks covered deferred long prefill but not ordinary short prefill. During
+failure cleanup XCTest also trapped in MLX's thread-local stream lookup.
+This failed run is retained in `QwenOpeningTailPassiveScores20261024` and
+`qwen-tail-passive-prefix-tests-20261024.log`; it is not qualified evidence.
+The fix retains the ordinary short-tail arrays without evaluating or
+re-forwarding them. The retry must preserve all prior scores before its
+intermediates are interpreted.
+
+The short-tail retry passed (release build 186.33 s, test 34.971 s). All 320
+score-array payloads match the pre-capture control. At joined-31/BF16-state
+geometry, all four stages of layers 0–2 and all retained PLE stages match
+the native capture. Layer 3's attention input also matches; its attention
+output is the first mismatch: 40,107/79,360 values across all 31 positions,
+RMS 0.000383942, maximum absolute difference 0.0078125. Later layers already
+receive different inputs, so their differences are not independent causes.
+Evidence: `QwenOpeningTailPassiveRetryScores20261024`,
+`QwenOpeningTailPassiveRetryScores20261024-control.json`, and
+`qwen-tail-passive-comparison-20261024.json`.
+
+The next passive capture includes the layer-3 sparse index tensors, rotated
+Q/K, current and full cached V/K, attention heads, and output gate. The
+expanded native capture remains identical under frozen/off/on response and
+64-score controls (`QwenOpeningTailAttentionNative20261024`). No cache reset,
+second forward, graph flush, or sampling change is introduced by these hooks.
+
+Source comparison identifies a specific hypothesis: AFM's fused short Q/K
+rotation narrows angles and individual products to BF16, while the pinned
+native `QK_NORM_ROPE_256_SOURCE` keeps rotation in FP32 and narrows the result.
+An internal default-false kernel template argument allows that hypothesis to
+be tested without changing the norm, projections, launch geometry or serving
+policy. It accepts FP32 angles only. This section is not a claim that the
+hypothesis is confirmed or that coding performance has recovered.
+
+One build-only attempt (`build -c release --build-tests`) failed because
+release modules were not testable. The wrapper's native retry did not repair
+that invocation. Subsequent work uses the established `test -c release`
+wrapper path. The failed log is `qwen-tail-attention-swift-build-20261024.log`.
+
+### Short Q/K rotation result, 2026-10-24 23:40 EDT
+
+The expanded capture localizes the tail discrepancy to the rotated first 64
+Q/K dimensions. Unrotated dimensions, V, sparse-index tensors and the output
+gate already match. The FP32-rotation diagnostic removes every captured
+attention input/output difference, including the full cached keys and values.
+Across 211 retained tensors (24,181,403 values), only layer 47's MLP output
+has differences: 46 values at nonfinal positions 6, 13 and 21, RMS 7.44e-6.
+The final prompt token's complete score array matches native exactly under
+joined-31/BF16-state geometry. This is a localized rounding correction, not
+whole-task quality or throughput qualification.
+
+| Fixed-prefix arm | Control winners | FP32 rotation winners | Control mean score RMS | FP32 rotation mean RMS |
+| --- | ---: | ---: | ---: | ---: |
+| Production 30+1 | 60/64 | 56/64 | 0.557651 | 0.603458 |
+| Joined 31, F32 state | 58/64 | 58/64 | 0.613297 | 0.597363 |
+| Joined 31, BF16 state values | 59/64 | 58/64 | 0.526038 | 0.472641 |
+| Reconstructed 30+1 | 60/64 | 56/64 | 0.557651 | 0.603458 |
+| Reconstructed 30+1, BF16 state values | 60/64 | 62/64 | 0.508311 | 0.458862 |
+
+The ordinary production geometry does not improve in this probe. All new
+switches remain default false. Even in the matched-geometry arm, the first
+decode step diverges (score RMS 0.357259), so the next isolation target is
+that step's ordinary intermediate tensors. No new whole-coding benchmark or
+serving throughput measurement has been claimed.
+
+Disabled capture controls preserve all 320 score arrays. Release test passes
+in 35.238 s; the earlier build-mode mistake caused a full 307.66 s rebuild.
+The enabled diagnostic passes in 35.171 s using the same test executable.
+Evidence: `QwenOpeningTailAttentionScores20261024`,
+`QwenOpeningTailRotationScores20261024`,
+`qwen-tail-attention-comparison-20261024.json`, and
+`qwen-tail-rotation-comparison-20261024.json` under the existing evidence root.
+The expanded native binary is preserved in
+`QwenPassiveNativeTailAttentionBinary20261024`, SHA-256
+`8521929e1694973cd5a400dc8f854fe62b634db0a008ca29c2cde46fedfc300a`.

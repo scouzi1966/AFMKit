@@ -2133,11 +2133,17 @@ final class Qwen4ExpQSAIndexer: Module {
     // Reference text queries use scalar MLX RoPE; pooled keys retain cos/sin.
     // Diagnostic only: leave explicit multimodal positions and serving unchanged.
     var referenceScalarTextQueriesForTesting = false
+    var referenceScalarTextQueriesAllWidthsForTesting = false
     var referencePooledTextSpectrumForTesting = false
     var passiveCaptureForTesting = false
+    var passiveCaptureWidthForTesting = 6630
+    var passiveCaptureOffsetForTesting = 0
+    var passiveAttentionCaptureForTesting = false
     var passiveStagesForTesting: [String: MLXArray] = [:]
-    private func retainPassive(_ key: String, _ value: MLXArray, length: Int, offset: Int) {
-        if passiveCaptureForTesting, length == 6630, offset == 0,
+    fileprivate func retainPassive(_ key: String, _ value: MLXArray, length: Int, offset: Int) {
+        if key.hasPrefix("attention-"), !passiveAttentionCaptureForTesting { return }
+        if passiveCaptureForTesting, length == passiveCaptureWidthForTesting,
+           offset == passiveCaptureOffsetForTesting,
            passiveStagesForTesting[key] == nil { passiveStagesForTesting[key] = value }
     }
 
@@ -2468,8 +2474,9 @@ final class Qwen4ExpQSAIndexer: Module {
         let sharedTables = providedPositionIDs == nil && positionTables?.matches(rope) == true
             ? positionTables : nil
         let queries: MLXArray
-        if referenceScalarTextQueriesForTesting, providedPositionIDs == nil,
-           batch == 1, length > 32 {
+        if (referenceScalarTextQueriesForTesting && length > 32)
+            || referenceScalarTextQueriesAllWidthsForTesting,
+           providedPositionIDs == nil, batch == 1 {
             let normalized = qLayerNorm(queryRows.reshaped(batch, length, heads, headDim))
                 .transposed(0, 2, 1, 3)
             queries = rope.applyScalarTextForTesting(normalized, offset: previousOffset)
@@ -2887,6 +2894,8 @@ private final class Qwen4ExpAttention: Module {
     // The serving path remains unchanged; short-tail/decode fusion stays on.
     var referenceScalarPrefillRoPEForTesting = false
     var referencePrefillGateForTesting = false
+    var referenceTailGateForTesting = false
+    var referenceFusedRotationForTesting = false
     static let sharedRequestProjections =
         ProcessInfo.processInfo.environment["AFM_QWEN_BATCH_ATTENTION_PROJECTIONS"] == "1"
 
@@ -2972,7 +2981,8 @@ private final class Qwen4ExpAttention: Module {
             epsilon: self.qNorm.eps,
             qHeads: self.heads,
             kvHeads: self.kvHeads,
-            rotaryDimensions: self.rope.dimensions)
+            rotaryDimensions: self.rope.dimensions,
+            referenceRotationForTesting: referenceFusedRotationForTesting)
         precondition(
             fusedQK != nil,
             "compiled Qwen attention decode requires fused QK norm/RoPE")
@@ -3246,7 +3256,9 @@ private final class Qwen4ExpAttention: Module {
                     epsilon: qNorm.eps,
                     qHeads: heads,
                     kvHeads: kvHeads,
-                    rotaryDimensions: rope.dimensions)
+                    rotaryDimensions: rope.dimensions,
+                    referenceRotationForTesting: referenceFusedRotationForTesting
+                        && providedPositionIDs == nil && sharedFusedQKAngles != nil)
             } else {
                 fusedQK = nil
             }
@@ -3270,6 +3282,11 @@ private final class Qwen4ExpAttention: Module {
         }
         attentionHostProfiler?.projections()
         attentionProfiler?.lap([q, k, v], stage: "qk-rope")
+        if indexer.passiveAttentionCaptureForTesting {
+            indexer.retainPassive("attention-query", q, length: l, offset: offset)
+            indexer.retainPassive("attention-key", k, length: l, offset: offset)
+            indexer.retainPassive("attention-value", v, length: l, offset: offset)
+        }
         let effectiveMask: MLXFast.ScaledDotProductAttentionMaskMode
         if case let .some(.mask(qsaMask)) = qsaSelection {
             effectiveMask = .array(qsaMask)
@@ -3337,6 +3354,10 @@ private final class Qwen4ExpAttention: Module {
                 contiguousFeatures: cache is Qwen4ExpAttentionCache)
         } else if case let .some(.mask(qsaMask)) = qsaSelection {
             let cached = cache?.update(keys: k, values: v) ?? (k, v)
+            if indexer.passiveAttentionCaptureForTesting {
+                indexer.retainPassive("attention-cached-key", cached.0, length: l, offset: offset)
+                indexer.retainPassive("attention-cached-value", cached.1, length: l, offset: offset)
+            }
             if let fused = Qwen4ExpQSAMaskedAttention.call(
                 queries: q,
                 keys: cached.0,
@@ -3453,6 +3474,10 @@ private final class Qwen4ExpAttention: Module {
         }
         attentionHostProfiler?.attention()
         attentionProfiler?.lap([outputHeads], stage: "cache-sdpa")
+        if indexer.passiveAttentionCaptureForTesting {
+            indexer.retainPassive("attention-heads", outputHeads, length: l, offset: offset)
+            indexer.retainPassive("attention-gate", gate, length: l, offset: offset)
+        }
         let result: MLXArray
         if deferOutputProjection {
             result = outputHeads.transposed(0, 2, 1, 3).reshaped(b, l, -1) * sigmoid(gate)
@@ -3463,7 +3488,8 @@ private final class Qwen4ExpAttention: Module {
         } else {
             var output = outputHeads
                 .transposed(0, 2, 1, 3).reshaped(b, l, -1)
-            let gateValues = referencePrefillGateForTesting && l > 32
+            let gateValues = ((referencePrefillGateForTesting && l > 32)
+                || (referenceTailGateForTesting && (17...32).contains(l)))
                 ? Qwen4ExpHCActivation.sigmoid(gate) : sigmoid(gate)
             output = output * gateValues
             result = qwen4ExpVerificationLinear(
@@ -5580,6 +5606,11 @@ final class Qwen4ExpDecoderLayer: Module {
         set { selfAttention?.indexer.referenceScalarTextQueriesForTesting = newValue }
     }
 
+    var referenceScalarIndexerQueriesAllWidthsForTesting: Bool {
+        get { selfAttention?.indexer.referenceScalarTextQueriesAllWidthsForTesting ?? false }
+        set { selfAttention?.indexer.referenceScalarTextQueriesAllWidthsForTesting = newValue }
+    }
+
     var referenceScalarPrefillRoPEForTesting: Bool {
         get { selfAttention?.referenceScalarPrefillRoPEForTesting ?? false }
         set { selfAttention?.referenceScalarPrefillRoPEForTesting = newValue }
@@ -5588,6 +5619,16 @@ final class Qwen4ExpDecoderLayer: Module {
     var referenceAttentionPrefillGateForTesting: Bool {
         get { selfAttention?.referencePrefillGateForTesting ?? false }
         set { selfAttention?.referencePrefillGateForTesting = newValue }
+    }
+
+    var referenceAttentionTailGateForTesting: Bool {
+        get { selfAttention?.referenceTailGateForTesting ?? false }
+        set { selfAttention?.referenceTailGateForTesting = newValue }
+    }
+
+    var referenceFusedRotationForTesting: Bool {
+        get { selfAttention?.referenceFusedRotationForTesting ?? false }
+        set { selfAttention?.referenceFusedRotationForTesting = newValue }
     }
 
     // Passive diagnostic: retain existing prefill arrays without another
@@ -5814,7 +5855,9 @@ final class Qwen4ExpDecoderLayer: Module {
             attended: attended,
             residual: residual,
             injection: injection,
-            verificationPolicy: verificationPolicy)
+            verificationPolicy: verificationPolicy,
+            passiveAttentionRead: passivePrefillWidthForTesting == input.dim(1)
+                && verificationPolicy == nil ? mixed : nil)
     }
 
     /// Reuse the AR tail's model-owned graph and its exact M=1 kernel choices
@@ -5963,7 +6006,8 @@ final class Qwen4ExpDecoderLayer: Module {
         attended: MLXArray,
         residual initialResidual: MLXArray,
         injection initialInjection: MLXArray,
-        verificationPolicy: MTPVerificationPolicy?
+        verificationPolicy: MTPVerificationPolicy?,
+        passiveAttentionRead: MLXArray? = nil
     ) -> MLXArray {
         var mixed: MLXArray
         var residual = initialResidual
@@ -5973,8 +6017,17 @@ final class Qwen4ExpDecoderLayer: Module {
             residual: residual,
             weights: injection,
             verificationPolicy: verificationPolicy)
+        let mlpOutput = mlp(mixed, verificationPolicy: verificationPolicy)
+        if let passiveAttentionRead, passivePrefillStagesForTesting.isEmpty {
+            // Retain the ordinary short-prefill graph without evaluating or
+            // rebuilding it. Long prefill is captured in the deferred path.
+            passivePrefillStagesForTesting = [
+                "attn-read": passiveAttentionRead, "attn-output": attended,
+                "mlp-read": mixed, "mlp-output": mlpOutput,
+            ]
+        }
         return mlpHyperConnection.inject(
-            mlp(mixed, verificationPolicy: verificationPolicy),
+            mlpOutput,
             residual: residual,
             weights: injection,
             verificationPolicy: verificationPolicy)

@@ -25,6 +25,8 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
         let passive_forward: Bool?
         let passive_full_rows: Bool?
         let passive_layer_count: Int?
+        let passive_width: Int?
+        let passive_arm: String?
         let passive_qsa: Bool?
         let reference_ple_norm: Bool?
         let reference_ple_scale: Bool?
@@ -33,8 +35,11 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
         let reference_routed_prefill_activation: Bool?
         let reference_scalar_prefill_rope: Bool?
         let reference_scalar_indexer_queries: Bool?
+        let reference_scalar_indexer_queries_all_widths: Bool?
         let reference_pooled_indexer_spectrum: Bool?
         let reference_attention_prefill_gate: Bool?
+        let reference_attention_tail_gate: Bool?
+        let reference_fused_rotation: Bool?
         let model: String
         let histories: [History]
         let rows: [Row]
@@ -113,18 +118,28 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
         for layer in allDecoderLayers {
             layer.referenceScalarPrefillRoPEForTesting = fixture.reference_scalar_prefill_rope ?? false
             layer.referenceScalarIndexerQueriesForTesting = fixture.reference_scalar_indexer_queries ?? false
+            layer.referenceScalarIndexerQueriesAllWidthsForTesting = fixture.reference_scalar_indexer_queries_all_widths ?? false
             layer.referencePooledIndexerSpectrumForTesting = fixture.reference_pooled_indexer_spectrum ?? false
             layer.referenceAttentionPrefillGateForTesting = fixture.reference_attention_prefill_gate ?? false
+            layer.referenceAttentionTailGateForTesting = fixture.reference_attention_tail_gate ?? false
+            layer.referenceFusedRotationForTesting = fixture.reference_fused_rotation ?? false
         }
         defer {
             for layer in allDecoderLayers {
                 layer.referenceScalarPrefillRoPEForTesting = false
                 layer.referenceScalarIndexerQueriesForTesting = false
+                layer.referenceScalarIndexerQueriesAllWidthsForTesting = false
                 layer.referencePooledIndexerSpectrumForTesting = false
                 layer.referenceAttentionPrefillGateForTesting = false
+                layer.referenceAttentionTailGateForTesting = false
+                layer.referenceFusedRotationForTesting = false
             }
         }
         let passiveLayerCount = fixture.passive_layer_count ?? 8
+        let passiveWidth = fixture.passive_width ?? 6630
+        let passiveArm = fixture.passive_arm ?? "production-split"
+        XCTAssertTrue([31, 6630].contains(passiveWidth))
+        XCTAssertTrue(["production-split", "joined-final31", "joined-final31-bf16-state"].contains(passiveArm))
         XCTAssertTrue((1...48).contains(passiveLayerCount))
         let passiveLayers = model.namedModules().compactMap { name, module -> (Int, Qwen4ExpDecoderLayer)? in
             guard let layer = module as? Qwen4ExpDecoderLayer,
@@ -136,8 +151,8 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
             XCTAssertEqual(fixture.case_id, "opening-r1-64")
             XCTAssertEqual(passiveLayers.map(\.0), Array(0..<passiveLayerCount))
             for (_, layer) in passiveLayers {
-                layer.passivePrefillWidthForTesting = 6630
-                layer.passivePLEWidthForTesting = 6630
+                layer.passivePrefillWidthForTesting = passiveWidth
+                layer.passivePLEWidthForTesting = passiveWidth
             }
         }
         defer {
@@ -155,10 +170,17 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
         }
         if fixture.passive_qsa == true {
             XCTAssertEqual(passiveIndexers.count, 1)
-            for indexer in passiveIndexers { indexer.passiveCaptureForTesting = true }
+            for indexer in passiveIndexers {
+                indexer.passiveCaptureWidthForTesting = passiveWidth
+                indexer.passiveCaptureOffsetForTesting = passiveWidth == 31 ? 6630 : 0
+                indexer.passiveAttentionCaptureForTesting = passiveWidth == 31
+            }
         }
         defer { for indexer in passiveIndexers {
             indexer.passiveCaptureForTesting = false; indexer.passiveStagesForTesting = [:]
+            indexer.passiveCaptureWidthForTesting = 6630
+            indexer.passiveCaptureOffsetForTesting = 0
+            indexer.passiveAttentionCaptureForTesting = false
         } }
         let projectionPolicy = fixture.prefill_projection ?? "unchanged"
         XCTAssertTrue(["unchanged", "control", "dense"].contains(projectionPolicy))
@@ -183,6 +205,8 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
                 "passive_forward_diagnostic_only": fixture.passive_forward ?? false,
                 "passive_full_rows_diagnostic_only": fixture.passive_full_rows ?? false,
                 "passive_layer_count_diagnostic_only": passiveLayerCount,
+                "passive_width_diagnostic_only": passiveWidth,
+                "passive_arm_diagnostic_only": passiveArm,
                 "reference_ple_norm_diagnostic_only": fixture.reference_ple_norm ?? false,
                 "reference_ple_scale_diagnostic_only": fixture.reference_ple_scale ?? false,
                 "reference_ple_all_widths_diagnostic_only": fixture.reference_ple_all_widths ?? false,
@@ -190,8 +214,11 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
                 "reference_routed_prefill_activation_diagnostic_only": fixture.reference_routed_prefill_activation ?? false,
                 "reference_scalar_prefill_rope_diagnostic_only": fixture.reference_scalar_prefill_rope ?? false,
                 "reference_scalar_indexer_queries_diagnostic_only": fixture.reference_scalar_indexer_queries ?? false,
+                "reference_scalar_indexer_queries_all_widths_diagnostic_only": fixture.reference_scalar_indexer_queries_all_widths ?? false,
                 "reference_pooled_indexer_spectrum_diagnostic_only": fixture.reference_pooled_indexer_spectrum ?? false,
                 "reference_attention_prefill_gate_diagnostic_only": fixture.reference_attention_prefill_gate ?? false,
+                "reference_attention_tail_gate_diagnostic_only": fixture.reference_attention_tail_gate ?? false,
+                "reference_fused_rotation_diagnostic_only": fixture.reference_fused_rotation ?? false,
                 "projection_engagement": projections.map { ["module": $0.0, "widths": $0.1.engagementReport] as [String: Any] },
                 "peak_active_memory_bytes": Memory.peakMemory,
                 "blocked_calls_per_layer": recurrentLayers.map(\.referenceBlockedCallsForTesting),
@@ -205,6 +232,18 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
         }
         for arm in ["production-split", "joined-final31", "joined-final31-bf16-state",
                     "reconstructed-split", "reconstructed-split-bf16-state"] {
+            for indexer in passiveIndexers {
+                indexer.passiveCaptureForTesting = fixture.passive_qsa == true && arm == passiveArm
+                indexer.passiveStagesForTesting = [:]
+            }
+            if fixture.passive_forward == true {
+                for (_, layer) in passiveLayers {
+                    layer.passivePrefillWidthForTesting = arm == passiveArm ? passiveWidth : nil
+                    layer.passivePLEWidthForTesting = arm == passiveArm ? passiveWidth : nil
+                    layer.passivePrefillStagesForTesting = [:]
+                    layer.passivePLEStagesForTesting = [:]
+                }
+            }
             let roundState = arm.hasSuffix("bf16-state")
             let splitTail = arm.hasPrefix("reconstructed-split")
             var cache: [KVCache] = []
@@ -266,20 +305,20 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
                 // The counterfactual only begins at the captured request.
                 if history.request == probeRequest { try persistState() }
             }
-            if fixture.passive_forward == true, arm == "production-split" {
+            if fixture.passive_forward == true, arm == passiveArm {
                 var stages: [String: MLXArray] = [:]
                 for (index, layer) in passiveLayers {
                     XCTAssertEqual(layer.passivePrefillStagesForTesting.count, 4)
                     for (name, value) in layer.passivePrefillStagesForTesting {
-                        XCTAssertEqual(Array(value.shape.prefix(2)), [1, 6630])
+                        XCTAssertEqual(Array(value.shape.prefix(2)), [1, passiveWidth])
                         stages[String(format: "layer-%03d-", index) + name] = (index == 0 || fixture.passive_full_rows == true)
                             ? value : value[0..., (value.dim(1) - 1)..., 0...]
                     }
                     if index == 1 {
                         XCTAssertEqual(layer.passivePLEStagesForTesting.count, 8)
                         for (name, value) in layer.passivePLEStagesForTesting {
-                            let flat = value.reshaped(1, 6630, -1)
-                            stages[name] = flat[0..., 6614..., 0...]
+                            let flat = value.reshaped(1, passiveWidth, -1)
+                            stages[name] = flat[0..., (passiveWidth - 16)..., 0...]
                         }
                     }
                     layer.passivePrefillWidthForTesting = nil
@@ -289,7 +328,7 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
                 }
                 if fixture.passive_qsa == true {
                     for indexer in passiveIndexers {
-                        XCTAssertEqual(indexer.passiveStagesForTesting.count, 4)
+                        XCTAssertEqual(indexer.passiveStagesForTesting.count, passiveWidth == 31 ? 11 : 4)
                         for (name, value) in indexer.passiveStagesForTesting { stages[name] = value }
                         indexer.passiveCaptureForTesting = false
                         indexer.passiveStagesForTesting = [:]
