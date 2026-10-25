@@ -84,6 +84,7 @@ struct MLXJSONStopFilter {
     private(set) var stopped = false
     private var inputBytes = 0
     private var emittedBytes = 0
+    private var pendingSourceTokens = 0
     private var pendingLogprobs: [(end: Int, values: [ResolvedLogprob])] = []
 
     init(startTag: String?, endTag: String?, insideReasoning: Bool, stopSequences: [String]) {
@@ -95,10 +96,13 @@ struct MLXJSONStopFilter {
     mutating func consume(_ text: String, logprobs: [ResolvedLogprob]? = nil) -> [StreamChunk] {
         guard !stopped else { return [] }
         inputBytes += text.utf8.count
+        if !text.isEmpty { pendingSourceTokens += 1 }
         if let logprobs, !logprobs.isEmpty {
             pendingLogprobs.append((inputBytes, logprobs))
         }
-        return filter(framer.consume(text))
+        let segments = framer.consume(text)
+        let chunks = filter(segments)
+        return accountGeneratedTokens(chunks)
     }
 
     mutating func finish() -> [StreamChunk] {
@@ -107,7 +111,20 @@ struct MLXJSONStopFilter {
         let tail = stops.finish()
         if !tail.isEmpty { chunks += annotate([.init(text: tail)]) }
         pendingLogprobs.removeAll()
-        return chunks
+        return accountGeneratedTokens(chunks)
+    }
+
+    private mutating func accountGeneratedTokens(_ chunks: [StreamChunk]) -> [StreamChunk] {
+        guard let firstTextIndex = chunks.firstIndex(where: { !$0.text.isEmpty }) else {
+            if stopped { pendingSourceTokens = 0 }
+            return chunks
+        }
+        let sourceTokens = pendingSourceTokens
+        pendingSourceTokens = 0
+        return chunks.enumerated().map { index, chunk in
+            StreamChunk(copying: chunk,
+                generatedTokenCount: index == firstTextIndex ? sourceTokens : 0)
+        }
     }
 
     private mutating func annotate(_ chunks: [StreamChunk]) -> [StreamChunk] {

@@ -101,4 +101,14 @@ final class MLXJSONReasoningFramerTests: XCTestCase {
             XCTAssertTrue(filter.stopped)
         }
     }
+
+    func testSplitStructuredFrameChargesEachSourceChunkOnce() {
+        var filter = MLXJSONStopFilter(startTag: "<think>", endTag: "</think>",
+            insideReasoning: false, stopSequences: ["[STOP]"])
+        let firstChunks = filter.consume("<think>private</think>{\"x\":1}")
+        XCTAssertGreaterThan(firstChunks.filter { !$0.text.isEmpty }.count, 1)
+        XCTAssertEqual(firstChunks.reduce(0) { $0 + ($1.generatedTokenCountOverride ?? 1) }, 1)
+        let chunks = firstChunks + filter.consume("[STOP]discarded") + filter.finish()
+        XCTAssertEqual(chunks.map(\.text).joined(), "<think>private</think>{\"x\":1}")
+    }
 }
