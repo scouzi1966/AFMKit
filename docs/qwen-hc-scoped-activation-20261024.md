@@ -1871,3 +1871,41 @@ Evidence: `QwenOpeningDecodeActivation{Control,Corrected}Scores20261025`,
 `qwen-decode-activation-regression-tests-20261025.log`,
 `QwenColdR2DecodeAllLayersScores20261025`, and
 `qwen-cold-r2-decode-all-layers-comparison-20261025.json`.
+
+
+### Independent cold-prefix localization, 2026-10-25 02:25 EDT
+
+The prefix harness now derives capture geometry from the qualified prompt,
+accepts the second-request fixture for passive capture, and applies the PLE
+arithmetic policy independently of the number of layers being inspected.
+Optional fixture expectations make exact score counts and winner overlaps
+explicit regression assertions. A capture-disabled opening run passes the
+64/64 exact-score and winner assertions and preserves all 320 score payloads
+from the prior opening run (build 102.39s; test 35.355 s).
+
+The second-request first-chunk capture uses 7,224 tokens followed by the same
+31-token native tail. AFM passive capture preserves all 285 score payloads.
+Its 200 captured arrays match native exactly: the four normal model boundaries
+per layer plus eight PLE arrays. Layer 0 retains all rows; subsequent layers
+retain their final row, and PLE retains its final 16 rows. This bounds the
+localization; it does not prove that every unretained row or recurrent state
+matches. The final 31-token span and carried state remain under investigation.
+
+The first native capture exporter rejected a flattened HC injection tensor
+with `InvalidPassiveShape`. Raw score and semantic checks still passed; the
+export failure was recorded and that run was not treated as complete evidence.
+The corrected exporter saves only the four sequence-shaped prefill boundaries.
+Retry frozen/off/on semantic controls and all 57 historical raw score arrays
+match. Native capture binary SHA-256:
+`ebe016ca1e995d72d54bb786bf679a4ddbf6182d0d912916999e5565abcbdcb8`.
+
+The focused step-12 HC normalization test also passes with the compiled native
+HC chain selected (2.772 s), including the exact native read/output checks.
+No serving policy changed. No fresh coding or throughput claim is made.
+
+Evidence: `QwenOpeningExactScoreGuard20261025`,
+`QwenOpeningExactScoreGuardFixture20261025.json`,
+`QwenColdR2PrefillCaptureScores20261025`,
+`QwenColdR2PrefillNativeRetry20261025`,
+`qwen-cold-r2-prefill-comparison-20261025.json`, and
+`QwenNativeDecodeStep12NativeChain20261025`.

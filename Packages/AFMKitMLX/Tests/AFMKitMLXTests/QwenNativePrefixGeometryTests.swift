@@ -48,6 +48,8 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
         let reference_down_reduction: Bool?
         let reference_routed_decode_activation: Bool?
         let reference_fused_rotation: Bool?
+        let expected_exact_scores: [String: Int]?
+        let expected_winner_overlaps: [String: Int]?
         let model: String
         let histories: [History]
         let rows: [Row]
@@ -164,9 +166,10 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
             }
         }
         let passiveLayerCount = fixture.passive_layer_count ?? 8
-        let passiveWidth = fixture.passive_width ?? 6630
+        let prefillBoundary = fixture.histories[1].tokens.count - 31
+        let passiveWidth = fixture.passive_width ?? prefillBoundary
         let passiveArm = fixture.passive_arm ?? "production-split"
-        XCTAssertTrue([1, 31, 6630].contains(passiveWidth))
+        XCTAssertTrue([1, 31, prefillBoundary].contains(passiveWidth))
         XCTAssertTrue(["production-split", "joined-final31", "joined-final31-bf16-state"].contains(passiveArm))
         XCTAssertTrue((1...48).contains(passiveLayerCount))
         let passiveLayers = model.namedModules().compactMap { name, module -> (Int, Qwen4ExpDecoderLayer)? in
@@ -174,9 +177,10 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
                   let index = Int(name.split(separator: ".").last ?? ""), index < passiveLayerCount else { return nil }
             return (index, layer)
         }.sorted { $0.0 < $1.0 }
-        for (_, layer) in passiveLayers { layer.referencePLEGateScaleForTesting = fixture.reference_ple_scale ?? false }
+        // Arithmetic policy is independent of how many layers are retained for inspection.
+        for layer in allDecoderLayers { layer.referencePLEGateScaleForTesting = fixture.reference_ple_scale ?? false }
+        defer { for layer in allDecoderLayers { layer.referencePLEGateScaleForTesting = false } }
         if fixture.passive_forward == true {
-            XCTAssertEqual(fixture.case_id, "opening-r1-64")
             XCTAssertEqual(passiveLayers.map(\.0), Array(0..<passiveLayerCount))
             for (_, layer) in passiveLayers {
                 layer.passivePrefillWidthForTesting = passiveWidth
@@ -189,7 +193,6 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
                 layer.passivePrefillStagesForTesting = [:]
                 layer.passivePLEWidthForTesting = nil
                 layer.passivePLEStagesForTesting = [:]
-                layer.referencePLEGateScaleForTesting = false
             }
         }
         let passiveIndexers = model.namedModules().compactMap { name, module -> Qwen4ExpQSAIndexer? in
@@ -200,7 +203,7 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
             XCTAssertEqual(passiveIndexers.count, 1)
             for indexer in passiveIndexers {
                 indexer.passiveCaptureWidthForTesting = passiveWidth
-                indexer.passiveCaptureOffsetForTesting = passiveWidth == 1 ? 6661 : (passiveWidth == 31 ? 6630 : 0)
+                indexer.passiveCaptureOffsetForTesting = passiveWidth == 1 ? fixture.histories[1].tokens.count : (passiveWidth == 31 ? prefillBoundary : 0)
                 indexer.passiveAttentionCaptureForTesting = passiveWidth == 31 || passiveWidth == 1
             }
         }
@@ -452,6 +455,14 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
             }
             try save(arrays: scores, url: root.appendingPathComponent(arm + ".safetensors"))
             let own = records.filter { $0["arm"] as? String == arm }
+            if let expected = fixture.expected_exact_scores?[arm] {
+                XCTAssertEqual(own.filter { $0["rms_error"] as? Float == 0 }.count, expected,
+                    "Qualified full vocabulary score equality regressed for \(arm)")
+            }
+            if let expected = fixture.expected_winner_overlaps?[arm] {
+                XCTAssertEqual(own.filter { $0["raw_winner_sets_overlap"] as? Bool == true }.count, expected,
+                    "Qualified winning-token overlap regressed for \(arm)")
+            }
             print("NATIVE_PREFIX arm=\(arm) raw_winner_overlap=\(own.filter { $0["raw_winner_sets_overlap"] as? Bool == true }.count)/\(own.count)")
             if projectionPolicy == "dense" {
                 XCTAssertTrue(projections.contains { !$0.1.engagedWidths.isEmpty },
