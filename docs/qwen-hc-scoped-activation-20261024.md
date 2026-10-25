@@ -2624,3 +2624,51 @@ The retained candidate is `QwenRadixMaskHTTPBinary20261025/afm`, source
 `9d2d55c066dfcef10377586a7ebbc60f0baee44a1156d0ce15b85cddfc6d7e96`.
 The reference's deferred ordering alone does not reproduce its speed in this
 Swift path. Further attribution is required before any replacement schedule.
+
+#### Fresh coding variance batch: midpoint, October 25
+
+The retained `37758bf2` executable above is frozen for five fresh Orbital tasks
+per engine, with alternating pair order. No source, launcher, sampler, budget,
+checkpoint or execution setting changes are made during the batch. Each task
+starts in an empty project directory; generated programs, every request and
+response, client interactions, and independent browser checks are preserved.
+The experiment remains MTP-off, thinking-on and prefix-cache-on, with the same
+180k-output-token / 60-minute / 240-request limits as the preceding comparison.
+
+The following is **incomplete midpoint evidence**, not a parity or release claim:
+
+| Engine/run | Task seconds | Output tokens | Checks | Native decode tok/s |
+| --- | ---: | ---: | ---: | ---: |
+| AFM 1 | 1160.924 | 65848 | 10/11 | 60.251 |
+| Reference 1 | 529.095 | 31770 | 8/11 | not logged |
+| Reference 2 | 915.901 | 56010 | 10/11 | not logged |
+| AFM 2 | 424.390 | 23571 | 11/11 | 60.645 |
+| AFM 3 | 845.485 | 48189 | 10/11 | 60.358 |
+
+AFM's elapsed variation here is chiefly variation in generated work rather than
+a comparable change in native decode rate. AFM 1's final 15 responses account
+for 33,753 tokens and 576.94 API seconds, including repeated reviews, repeated
+tests and a few edits. All five completed tasks used an identical first
+model-visible request. Later tool results contain changing shell timings and
+chunk IDs, and generated actions diverge; fixed sampling settings do not make
+the full live task inputs identical. This does not exclude an engine defect.
+
+AFM 1, AFM 3 and reference 2 fail the unchanged diagnostic assertion requiring
+`Boreal` rather than `boreal`. Reference 1 records a negative-animation-delta
+exception and a blank 3D viewport; its rendered-scene, raycast and exception
+checks fail. AFM 2 passes every check. Reference 2 has one malformed client tool
+call; AFM 3 has one unsupported `write_file` call. No API error is recorded in
+these five tasks. Generated code is not repaired and scores are not adjusted.
+
+The mask optimization only changes the qualified path through 8K context;
+the gathered attention path above 8K is unchanged. The short-request speedup
+must not be presented as a corresponding long coding-task gain.
+
+Evidence: `QwenRadixMaskOrbitalFiveEach20261025/{REPORT.md,analysis.json,status.json}`
+under the existing external artifact root. The report updates after each task
+and checks executable/client/task hashes and 113 checkpoint-file identities
+(metadata, not a new full weight digest). `QUALITY-TRIAGE.json` records the
+read-only screenshot/source inspection. `REVIEW-LOOP-DIAGNOSTIC-INPUTS.json`
+and `AFM3-EARLY-REASONING-CASE.json` preserve candidate inputs for subsequent
+identical-input reference controls. Those controls have not run at this midpoint;
+no additional GPU workload is admitted during the live batch.
