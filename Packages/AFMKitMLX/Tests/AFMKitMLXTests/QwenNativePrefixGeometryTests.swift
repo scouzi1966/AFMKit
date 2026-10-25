@@ -20,6 +20,7 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
     }
     private struct Fixture: Decodable {
         let case_id: String?
+        let blocked_recurrence: Bool?
         let model: String
         let histories: [History]
         let rows: [Row]
@@ -79,6 +80,12 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
         let context = try await LLMModelFactory.shared.load(configuration:
             ModelConfiguration(directory: URL(fileURLWithPath: fixture.model)))
         let model = try XCTUnwrap(context.model as? Qwen4ExpModel)
+        let useBlocked = fixture.blocked_recurrence ?? false
+        let recurrentLayers = model.modules().compactMap { $0 as? Qwen4ExpDecoderLayer }
+            .filter { $0.isLinear }
+        XCTAssertEqual(recurrentLayers.count, 36)
+        for layer in recurrentLayers { layer.referenceBlockedRecurrenceForTesting = useBlocked }
+        defer { for layer in recurrentLayers { layer.referenceBlockedRecurrenceForTesting = false } }
         var records = [[String: Any]]()
         var prefixStateHashes = [String]()
         var productionScoreBytes = [Data]()
@@ -86,6 +93,8 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
             let report: [String: Any] = [
                 "fixture_sha256": digest(data), "records": records,
                 "checkpoint": fixture.model,
+                "blocked_recurrence_diagnostic_only": useBlocked,
+                "blocked_calls_per_layer": recurrentLayers.map(\.referenceBlockedCallsForTesting),
                 "scope": "Diagnostic raw logits on reference teacher prefixes. Production split30+1, joined final31, and BF16 state-value counterfactuals. A reconstructed split must exactly reproduce production before its state intervention is interpreted. FP32 buffers and AFM dispatch are retained. No generated tools, sampling, task quality or performance claim.",
                 "reference_state_limit": "Reference captures use its own default state policy; changing tail geometry does not align every numerical policy.",
                 "test_executable_sha256": digest(try Data(contentsOf:
@@ -205,6 +214,12 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
             try save(arrays: scores, url: root.appendingPathComponent(arm + ".safetensors"))
             let own = records.filter { $0["arm"] as? String == arm }
             print("NATIVE_PREFIX arm=\(arm) raw_winner_overlap=\(own.filter { $0["raw_winner_sets_overlap"] as? Bool == true }.count)/\(own.count)")
+            if useBlocked {
+                XCTAssertTrue(recurrentLayers.allSatisfy { $0.referenceBlockedCallsForTesting > 0 },
+                              "The counterfactual must actually execute the blocked kernel in every recurrent layer")
+            } else {
+                XCTAssertTrue(recurrentLayers.allSatisfy { $0.referenceBlockedCallsForTesting == 0 })
+            }
             try writeReport()
         }
         #endif

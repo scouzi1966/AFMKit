@@ -28,6 +28,7 @@ final class QwenWarmStatePolicyTests: XCTestCase {
         let expected_control_counts: [Int]
         let max_tokens: Int
         let arms: [String]?
+        let prompt_score_oracles: [String: String]?
     }
     private let prefillStep = 8192
     private let backoff = 31
@@ -79,6 +80,9 @@ final class QwenWarmStatePolicyTests: XCTestCase {
         let context = try await LLMModelFactory.shared.load(configuration:
             ModelConfiguration(directory: URL(fileURLWithPath: fixture.model)))
         let model = try XCTUnwrap(context.model as? Qwen4ExpModel)
+        let recurrentLayers = model.modules().compactMap { $0 as? Qwen4ExpDecoderLayer }.filter { $0.isLinear }
+        XCTAssertEqual(recurrentLayers.count, 36)
+        defer { for layer in recurrentLayers { layer.referenceBlockedRecurrenceForTesting = false } }
         let eos = context.resolvedEOSTokenIds
         let sampler = ArgMaxSampler()
         var records = [[String: Any]]()
@@ -99,11 +103,14 @@ final class QwenWarmStatePolicyTests: XCTestCase {
         let arms = fixture.arms ?? defaultArms
         XCTAssertEqual(Array(arms.prefix(2)), ["production", "reconstructed-split"])
         XCTAssertEqual(Set(arms).count, arms.count)
-        XCTAssertTrue(Set(arms).isSubset(of: Set(defaultArms + ["joined-tail-bf16-storage"])))
+        XCTAssertTrue(Set(arms).isSubset(of: Set(defaultArms + ["joined-tail-bf16-storage", "native-stride-bf16-storage", "native-stride-blocked-bf16-storage"])))
         for arm in arms {
             let roundState = arm.hasSuffix("bf16-state")
             let bf16Storage = arm.hasSuffix("bf16-storage")
-            let joined = arm.hasPrefix("joined-tail")
+            let nativeStride = arm.hasPrefix("native-stride")
+            let blocked = arm == "native-stride-blocked-bf16-storage"
+            let joined = arm.hasPrefix("joined-tail") || nativeStride
+            for layer in recurrentLayers { layer.referenceBlockedRecurrenceForTesting = false }
             let radix = RadixTreeCache(modelID: "warm-state-diagnostic-" + arm)
             func persist(_ cache: [KVCache]) throws {
                 guard roundState || bf16Storage else { return }
@@ -148,6 +155,8 @@ final class QwenWarmStatePolicyTests: XCTestCase {
                 limit: startupTokens, round: false)
             try JSONEncoder().encode(warmup.ids).write(to: root.appendingPathComponent(arm + "-startup.json"))
 
+            for layer in recurrentLayers { layer.referenceBlockedRecurrenceForTesting = blocked }
+            let blockedCallsBefore = recurrentLayers.map(\.referenceBlockedCallsForTesting)
             for (index, history) in captured.histories.enumerated() {
                 var cache = model.newCache(parameters: nil)
                 let match = MLXPrefixReplayPolicy.validatedRestoreMatch(radix.findExactBoundaryMatch(history.tokens), cache: cache)
@@ -174,6 +183,7 @@ final class QwenWarmStatePolicyTests: XCTestCase {
                     }
                 }
                 var boundaries = [Int]()
+                var prefillWidths = [Int]()
                 func insert(_ boundary: Int, _ states: [[MLXArray]], _ metadata: [[String]]) {
                     eval(states.flatMap { $0 })
                     boundaries.append(boundary)
@@ -193,15 +203,21 @@ final class QwenWarmStatePolicyTests: XCTestCase {
                     XCTAssertGreaterThan(boundary, prefix)
                     var position = prefix
                     while position < boundary {
-                        let end = min(position + prefillStep, boundary)
+                        // Match reference nextChunkEnd: checkpoints align to
+                        // absolute positions, not offsets within the new suffix.
+                        let strideEnd = nativeStride ? ((position / prefillStep) + 1) * prefillStep : Int.max
+                        let end = min(position + prefillStep, boundary, strideEnd)
+                        prefillWidths.append(end - position)
                         _ = try forward(Array(history.tokens[position..<end]), cache)
                         position = end
                     }
                     insert(boundary, MLXPrefixReplayPolicy.snapshotLayerStates(cache), cache.map(\.metaState))
                     let tail = Array(history.tokens[boundary...])
                     if joined {
+                        prefillWidths.append(tail.count)
                         initial = try forward(tail, cache)
                     } else {
+                        prefillWidths.append(contentsOf: [tail.count - 1, 1])
                         _ = try forward(Array(tail.dropLast()), cache)
                         initial = try forward([try XCTUnwrap(tail.last)], cache)
                     }
@@ -212,12 +228,38 @@ final class QwenWarmStatePolicyTests: XCTestCase {
                 radix.insert(tokens: history.tokens, layerStates: full, layerMetaStates: cache.map(\.metaState),
                     promptLogits: MLXPrefixReplayPolicy.promptBoundaryLogits(initial.reshaped(1, 1, -1)),
                     statesAreIndependentSnapshots: true)
-                let result = try generate(initial, cache, limit: fixture.max_tokens)
                 let stem = "\(arm)-request-\(history.request)"
+                try save(arrays: ["raw_final_prompt_logits": initial],
+                         url: root.appendingPathComponent(stem + "-initial.safetensors"))
+                var scoreMetrics: [String: Any] = [:]
+                if let path = fixture.prompt_score_oracles?[String(history.request)] {
+                    XCTAssertNotNil(fixture.files[path], "Native score input must be hash-bound")
+                    let reference = try XCTUnwrap(loadArrays(url: URL(fileURLWithPath: path))["raw_final_prompt_logits"])
+                        .reshaped(-1).asType(.float32)
+                    let actual = initial.reshaped(-1).asType(.float32)
+                    eval(actual, reference)
+                    XCTAssertEqual(actual.size, 248320)
+                    XCTAssertEqual(actual.shape, reference.shape)
+                    let a = actual.asArray(Float.self), r = reference.asArray(Float.self)
+                    XCTAssertTrue(a.allSatisfy(\.isFinite) && r.allSatisfy(\.isFinite))
+                    let am = try XCTUnwrap(a.max()), rm = try XCTUnwrap(r.max())
+                    let aw = a.indices.filter { a[$0] == am }, rw = r.indices.filter { r[$0] == rm }
+                    let delta = actual - reference
+                    scoreMetrics = ["afm_raw_winners": aw, "native_raw_winners": rw,
+                                    "raw_winner_sets_overlap": !Set(aw).isDisjoint(with: rw),
+                                    "max_absolute_error": abs(delta).max().item(Float.self),
+                                    "rms_error": sqrt(mean(square(delta))).item(Float.self)]
+                }
+                if nativeStride && history.request == 5 {
+                    XCTAssertEqual(prefillWidths, [265, 475, 31])
+                }
+                let result = try generate(initial, cache, limit: fixture.max_tokens)
                 try JSONEncoder().encode(result.ids).write(to: root.appendingPathComponent(stem + "-ids.json"))
                 try context.tokenizer.decode(tokens: result.ids).write(to: root.appendingPathComponent(stem + ".txt"), atomically: true, encoding: .utf8)
                 records.append(["arm": arm, "request": history.request, "prompt_tokens": history.tokens.count,
                     "restored_prefix": prefix, "output_tokens": result.ids.count,
+                    "explicit_prefill_widths": prefillWidths,
+                    "blocked_kernel": blocked, "native_prompt_score_comparison": scoreMetrics,
                     "terminal_token": result.terminal as Any? ?? NSNull(), "output_ids_sha256": tokenHash(result.ids)])
                 try report()
                 print("WARM_STATE arm=\(arm) request=\(history.request) output=\(result.ids.count) terminal=\(String(describing: result.terminal))")
@@ -227,6 +269,12 @@ final class QwenWarmStatePolicyTests: XCTestCase {
                 } else if arm == "reconstructed-split" {
                     XCTAssertEqual(result.ids, controls[index], "Reconstructed split must reproduce production exactly")
                 }
+            }
+            let blockedCallsAfter = recurrentLayers.map(\.referenceBlockedCallsForTesting)
+            if blocked {
+                XCTAssertTrue(zip(blockedCallsBefore, blockedCallsAfter).allSatisfy { $0 < $1 })
+            } else {
+                XCTAssertEqual(blockedCallsBefore, blockedCallsAfter)
             }
         }
         #endif

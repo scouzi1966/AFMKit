@@ -11,10 +11,12 @@ from component equality, fixed-input responses, and raw decode throughput.
 The output-gate candidate `7a0065bd` is preserved as binary `48d07045…`.
 It improves raw winning-token overlap on the native-prefix diagnostic from
 52/57 to 56/57, but increases total output and HTTP time on the five-request
-screen. It has **not** replaced the baseline. The next controlled experiment
-combines the known short-HC correction with this output-gate correction;
-the earlier short-HC-only candidate remains rejected. Main and installed
-binaries are unchanged.
+screen. It has **not** replaced the baseline. The combined short-HC/output-gate
+candidate (`12a44c24`, binary `a597e213…`) also failed its exploratory task pair:
+1,110.15 seconds and 8/11 checks versus the reference's 544.12 seconds and
+11/11 checks. It remains rejected for promotion. Current work is a bounded
+same-prefix arithmetic diagnosis; no new coding-parity result is claimed.
+Main and installed binaries are unchanged.
 
 The sections below retain the history of each intervention, including failures.
 
@@ -704,3 +706,58 @@ Evidence: `QwenOpeningNativeDecisionsRetry20261024`,
 and `qwen-opening-prefix-tests-20261024.log` under the external evaluation root.
 The initial capture attempt is retained separately: its copied capture binary
 could not find a relative libllama dependency, so no score comparison used it.
+
+## Blocked recurrence and native stride diagnostics: not promoted
+
+The pinned reference's exact blocked GDN kernel was ported with its MIT and
+underlying oMLX Apache-2.0 attribution retained. It is selected only by an
+internal per-model test switch, never by serving configuration. Native oracle
+outputs and final states match byte-for-byte at widths 64, 128 and 256 with
+zero and nonzero state. Short widths decline the kernel. The existing packed
+route still exactly matches its own source-algorithm control.
+
+Interleaved Release medians, one layer and identical FP32 state:
+
+| Width | Current packed ms | Ported blocked ms |
+|---|---:|---:|
+| 64 | 0.3659 | 0.3956 |
+| 256 | 0.5568 | 0.6773 |
+| 2048 | 1.4996 | 2.0565 |
+
+These include binding/dispatch/evaluation, not just GPU time. Width 2048 repeats
+checkpoint-derived input rows. The port is not a speed win on this experiment.
+The primitive tests passed 2/2 after a 180.62-second build.
+
+With the test switch disabled, all 320 saved opening score arrays are exactly
+unchanged. The compiled-decode continuation test also passes. With it enabled,
+opening winner overlaps are 58/64 (production split), 58/64 (joined), 59/64
+(joined BF16-rounded), 58/64 (reconstructed split), and 57/64 (split BF16-rounded).
+This is not an improvement. No runtime policy is promoted.
+
+The actual native warm-R5 capture passes frozen/capture-off/capture-on controls:
+all five saved replies and usage match, as do the 8,698 AFM/native prompt token
+IDs and the 7,927-token restored prefix. Native source plus its `S=475` log show
+an absolute 8,192 boundary: R5 prefill is 265 + 475 + 31, rather than 740 + 31.
+This missing boundary limits the earlier synthetic forward comparison.
+
+A new test-only stride arm reproduces those widths. It retains both mandatory
+production controls. The controls still emit 58,56,523,233,179 tokens. Joined
+BF16 storage emits 61,72,274,80,1354; matching the native stride instead gives
+61,72,274,80,2048 (last response capped). Adding the ported blocked recurrence
+gives 58,81,74,563,2048 (capped). None matches native 72,67,84,123,1824.
+R5 initial-score RMS error is 0.9411 for production, 1.0528 for joined BF16,
+1.1066 for native stride/BF16, and 0.9570 with blocked recurrence too. The latter
+three select a different first word from the reference. Counts and score error
+are diagnostic, not task quality; no generated tools were executed.
+
+The warm-stride test passes its controls in 201.74 seconds after a 102.87-second
+build. Its outputs, all first-score tensors, exact fixture hashes, and native
+capture controls are retained under `QwenWarmNativeStrideScores20261024` and
+`QwenWarm5NativeDecisions20261024`. Kernel timing and disabled-switch comparison
+are `qwen-blocked-kernel-timing-20261024.json` and
+`qwen-blocked-disabled-control-20261024.json`.
+
+Next source discrepancy to isolate: native `prefillDqGemm` uses transient
+BF16 dequantization plus dense GEMM at 2,048+ rows; AFM's ordinary quantized
+linear keeps quantizedMM. Matching recurrence on already-projected inputs did
+not test this projection choice. No quality or speed benefit is established yet.

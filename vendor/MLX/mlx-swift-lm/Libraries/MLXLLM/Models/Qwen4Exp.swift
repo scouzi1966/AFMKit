@@ -3479,6 +3479,9 @@ private final class Qwen4ExpGatedDeltaNet: Module {
     let captureRecurrentStates: Bool
     // Checkpoint diagnostic only; never set by runtime configuration.
     var referencePrefillQKNormalizationForTesting = false
+    // Per-model diagnostic only; no environment variable or serving option.
+    var referenceBlockedRecurrenceForTesting = false
+    private(set) var referenceBlockedCallsForTesting = 0
     private static let compileDecode =
         ProcessInfo.processInfo.environment["AFM_QWEN_COMPILE_GDN_DECODE"] != "0"
             && HardwareInfo.isModelOwnedCompiledDecodeSupported
@@ -3911,6 +3914,14 @@ private final class Qwen4ExpGatedDeltaNet: Module {
             output = captured.output
             state = captured.state
             layerCache.gatedDeltaRollback?.recurrentHistory = captured.history
+        } else if referenceBlockedRecurrenceForTesting, verificationPolicy == nil,
+                  let fusedPrework,
+                  let blocked = qwen4ExpBlockedGatedDeltaKernel(
+                    q: q, k: k, v: v, g: fusedPrework.gate,
+                    beta: fusedPrework.beta, state: recurrentState)
+        {
+            referenceBlockedCallsForTesting += 1
+            (output, state) = blocked
         } else if let fusedPrework {
             (output, state) = gatedDeltaKernel(
                 q: q, k: k, v: v,
@@ -5440,6 +5451,18 @@ final class Qwen4ExpDecoderLayer: Module {
     func gatedDeltaDecodeForTesting(_ input: MLXArray, cache: ArraysCache) -> MLXArray {
         precondition(isLinear)
         return linearAttention!(input, cache: cache, verificationPolicy: nil)
+    }
+
+    var referenceBlockedRecurrenceForTesting: Bool {
+        get { linearAttention?.referenceBlockedRecurrenceForTesting ?? false }
+        set {
+            precondition(isLinear)
+            linearAttention!.referenceBlockedRecurrenceForTesting = newValue
+        }
+    }
+
+    var referenceBlockedCallsForTesting: Int {
+        linearAttention?.referenceBlockedCallsForTesting ?? 0
     }
 
     var referenceGatedDeltaPrefillNormalizationForTesting: Bool {

@@ -1,0 +1,11 @@
+Qwen4ExpBlockedGatedDelta.swift adapts GDN_KERNEL_BLOCKED_BODY from
+https://github.com/ddalcu/mlx-serve/blob/02bee553f48cd3bc7d82aba0f8073820bd924738/src/transformer.zig
+Copyright (c) 2026 David Dalcu. MIT License (LICENSE-mlx-serve).
+
+The underlying blocked-sequence kernel derives from jundot/omlx:
+custom_kernels/qwen35_prefill/gdn.py (Apache License, Version 2.0).
+The Apache terms continue to apply to those portions (LICENSE-APACHE-2.0).
+
+AFMKit modifications: Swift binding, tensor shape/dtype guards, input-width
+staging selection. Arithmetic and reduction order retained from the pinned
+reference. Initially experimental and not selected by any serving path.
