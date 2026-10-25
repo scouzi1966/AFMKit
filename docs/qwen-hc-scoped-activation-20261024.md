@@ -2527,3 +2527,30 @@ construction with the already-qualified exact radix block selection expanded
 to the same mask. It must preserve score vectors and serving output, and
 improve measured serving latency, before retention. Other quantizations and
 MTP/batched profiles remain outside that experiment.
+
+
+### Serial radix-mask experiment, October 25
+
+The qualified serial arithmetic profile now tries the existing exact radix
+selector followed by block-to-boolean-mask expansion before its old quadratic
+rank-mask fallback. The attention operation, scores, tie ordering and numerical
+profile are unchanged. The new helper only accepts one row whose visible length
+is the full key span, with the exact complete-block count. Padded capacities,
+batched requests and unqualified profiles retain their existing behavior. The
+existing mask-fusion disable switch still applies; no new setting is introduced.
+
+Release qualification: 11 tests passed, 3 optional diagnostics skipped, no
+failures. New host-oracle cases cover 513/1024/1818/2048 blocks, near ties and
+exact ties, every remainder modulo four, and rejected geometries. All 249 fixed
+native score vectors and winner sets remain exact (64 opening, 57 cold second,
+64 cached second, 64 cached fifth crossing 8K).
+
+Evidence: `qwen-radix-mask-qualification-20261025.log` and
+`Qwen{Opening,ColdR2,WarmR2,WarmR5}RadixMaskVerified20261025` under the existing
+external artifact root. An initial run correctly stopped before inference
+because the reused manifest pinned the previous candidate source hash. Its
+failure log is retained; separate experiment manifests update only that source
+identity. Native scores, histories, model hashes and expected counts are unchanged.
+
+This is an isolated experimental checkpoint. Serving output and latency still
+need comparison before the optimization can be retained or promoted.

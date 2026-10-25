@@ -1939,6 +1939,33 @@ enum Qwen4ExpQSADecodeMask {
             "AFM_QWEN_QSA_DECODE_MASK_FUSION"
         ] != "0"
 
+    /// Reuse the exact radix selector for a serial decode's fully visible key
+    /// span. This replaces quadratic score ranking, but leaves the boolean
+    /// mask and stock masked attention unchanged. Wider cache capacities and
+    /// batching retain the rank-mask fallback below.
+    static func callUsingRadix(
+        scores: MLXArray,
+        visibleCount: Int,
+        keyLength: Int,
+        compressionRatio: Int,
+        blockTopK: Int
+    ) -> MLXArray? {
+        guard enabled,
+              scores.ndim == 2, scores.dtype == .float32,
+              scores.dim(0) == 1,
+              visibleCount > 0, visibleCount == keyLength,
+              compressionRatio > 0, blockTopK > 0,
+              scores.dim(1) == visibleCount / compressionRatio,
+              scores.dim(1) > blockTopK,
+              let selected = Qwen4ExpQSAVerifyRadixSelection.call(
+                scores: scores.expandedDimensions(axis: 1),
+                visibleBlockCounts: [scores.dim(1)], topK: blockTopK)
+        else { return nil }
+
+        return Qwen4ExpQSAGather.maskFromBlocks(
+            selected, keyLength: keyLength, compressionRatio: compressionRatio)
+    }
+
     private static let kernel = MLXFast.metalKernel(
         name: "qwen4_exp_qsa_decode_mask",
         inputNames: ["scores", "limits"],
@@ -2718,6 +2745,16 @@ final class Qwen4ExpQSAIndexer: Module {
             queries: queries,
             blockKeys: blockKeys,
             previousOffset: previousOffset)
+        if referenceMatchedDecodeForTesting,
+           let radixMask = Qwen4ExpQSADecodeMask.callUsingRadix(
+            scores: scores,
+            visibleCount: visibleCount,
+            keyLength: totalLength,
+            compressionRatio: compressRatio,
+            blockTopK: blockTopK)
+        {
+            return radixMask
+        }
         if let fusedMask = Qwen4ExpQSADecodeMask.call(
             scores: scores,
             visibleCount: visibleCount,

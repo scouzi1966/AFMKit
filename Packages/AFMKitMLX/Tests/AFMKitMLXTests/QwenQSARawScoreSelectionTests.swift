@@ -76,6 +76,54 @@ final class QwenQSARawScoreSelectionTests: XCTestCase {
         }
     }
 
+    func testRadixDecodeMaskMatchesHostOrderingAtSparseCrossoverAndCausalTails() throws {
+        try MLXMetalLibrary.ensureAvailable(verbose: false)
+        for blocks in [513, 1_024, 1_818, 2_048] {
+            for exactTie in [false, true] {
+                var scores = [Float](repeating: 0, count: blocks)
+                for block in 0..<(Self.topK - 1) { scores[block] = Self.strongerScore }
+                let early = Self.topK - 1, late = blocks - 1
+                scores[early] = Float(bitPattern: 0x42e54423)
+                scores[late] = exactTie ? scores[early] : Float(bitPattern: 0x42e5442a)
+                let selected = Set(QwenQSARawScoreOracle.select(
+                    scores, blocks: blocks, bounds: [blocks], topK: Self.topK))
+                for tail in 0..<Self.compressionRatio {
+                    let visible = blocks * Self.compressionRatio + tail
+                    let mask = try XCTUnwrap(Qwen4ExpQSADecodeMask.callUsingRadix(
+                        scores: MLXArray(scores).reshaped(1, blocks),
+                        visibleCount: visible, keyLength: visible,
+                        compressionRatio: Self.compressionRatio, blockTopK: Self.topK))
+                    let expected = (0..<visible).map { token in
+                        token >= blocks * Self.compressionRatio
+                            || selected.contains(Int32(token / Self.compressionRatio))
+                    }
+                    XCTAssertEqual(mask.shape, [1, 1, 1, visible])
+                    XCTAssertEqual(mask.asArray(Bool.self), expected,
+                        "blocks=\(blocks), exactTie=\(exactTie), tail=\(tail)")
+                }
+            }
+        }
+    }
+
+    func testRadixDecodeMaskDeclinesUnqualifiedGeometry() throws {
+        try MLXMetalLibrary.ensureAvailable(verbose: false)
+        let scores = MLXArray.zeros([1, 513], dtype: .float32)
+        func mask(_ values: MLXArray, visible: Int = 2_052, capacity: Int = 2_052,
+                  ratio: Int = 4, topK: Int = 512) -> MLXArray? {
+            Qwen4ExpQSADecodeMask.callUsingRadix(
+                scores: values, visibleCount: visible, keyLength: capacity,
+                compressionRatio: ratio, blockTopK: topK)
+        }
+        XCTAssertNil(mask(scores, capacity: 2_056))
+        XCTAssertNil(mask(scores, visible: 2_048, capacity: 2_048))
+        XCTAssertNil(mask(MLXArray.zeros([2, 513], dtype: .float32)))
+        XCTAssertNil(mask(scores.asType(.bfloat16)))
+        XCTAssertNil(mask(scores.reshaped(1, 1, 513)))
+        XCTAssertNil(mask(scores, ratio: 0))
+        XCTAssertNil(mask(scores, topK: 0))
+        XCTAssertNil(mask(scores, topK: 513))
+    }
+
     private func assertIndexerSelection(exactTie: Bool) throws {
         try MLXMetalLibrary.ensureAvailable(verbose: false)
         let values: [String: Any] = [
@@ -109,6 +157,9 @@ final class QwenQSARawScoreSelectionTests: XCTestCase {
 
             for width in [1, 16] {
                 let indexer = Qwen4ExpQSAIndexer(configuration)
+                // Exercise the serial runtime's radix-mask dispatch as well as
+                // the existing multi-row prefill path against the host oracle.
+                indexer.referenceMatchedDecodeForTesting = width == 1
                 let cache = Qwen4ExpAttentionCache(indexerCompressRatio: Self.compressionRatio)
                 let prefix = fixture.blocks * Self.compressionRatio
                 _ = cache.updateIndexKeys(
