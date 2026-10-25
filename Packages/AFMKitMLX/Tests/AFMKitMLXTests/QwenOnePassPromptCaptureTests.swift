@@ -187,6 +187,29 @@ final class QwenOnePassPromptCaptureTests: XCTestCase {
         }
     }
 
+    func testReferenceNormalizedPrefillPreservesOnePassCaptureOutputAndFinalState() async throws {
+        let (model, _) = try await fixture()
+        let layers = model.namedModules().compactMap { $0.1 as? Qwen4ExpDecoderLayer }.filter(\.isLinear)
+        XCTAssertTrue(layers.allSatisfy(\.referenceGatedDeltaPrefillNormalizationForTesting),
+                      "Exercise the production prefill normalization default")
+        let tokens = (0..<256).map { $0 % 29 + 1 }
+        let input = LMInput.Text(tokens: MLXArray(tokens).reshaped(1, -1))
+        let controlCache = model.newCache(parameters: nil)
+        let control = model(input, cache: controlCache, state: nil, hostTokenIDs: tokens)
+        eval(control.logits, controlCache)
+        let capturedCache = model.newCache(parameters: nil)
+        let captured = try XCTUnwrap(model.prefillCapturingBoundary(input, cache: capturedCache,
+            state: nil, restoredPrefix: 0, boundary: 128, hostTokenIDs: tokens),
+            "The normalization fix must not disable the optimized capture path")
+        eval(captured.output.logits, capturedCache)
+        equal(control.logits, captured.output.logits, "reference-normalized one-pass output")
+        XCTAssertEqual(captured.states.count, capturedCache.count)
+        for (control, candidate) in zip(controlCache, capturedCache) {
+            equal(arrays(control), arrays(candidate), "reference-normalized final state")
+            XCTAssertEqual(control.offset, candidate.offset)
+        }
+    }
+
     func testUnsupportedInteriorDeclinesWithoutSplittingOrChangingColdOutput() async throws {
         let (model, head) = try await fixture()
         let control = generator(model, head, onePass: false)

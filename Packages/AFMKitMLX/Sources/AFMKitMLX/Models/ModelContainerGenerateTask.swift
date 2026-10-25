@@ -24,7 +24,8 @@ extension ModelContainer {
     /// completion while holding GPU time.
     func generateTask(
         input: consuming sending LMInput,
-        parameters: GenerateParameters
+        parameters: GenerateParameters,
+        tools: [[String: any Sendable]]? = nil
     ) async throws -> (AsyncStream<Generation>, Task<Void, Never>) {
         let box = TransferBox(input)
         return try await perform { (context: ModelContext) async throws -> (AsyncStream<Generation>, Task<Void, Never>) in
@@ -34,9 +35,11 @@ extension ModelContainer {
                 input: input, model: context.model, cache: nil, parameters: parameters)
             return MLXLMCommon.generateTask(
                 promptTokenCount: promptTokenCount,
-                modelConfiguration: context.configuration,
+                modelConfiguration: MLXModelService.generationConfiguration(
+                    context.configuration, rawPrompt: nil, hasTools: !(tools?.isEmpty ?? true)),
                 tokenizer: context.tokenizer,
-                iterator: iterator)
+                iterator: iterator,
+                tools: tools)
         }
     }
 }

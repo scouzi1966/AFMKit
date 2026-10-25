@@ -141,6 +141,53 @@ final class QwenRetainedRequestBatchTests: XCTestCase {
         return caches
     }
 
+    func testSerialVLMBackoffSnapshotSurvivesDonorAdvanceAndGrowingTurn() throws {
+        try MLXMetalLibrary.ensureAvailable(verbose: false)
+        MLXRandom.seed(931)
+        let model = try makeModel(vision: true)
+        eval(model)
+        let first = (0..<64).map { $0 % 29 + 1 }
+        let next = Array(first.prefix(63)) + [30] + (0..<16).map { $0 % 29 + 1 }
+        var saved: ([[MLXArray]], [[String]])?
+        let donor = model.newCache(parameters: nil)
+        let initial = try MLXReplayPrefill.prepareWithSnapshot(
+            model: model, cache: donor, inputTokens: first, restoredPrefix: 0,
+            prefillStepSize: 8192, promptSnapshotBackoffTokens: 31,
+            captureFinalCheckpoint: false,
+            checkpoint: { boundary, states, metadata in
+                XCTAssertEqual(boundary, 33)
+                eval(states.flatMap { $0 })
+                saved = (states, metadata)
+            }).output
+        XCTAssertNil(initial.state)
+        eval(initial.logits, donor)
+        let snapshot = try XCTUnwrap(saved)
+        let bytes = snapshot.0.map { $0.map { $0.asData(access: .copy).data } }
+        let control = model.newCache(parameters: nil)
+        let prefix = Array(first.prefix(33))
+        eval(model(LMInput.Text(tokens: MLXArray(prefix).reshaped(1, -1)),
+            cache: control, state: nil, hostTokenIDs: prefix).logits, control)
+        func finish(_ cache: [KVCache]) throws -> MLXArray {
+            let result = try MLXReplayPrefill.prepareWithSnapshot(
+                model: model, cache: cache, inputTokens: next, restoredPrefix: 33,
+                prefillStepSize: 8192, promptSnapshotBackoffTokens: 31,
+                captureFinalCheckpoint: false,
+                checkpoint: { _, states, _ in eval(states.flatMap { $0 }) }).output
+            XCTAssertNil(result.state)
+            eval(result.logits, cache)
+            return result.logits
+        }
+        let expected = try finish(control)
+        for _ in 0..<2 {
+            let restored = restoreRadixState(snapshot.0, metadata: snapshot.1,
+                boundary: 33, model: model)
+            exact(try finish(restored), expected, "VLM growing-turn restored logits")
+            exactPrimaryCaches(restored, control)
+            XCTAssertEqual(snapshot.0.map { $0.map { $0.asData(access: .copy).data } }, bytes,
+                "Donor or recipient advancement must not mutate shared prefix state")
+        }
+    }
+
     func testSharedRequestPLEPreservesIndependentHistoryAndConvolutionState() throws {
         try MLXMetalLibrary.ensureAvailable(verbose: false)
         MLXRandom.seed(931)

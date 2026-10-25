@@ -11,6 +11,48 @@ final class QwenNextGDNNormalizationFusionTests: XCTestCase {
     private let valueHeads = 6
     private let convolutionKernel = 4
 
+    func testReferenceSelectionKeepsOrdinaryFusionForUnqualifiedGeometry() {
+        func select(batch: Int = 1, width: Int = 128, key: Int = 128,
+                    value: Int = 128, verification: Bool = false, enabled: Bool = true) -> Bool {
+            Qwen4ExpGatedDeltaPrework.shouldUseReferencePrefillNormalization(
+                enabled: enabled, batchSize: batch, sequenceLength: width,
+                keyHeadDimension: key, valueHeadDimension: value, hasVerificationPolicy: verification)
+        }
+        XCTAssertTrue(select())
+        XCTAssertFalse(select(key: 64, value: 64), "Unqualified reference geometry must retain ordinary fusion")
+        XCTAssertFalse(select(value: 64))
+        XCTAssertFalse(select(batch: 2))
+        XCTAssertFalse(select(width: 1))
+        XCTAssertFalse(select(width: 15))
+        XCTAssertFalse(select(verification: true))
+        XCTAssertFalse(select(enabled: false))
+    }
+
+    /// Mirror Q/K inputs into V so the oracle observes the kernel's exact
+    /// convolution/SiLU result. This isolates normalization, not convolution.
+    func testOrdinaryBF16NormalizationMatchesMLXReduction() throws {
+        try MLXMetalLibrary.ensureAvailable(verbose: false)
+        let dimension = 128
+        let channels = 3 * dimension
+        let taps = 2
+        let row = (0..<dimension).map { Float($0.isMultiple(of: 4) ? 16 : 1.3125) }
+        let projected = MLXArray(row + row + row).asType(.bfloat16).reshaped(1, 1, channels)
+        let weight = MLXArray((0..<channels).flatMap { _ in [Float(0), 1] })
+            .asType(.bfloat16).reshaped(channels, taps, 1)
+        let scalar = MLXArray.zeros([1, 1, 1], dtype: .bfloat16)
+        let output = try XCTUnwrap(Qwen4ExpGatedDeltaPrework.call(
+            projected: projected, prior: MLXArray.zeros([1, taps - 1, channels], dtype: .bfloat16),
+            convolutionWeight: weight, projectedA: scalar, projectedB: scalar,
+            aLog: MLXArray.zeros([1], dtype: .bfloat16), dtBias: MLXArray.zeros([1], dtype: .bfloat16),
+            keyHeads: 1, valueHeads: 1, keyHeadDimension: dimension,
+            valueHeadDimension: dimension, convolutionKernel: taps))
+        let activated = output.values
+        let expectedKeys = activated * rsqrt((activated * activated).sum(axis: -1, keepDims: true) + 1e-6)
+        let expectedQueries = expectedKeys * MLXArray(1 / sqrt(Float(dimension))).asType(.bfloat16)
+        assertExact(output.keys, expectedKeys, "Ordinary keys must use the MLX reduction contract")
+        assertExact(output.queries, expectedQueries, "Ordinary queries must use the MLX reduction contract")
+    }
+
     private func values(_ shape: [Int], seed: Int, scale: Float, dtype: DType) -> MLXArray {
         MLXArray((0..<shape.reduce(1, *)).map { Float(($0 * 13 + seed) % 47 - 23) / 32 * scale })
             .reshaped(shape).asType(dtype)
@@ -32,7 +74,7 @@ final class QwenNextGDNNormalizationFusionTests: XCTestCase {
             let weight = values([channels, convolutionKernel, 1], seed: 5, scale: 0.25, dtype: dtype)
             let aLog = values([valueHeads], seed: 7, scale: 1, dtype: dtype)
             let dtBias = values([valueHeads], seed: 11, scale: 1, dtype: dtype)
-            for width in [128, 129, 257] {
+            for width in [16, 31, 97, 128, 129, 257] {
                 for scale: Float in [0, 0.003, 1, 8] {
                     let projected = values([1, width, channels], seed: 3, scale: scale, dtype: dtype)
                     let prior = values([1, convolutionKernel - 1, channels], seed: 17, scale: scale, dtype: dtype)
@@ -73,7 +115,7 @@ final class QwenNextGDNNormalizationFusionTests: XCTestCase {
 
     func testReferenceVariantRejectsDecodeVerificationBatchAndOtherHeadGeometry() throws {
         try MLXMetalLibrary.ensureAvailable(verbose: false)
-        for (batch, width, headDimension) in [(1, 1, 128), (1, 8, 128), (1, 127, 128), (2, 4, 128), (1, 128, 64)] {
+        for (batch, width, headDimension) in [(1, 1, 128), (1, 8, 128), (1, 15, 128), (2, 4, 128), (1, 128, 64)] {
             let channels = (2 * keyHeads + valueHeads) * headDimension
             func run(reference: Bool) -> Qwen4ExpGatedDeltaPreworkOutput? {
                 Qwen4ExpGatedDeltaPrework.call(
