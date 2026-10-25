@@ -55,6 +55,7 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
         let reference_routed_decode_activation: Bool?
         let reference_fused_rotation: Bool?
         let capture_joined_tail_boundary: Bool?
+        let prepare_joined_tail_boundary: Bool?
         let expected_exact_scores: [String: Int]?
         let expected_winner_overlaps: [String: Int]?
         let model: String
@@ -293,6 +294,9 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
         if fixture.capture_joined_tail_boundary == true {
             arms.append("joined-final31-interior-bf16-state")
         }
+        if fixture.prepare_joined_tail_boundary == true {
+            arms.append("prepared-final31-interior-bf16-state")
+        }
         for arm in arms {
             for indexer in passiveIndexers {
                 indexer.passiveCaptureForTesting = fixture.passive_qsa == true && arm == passiveArm && passiveWidth != 1
@@ -325,21 +329,31 @@ final class QwenNativePrefixGeometryTests: XCTestCase {
             for history in fixture.histories {
                 cache = model.newCache(parameters: nil)
                 var boundaries = [Int]()
-                if arm == "production-split" || history.request == 0 {
+                if arm == "production-split" || history.request == 0
+                    || arm == "prepared-final31-interior-bf16-state" {
+                    let joinFinal = history.request == probeRequest
+                        && arm == "prepared-final31-interior-bf16-state"
+                    var stateFailure: Error?
                     let prepared = try MLXReplayPrefill.prepareWithSnapshot(
                         model: model, cache: cache, inputTokens: history.tokens,
                         restoredPrefix: 0, prefillStepSize: 8192,
                         promptSnapshotBackoffTokens: 31, captureFinalCheckpoint: false,
+                        captureFinalTokenInline: joinFinal,
                         checkpoint: { boundary, states, _ in
                             boundaries.append(boundary)
                             eval(states.flatMap { $0 })
-                            if history.request == probeRequest {
+                            if history.request == probeRequest, !joinFinal {
                                 prefixStateHashes = states.flatMap { $0 }.map {
                                     self.digest($0.asData(access: .copy).data)
                                 }
                             }
-                        })
+                        }, checkCancellation: { if let stateFailure { throw stateFailure } },
+                        didCompleteChunk: joinFinal ? { _ in
+                            do { try persistState() } catch { stateFailure = error }
+                        } : nil)
+                    if let stateFailure { throw stateFailure }
                     XCTAssertEqual(boundaries, [history.tokens.count - 31])
+                    XCTAssertEqual(prepared.inlineCheckpointCount, joinFinal ? 1 : 0)
                     next = prepared.output.logits[0, -1].asType(.float32)
                 } else {
                     let boundary = history.tokens.count - 31

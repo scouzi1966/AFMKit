@@ -2012,3 +2012,34 @@ to be qualified. Do not infer serving acceptance from this result.
 Evidence: `QwenPrefixIntentionalFailure20261025`,
 `qwen-prefix-intentional-failure-tests-20261025.log`,
 `QwenColdR2InteriorCaptureRetry20261025`, and their fixtures/launch manifests.
+
+
+### Real prefill preparer and cache guards, 2026-10-25 03:15 EDT
+
+`MLXReplayPrefill.prepareWithSnapshot` now has a default-false internal
+`captureFinalTokenInline` qualification parameter. It calls the existing
+interior-capture adapter only when the complete joined tail fits the caller's
+chunk bound and no earlier inline anchor is pending. Unsupported input returns
+nil before mutation and takes the unchanged split path. A capture error never
+retries a possibly mutated cache. The N-1 snapshot/callback contract remains
+unchanged, while the live cache includes the final token. Cancellation after
+the joined forward prevents final checkpoint publication.
+
+Using this actual preparer, both frozen-reference comparisons still match all
+vocabulary scores exactly: opening 64/64 and second request 57/57. Their
+complete diagnostic times are 49.228 s and 51.492 s, not throughput figures.
+The second-request build took 140.49 s. No serving caller enables the new path.
+Recurrent BF16-valued persistence is still supplied by the diagnostic callback;
+a model-owned arithmetic policy remains necessary before API qualification.
+
+The full retained-request/cache suite passes 22/22 in 19.670 s (105.26 s build).
+The four new tests cover equality with an unsplit model forward, snapshot
+independence after donor decode, restoration, FP32 fallback, a 30-token chunk
+limit, cancellation before final checkpoint publication, and a mutating
+capture failure without fallback. Existing batching, growing-turn/radix,
+vision-wrapper and interior-capture tests also pass. There is no fresh coding
+or serving-speed result, and no release/default change.
+
+Evidence: `QwenColdR2PreparedCapture20261025`,
+`QwenOpeningPreparedCapture20261025`,
+`qwen-prepared-cache-regression-tests-20261025.log` and associated fixtures.

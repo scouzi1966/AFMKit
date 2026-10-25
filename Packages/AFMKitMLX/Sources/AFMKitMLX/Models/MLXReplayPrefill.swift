@@ -104,6 +104,7 @@ enum MLXReplayPrefill {
         captureCoarseAnchorInline: Bool = false,
         captureFinalSnapshot: Bool = false,
         captureFinalCheckpoint: Bool = true,
+        captureFinalTokenInline: Bool = false,
         checkpoint: ((Int, [[MLXArray]], [[String]]) -> Void)? = nil,
         checkCancellation: (() throws -> Void)? = nil,
         didCompleteChunk: ((Range<Int>) -> Void)? = nil,
@@ -119,7 +120,8 @@ enum MLXReplayPrefill {
             ? boundaries(restoredPrefix: restoredPrefix, finalBoundary: finalBoundary,
                          promptSnapshotBackoffTokens: promptSnapshotBackoffTokens,
                          retainCoarseAnchor: retainCoarseAnchor) : []
-        let adapter = captureCoarseAnchorInline ? model as? any InteriorPrefillCaptureModel : nil
+        let adapter = captureCoarseAnchorInline || captureFinalTokenInline
+            ? model as? any InteriorPrefillCaptureModel : nil
         let inlineAnchor = captureCoarseAnchorInline && retainCoarseAnchor
             && checkpoints.count == 2 && adapter != nil ? checkpoints.first : nil
         let scheduledCheckpoints = inlineAnchor.map { anchor in checkpoints.filter { $0 != anchor } }
@@ -135,6 +137,43 @@ enum MLXReplayPrefill {
                 // In particular, long prompts must not grow each forward pass
                 // to promptLength / maximumCheckpoints.
                 var end = consumed + min(boundary - consumed, max(1, prefillStepSize))
+                // Qualification path for a joined last forward. Capture the
+                // N-1 snapshot inside the model instead of changing the tail's
+                // projection geometry to (L-1)+1. Unsupported inputs return nil
+                // before mutation and retain the original split preparation.
+                // The caller's chunk memory bound includes the final token.
+                if captureFinalTokenInline, boundary == finalBoundary,
+                   end == finalBoundary,
+                   inputTokens.count - consumed <= max(1, prefillStepSize),
+                   inlineAnchor.map({ $0 <= consumed }) ?? true,
+                   let adapter {
+                    let chunk = Array(inputTokens[consumed...])
+                    if let captured = try adapter.prefillCapturingBoundary(
+                        LMInput.Text(tokens: MLXArray(chunk)[.newAxis]), cache: cache, state: state,
+                        restoredPrefix: consumed, boundary: finalBoundary - consumed,
+                        hostTokenIDs: model.consumesHostTokenIDs ? chunk : nil) {
+                        guard captured.output.state == nil,
+                              captured.states.count == cache.count,
+                              captured.metadata.count == cache.count else {
+                            throw CaptureError.invalidSnapshot
+                        }
+                        eval(cache)
+                        didCompleteChunk?(consumed..<inputTokens.count)
+                        try Task.checkCancellation()
+                        try checkCancellation?()
+                        radix?.insert(tokens: Array(inputTokens.prefix(finalBoundary)),
+                            layerStates: captured.states, layerMetaStates: captured.metadata,
+                            statesAreIndependentSnapshots: true)
+                        if captureFinalCheckpoint {
+                            checkpoint?(finalBoundary, captured.states, captured.metadata)
+                        }
+                        let snapshot = captureFinalSnapshot
+                            ? Snapshot(boundary: finalBoundary, states: captured.states,
+                                       metadata: captured.metadata) : nil
+                        return Prepared(output: captured.output, finalSnapshot: snapshot,
+                            inlineCheckpointCount: inlineCheckpointCount + 1)
+                    }
+                }
                 var captured: InteriorPrefillCapture?
                 if let anchor = inlineAnchor, anchor > consumed, anchor < end {
                     let chunk = Array(inputTokens[consumed..<end])

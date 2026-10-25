@@ -32,6 +32,124 @@ private final class ThrowingInteriorCaptureModel: Module, InteriorPrefillCapture
 }
 
 final class QwenRetainedRequestBatchTests: XCTestCase {
+    func testJoinedFinalTokenKeepsUnsplitOutputAndIndependentFinalSnapshot() throws {
+        try MLXMetalLibrary.ensureAvailable(verbose: false)
+        MLXRandom.seed(952)
+        let model = try makeModel(vision: true, nativeRecurrentHeads: true)
+        model.update(parameters: model.mapParameters {
+            $0.dtype.isFloatingPoint ? $0.asType(.bfloat16) : $0
+        })
+        quantize(model: model, groupSize: 32, bits: 4)
+        let prompt = (0..<96).map { $0 % 29 + 1 }
+        let live = model.newCache(parameters: nil)
+        var boundaries: [Int] = []
+        var chunks: [Range<Int>] = []
+        let prepared = try MLXReplayPrefill.prepareWithSnapshot(
+            model: model, cache: live, inputTokens: prompt, restoredPrefix: 0,
+            prefillStepSize: 128, promptSnapshotBackoffTokens: 31,
+            captureFinalSnapshot: true, captureFinalTokenInline: true,
+            checkpoint: { boundary, _, _ in boundaries.append(boundary) },
+            didCompleteChunk: { chunks.append($0) })
+        eval(prepared.output.logits, live)
+        XCTAssertEqual(boundaries, [65, 95])
+        XCTAssertEqual(chunks, [0..<65, 65..<96])
+        XCTAssertEqual(prepared.inlineCheckpointCount, 1)
+        let saved = try XCTUnwrap(prepared.finalSnapshot)
+        XCTAssertEqual(saved.boundary, 95)
+        let bytes = saved.states.map { $0.map { $0.asData(access: .copy).data } }
+        let manual = model.newCache(parameters: nil)
+        let first = Array(prompt.prefix(65)), tail = Array(prompt.suffix(31))
+        _ = model(.init(tokens: MLXArray(first)[.newAxis]), cache: manual, state: nil, hostTokenIDs: first)
+        eval(manual)
+        let expected = model(.init(tokens: MLXArray(tail)[.newAxis]), cache: manual, state: nil, hostTokenIDs: tail)
+        exact(prepared.output.logits, expected.logits, "Joined final forward")
+        exactPrimaryCaches(live, manual)
+        let continuation = model(.init(tokens: MLXArray([7])[.newAxis]), cache: live,
+            state: nil, hostTokenIDs: [7])
+        eval(continuation.logits, live)
+        XCTAssertEqual(saved.states.map { $0.map { $0.asData(access: .copy).data } }, bytes,
+            "A later decode must not mutate the retained N-1 snapshot")
+        let restored = restoreRadixState(saved.states, metadata: saved.metadata,
+            boundary: saved.boundary, model: model)
+        // Recurrent ArraysCache carries its boundary in the radix entry, not
+        // in an internal sequence counter. Attention tracks it explicitly.
+        for (index, cache) in restored.enumerated() {
+            XCTAssertEqual(cache.metaState, saved.metadata[index])
+            if cache is Qwen4ExpAttentionCache { XCTAssertEqual(cache.offset, saved.boundary) }
+            for (actual, expected) in zip(cache.state, saved.states[index]) {
+                exact(actual, expected, "Restored final snapshot")
+            }
+        }
+    }
+
+    func testJoinedFinalTokenFallsBackBeforeMutationForUnsupportedDtype() throws {
+        try MLXMetalLibrary.ensureAvailable(verbose: false)
+        MLXRandom.seed(953)
+        let model = try makeModel(vision: true)
+        let prompt = (0..<64).map { $0 % 29 + 1 }
+        let live = model.newCache(parameters: nil), control = model.newCache(parameters: nil)
+        var chunks: [Range<Int>] = []
+        let actual = try MLXReplayPrefill.prepareWithSnapshot(
+            model: model, cache: live, inputTokens: prompt, restoredPrefix: 0,
+            prefillStepSize: 128, promptSnapshotBackoffTokens: 31,
+            captureFinalTokenInline: true, checkpoint: { _, _, _ in },
+            didCompleteChunk: { chunks.append($0) })
+        let expected = try MLXReplayPrefill.prepareWithSnapshot(
+            model: model, cache: control, inputTokens: prompt, restoredPrefix: 0,
+            prefillStepSize: 128, promptSnapshotBackoffTokens: 31,
+            checkpoint: { _, _, _ in })
+        XCTAssertEqual(actual.inlineCheckpointCount, 0)
+        XCTAssertEqual(chunks, [0..<33, 33..<63])
+        exact(actual.output.logits, expected.output.logits, "Unsupported capture keeps original path")
+        exactPrimaryCaches(live, control)
+    }
+
+    func testJoinedFinalTokenDoesNotRetryAfterMutatingCaptureError() throws {
+        let model = ThrowingInteriorCaptureModel()
+        XCTAssertThrowsError(try MLXReplayPrefill.prepareWithSnapshot(
+            model: model, cache: model.newCache(parameters: nil), inputTokens: Array(0..<32),
+            restoredPrefix: 0, prefillStepSize: 64, captureFinalTokenInline: true)) { error in
+                XCTAssertTrue(error is ThrowingInteriorCaptureModel.Failure)
+            }
+        XCTAssertEqual(model.captureCalls, 1)
+        XCTAssertEqual(model.ordinaryCalls, 0)
+    }
+
+    func testJoinedFinalTokenHonorsChunkLimitAndCancellation() throws {
+        try MLXMetalLibrary.ensureAvailable(verbose: false)
+        MLXRandom.seed(954)
+        let model = try makeModel(vision: true, nativeRecurrentHeads: true)
+        model.update(parameters: model.mapParameters {
+            $0.dtype.isFloatingPoint ? $0.asType(.bfloat16) : $0
+        })
+        quantize(model: model, groupSize: 32, bits: 4)
+        let prompt = (0..<64).map { $0 % 29 + 1 }
+        var chunks: [Range<Int>] = []
+        let prepared = try MLXReplayPrefill.prepareWithSnapshot(
+            model: model, cache: model.newCache(parameters: nil), inputTokens: prompt,
+            restoredPrefix: 0, prefillStepSize: 30, promptSnapshotBackoffTokens: 31,
+            captureFinalTokenInline: true, checkpoint: { _, _, _ in },
+            didCompleteChunk: { chunks.append($0) })
+        eval(prepared.output.logits)
+        XCTAssertEqual(prepared.inlineCheckpointCount, 0)
+        XCTAssertEqual(chunks, [0..<30, 30..<33, 33..<63])
+        XCTAssertTrue(chunks.allSatisfy { $0.count <= 30 })
+
+        var finalChunkEvaluated = false
+        var checkpoints: [Int] = []
+        XCTAssertThrowsError(try MLXReplayPrefill.prepareWithSnapshot(
+            model: model, cache: model.newCache(parameters: nil), inputTokens: prompt,
+            restoredPrefix: 0, prefillStepSize: 128, promptSnapshotBackoffTokens: 31,
+            captureFinalSnapshot: true, captureFinalTokenInline: true,
+            checkpoint: { boundary, _, _ in checkpoints.append(boundary) },
+            checkCancellation: { if finalChunkEvaluated { throw CancellationError() } },
+            didCompleteChunk: { if $0.upperBound == prompt.count { finalChunkEvaluated = true } })) { error in
+                XCTAssertTrue(error is CancellationError)
+            }
+        XCTAssertTrue(finalChunkEvaluated)
+        XCTAssertEqual(checkpoints, [33], "Cancellation must prevent final checkpoint publication")
+    }
+
     private func configuration(nativeRecurrentHeads: Bool = false) throws -> Data {
         let text: [String: Any] = [
             "model_type": "qwen4_exp_text", "hidden_size": 128,
