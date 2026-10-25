@@ -2877,3 +2877,48 @@ Evidence: `QwenAFM5OrderedScore20261025` and
 gate is a separately frozen HTTP candidate with the same five request histories
 and unchanged launch/sampling options, compared against the frozen reference
 and retained AFM control. No install, merge, or release has occurred.
+
+#### Fresh HTTP confirmation: the reproduced long response is fixed
+
+The Release HTTP candidate is now frozen from provider
+`757611e3388f5b6ff1504929972d56f7ae449913` and consumer
+`6839b0566dbd166f11ad4203db9568165ac8ff49`. Binary SHA-256:
+`ad02d4fc537122cda3c8523035a06f29dc2a85169796c8986579ab8356778a65`.
+It is stored at `QwenOrderedQSAHTTPBinary20261025/afm` under the external artifact
+root, with build, source, version, and runtime-resource provenance alongside it.
+The retained binary was not overwritten.
+
+Fresh reference and candidate servers received the same five requests, one
+engine at a time. All five reference responses match the frozen historical
+reference control. **All five candidate AFM responses now match reference's
+reasoning, messages, and parsed tool arguments exactly.** Response IDs and
+timing fields are excluded from semantic comparison. No returned tool executes.
+
+| Request | AFM/reference output tokens | Candidate AFM API time | Reference API time | AFM elapsed gap |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | 58 / 58 | 6.436s | 6.089s | +5.70% |
+| 2 | 65 / 65 | 1.958s | 1.740s | +12.48% |
+| 3 | 77 / 77 | 2.046s | 1.838s | +11.35% |
+| 4 | 641 / 641 | 11.184s | 10.076s | +10.99% |
+| 5 | 2,437 / 2,437 | 41.164s | 37.507s | +9.75% |
+
+The retained AFM response 5 had 8,273 output tokens and took 136.188s. The fix
+reduces that reproduced excess generation without reducing its thinking cap or
+output limit. Candidate AFM's native decode rate is 61.08 tok/s for request 5;
+retained AFM measured 61.27 tok/s on its longer, different output. That pair is
+not a strictly matched throughput comparison. On unchanged responses 1–4,
+candidate native decode is 0.1–1.4% lower in this single pair of runs; repeated
+measurements are required before declaring no speed regression or accepting a
+tradeoff. Do not describe this as universal performance parity: several short
+request API gaps remain above 10%.
+
+AFM restores the same prefixes `[0, 6630, 7224, 7676, 7852]`. Both AFM logs also
+contain the automatic 54-prompt-token / 4-output-token startup check; it is
+explicitly excluded from measured request statistics. MTP remains off, prefix
+caching on, temperature 0, top-p 1, top-k 0, and reasoning medium. No inference
+tuning environment variables were added. The checkpoint remains the same
+ddalcu vision overlay pinned above.
+
+Evidence: `QwenOrderedQSAAFM5Input20261025/{results.json,comparison.json}` plus
+per-request bodies, SSE, server logs, and startup records. This is a controlled
+HTTP correctness result, not a newly completed five-run coding-project batch.
