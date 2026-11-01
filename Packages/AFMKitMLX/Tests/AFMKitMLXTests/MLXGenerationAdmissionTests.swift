@@ -257,6 +257,14 @@ final class MLXGenerationAdmissionTests: XCTestCase {
         XCTAssertFalse(eligible(allowsTools: true, media: true))
     }
 
+    func testSerialQwenMTPReplayLimitCoversAgentPromptsWithinByteBudget() {
+        XCTAssertEqual(MLXModelService.qwenSerialMTPReplayPromptTokenLimit(nil), 16_384)
+        XCTAssertEqual(MLXModelService.qwenSerialMTPReplayPromptTokenLimit("8192"), 8_192)
+        XCTAssertEqual(MLXModelService.qwenSerialMTPReplayPromptTokenLimit("999999"), 16_384)
+        XCTAssertEqual(MLXModelService.qwenSerialMTPReplayPromptTokenLimit("invalid"), 16_384)
+        XCTAssertEqual(MLXModelService.qwenSerialMTPReplayPromptTokenLimit("0"), 0)
+    }
+
     func testSuccessfulAndCancelledBatchSubmissionsReleaseCapacityExactlyOnce() {
         let capacity = CapacityProbe()
 

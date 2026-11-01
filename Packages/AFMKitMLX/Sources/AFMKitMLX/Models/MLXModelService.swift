@@ -836,6 +836,10 @@ public final class MLXModelService:
         prefixCaching && mtpEnabled && usesEmbeddedMTP
     }
 
+    static func qwenSerialMTPReplayPromptTokenLimit(_ value: String?) -> Int {
+        min(16_384, max(0, Int(value ?? "16384") ?? 16_384))
+    }
+
     static func isGreedySpeculationEligible(
         parameters: GenerateParameters,
         hasTools: Bool,
@@ -2957,9 +2961,12 @@ public final class MLXModelService:
                 && modelArchitecture.canonicalModelType == "qwen4_exp"
                 && qwenReplayMiB > 0
             {
+                // The serial Codex/tool prompt commonly exceeds the scheduler's
+                // 4K replay default. Allow 16K here only under the selected
+                // replay profile and retain the same hard byte budget.
                 self.qwenSerialMTPPromptReplayCache = ExactPromptReplayCache(
                     maximumBytes: qwenReplayMiB * 1_024 * 1_024,
-                    maximumPromptTokens: BatchScheduler.qwenMTPReplayPromptTokenLimit(
+                    maximumPromptTokens: Self.qwenSerialMTPReplayPromptTokenLimit(
                         qwenReplayEnvironment["AFM_QWEN_MTP_REPLAY_MAX_TOKENS"]))
             } else {
                 self.qwenSerialMTPPromptReplayCache?.removeAll()
@@ -4856,11 +4863,16 @@ public final class MLXModelService:
                                                     cacheHit: replayState != nil))
                                         else { throw MLXServiceError.loadFailed("Unable to create Qwen MTP session") }
                                         if let captured = session.takePromptState() {
-                                            replayCache.insert(prompt: captured.promptIds,
+                                            let inserted = replayCache.insert(prompt: captured.promptIds,
                                                 value: captured,
                                                 valueBytes: captured.estimatedRetainedBytes,
                                                 sourcePrompt: env["AFM_QWEN_MTP_REPLAY_BACKOFF_ON_MISS"] == "1"
                                                     && backoff > 0 ? promptIds : nil)
+                                            if dbg {
+                                                print("[\(ts())] [Qwen-MTPReplay] captured=\(captured.promptIds.count) "
+                                                    + "bytes=\(captured.estimatedRetainedBytes) stored=\(inserted) "
+                                                    + "entries=\(replayCache.count) retained=\(replayCache.retainedBytes)")
+                                            }
                                         }
                                         while let token = session.nextToken() {
                                             if !emit(token) { break }
