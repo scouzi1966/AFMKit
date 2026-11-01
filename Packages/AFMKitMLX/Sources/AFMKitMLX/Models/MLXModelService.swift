@@ -4860,7 +4860,12 @@ public final class MLXModelService:
                                                 BatchScheduler.qwenMTPReplayCaptureBackoff(
                                                     backoff,
                                                     onlyOnMiss: env["AFM_QWEN_MTP_REPLAY_BACKOFF_ON_MISS"] == "1",
-                                                    cacheHit: replayState != nil))
+                                                    cacheHit: replayState != nil),
+                                            // Batched verification changes greedy tool decisions on
+                                            // real Codex prompts. Keep tool MTP on the conformant
+                                            // singleton verifier regardless of throughput profile.
+                                            verificationPolicyOverride: !(tools?.isEmpty ?? true)
+                                                ? .strictSingletonEquivalent : nil)
                                         else { throw MLXServiceError.loadFailed("Unable to create Qwen MTP session") }
                                         if let captured = session.takePromptState(), let replayCache {
                                             let inserted = replayCache.insert(prompt: captured.promptIds,
