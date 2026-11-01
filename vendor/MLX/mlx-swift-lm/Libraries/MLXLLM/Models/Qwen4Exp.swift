@@ -7905,7 +7905,8 @@ public final class Qwen4ExpMTPGenerator {
         temperature: Float = 0, topP: Float = 1, seed: UInt64? = nil,
         promptState: Qwen4ExpMTPPromptState? = nil, retainPromptState: Bool = false,
         allowPromptPrefixReplay: Bool = false, adaptiveDepth: Bool = false,
-        prefillStepSize: Int? = nil, promptSnapshotBackoffTokens: Int = 0
+        prefillStepSize: Int? = nil, promptSnapshotBackoffTokens: Int = 0,
+        verificationPolicyOverride: MTPVerificationPolicy? = nil
     ) -> Qwen4ExpMTPSession? {
         precondition(temperature.isFinite && temperature >= 0)
         precondition(topP.isFinite && (0...1).contains(topP))
@@ -7921,7 +7922,7 @@ public final class Qwen4ExpMTPGenerator {
         }
         return Qwen4ExpMTPSession(
             model: model, head: head, depth: depth,
-            verificationPolicy: verificationPolicy,
+            verificationPolicy: verificationPolicyOverride ?? verificationPolicy,
             draftDispatchStride: draftDispatchStride, retainHeadAnchor: retainHeadAnchor,
             promptIds: promptIds, maxTokens: maxTokens, eosIds: eosIds,
             temperature: temperature, topP: topP, seed: seed,

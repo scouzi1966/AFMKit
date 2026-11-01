@@ -238,6 +238,33 @@ final class MLXGenerationAdmissionTests: XCTestCase {
         XCTAssertFalse(eligible(media: true))
     }
 
+    func testQwenToolSpeculationRequiresExplicitToolAdmission() {
+        let greedy = GenerateParameters(temperature: 0)
+        func eligible(allowsTools: Bool, schema: Bool = false,
+                      logprobs: Bool = false, stop: Bool = false,
+                      media: Bool = false) -> Bool {
+            MLXModelService.isSpeculationEligible(
+                parameters: greedy, supportsSampling: true,
+                hasTools: true, allowsTools: allowsTools,
+                hasResponseFormat: schema, wantsLogprobs: logprobs,
+                hasStopSequences: stop, hasMedia: media)
+        }
+        XCTAssertFalse(eligible(allowsTools: false))
+        XCTAssertTrue(eligible(allowsTools: true))
+        XCTAssertFalse(eligible(allowsTools: true, schema: true))
+        XCTAssertFalse(eligible(allowsTools: true, logprobs: true))
+        XCTAssertFalse(eligible(allowsTools: true, stop: true))
+        XCTAssertFalse(eligible(allowsTools: true, media: true))
+    }
+
+    func testSerialQwenMTPReplayLimitCoversAgentPromptsWithinByteBudget() {
+        XCTAssertEqual(MLXModelService.qwenSerialMTPReplayPromptTokenLimit(nil), 16_384)
+        XCTAssertEqual(MLXModelService.qwenSerialMTPReplayPromptTokenLimit("8192"), 8_192)
+        XCTAssertEqual(MLXModelService.qwenSerialMTPReplayPromptTokenLimit("999999"), 16_384)
+        XCTAssertEqual(MLXModelService.qwenSerialMTPReplayPromptTokenLimit("invalid"), 16_384)
+        XCTAssertEqual(MLXModelService.qwenSerialMTPReplayPromptTokenLimit("0"), 0)
+    }
+
     func testSuccessfulAndCancelledBatchSubmissionsReleaseCapacityExactlyOnce() {
         let capacity = CapacityProbe()
 
