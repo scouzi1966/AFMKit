@@ -769,6 +769,9 @@ public final class MLXModelService:
     /// Exact GLM speculative replay entries; unlike `radixCache`, these include
     /// prompt hidden states required to reseed the embedded NextN head.
     private var glmMTPPromptReplayCache: GLM5NextMTPPromptReplayCache?
+    /// Serial Qwen MTP needs complete target, head and recurrent state; AR radix
+    /// entries cannot be substituted for a speculative prompt boundary.
+    private var qwenSerialMTPPromptReplayCache: ExactPromptReplayCache<Qwen4ExpMTPPromptState>?
     /// Model identity captured by `scheduler`. Kept separately from
     /// `currentModelID` so a stale scheduler can never serve a newly published
     /// container after a model switch.
@@ -852,6 +855,7 @@ public final class MLXModelService:
         parameters: GenerateParameters,
         supportsSampling: Bool,
         hasTools: Bool,
+        allowsTools: Bool = false,
         hasResponseFormat: Bool,
         wantsLogprobs: Bool,
         hasStopSequences: Bool,
@@ -865,7 +869,7 @@ public final class MLXModelService:
             && parameters.topK == 0
             && parameters.minP == 0
             && !parameters.ignoreEndOfSequence
-            && !hasTools
+            && (!hasTools || allowsTools)
             && !hasResponseFormat
             && !wantsLogprobs
             && !hasStopSequences
@@ -2223,6 +2227,8 @@ public final class MLXModelService:
                     radixCache = nil
                     glmMTPPromptReplayCache?.invalidateAll()
                     glmMTPPromptReplayCache = nil
+                    qwenSerialMTPPromptReplayCache?.removeAll()
+                    qwenSerialMTPPromptReplayCache = nil
                 }
                 modelSwitchInProgress = false
             }
@@ -2943,6 +2949,21 @@ public final class MLXModelService:
             } else {
                 self.glmMTPPromptReplayCache?.invalidateAll()
                 self.glmMTPPromptReplayCache = nil
+            }
+            let qwenReplayEnvironment = QwenMTPExecutionProfile.environment
+            let qwenReplayMiB = min(4096, max(0,
+                Int(qwenReplayEnvironment["AFM_QWEN_MTP_REPLAY_MIB"] ?? "0") ?? 0))
+            if self.enablePrefixCaching && mtpEnabled
+                && modelArchitecture.canonicalModelType == "qwen4_exp"
+                && qwenReplayMiB > 0
+            {
+                self.qwenSerialMTPPromptReplayCache = ExactPromptReplayCache(
+                    maximumBytes: qwenReplayMiB * 1_024 * 1_024,
+                    maximumPromptTokens: BatchScheduler.qwenMTPReplayPromptTokenLimit(
+                        qwenReplayEnvironment["AFM_QWEN_MTP_REPLAY_MAX_TOKENS"]))
+            } else {
+                self.qwenSerialMTPPromptReplayCache?.removeAll()
+                self.qwenSerialMTPPromptReplayCache = nil
             }
             // /metrics: expose total GPU memory pressure as
             // afm:gpu_cache_usage_perc — fraction of Metal's recommended
@@ -4521,10 +4542,22 @@ public final class MLXModelService:
             wantsLogprobs: wantLogprobs,
             hasStopSequences: !(stop?.isEmpty ?? true),
             hasMedia: !resolvedMedia.mediaKinds.isEmpty)
+        // Qwen's raw tool stream is parsed by AFMMLXRawToolStreamFallback.
+        // Its serial MTP path owns a complete prompt-state replay cache when
+        // configured, so a speculative request never borrows an AR radix entry.
+        // Other generators retain the tool exclusion; strict grammar needs AR logits.
+        let hasQwenNextMTP: Bool = {
+            guard case .qwenNext? = mtpBinding?.generator else { return false }
+            return true
+        }()
+        let qwenToolMTPAllowed = hasQwenNextMTP
+            && !toolCallParserDisabled
+            && !(enableGrammarConstraints && Self.hasStrictTools(tools))
         let mtpStreamEligible = mtpBinding != nil && Self.isSpeculationEligible(
             parameters: baseParameters,
             supportsSampling: mtpBinding?.generator.supportsSampling == true,
             hasTools: !(tools?.isEmpty ?? true),
+            allowsTools: qwenToolMTPAllowed,
             hasResponseFormat: responseFormat != nil,
             wantsLogprobs: wantLogprobs,
             hasStopSequences: !(stop?.isEmpty ?? true),
@@ -4799,6 +4832,40 @@ public final class MLXModelService:
                                                         state, modelID: modelID)
                                                 }
                                                 : nil)
+                                    } else if case .qwenNext(let generator) = gen,
+                                              let replayCache = self.qwenSerialMTPPromptReplayCache
+                                    {
+                                        let replayState = replayCache.find(prompt: promptIds, allowPrefix: true)
+                                        let capture = replayState?.promptIds.count != promptIds.count
+                                            && replayCache.canStore(prompt: promptIds)
+                                        let env = QwenMTPExecutionProfile.environment
+                                        let backoff = BatchScheduler.qwenMTPReplayBackoffTokenCount(
+                                            env["AFM_QWEN_MTP_REPLAY_BACKOFF"])
+                                        guard let session = generator.makeSession(
+                                            promptIds: promptIds, maxTokens: maxTok, eosIds: eos,
+                                            temperature: baseParameters.temperature,
+                                            topP: baseParameters.topP, seed: baseParameters.seed,
+                                            promptState: replayState,
+                                            retainPromptState: capture,
+                                            allowPromptPrefixReplay: true,
+                                            prefillStepSize: baseParameters.prefillStepSize,
+                                            promptSnapshotBackoffTokens:
+                                                BatchScheduler.qwenMTPReplayCaptureBackoff(
+                                                    backoff,
+                                                    onlyOnMiss: env["AFM_QWEN_MTP_REPLAY_BACKOFF_ON_MISS"] == "1",
+                                                    cacheHit: replayState != nil))
+                                        else { throw MLXServiceError.loadFailed("Unable to create Qwen MTP session") }
+                                        if let captured = session.takePromptState() {
+                                            replayCache.insert(prompt: captured.promptIds,
+                                                value: captured,
+                                                valueBytes: captured.estimatedRetainedBytes,
+                                                sourcePrompt: env["AFM_QWEN_MTP_REPLAY_BACKOFF_ON_MISS"] == "1"
+                                                    && backoff > 0 ? promptIds : nil)
+                                        }
+                                        while let token = session.nextToken() {
+                                            if !emit(token) { break }
+                                        }
+                                        return (allTokens.count, replayState?.promptIds.count ?? 0)
                                     } else {
                                         _ = gen.generate(promptIds: promptIds, maxTokens: maxTok,
                                                          eosIds: eos, parameters: baseParameters,
@@ -5564,6 +5631,8 @@ public final class MLXModelService:
         self.radixCache?.invalidateAll()
         self.glmMTPPromptReplayCache?.invalidateAll()
         self.glmMTPPromptReplayCache = nil
+        self.qwenSerialMTPPromptReplayCache?.removeAll()
+        self.qwenSerialMTPPromptReplayCache = nil
         autoreleasepool {
             withStateLock {
                 currentContainer = nil

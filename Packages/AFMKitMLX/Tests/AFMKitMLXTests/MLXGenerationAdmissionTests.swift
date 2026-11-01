@@ -238,6 +238,25 @@ final class MLXGenerationAdmissionTests: XCTestCase {
         XCTAssertFalse(eligible(media: true))
     }
 
+    func testQwenToolSpeculationRequiresExplicitToolAdmission() {
+        let greedy = GenerateParameters(temperature: 0)
+        func eligible(allowsTools: Bool, schema: Bool = false,
+                      logprobs: Bool = false, stop: Bool = false,
+                      media: Bool = false) -> Bool {
+            MLXModelService.isSpeculationEligible(
+                parameters: greedy, supportsSampling: true,
+                hasTools: true, allowsTools: allowsTools,
+                hasResponseFormat: schema, wantsLogprobs: logprobs,
+                hasStopSequences: stop, hasMedia: media)
+        }
+        XCTAssertFalse(eligible(allowsTools: false))
+        XCTAssertTrue(eligible(allowsTools: true))
+        XCTAssertFalse(eligible(allowsTools: true, schema: true))
+        XCTAssertFalse(eligible(allowsTools: true, logprobs: true))
+        XCTAssertFalse(eligible(allowsTools: true, stop: true))
+        XCTAssertFalse(eligible(allowsTools: true, media: true))
+    }
+
     func testSuccessfulAndCancelledBatchSubmissionsReleaseCapacityExactlyOnce() {
         let capacity = CapacityProbe()
 
