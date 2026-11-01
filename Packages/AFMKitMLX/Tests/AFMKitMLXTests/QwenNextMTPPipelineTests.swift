@@ -7,6 +7,25 @@ import XCTest
 @testable import AFMKitMLX
 
 final class QwenNextMTPPipelineTests: XCTestCase {
+    func testToolStyleStrictOverrideStaysOutOfSharedBatchedVerification() async throws {
+        let model = try await makeModel(indexerBudget: 4)
+        let head = Qwen4ExpMTPHead(model.configuration)
+        eval(model, head)
+        let generator = Qwen4ExpMTPGenerator(
+            model: model, head: head, depth: 3, verificationPolicy: .batched)
+        let prompts = [[1, 2, 3, 4], [1, 2, 3, 5]]
+        let strict = try prompts.map { prompt in
+            try XCTUnwrap(generator.makeSession(
+                promptIds: prompt, maxTokens: 8,
+                verificationPolicyOverride: .strictSingletonEquivalent))
+        }
+        for session in strict {
+            XCTAssertNotNil(session.nextToken())
+            XCTAssertTrue(session.prepareDraftTokens())
+        }
+        XCTAssertEqual(Qwen4ExpMTPSession.prepareCompatibleVerificationBatches(strict).rows, 0)
+    }
+
     func testDraftShortlistUsesCoarseTop32AndExactTargetRows() throws {
         // Clear the production Metal selector's 16,384-row eligibility floor
         // while keeping this fixture small enough for a focused unit test.

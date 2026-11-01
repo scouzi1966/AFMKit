@@ -4541,7 +4541,8 @@ public final class MLXModelService:
 
         // Decide speculative eligibility before selecting the execution lane.
         // Merely loading an MTP head must not serialize unsupported requests
-        // (tools, stops, schemas, logprobs, media, or sampling on greedy-only heads).
+        // (incompatible tool contracts, stops, schemas, logprobs, media, or
+        // sampling on greedy-only heads).
         let specGreedyStream = Self.isGreedySpeculationEligible(
             parameters: baseParameters,
             hasTools: !(tools?.isEmpty ?? true),
