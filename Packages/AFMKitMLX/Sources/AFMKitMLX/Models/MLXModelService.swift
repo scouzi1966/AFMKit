@@ -4777,7 +4777,7 @@ public final class MLXModelService:
                         let t0 = Date.timeIntervalSinceReferenceDate
                         do {
                             let generation = try await container.perform { context -> (
-                                outCount: Int, cachedTokens: Int
+                                outCount: Int, cachedTokens: Int, prefillTime: TimeInterval
                             ) in
                                 let eos = context.resolvedEOSTokenIds
                                 var allTokens: [Int] = []
@@ -4818,7 +4818,7 @@ public final class MLXModelService:
                                             maxTokens: maxTok,
                                             eosIds: eos,
                                             onToken: emit)
-                                        return (allTokens.count, replayState.promptIds.count)
+                                        return (allTokens.count, replayState.promptIds.count, 0)
                                     }
 
                                     if case .glm(let generator) = gen,
@@ -4839,12 +4839,12 @@ public final class MLXModelService:
                                                         state, modelID: modelID)
                                                 }
                                                 : nil)
-                                    } else if case .qwenNext(let generator) = gen,
-                                              let replayCache = self.qwenSerialMTPPromptReplayCache
+                                    } else if case .qwenNext(let generator) = gen
                                     {
-                                        let replayState = replayCache.find(prompt: promptIds, allowPrefix: true)
+                                        let replayCache = self.qwenSerialMTPPromptReplayCache
+                                        let replayState = replayCache?.find(prompt: promptIds, allowPrefix: true)
                                         let capture = replayState?.promptIds.count != promptIds.count
-                                            && replayCache.canStore(prompt: promptIds)
+                                            && replayCache?.canStore(prompt: promptIds) == true
                                         let env = QwenMTPExecutionProfile.environment
                                         let backoff = BatchScheduler.qwenMTPReplayBackoffTokenCount(
                                             env["AFM_QWEN_MTP_REPLAY_BACKOFF"])
@@ -4862,7 +4862,7 @@ public final class MLXModelService:
                                                     onlyOnMiss: env["AFM_QWEN_MTP_REPLAY_BACKOFF_ON_MISS"] == "1",
                                                     cacheHit: replayState != nil))
                                         else { throw MLXServiceError.loadFailed("Unable to create Qwen MTP session") }
-                                        if let captured = session.takePromptState() {
+                                        if let captured = session.takePromptState(), let replayCache {
                                             let inserted = replayCache.insert(prompt: captured.promptIds,
                                                 value: captured,
                                                 valueBytes: captured.estimatedRetainedBytes,
@@ -4874,30 +4874,34 @@ public final class MLXModelService:
                                                     + "entries=\(replayCache.count) retained=\(replayCache.retainedBytes)")
                                             }
                                         }
+                                        let prefillTime = Date.timeIntervalSinceReferenceDate - t0
                                         while let token = session.nextToken() {
                                             if !emit(token) { break }
                                         }
-                                        return (allTokens.count, replayState?.promptIds.count ?? 0)
+                                        return (allTokens.count, replayState?.promptIds.count ?? 0,
+                                            prefillTime)
                                     } else {
                                         _ = gen.generate(promptIds: promptIds, maxTokens: maxTok,
                                                          eosIds: eos, parameters: baseParameters,
                                                          onToken: emit)
                                     }
-                                    return (allTokens.count, 0)
+                                    return (allTokens.count, 0, 0)
                                 }
-                                return (allTokens.count, 0)
+                                return (allTokens.count, 0, 0)
                             }
                             let outCount = generation.outCount
-                            let gt = Date.timeIntervalSinceReferenceDate - t0
+                            let totalTime = Date.timeIntervalSinceReferenceDate - t0
+                            let generateTime = max(0, totalTime - generation.prefillTime)
                             if dbg {
-                                let tps = gt > 0 ? Double(outCount) / gt : 0
+                                let tps = generateTime > 0 ? Double(outCount) / generateTime : 0
                                 let engine = useDSpark ? "DSpARK" : (useEagle3 ? "EAGLE3" : "MTP")
-                                print("[\(ts())] [\(engine)] streamed \(outCount) tok in \(String(format: "%.2f", gt))s (\(String(format: "%.1f", tps)) tok/s)")
+                                print("[\(ts())] [\(engine)] streamed \(outCount) tok in \(String(format: "%.2f", generateTime))s (\(String(format: "%.1f", tps)) tok/s)")
                             }
                             continuation.yield(StreamChunk(text: "", promptTokens: promptIds.count,
                                                            completionTokens: outCount,
                                                            cachedTokens: generation.cachedTokens,
-                                                           promptTime: 0, generateTime: gt))
+                                                           promptTime: generation.prefillTime,
+                                                           generateTime: generateTime))
                             StatsAggregator.shared.requestSucceeded(reason: "stop")
                             StatsAggregator.shared.requestCompleted()
                             continuation.finish()
