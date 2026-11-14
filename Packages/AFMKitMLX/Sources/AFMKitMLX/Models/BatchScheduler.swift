@@ -1988,7 +1988,12 @@ actor BatchScheduler {
             allowPromptPrefixReplay: true, adaptiveDepth: qwenMTPAdaptiveDepth,
             prefillStepSize: req.parameters.prefillStepSize,
             promptSnapshotBackoffTokens: Self.qwenMTPReplayCaptureBackoff(qwenMTPReplayBackoffTokens,
-                onlyOnMiss: qwenMTPReplayBackoffOnMiss, cacheHit: replayState != nil))
+                onlyOnMiss: qwenMTPReplayBackoffOnMiss, cacheHit: replayState != nil),
+            // Tool calls must keep singleton verification even when the
+            // throughput profile selects batched verification for plain text.
+            // Shared verification already filters for batched-policy sessions.
+            verificationPolicyOverride: req.toolCallRuntimeConfig != nil
+                ? .strictSingletonEquivalent : nil)
         else {
             failPendingRequest(req,
                 error: MLXServiceError.loadFailed("Unable to create Qwen MTP session"))
