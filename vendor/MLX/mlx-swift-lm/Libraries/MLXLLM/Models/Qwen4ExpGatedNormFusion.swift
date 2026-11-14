@@ -5,6 +5,8 @@
 // 7d0120363c98e7daa9b9894b6fb71cc8d7e84c5e:
 // https://github.com/ddalcu/mlx-serve/blob/7d0120363c98e7daa9b9894b6fb71cc8d7e84c5e/src/transformer.zig
 // Copyright © 2026 David Dalcu. Ported to MLX Swift for AFMKit.
+// Prefill's BF16 sigmoid-table boundary follows the same repository at
+// 02bee553f48cd3bc7d82aba0f8073820bd924738, GDN_NORMGATE_SOURCE.
 
 import Foundation
 import MLX
@@ -18,9 +20,20 @@ enum Qwen4ExpGatedNormFusion {
             "AFM_QWEN_FUSED_GDN_NORM_GATE"
         ] != "0"
 
+    // The reference uses its precompiled sigmoid for prefill (S >= 17).
+    // Inline fast exp has a different BF16 result at -6.84375. Reuse the
+    // independently qualified precise activation; this immutable table is
+    // created once and never carries request or model state.
+    nonisolated(unsafe) private static let prefillSigmoidTable: MLXArray = {
+        let values = (0 ..< (1 << 16)).map { Float(bitPattern: UInt32($0) << 16) }
+        let result = Qwen4ExpHCActivation.sigmoid(MLXArray(values).asType(.bfloat16))
+        eval(result)
+        return result
+    }()
+
     private static let kernel = MLXFast.metalKernel(
         name: "qwen4_exp_gdn_norm_gate",
-        inputNames: ["values", "gate", "weight", "epsilon"],
+        inputNames: ["values", "gate", "weight", "epsilon", "sigmoid_table"],
         outputNames: ["output"],
         source: """
             const uint lane = thread_position_in_threadgroup.x;
@@ -46,10 +59,15 @@ enum Qwen4ExpGatedNormFusion {
                 const T normalized = weight[lane * 4 + item]
                     * T(elements[item] * inverse_rms);
                 const T gate_value = gate[index];
-                const T sigmoid_tail = T(1)
-                    / (T(1) + metal::exp(metal::abs(gate_value)));
-                const T sigmoid_value = gate_value < T(0)
-                    ? sigmoid_tail : T(1) - sigmoid_tail;
+                T sigmoid_value;
+                if constexpr (PREFILL_TABLE) {
+                    sigmoid_value = sigmoid_table[as_type<ushort>(gate_value)];
+                } else {
+                    const T sigmoid_tail = T(1)
+                        / (T(1) + metal::exp(metal::abs(gate_value)));
+                    sigmoid_value = gate_value < T(0)
+                        ? sigmoid_tail : T(1) - sigmoid_tail;
+                }
                 const T gated = bool(SIGMOID_GATE)
                     ? sigmoid_value : gate_value * sigmoid_value;
                 output[index] = normalized * gated;
@@ -72,21 +90,24 @@ enum Qwen4ExpGatedNormFusion {
               values.shape == gate.shape,
               values.dim(0) == 1,
               values.dim(1) > 0,
-              values.dim(1) <= 32,
+              (values.dim(1) <= 32 || sigmoidGate),
               values.dim(3) == 128,
               weight.shape == [128]
         else { return nil }
 
         let rows = values.dim(0) * values.dim(1)
         let heads = values.dim(2)
+        let useTable = sigmoidGate && values.dim(1) >= 17
         return kernel(
             // The custom-kernel boundary copies only non-row-contiguous
             // inputs; avoid forcing two redundant graph nodes per GDN layer.
-            [values, gate, weight, MLXArray(epsilon)],
+            [values, gate, weight, MLXArray(epsilon),
+             useTable ? prefillSigmoidTable : values],
             template: [
                 ("T", values.dtype),
                 ("HEADS", heads),
                 ("SIGMOID_GATE", sigmoidGate ? 1 : 0),
+                ("PREFILL_TABLE", useTable),
             ],
             grid: (32, rows, heads),
             threadGroup: (32, 1, 1),

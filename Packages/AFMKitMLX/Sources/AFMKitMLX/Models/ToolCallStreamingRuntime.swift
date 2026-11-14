@@ -120,13 +120,13 @@ public final class ToolCallStreamingRuntime {
                 madeToolCall = true
                 let afterStart = String(candidate[startRange.upperBound...])
                 let output = self.consumeToolBodyFragment(afterStart, prependStarted: true)
-                guard !prefix.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                guard !prefix.isEmpty else {
                     return output
                 }
                 return ToolCallStreamingOutput(
                     handled: true,
                     events: output.events,
-                    passthroughText: prefix
+                    passthroughText: prefix + (output.passthroughText ?? "")
                 )
             }
 
@@ -160,7 +160,7 @@ public final class ToolCallStreamingRuntime {
     }
 
     public func finishIncompleteToolCall() -> [ToolCallStreamingEvent] {
-        guard inToolCall, !currentToolText.isEmpty, !finalizedCurrentToolCall else { return [] }
+        guard inToolCall, !finalizedCurrentToolCall else { return [] }
 
         defer { resetState() }
 
@@ -179,6 +179,13 @@ public final class ToolCallStreamingRuntime {
             // An unfinished native envelope is not a completed invocation. In
             // particular, a literal tool end inside an unfinished arg_value
             // must not cause a fabricated empty/partial argument dictionary.
+            unfinishedNativeText = toolCallStartTag + currentToolText
+            return []
+        }
+
+        if toolCallParser == "qwen3_xml", !incrementalEmittedFirst {
+            // No native function was accepted. Preserve exactly what arrived,
+            // including an opener alone, rather than fabricating an end tag.
             unfinishedNativeText = toolCallStartTag + currentToolText
             return []
         }
@@ -211,7 +218,7 @@ public final class ToolCallStreamingRuntime {
             return events
         }
 
-        return emitParsedToolCalls(from: currentToolText)
+        return emitParsedToolCalls(parseToolCalls(from: currentToolText).0)
     }
 
     func finishPendingText() -> String {
@@ -250,18 +257,25 @@ public final class ToolCallStreamingRuntime {
             // A chunk may close more parameters as well as the envelope. Emit
             // those final deltas before closing the already-started JSON stream.
             if incrementalEmittedFirst { events += scanIncrementalMarkers() }
-            events.append(contentsOf: finalizeCurrentToolCall())
+            let finalized = finalizeCurrentToolCall()
+            events.append(contentsOf: finalized.events)
 
             guard !afterEnd.isEmpty else {
-                return ToolCallStreamingOutput(handled: true, events: events)
+                return ToolCallStreamingOutput(
+                    handled: true,
+                    events: events,
+                    passthroughText: finalized.remaining.isEmpty ? nil : finalized.remaining
+                )
             }
 
             let trailing = process(piece: afterEnd)
             events.append(contentsOf: trailing.events)
+            let remaining = finalized.remaining
+                + (trailing.handled ? (trailing.passthroughText ?? "") : afterEnd)
             return ToolCallStreamingOutput(
                 handled: true,
                 events: events,
-                passthroughText: trailing.handled ? trailing.passthroughText : afterEnd
+                passthroughText: remaining.isEmpty ? nil : remaining
             )
         }
 
@@ -269,7 +283,7 @@ public final class ToolCallStreamingRuntime {
         return ToolCallStreamingOutput(handled: true, events: events)
     }
 
-    private func finalizeCurrentToolCall() -> [ToolCallStreamingEvent] {
+    private func finalizeCurrentToolCall() -> (events: [ToolCallStreamingEvent], remaining: String) {
         defer { resetState() }
 
         if incrementalEmittedFirst {
@@ -291,10 +305,13 @@ public final class ToolCallStreamingRuntime {
                 )
                 events.append(.replaceCollected(index: incrementalToolIndex, toolCall: responseToolCall))
             }
-            return events
+            return (events, "")
         }
 
-        return emitParsedToolCalls(from: currentToolText)
+        let (parsed, remaining) = parseToolCalls(from: currentToolText)
+        // A rejected envelope is ordinary output, not an invocation. Return
+        // the parser's unconsumed text before resetting the held envelope.
+        return (emitParsedToolCalls(parsed), remaining)
     }
 
     private func parseIncrementalToolCalls(includeTrailingPartial: Bool) -> [ToolCall] {
@@ -322,10 +339,6 @@ public final class ToolCallStreamingRuntime {
         return [fallback]
     }
 
-    private func emitParsedToolCalls(from body: String) -> [ToolCallStreamingEvent] {
-        emitParsedToolCalls(parseToolCalls(from: body))
-    }
-
     private func emitParsedToolCalls(_ parsed: [ToolCall]) -> [ToolCallStreamingEvent] {
         var events = [ToolCallStreamingEvent]()
         for tc in parsed {
@@ -346,14 +359,13 @@ public final class ToolCallStreamingRuntime {
         return events
     }
 
-    private func parseToolCalls(from body: String) -> [ToolCall] {
+    private func parseToolCalls(from body: String) -> ([ToolCall], String) {
         let wrapped = "\(toolCallStartTag)\(body)\(toolCallEndTag)"
-        let (parsed, _) = Self.parseCompletedToolCalls(
+        return Self.parseCompletedToolCalls(
             from: wrapped,
             toolCallParser: toolCallParser,
             tools: tools
         )
-        return parsed
     }
 
     private func normalizedToolCall(from toolCall: ToolCall, index: Int) -> ResponseToolCall {

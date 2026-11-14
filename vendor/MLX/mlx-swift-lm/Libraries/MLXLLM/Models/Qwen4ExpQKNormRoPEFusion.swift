@@ -124,7 +124,17 @@ enum Qwen4ExpQKNormRoPEFusion {
             for (uint item = 0; item < 4; ++item) {
                 const uint index = base + item;
                 T result;
-                if (index < half_rotary) {
+                // Diagnostic counterpart of ddalcu/mlx-serve (MIT),
+                // 02bee553, QK_NORM_ROPE_256_SOURCE: keep angle products in
+                // FP32 and narrow only the completed rotated value.
+                if (REFERENCE_ROTATION && index < half_rotary) {
+                    result = T(float(normalized[index]) * float(angle_row[index])
+                        - float(normalized[index + half_rotary])
+                            * float(angle_row[half_rotary + index]));
+                } else if (REFERENCE_ROTATION && index < uint(ROTARY_DIM)) {
+                    result = T(float(normalized[index - half_rotary]) * float(angle_row[index])
+                        + float(normalized[index]) * float(angle_row[index - half_rotary]));
+                } else if (index < half_rotary) {
                     const T cosine_product = normalized[index] * T(angle_row[index]);
                     const T sine_product = normalized[index + half_rotary]
                         * T(angle_row[half_rotary + index]);
@@ -190,17 +200,20 @@ enum Qwen4ExpQKNormRoPEFusion {
         epsilon: Float,
         qHeads: Int,
         kvHeads: Int,
-        rotaryDimensions: Int
+        rotaryDimensions: Int,
+        referenceRotationForTesting: Bool = false
     ) -> (q: MLXArray, k: MLXArray)? {
         callImpl(q: q, k: k, qWeight: qWeight, kWeight: kWeight,
             angles: angles, epsilon: epsilon, qHeads: qHeads, kvHeads: kvHeads,
-            rotaryDimensions: rotaryDimensions, keysOnly: false)
+            rotaryDimensions: rotaryDimensions, keysOnly: false,
+            referenceRotationForTesting: referenceRotationForTesting)
     }
 
     private static func callImpl(
         q: MLXArray, k: MLXArray, qWeight: MLXArray, kWeight: MLXArray,
         angles: MLXArray, epsilon: Float, qHeads: Int, kvHeads: Int,
-        rotaryDimensions: Int, keysOnly: Bool
+        rotaryDimensions: Int, keysOnly: Bool,
+        referenceRotationForTesting: Bool = false
     ) -> (q: MLXArray, k: MLXArray)? {
         guard enabled,
               Device.defaultDevice().deviceType == .gpu,
@@ -222,6 +235,7 @@ enum Qwen4ExpQKNormRoPEFusion {
               kWeight.dtype == q.dtype,
               angles.shape == [q.dim(1), rotaryDimensions],
               angles.dtype == q.dtype || angles.dtype == .float32,
+              !referenceRotationForTesting || angles.dtype == .float32,
               [32, 64, 128].contains(rotaryDimensions)
         else { return nil }
 
@@ -243,6 +257,7 @@ enum Qwen4ExpQKNormRoPEFusion {
                 ("KV_HEADS", kvHeads),
                 ("SEQUENCE", sequence),
                 ("ROTARY_DIM", rotaryDimensions),
+                ("REFERENCE_ROTATION", referenceRotationForTesting),
             ],
             grid: ((launchedQueryHeads + kvHeads) * sequence * 64, 1, 1),
             threadGroup: (64, 1, 1),

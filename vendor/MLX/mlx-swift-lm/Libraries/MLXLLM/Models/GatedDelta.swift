@@ -50,7 +50,7 @@ func computeGSafe(
 
 private func makeGatedDeltaKernel(
     hasMask: Bool, vectorized: Bool, fuseGating: Bool = false,
-    captureStates: Bool = false
+    captureStates: Bool = false, roundStateToBF16: Bool = false
 ) -> MLXFast.MLXFastKernel? {
     let maskSource = hasMask ? "mask[b_idx * T + t]" : "true"
 
@@ -190,7 +190,7 @@ private func makeGatedDeltaKernel(
         }
         for (int i = 0; i < n_per_t; ++i) {
           auto s_idx = n_per_t * dk_idx + i;
-          o_state[s_idx] = static_cast<StT>(state[i]);
+          o_state[s_idx] = \(roundStateToBF16 ? "static_cast<StT>(static_cast<RoundT>(state[i]))" : "static_cast<StT>(state[i])");
         }
     """
 
@@ -209,6 +209,7 @@ private func makeGatedDeltaKernel(
     if vectorized { suffix += "_vec" }
     if hasMask { suffix += "_mask" }
     if captureStates { suffix += "_fp32_history" }
+    if roundStateToBF16 { suffix += "_bf16_persist" }
 
     return MLXFast.metalKernel(
         name: "gated_delta_step\(suffix)",
@@ -537,12 +538,18 @@ func gatedDeltaOps(
 
 // MARK: - Metal Kernel Dispatch
 
+private enum GatedDeltaRoundedPersistenceKernel {
+    static let kernel = makeGatedDeltaKernel(
+        hasMask: false, vectorized: false, roundStateToBF16: true)
+}
+
 /// Dispatch gated delta recurrence to Metal kernel.
 func gatedDeltaKernel(
     q: MLXArray, k: MLXArray, v: MLXArray,
     g: MLXArray, beta: MLXArray,
     state: MLXArray,
-    mask: MLXArray? = nil
+    mask: MLXArray? = nil,
+    persistStateAsBF16: Bool = false
 ) -> (MLXArray, MLXArray) {
     let (B, T, Hk, Dk) = k.shape4
     let Hv = v.dim(2)
@@ -564,7 +571,15 @@ func gatedDeltaKernel(
     let grid: (Int, Int, Int)
     let threadGroup: (Int, Int, Int)
 
-    if packedEligible {
+    let roundedPersistence = persistStateAsBF16 && T == 1 && mask == nil
+        && g.ndim == 3 && stateType == .float32 && inputType == .bfloat16
+        && GatedDeltaRoundedPersistenceKernel.kernel != nil
+    if roundedPersistence {
+        inputs = [q, k, v, g, beta, state, MLXArray(T)]
+        kernel = GatedDeltaRoundedPersistenceKernel.kernel
+        grid = (32, Dv, B * Hv)
+        threadGroup = (32, 4, 1)
+    } else if packedEligible {
         inputs = [q, k, v, g, beta, state, MLXArray(T)]
         kernel = GatedDeltaKernelManager.shared.kernelPacked
         grid = (32, Dv / 8, B * Hv)
@@ -597,23 +612,27 @@ func gatedDeltaKernel(
         fatalError("Gated delta Metal kernel not available")
     }
 
+    var template: [(String, any KernelTemplateArg)] = [
+        ("InT", inputType),
+        ("StT", stateType),
+        ("Dk", Dk),
+        ("Dv", Dv),
+        ("Hk", Hk),
+        ("Hv", Hv),
+    ]
+    if roundedPersistence { template.append(("RoundT", DType.bfloat16)) }
     let outputs = kernel(
         inputs,
-        template: [
-            ("InT", inputType),
-            ("StT", stateType),
-            ("Dk", Dk),
-            ("Dv", Dv),
-            ("Hk", Hk),
-            ("Hv", Hv),
-        ],
+        template: template,
         grid: grid,
         threadGroup: threadGroup,
         outputShapes: [[B, T, Hv, Dv], state.shape],
         outputDTypes: [inputType, stateType]
     )
 
-    return (outputs[0], outputs[1])
+    let persisted = persistStateAsBF16 && !roundedPersistence
+        ? outputs[1].asType(.bfloat16).asType(.float32) : outputs[1]
+    return (outputs[0], persisted)
 }
 
 /// Dispatch gated delta recurrence with fused gating (compute g + beta inside kernel).

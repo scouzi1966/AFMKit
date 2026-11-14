@@ -105,13 +105,10 @@ final class QwenQSAReferenceRotaryTests: XCTestCase {
                 positionIDs: blockPositions).squeezed(axis: 1)
             let scores = maximum(matmul(queries.asType(.float32), bank.asType(.float32).swappedAxes(-1, -2)),
                                  MLXArray(0)).sum(axis: 1)
-            let blockIDs = MLXArray(0..<blocks).asType(.int32).reshaped(1, 1, blocks)
-            let visible = blockIDs .< (textHistory[0..., prefix...] + 1).floorDivide(ratio).reshaped(1, width, 1)
-            let biased = scores - blockIDs.asType(.float32) * 1e-7
-            let masked = MLX.where(visible, biased, MLXArray(-Float.greatestFiniteMagnitude))
-            let selected = argPartition(-masked, kth: topK - 1, axis: -1)[0..., 0..., ..<topK].asType(.int32)
-            let sortedBlocks = sorted(MLX.where(takeAlong(visible, selected, axis: -1), selected,
-                                               MLXArray(Int32.max)), axis: -1)
+            let bounds = (0..<width).map { (prefix + $0 + 1) / ratio }
+            let sortedBlocks = MLXArray(QwenQSARawScoreOracle.select(
+                scores.asArray(Float.self), blocks: blocks, bounds: bounds, topK: topK))
+                .reshaped(1, width, topK)
             let expected = Qwen4ExpQSAGather.maskFromBlocks(sortedBlocks, keyLength: total, compressionRatio: ratio)
             let selection = indexer(MLXArray.zeros([1, width, 16], dtype: .bfloat16),
                 positionIDs: image ? positions : nil, cache: cache,

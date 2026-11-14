@@ -600,6 +600,27 @@ public struct TokenIterator: Sequence, IteratorProtocol {
     /// Logprob info computed during `convertToToken()`, pending for the next `next()` return.
     private var pendingLogprobInfo: TokenLogprobData?
 
+    // Optional serial-AR diagnostic only. No provider/API sets this policy.
+    private var reasoningBudget: NativeReasoningBudgetState?
+    private var reasoningEmissionQueue: [Int] = []
+    private var reasoningEmissionCursor = 0
+    private var reasoningResumeLogits: MLXArray?
+    public private(set) var lastReasoningTokenOrigin: NativeReasoningTokenOrigin?
+    public private(set) var abandonedReasoningTokenCount = 0
+
+    /// A forced span is committed in one model call but delivered one ID at a
+    /// time. While this is nonzero, live cache is AHEAD of delivered output.
+    /// Do not export/reuse it as a delivered-prefix checkpoint. On early stop
+    /// or cancellation discard the live request cache; prompt snapshots remain
+    /// independently owned and are not mutated by this transition.
+    public var committedUndeliveredReasoningTokenCount: Int {
+        reasoningEmissionQueue.count - reasoningEmissionCursor
+    }
+
+    public var reasoningBudgetCacheIsAtDeliveredBoundary: Bool {
+        committedUndeliveredReasoningTokenCount == 0 && abandonedReasoningTokenCount == 0
+    }
+
     // Performance instrumentation (enabled by AFM_PERF=1)
     static let perfEnabled = ProcessInfo.processInfo.environment["AFM_PERF"] == "1"
     var perfModelNs: UInt64 = 0        // cumulative: model() graph construction
@@ -668,8 +689,17 @@ public struct TokenIterator: Sequence, IteratorProtocol {
         parameters: GenerateParameters,
         processorPrompt: MLXArray? = nil,
         preparedPrefill: (([KVCache]) throws -> LMOutput)? = nil,
-        promptBoundaryObserver: ((LMOutput, [KVCache]) -> Void)? = nil
+        promptBoundaryObserver: ((LMOutput, [KVCache]) -> Void)? = nil,
+        reasoningBudget: NativeReasoningBudget? = nil
     ) throws {
+        if reasoningBudget != nil {
+            // Reject before model.prepare, cache mutation, or a sampler draw.
+            guard !parameters.computeLogprobs, !parameters.ignoreEndOfSequence,
+                parameters.kvBits == nil, parameters.processor() == nil,
+                input.image == nil, input.video == nil, input.text.mask == nil,
+                input.text.tokens.ndim == 1
+            else { throw NativeReasoningBudget.ConfigurationError.unsupportedIteratorConfiguration }
+        }
         self.model = model
         self.y = input.text
         self.cache = cache ?? model.newCache(parameters: parameters)
@@ -686,6 +716,7 @@ public struct TokenIterator: Sequence, IteratorProtocol {
         self.computeLogprobs = parameters.computeLogprobs
         self.topLogprobsCount = parameters.topLogprobsCount
         self.temperatureForLogprobs = parameters.temperature
+        self.reasoningBudget = reasoningBudget.map(NativeReasoningBudgetState.init)
 
         self.promptPrefillTime = try measure {
             if let preparedPrefill {
@@ -716,8 +747,14 @@ public struct TokenIterator: Sequence, IteratorProtocol {
     public init(
         input: LMInput, model: any LanguageModel, cache: [KVCache]? = nil,
         processor: LogitProcessor?, sampler: LogitSampler, prefillStepSize: Int = 512,
-        maxTokens: Int? = nil
+        maxTokens: Int? = nil,
+        reasoningBudget: NativeReasoningBudget? = nil
     ) throws {
+        if reasoningBudget != nil {
+            guard processor == nil, input.image == nil, input.video == nil,
+                input.text.mask == nil, input.text.tokens.ndim == 1
+            else { throw NativeReasoningBudget.ConfigurationError.unsupportedIteratorConfiguration }
+        }
         self.model = model
         self.y = input.text
         self.cache = cache ?? model.newCache(parameters: nil)
@@ -735,6 +772,7 @@ public struct TokenIterator: Sequence, IteratorProtocol {
         self.computeLogprobs = false
         self.topLogprobsCount = 0
         self.temperatureForLogprobs = 0
+        self.reasoningBudget = reasoningBudget.map(NativeReasoningBudgetState.init)
 
         self.promptPrefillTime = try measure {
             try prepare(input: input, windowSize: prefillStepSize)
@@ -866,6 +904,13 @@ public struct TokenIterator: Sequence, IteratorProtocol {
     }
 
     mutating public func next() -> Int? {
+        if reasoningBudget != nil {
+            switch nextReasoningBoundaryToken() {
+            case .ordinary: break
+            case .token(let token): return token
+            case .finished: return nil
+            }
+        }
         if let maxTokens, tokenCount >= maxTokens {
             return nil
         }
@@ -930,7 +975,92 @@ public struct TokenIterator: Sequence, IteratorProtocol {
             }
         }
 
+        if reasoningBudget != nil {
+            lastReasoningTokenOrigin = .sampled
+            reasoningBudget?.observe(result)
+        }
         return result
+    }
+
+    private enum ReasoningBoundaryNext {
+        case ordinary
+        case token(Int)
+        case finished
+    }
+
+    /// Only entered for an explicitly configured serial iterator. Unlike the
+    /// reference's pipeline, our `y` is sampled but NOT in cache. Commit that
+    /// singleton first, then the whole suffix, preserving those two recurrence
+    /// boundaries. Neither call samples an unused successor. In particular,
+    /// do not replace this with one [pending + suffix] forward or singleton
+    /// forced-token sampling: those have different recurrent rounding geometry.
+    /// Adapted boundary semantics from mlx-serve v26.10.1 commit
+    /// 02bee553f48cd3bc7d82aba0f8073820bd924738, src/generate.zig:3816
+    /// (commitForcedTokens, ordinary pipelined branch). Speculative branches
+    /// and server policy wiring are deliberately outside this iterator hook.
+    private mutating func nextReasoningBoundaryToken() -> ReasoningBoundaryNext {
+        if Task.isCancelled {
+            teardown()
+            return .finished
+        }
+        if let maxTokens, tokenCount >= maxTokens { return .finished }
+        if reasoningEmissionCursor < reasoningEmissionQueue.count {
+            return emitReasoningBoundaryToken()
+        }
+        guard reasoningBudget?.isDue == true, let pending = y else { return .ordinary }
+        let pendingID = pending.tokens.item(Int.self)
+        let returnedCount = tokenCount
+        let maximumTokens = maxTokens
+        guard reasoningBudget?.takeDecision(
+            returnedTokenCount: returnedCount, maximumTokens: maximumTokens,
+            pendingTokenID: pendingID) == .force
+        else { return .ordinary }
+
+        let forced = reasoningBudget!.configuration.forcedTokenIDs
+        let pendingOutput = model.callAsFunction(
+            pending[text: .newAxis], cache: cache.isEmpty ? nil : cache,
+            state: state, hostTokenIDs: model.consumesHostTokenIDs ? [pendingID] : nil)
+        state = pendingOutput.state
+        let forcedInput = LMInput.Text(tokens: MLXArray(forced.map(Int32.init)).reshaped(1, -1))
+        let output = model.callAsFunction(
+            forcedInput, cache: cache.isEmpty ? nil : cache,
+            state: state, hostTokenIDs: model.consumesHostTokenIDs ? forced : nil)
+        state = output.state
+        let finalLogits = output.logits[0..., -1, 0...].reshaped(
+            output.logits.dim(0), 1, output.logits.dim(-1))
+        reasoningResumeLogits = finalLogits
+        // Materialize the existing forward once; never run another forward
+        // while draining queued IDs. The last row owns the next distribution.
+        asyncEval(finalLogits)
+        y = nil
+        reasoningEmissionQueue = [pendingID] + forced
+        reasoningEmissionCursor = 0
+        return emitReasoningBoundaryToken()
+    }
+
+    private mutating func emitReasoningBoundaryToken() -> ReasoningBoundaryNext {
+        let index = reasoningEmissionCursor
+        let token = reasoningEmissionQueue[index]
+        reasoningEmissionCursor += 1
+        tokenCount += 1
+        lastReasoningTokenOrigin = index == 0 ? .sampled : .forcedBoundary
+        // This bounded hook rejects processors and logprobs at construction;
+        // no force-masked pseudo-probabilities or duplicate processor feedback.
+        lastLogprobInfo = nil
+        pendingLogprobInfo = nil
+        reasoningBudget?.observe(token)
+        if reasoningEmissionCursor == reasoningEmissionQueue.count {
+            let logits = reasoningResumeLogits!
+            reasoningResumeLogits = nil
+            reasoningEmissionQueue = []
+            reasoningEmissionCursor = 0
+            // Restore the normal invariant: cache includes the returned token;
+            // y is the one sampled (uncommitted) successor. One RNG draw only.
+            let nextToken = convertToToken(logits: logits)
+            y = .init(tokens: nextToken)
+            asyncEval(nextToken)
+        }
+        return .token(token)
     }
 
     mutating func excludeLastTokenFromGenerationLimit() {
@@ -966,6 +1096,13 @@ public struct TokenIterator: Sequence, IteratorProtocol {
     /// Explicitly release iterator-held generation state so ARC can drop
     /// MLX-backed arrays before the final stream synchronization.
     public mutating func teardown() {
+        if reasoningBudget != nil {
+            abandonedReasoningTokenCount += committedUndeliveredReasoningTokenCount
+            reasoningEmissionQueue = []
+            reasoningEmissionCursor = 0
+            reasoningResumeLogits = nil
+            reasoningBudget = nil
+        }
         cache = []
         state = nil
         y = nil

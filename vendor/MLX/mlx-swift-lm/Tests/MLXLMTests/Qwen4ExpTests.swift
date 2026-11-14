@@ -973,7 +973,8 @@ final class Qwen4ExpTests: XCTestCase {
                 input: eagerStream,
                 normWeight: normWeight,
                 groupSize: hiddenSize,
-                epsilon: epsilon))
+                epsilon: epsilon,
+                referenceHCRounding: true))
 
         XCTAssertLessThanOrEqual(
             maximumAbsoluteDifference(actual.stream, eagerStream), 0.002)

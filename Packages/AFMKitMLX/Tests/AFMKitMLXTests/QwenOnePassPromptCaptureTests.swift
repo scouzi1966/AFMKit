@@ -190,8 +190,8 @@ final class QwenOnePassPromptCaptureTests: XCTestCase {
     func testReferenceNormalizedPrefillPreservesOnePassCaptureOutputAndFinalState() async throws {
         let (model, _) = try await fixture()
         let layers = model.namedModules().compactMap { $0.1 as? Qwen4ExpDecoderLayer }.filter(\.isLinear)
-        XCTAssertTrue(layers.allSatisfy(\.referenceGatedDeltaPrefillNormalizationForTesting),
-                      "Exercise the production prefill normalization default")
+        XCTAssertTrue(layers.allSatisfy { !$0.referenceGatedDeltaPrefillNormalizationForTesting },
+                      "Reference arithmetic is selected by qualified geometry; the diagnostic override stays off")
         let tokens = (0..<256).map { $0 % 29 + 1 }
         let input = LMInput.Text(tokens: MLXArray(tokens).reshaped(1, -1))
         let controlCache = model.newCache(parameters: nil)
